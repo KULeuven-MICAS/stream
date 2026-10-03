@@ -48,7 +48,7 @@ def solve(
 
 
 def test_spec_forms_parse_to_name_and_options() -> None:
-    assert parse_spec("energy") == ("energy", {})
+    assert parse_spec("memory_ports") == ("memory_ports", {})
     assert parse_spec({"memory_ports": {"burst": False}}) == ("memory_ports", {"burst": False})
     assert parse_spec({"memory_ports": None}) == ("memory_ports", {})
     with pytest.raises(ValueError, match="exactly one family"):
@@ -71,8 +71,8 @@ def test_no_families_loads_nothing() -> None:
 
 def test_solve_options_fold_families_into_the_constraint_selection() -> None:
     assert SolveOptions().resolved_constraint_selection() is None
-    selection = SolveOptions(families=["energy"]).resolved_constraint_selection()
-    assert selection == ConstraintSelection(families=("energy",))
+    selection = SolveOptions(families=["memory_ports"]).resolved_constraint_selection()
+    assert selection == ConstraintSelection(families=("memory_ports",))
 
 
 @pytest.mark.slow

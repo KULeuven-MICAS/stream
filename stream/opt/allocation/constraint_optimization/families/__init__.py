@@ -46,7 +46,7 @@ def available_families() -> dict[str, Callable[..., ConstraintFamily]]:
 
 
 def parse_spec(spec: FamilySpec) -> tuple[str, dict[str, Any]]:
-    """``"energy"`` or ``{"memory_ports": {"burst": True}}`` to a name and its options."""
+    """``"memory_ports"`` or ``{"memory_ports": {"burst": True}}`` to a name and its options."""
     if isinstance(spec, str):
         return spec, {}
     if len(spec) != 1:

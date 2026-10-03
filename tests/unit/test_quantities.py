@@ -36,7 +36,7 @@ def test_registry_rejects_duplicates_and_names_the_available_quantities() -> Non
     with pytest.raises(ValueError, match="already registered"):
         registry.add("overlap", 4)
     with pytest.raises(KeyError, match="available: overlap"):
-        registry.get("energy")
+        registry.get("buffering")
 
 
 @pytest.mark.slow

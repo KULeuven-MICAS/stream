@@ -1880,7 +1880,7 @@ class TransferAndTensorAllocator:
             traffic_weight = self.iterations / bw
             primary_expr = primary_expr + traffic_weight * traffic_expr
 
-        # Buffering depth; the ObjectiveSpec decides whether and at which priority it is minimised.
+        # Buffering depth, minimised once latency and offchip traffic are settled.
         buffering_expr = self.model.quicksum(
             self.tiles_needed_levels[(t, s)] * self.z_stop[(t, s)]._raw
             for t in self.tensors_to_optimize_reuse_for

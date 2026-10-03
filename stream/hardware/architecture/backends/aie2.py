@@ -94,8 +94,6 @@ class AIE2CoreBackend:
                 "dma",
                 name,
                 channels * self.dma_channel_bits,
-                0.0,
-                0.0,
                 frozenset({(ANY_OPERAND, direction)}),
             )
             for name, channels, direction in (("mm2s", self.dma_mm2s, READ), ("s2mm", self.dma_s2mm, WRITE))

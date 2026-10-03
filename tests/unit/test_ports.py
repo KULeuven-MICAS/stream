@@ -68,12 +68,11 @@ def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fu
     assert port is not None and port.name == "rw_port_3"
 
 
-def test_declared_port_width_and_access_energy_become_the_port_model(fusemax: Accelerator):
-    # fusemax_dram.yaml: rw ports of 3200 b/cc, r_cost = w_cost = 32000 pJ per access
+def test_declared_port_width_becomes_the_port_model(fusemax: Accelerator):
+    # fusemax_dram.yaml: rw ports of 3200 b/cc
     port = next(p for p in fusemax.ports if p.key == (2, "dram", "rw_port_1"))
     assert port.bits_per_cycle == 3200
     assert port.bandwidth.efficiency(4, "read") == 1.0
-    assert port.read_energy_per_bit == port.write_energy_per_bit == 10.0
 
 
 def test_aie2_tiles_expose_their_dma_channels_as_ports():
