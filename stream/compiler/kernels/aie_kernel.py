@@ -79,15 +79,9 @@ def induction_variable(op: Operation, var: StrensorVar, occurrence: int = 0) -> 
 
 @dataclass(frozen=True)
 class StateOperand:
-    """A buffer a kernel keeps on its core from one step of a loop to the next.
-
-    ``carried_over`` and ``indexed_by`` name kernel dimensions. Read at ``carried_over - 1``
-    and written at ``carried_over``, which is the recurrence
-    :func:`~stream.workload.iterator_type.is_state_operand` recognises and what makes that
-    dimension SEQUENTIAL. ``rows`` is the extent kept per step; the node supplies the extent
-    of ``indexed_by``, so splitting that dimension divides the state with it. ``handover`` is
-    how deep a copy the next step of the computation reads, zero for a state kept private.
-    """
+    """A buffer a kernel keeps on its core from one step of a loop to the next: read at ``carried_over - 1`` and
+    written at ``carried_over``, ``rows`` per step times the extent of ``indexed_by``. ``handover`` is how deep a
+    copy the next step of the computation reads, zero for a state kept private."""
 
     name: str
     rows: int

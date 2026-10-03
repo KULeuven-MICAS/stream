@@ -37,7 +37,6 @@ class DmaStream:
     """``bits_per_cycle * gated`` is the stream's bits per iteration; ``gated`` never exceeds ``latency_ub``. It is
     the gated latency, or the path choice when the active latency rounds to 0 and has no gated latency to scale."""
 
-    transfer: TransferNode
     choice: MulticastPathPlan
     gated: Any
     bits_per_cycle: float
@@ -48,12 +47,9 @@ class DmaStream:
 
 @dataclass(frozen=True)
 class NodeTraffic:
-    """Bits per iteration ``node`` moves through ``port`` of ``core``, the core it runs on."""
+    """Bits per iteration a node moves through ``port`` of the core it runs on."""
 
-    node: ComputationNode
-    core: Core
     port: Port
-    direction: str
     bits: float
     slot: int
 
@@ -65,7 +61,7 @@ def active_fraction(node: Any, alloc: TransferAndTensorAllocator) -> float:
     return prod(v.size for v in temporal if v.effect != LoopEffect.ABSENT) / total if total else 1.0
 
 
-def operand_role(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
+def tensor_role(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
     """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
     producer = next(iter(alloc.workload.predecessors(tr)), None)
     if read_side and isinstance(producer, ComputationNode):
@@ -101,7 +97,7 @@ def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> 
         (choice.sources, READ, 1.0 / len(choice.sources)),
         (choice.targets, WRITE, write_share),
     ):
-        operand = operand_role(alloc, tr, read_side=direction == READ)
+        operand = tensor_role(alloc, tr, read_side=direction == READ)
         for core in cores:
             port = ports.port_for(core, direction, operand)
             if port is None:
@@ -117,6 +113,8 @@ def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> 
 def dma_streams(alloc: TransferAndTensorAllocator) -> list[DmaStream]:
     """Every gated transfer latency that moves bits, with the ports its sources read and its targets write."""
     streams: list[DmaStream] = []
+    if "transfer_latency" not in alloc.quantities:
+        return []
     for (tr, choice), quantity in alloc.quantities.indexed("transfer_latency").items():
         link_latency = float(alloc.transfer_latency_for_path(tr, choice))
         if link_latency <= 0:
@@ -125,11 +123,11 @@ def dma_streams(alloc: TransferAndTensorAllocator) -> list[DmaStream]:
         bits = tr.inputs[0].size_bits() * active_fraction(tr, alloc)
         sides = tuple(_sides(alloc, tr, choice))
         if latency > 0:
-            stream = DmaStream(tr, choice, quantity.expr, bits / latency, latency, alloc.slot_of[tr], sides)
+            stream = DmaStream(choice, quantity.expr, bits / latency, latency, alloc.slot_of[tr], sides)
         else:
             # Charged at a reuse factor of 1, an upper bound, since y / R needs a variable of its own.
             gate = alloc.y_path_choice[(tr, choice)]._raw
-            stream = DmaStream(tr, choice, gate, bits, 1.0, alloc.slot_of[tr], sides)
+            stream = DmaStream(choice, gate, bits, 1.0, alloc.slot_of[tr], sides)
         streams.append(stream)
     return streams
 
@@ -148,5 +146,5 @@ def node_traffic(alloc: TransferAndTensorAllocator) -> list[NodeTraffic]:
             for operand, direction, bits in port_traffic(backend, alloc.cost_lut.get_cost(node, core)):
                 port = alloc.accelerator.ports.port_for(core, direction, operand)
                 if port is not None:
-                    traffic.append(NodeTraffic(node, core, port, direction, bits * fraction, alloc.slot_of[node]))
+                    traffic.append(NodeTraffic(port, bits * fraction, alloc.slot_of[node]))
     return traffic

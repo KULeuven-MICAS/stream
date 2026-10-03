@@ -1,8 +1,4 @@
-"""A tensor a transfer produces is held only on the cores the transfer's chosen path writes to.
-
-The key of an attention head, brought by the shim to one memory tile, was placed on four: the
-next transfer then read a quarter of it from each, which the generated design never does.
-"""
+"""A tensor a transfer produces is held only on the cores the transfer's chosen path writes to."""
 
 from __future__ import annotations
 

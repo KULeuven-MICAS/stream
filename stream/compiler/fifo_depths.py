@@ -36,11 +36,8 @@ class FifoDepths:
     def deepen(
         self, depths: tuple[int, ...], tiles: tuple[SSAValue, ...], object_bytes: int, feed: bool = True
     ) -> tuple[int, ...]:
-        """Per-endpoint depths, raised as far as each endpoint's tile has slack for the extra objects.
-
-        The readers on compute tiles deepen together: a broadcast advances only once every reader
-        has room, so the slowest reader's depth bounds how far any of them may run ahead.
-        """
+        """Per-endpoint depths, raised as far as each endpoint's tile has slack for the extra objects. Readers on
+        compute tiles deepen together, since a broadcast advances only once every reader has room."""
         if not feed or len(depths) != len(tiles):
             return depths
         out = list(depths)

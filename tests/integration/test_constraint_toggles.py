@@ -222,10 +222,8 @@ def test_buffer_descriptor_flip():
 
 @pytest.mark.slow
 def test_dma_channels_flip():
-    """A tight DMA limit is infeasible with dma_channels on and feasible with it off (the guard in _objective).
-
-    build_transfer_context is patched in the allocator's own namespace.
-    """
+    """A tight DMA limit is infeasible with dma_channels on and feasible with it off (the guard in _objective);
+    build_transfer_context is patched in the allocator's own namespace."""
     # Enabled + tight limit -> infeasible
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch(_BUILD_TRANSFER_CONTEXT, side_effect=_build_transfer_context_tight_dma):

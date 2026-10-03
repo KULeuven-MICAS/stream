@@ -41,10 +41,9 @@ def test_registry_rejects_duplicates_and_names_the_available_quantities() -> Non
 
 @pytest.mark.slow
 def test_allocator_registers_what_it_builds(alloc: tta.TransferAndTensorAllocator) -> None:
-    expected = {"slot_latency", "overlap", "iteration", "total_latency", "transfer_latency", "primary"}
-    expected |= {"offchip_traffic", "buffering", "route_hops", "memory_load", "dma_in", "dma_out"}
+    expected = {"slot_latency", "overlap", "iteration", "transfer_latency", "primary"}
+    expected |= {"offchip_traffic", "buffering", "route_hops"}
     assert expected <= set(alloc.quantities.names())
-    assert alloc.model.value(alloc.quantities.get("total_latency").expr) == alloc.total_latency.X
     slots = alloc.quantities.indexed("slot_latency")
     iteration = alloc.model.value(alloc.quantities.get("iteration").expr)
     assert iteration == sum(alloc.model.value(q.expr) for q in slots.values())

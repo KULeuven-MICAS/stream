@@ -30,14 +30,9 @@ def _extent(node: ComputationNode, position: int) -> int | None:
 
 
 def state_tensor(node: ComputationNode, state, positions: dict[str, int]) -> tuple[Tensor, AffineMap] | None:
-    """The operand and the map that make ``state`` a recurrence on ``node``, whose kernel's
-    dimensions sit at ``positions``.
-
-    ``rows`` of state per step of the carried dimension, indexed by the dimension the node
-    splits over, so a split of that dimension divides the state with it. Reading the carried
-    dimension at ``-1`` is what marks it: the extent that reaches the tensor is clipped to
-    its own shape, so the carry costs ``rows`` however the carried dimension is tiled.
-    """
+    """The operand and map that make ``state`` a recurrence on ``node``: ``rows`` per step of the carried
+    dimension, read at ``-1``, indexed by the dimension the node splits over. The carry costs ``rows`` however
+    the carried dimension is tiled, since the extent reaching the tensor is clipped to its shape."""
     carried, index = positions[state.carried_over], positions[state.indexed_by]
     indexed = _extent(node, index)
     if indexed is None or _extent(node, carried) is None:

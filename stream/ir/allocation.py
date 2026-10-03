@@ -26,7 +26,7 @@ class LatencyInfo(BaseModel):
     )
     fill: int = Field(
         default=0,
-        description="Cycles of total each run waits before its first iteration for the tensors it holds in one buffer",
+        description="Cycles each run waits before its first iteration for the tensors it holds in one buffer",
     )
 
 

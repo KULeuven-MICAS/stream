@@ -189,10 +189,8 @@ def test_gemm_gurobi_baseline():
 
 @pytest.mark.slow
 def test_gemm_cross_backend():
-    """ORToolsBackend (GSCIP) produces OPTIMAL on TETRA gemm instance, matching Gurobi within 1%.
-
-    The allocator module's ``create_solver`` is patched to return an ORToolsBackend.
-    """
+    """ORToolsBackend (GSCIP) solves the TETRA gemm instance to OPTIMAL, within 1% of Gurobi; the allocator
+    module's ``create_solver`` is patched to return an ORToolsBackend."""
     results = []
     ort_factory = _make_ortools_factory(mathopt.SolverType.GSCIP)
 

@@ -106,10 +106,8 @@ from unittest.mock import MagicMock  # noqa: E402
 
 
 def _make_tta_stub(constraint_selection, *, bind_objective=False):
-    """A mock allocator that runs the real _create_constraints and _objective dispatch.
-
-    bind_objective also binds the real _set_total_latency_and_objective so its DMA branch runs.
-    """
+    """A mock allocator that runs the real _create_constraints and _objective dispatch; bind_objective also
+    binds the real _set_total_latency_and_objective so its DMA branch runs."""
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
         TransferAndTensorAllocator,

@@ -71,8 +71,6 @@ class Port:
 
     key: PortKey
     core_ids: tuple[int, ...]
-    memory: str
-    name: str
     bandwidth: BandwidthModel = field(hash=False)
     serves: frozenset[Service]
 
@@ -118,8 +116,6 @@ class PortRegistry:
             key: Port(
                 key=key,
                 core_ids=tuple(sorted(core_ids[key])),
-                memory=key.memory,
-                name=key.port,
                 bandwidth=overrides.get(key, BandwidthModel.flat(spec.bits_per_cycle)),
                 serves=frozenset(serves[key]),
             )
@@ -129,9 +125,6 @@ class PortRegistry:
 
     def __iter__(self) -> Iterator[Port]:
         return iter(self._ports.values())
-
-    def __len__(self) -> int:
-        return len(self._ports)
 
     def ports_of(self, core: Core) -> tuple[Port, ...]:
         """The top-level ports ``core`` reaches; none for a core without a port model."""

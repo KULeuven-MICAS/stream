@@ -43,7 +43,7 @@ def fusemax() -> Accelerator:
 
 def test_cores_sharing_a_memory_share_its_ports(fusemax: Accelerator):
     registry = fusemax.ports
-    sram = [port for port in registry if port.memory == "sram"]
+    sram = [port for port in registry if port.key.memory == "sram"]
     assert {port.key for port in sram} == {(0, "sram", "r_port_1"), (0, "sram", "w_port_1")}
     assert all(port.core_ids == (0, 1) for port in sram)
     assert registry.ports_of(fusemax.get_core(0)) == registry.ports_of(fusemax.get_core(1))
@@ -55,7 +55,7 @@ def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
     assert len(registry.ports_of(dram)) == 3
     roles = (input_role(1), input_role(2), OUTPUT)
     names = {role: registry.port_for(dram, READ_BY_DATAPATH, role) for role in roles}
-    assert {role: port and port.name for role, port in names.items()} == {
+    assert {role: port and port.key.port for role, port in names.items()} == {
         "input1": "rw_port_1",
         "input2": "rw_port_2",
         "output": "rw_port_3",
@@ -65,7 +65,7 @@ def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
 def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fusemax: Accelerator):
     registry = fusemax.ports
     port = registry.port_for(fusemax.get_core(2), WRITE_BY_DATAPATH, input_role(1))
-    assert port is not None and port.name == "rw_port_3"
+    assert port is not None and port.key.port == "rw_port_3"
 
 
 def test_declared_port_width_becomes_the_port_model(fusemax: Accelerator):
@@ -78,7 +78,7 @@ def test_declared_port_width_becomes_the_port_model(fusemax: Accelerator):
 def test_aie2_tiles_expose_their_dma_channels_as_ports():
     accelerator = parse_accelerator(AIE2)
     compute, mem_tile = accelerator.get_core(2), accelerator.get_core(1)
-    rates = {(p.name, p.bits_per_cycle) for p in accelerator.ports.ports_of(compute)}
+    rates = {(p.key.port, p.bits_per_cycle) for p in accelerator.ports.ports_of(compute)}
     assert rates == {("mm2s", 2 * 64), ("s2mm", 2 * 64)}
     assert accelerator.ports.port_for(mem_tile, WRITE, input_role(1)).bits_per_cycle == 6 * 64
     assert accelerator.ports.port_for(compute, READ_BY_DATAPATH, input_role(1)) is None
@@ -88,7 +88,7 @@ def test_a_core_with_measured_bandwidth_has_no_ports():
     accelerator = fusemax_accelerator({2: MEASURED})
     registry = accelerator.ports
     assert registry.ports_of(accelerator.get_core(2)) == ()
-    assert {port.memory for port in registry} == {"sram"}
+    assert {port.key.memory for port in registry} == {"sram"}
     assert set(accelerator.bandwidth) == {2}
 
 

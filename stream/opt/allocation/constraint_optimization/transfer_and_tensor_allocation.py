@@ -1190,7 +1190,6 @@ class TransferAndTensorAllocator:
                 terms["handover"] = {"value": held, "dims": (), "dtype": ""}
 
         for memory, expr in load.items():
-            self.quantities.add("memory_load", expr, index=memory.id)
             cap = self._memory_capacity_bits(memory)
             self._resource_bounds[("memory_capacity", memory.id)] = cap / 8  # bytes
             self._add_resource_constr(
@@ -1465,17 +1464,9 @@ class TransferAndTensorAllocator:
         self._resident_fill()
 
     def _resident_fill(self) -> None:
-        """Cycles each run waits for the windows it holds in one buffer to fill.
-
-        A reuse level no outer loop rotates keeps its whole window of an off-chip tensor in a single
-        object for the run: the object fills completely before the first iteration reads it, and the
-        next run cannot refill it before this one is done with it, so the fill overlaps no iteration.
-        A window an outer loop moves on that is held in one buffer instead waits the same way every
-        time it moves on, the next window filling only once the last read of this one is done. The
-        slots spread those transfers over the iterations, as if a second buffer prefetched them. The
-        fills run together, each no faster than its own path and all of them sharing every
-        shared-bandwidth core at its ceiling, as one iteration's transfers do.
-        """
+        """Cycles each run waits for the off-chip windows it holds in one buffer to fill: such a window fills
+        before the iteration that reads it, overlapping none. The fills share each path and shared-bandwidth core
+        as one iteration's transfers do."""
         self.fill = fill = self.model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
         shared: dict[int, list[Any]] = defaultdict(list)
         singles: dict[Tensor, list[tuple[int, Any]]] = defaultdict(list)
@@ -1513,7 +1504,6 @@ class TransferAndTensorAllocator:
                 shared[core_id] += [tiles * share * w._raw for tiles, w in held]
         for core_id, terms in shared.items():
             self.model.add_constr(fill >= self.model.quicksum(terms), name=f"fill_shared_{core_id}")
-        self.quantities.add("resident_fill", fill._raw)
 
     def _objective(self) -> None:
         if self.constraint_selection.dma_channels:
@@ -1682,8 +1672,6 @@ class TransferAndTensorAllocator:
             if not self._bounds_overlap(res):
                 continue
             busy = self._link_busy_expr(res) if isinstance(res, CommunicationLink) else None
-            if busy is not None:
-                self.quantities.add("link_busy", busy, index=res)
             if busy is None:
                 self.model.add_constr(overlap <= v)
             else:
@@ -1819,8 +1807,6 @@ class TransferAndTensorAllocator:
 
             self.core_dma_in[core] = v_in
             self.core_dma_out[core] = v_out
-            self.quantities.add("dma_in", v_in._raw, index=core.id)
-            self.quantities.add("dma_out", v_out._raw, index=core.id)
 
         self.max_core_dma_in = self.model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaIn")
         self.max_core_dma_out = self.model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaOut")
@@ -1852,7 +1838,6 @@ class TransferAndTensorAllocator:
             - (self.iterations - 1) * self.overlap
             + self.fill
         )
-        self.quantities.add("total_latency", total_latency._raw)
 
         # Primary objective: minimize total latency (+ DMA balancing if enabled)
         if self.constraint_selection.dma_channels:

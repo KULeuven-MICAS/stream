@@ -5,13 +5,9 @@ from stream.workload.workload import ComputationNode, Tensor
 
 
 class MatMulParser(OnnxOperatorParser):
-    """Parses an ONNX MatMul into an affine ``ComputationNode``.
-
-    Semantics follow ``numpy.matmul``: the last two axes are the matrix axes ``(m, k) @ (k, n)`` and
-    leading axes are numpy-broadcast batch axes (right-aligned). Iteration space ``(batch..., m, n, k)``
-    with ``k`` the single contraction (REDUCTION); a broadcast batch axis (size 1 against a larger output
-    axis, or absent) indexes that operand at constant 0, keeping the map affine.
-    """
+    """Parses an ONNX MatMul, as ``numpy.matmul``, into a ``ComputationNode`` over ``(batch..., m, n, k)`` with
+    ``k`` the contraction. A broadcast batch axis (size 1 against a larger output axis, or absent) indexes its
+    operand at constant 0, keeping the map affine."""
 
     EXPECTED_NB_OF_INPUTS = 2  # A and B
 

@@ -70,5 +70,8 @@ def load_families(
             raise KeyError(f"Unknown constraint family {name!r}; available: {', '.join(sorted(known)) or 'none'}")
         if any(f.name == name for f in families):
             raise ValueError(f"Constraint family {name!r} is selected twice")
-        families.append(known[name](**options))
+        try:
+            families.append(known[name](**options))
+        except TypeError as exc:
+            raise TypeError(f"Constraint family {name!r}: {exc}") from None
     return tuple(families)

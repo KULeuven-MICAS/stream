@@ -1,10 +1,5 @@
-"""The cycles a run waits for the off-chip tensors it holds in a single buffer.
-
-A reuse level no outer loop rotates is filled whole before the first iteration reads it, and
-the next run cannot refill it while this one still reads it. The slots spread that transfer
-over the iterations as if a second buffer hid it, so only this term charges the wait: traced
-on NPU2, attention that kept a head's whole key resident stalled every head for its fill.
-"""
+"""The cycles a run waits for the off-chip tensors it holds in a single buffer, which fill before the first
+iteration reads them and overlap no iteration."""
 
 from __future__ import annotations
 
