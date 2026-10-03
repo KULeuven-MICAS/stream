@@ -24,7 +24,7 @@ class Accelerator:
         self,
         name: str,
         cores: CoreGraph,
-        nb_shared_mem_groups: int,
+        shared_mem_group_ids: dict[int, int],
         offchip_core_id: int | None = None,
         kernel_library: KernelLibrary | None = None,
         bandwidth: dict[int, BandwidthModel] | None = None,
@@ -36,7 +36,8 @@ class Accelerator:
         self.offchip_core_id = offchip_core_id
         self.bandwidth = bandwidth or {}
         self.reconfiguration = reconfiguration or {}
-        self.nb_shared_mem_groups = nb_shared_mem_groups
+        # core id -> the first core of its `core_memory_sharing` group, whose top-level memory it uses
+        self.shared_mem_group_ids = shared_mem_group_ids
         self.communication_manager = CommunicationManager(self)
 
     def get_core(self, core_id: int) -> Core:
@@ -45,6 +46,14 @@ class Accelerator:
         Raises ValueError() when a core_id is not found in the available cores.
         """
         return self.cores.get_node_with_id(core_id)
+
+    @property
+    def nb_shared_mem_groups(self) -> int:
+        return len(set(self.shared_mem_group_ids.values()))
+
+    def memory_of(self, core: Core) -> Core:
+        """The core owning the top-level memory ``core`` uses: the first of its `core_memory_sharing` group."""
+        return self.get_core(self.shared_mem_group_ids.get(core.id, core.id))
 
     def get_offchip_core(self) -> Core:
         """Return the offchip core."""

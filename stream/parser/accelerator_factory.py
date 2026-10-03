@@ -21,14 +21,14 @@ class AcceleratorFactory:
     def create(self) -> Accelerator:
         """! Create an Accelerator instance from the user-provided data."""
         cores: list[Core] = []
-        unique_shared_mem_group_ids: set[int] = set()
+        shared_mem_group_ids: dict[int, int] = {}
 
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
             coordinates = self.data.get("core_coordinates", {}).get(core_id)
             core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates)
             cores.append(core)
-            unique_shared_mem_group_ids.add(shared_mem_group_id)
+            shared_mem_group_ids[core_id] = shared_mem_group_id
 
         # Extra check on shared memory
         if self.have_non_identical_shared_memory(cores):
@@ -42,14 +42,13 @@ class AcceleratorFactory:
         offchip_core_id = self.data.get("offchip_core_id", None)
 
         cores_graph = self.create_core_graph(cores)
-        nb_shared_mem_groups = len(unique_shared_mem_group_ids)
 
         # Take next available core id
         return Accelerator(
             name=self.data["name"],
             cores=cores_graph,
             offchip_core_id=offchip_core_id,
-            nb_shared_mem_groups=nb_shared_mem_groups,
+            shared_mem_group_ids=shared_mem_group_ids,
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
             bandwidth={
                 int(core): BandwidthModel.from_description(model)

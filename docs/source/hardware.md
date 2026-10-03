@@ -64,7 +64,7 @@ core_connectivity:
 | `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
-| `core_memory_sharing` | no | Groups of core ids that share L1 memory, e.g. `["0, 1", "2, 3"]`. |
+| `core_memory_sharing` | no | Groups of core ids that share their top-level memory, e.g. `["0, 1", "2, 3"]`. Its capacity bounds everything the group's cores hold in it together: split tiles add up, a tensor each core holds whole counts once. |
 
 ### Connections: `link` vs `bus`
 

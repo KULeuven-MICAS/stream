@@ -9,6 +9,8 @@ back to the choice that caused it.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from stream.hardware.architecture.core import Core
@@ -129,6 +131,7 @@ def _allocator(context, broadcast: bool = False):
 
     alloc = TransferAndTensorAllocator.__new__(TransferAndTensorAllocator)
     alloc.context = context
+    alloc.accelerator = SimpleNamespace(memory_of=lambda core: core)  # each tile owns its memory
     alloc._transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
     return alloc
 
