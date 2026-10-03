@@ -745,6 +745,7 @@ class FlashKernel(GemmKernel):
                 i32,
                 i32,
                 MemRefType(i32, (2,)),
+                i32,
             ],
             outputs=[],
         )
@@ -818,9 +819,11 @@ class FlashKernel(GemmKernel):
             # as the peeled first iteration the kernel was written for.
             opened := CmpiOp(key_block, zero, "ne"),
             carried := ExtUIOp(opened, i32),
+            # The keys that exist: the kernel zeroes the value rows of a block past them.
+            keys := ConstantOp.from_int_and_width(key_blocks * self.k, i32),
             CallOp(
                 self.function_name,
-                [op.inputs[0], op.inputs[1], op.inputs[2], scale, rows.result, carried.result, index],
+                [op.inputs[0], op.inputs[1], op.inputs[2], scale, rows.result, carried.result, index, keys.result],
                 [],
             ),
             last := ConstantOp.from_int_and_width(key_blocks - 1, i32),
