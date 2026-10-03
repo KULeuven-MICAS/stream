@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
 
+if TYPE_CHECKING:
+    from stream.hardware.ports import PortSpec
+
 
 class Core:
-    """A single hardware core in the Stream accelerator model.
-
-    ``Core`` is a **thin identity object** with pluggable backend.  All
-    hardware-specific details live inside a *backend* object that implements
-    the backend protocol (``get_memory_capacity``, ``get_max_memory_bandwidth``,
-    ``get_ir``).
-
-    Access to backend attributes is transparent: ``core.operational_array``
-    or ``core.mem_hierarchy_dict`` are resolved through ``__getattr__``
-    delegation to the backend.
-    """
+    """A single hardware core: identity and scheduling attributes, with hardware details in a pluggable backend
+    implementing the protocol of :mod:`stream.hardware.architecture.backends`. Backend attributes such as
+    ``core.operational_array`` resolve through ``__getattr__`` delegation."""
 
     def __init__(
         self,
@@ -99,30 +94,13 @@ class Core:
         if self.id != other.id:
             return False
         if self._backend is not None and other._backend is not None:
-            if type(self._backend) is not type(other._backend):
-                return False
-            if isinstance(self._backend, ZigZagCoreBackend):
-                return (
-                    self._backend.operational_array == other._backend.operational_array
-                    and self._backend.memory_hierarchy == other._backend.memory_hierarchy
-                    and self._backend.dataflows == other._backend.dataflows
-                )
-            # For AIE2 and any future frozen-dataclass backends, __eq__ is auto-generated
-            return self._backend == other._backend
+            return self._backend.same_hardware(other._backend)
         return True
 
     def has_same_performance(self, other: Core) -> bool:
         if self._backend is None or other._backend is None:
             return self.id == other.id
-        if type(self._backend) is not type(other._backend):
-            return False
-        if isinstance(self._backend, ZigZagCoreBackend):
-            return (
-                self._backend.operational_array == other._backend.operational_array
-                and self._backend.memory_hierarchy.has_same_performance(other._backend.memory_hierarchy)
-                and self._backend.dataflows == other._backend.dataflows
-            )
-        return self._backend == other._backend
+        return self._backend.has_same_performance(other._backend)
 
     def __hash__(self) -> int:
         return self.id
@@ -157,15 +135,14 @@ class Core:
         assert self._backend is not None, f"{self} has no backend"
         return self._backend.get_max_memory_bandwidth(type)  # type: ignore[arg-type]
 
+    def memory_ports(self) -> tuple[PortSpec, ...]:
+        """The ports of the core's top-level memories its backend models; empty when it models none."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.memory_ports()
+
     # ------------------------------------------------------------------ #
     # Serialization                                                      #
     # ------------------------------------------------------------------ #
-
-    def _get_type_specific_ir(self) -> dict:
-        """Return type-specific IR attributes based on the namespace."""
-        if self.namespace == "aie2":
-            return {"max_object_fifo_depth": self.max_object_fifo_depth}
-        return {}
 
     def get_ir(self) -> dict:
         """Return a dictionary representation of this core for serialization."""
@@ -182,7 +159,5 @@ class Core:
         # Merge backend-specific fields (uniform protocol)
         if self._backend is not None:
             d.update(self._backend.get_ir())
-
-        # Merge type-specific attributes last
-        d.update(self._get_type_specific_ir())
+            d.update({field: getattr(self, field) for field in self._backend.core_ir_fields})
         return d

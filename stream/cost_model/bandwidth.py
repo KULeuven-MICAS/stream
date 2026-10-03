@@ -25,10 +25,15 @@ class BandwidthModel:
         strided = {side: {int(k): float(v) for k, v in data["strided"][side].items()} for side in DIRECTIONS}
         return cls(ceiling=float(data["ceiling"]), contiguous=float(data["contiguous"]), strided=strided)
 
+    @classmethod
+    def flat(cls, bits_per_cycle: float) -> BandwidthModel:
+        """A rate that every access pattern reaches, as a hardware description's port width declares."""
+        return cls(ceiling=bits_per_cycle, contiguous=bits_per_cycle, strided={side: {} for side in DIRECTIONS})
+
     def efficiency(self, span_bytes: float, direction: str) -> float:
         """Fraction of the contiguous rate a transfer gets whose contiguous span is ``span_bytes``."""
         table = sorted(self.strided[direction].items())
-        if span_bytes >= 2 * table[-1][0]:
+        if not table or span_bytes >= 2 * table[-1][0]:
             return 1.0
         points = [(math.log(s), bw / self.contiguous) for s, bw in table] + [(math.log(2 * table[-1][0]), 1.0)]
         x = math.log(max(span_bytes, table[0][0]))

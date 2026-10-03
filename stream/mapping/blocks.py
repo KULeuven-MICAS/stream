@@ -21,7 +21,7 @@ def block_options(workload: Workload, mapping: Mapping, group: FusedGroup) -> di
     fixed: set[LayerDim] = set()
     for node, entry in _group_kernels(workload, mapping, group):
         dims = workload.get_dims(node)
-        for position, _, call_dim in entry.kernel.call_tile():
+        for position, _, call_dim in entry.kernel.call_tile(node):
             dim = dims[position]
             if call_dim.blocks:
                 options[dim] = options.get(dim, set(call_dim.blocks)) & set(call_dim.blocks)
@@ -45,7 +45,7 @@ def with_block(workload: Workload, mapping: Mapping, gi: int, group: FusedGroup,
         dims = workload.get_dims(node)
         fields = {
             call_dim.name: size
-            for position, _, call_dim in entry.kernel.call_tile()
+            for position, _, call_dim in entry.kernel.call_tile(node)
             if dims[position] == dim and (call_dim.blocks or call_dim.divisor)
         }
         if fields:

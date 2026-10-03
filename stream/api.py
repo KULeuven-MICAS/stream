@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from zigzag.mapping.temporal_mapping import TemporalMappingType
@@ -22,6 +22,7 @@ from stream.frontends import load_workload
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
 from stream.opt.allocation.constraint_optimization.context import build_transfer_context
+from stream.opt.allocation.constraint_optimization.families import load_families
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.codegen.backends import codegen_backend_for
@@ -72,6 +73,17 @@ class SolveOptions:
     tile_search: bool = False
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
+    families: Sequence[str | Mapping[str, Any]] | None = None
+    """Constraint families to add to the allocation model; None adds none. ``memory_ports`` bounds each top-level
+    memory port's bits per iteration by its rate (bits per cycle) times the initiation interval (option
+    ``interval``) and each slot's bits by its rate times the slot latency (option ``burst``), both on by default."""
+
+    def resolved_constraint_selection(self) -> ConstraintSelection | None:
+        """``constraint_selection`` with ``families`` folded in; an unknown family or option raises here."""
+        if not self.families:
+            return self.constraint_selection
+        load_families(self.families)
+        return replace(self.constraint_selection or ConstraintSelection(), families=tuple(self.families))
 
 
 @dataclass(frozen=True)
@@ -169,7 +181,7 @@ def _solve(
         temporal_mapping_type=TemporalMappingType[options.temporal_mapping_type.upper()],
         nb_cols_to_use=options.nb_cols_to_use,
         backend=backend.value,
-        constraint_selection=options.constraint_selection,
+        constraint_selection=options.resolved_constraint_selection(),
         kernel_library=options.kernel_library,
         tile_search=options.tile_search,
         **options.stage_options,

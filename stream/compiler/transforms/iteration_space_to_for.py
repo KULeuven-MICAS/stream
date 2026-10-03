@@ -51,6 +51,10 @@ def iteration_space_to_for(block: Block, rewriter: PatternRewriter):  # noqa: PL
         else:
             raise RuntimeError("non-steady state op encountered")
     assert ssis is not None
+    loops = [var for var in ssis.vars if var.type == StrensorVarType.TEMPORAL and var.dim in relevant_dims]
+    if not loops:
+        # A steady state of a single iteration runs once, without a loop.
+        return
 
     # some common for loop variables
     lb = ConstantOp.from_int_and_width(0, IndexType())
@@ -60,18 +64,13 @@ def iteration_space_to_for(block: Block, rewriter: PatternRewriter):  # noqa: PL
     # create for loop nest:
     for_ops = []
     innermost = None
-    for var in reversed(ssis.vars):
-        if var.type != StrensorVarType.TEMPORAL:
-            continue
-        if var.dim not in relevant_dims:
-            continue
+    for var in reversed(loops):
         ub = ConstantOp.from_int_and_width(var.size, IndexType())
         for_op = ForOp(lb, ub, step, [], Block([*for_ops, YieldOp()], arg_types=[IndexType()]))
         if innermost is None:
             innermost = for_op
         for_op.attributes["layer_dim"] = StrensorVarAttr(var)
         for_ops = [ub, for_op]
-    assert innermost is not None
 
     # insert for loop nest
     rewriter.insert_op(for_ops, InsertPoint.after(step))

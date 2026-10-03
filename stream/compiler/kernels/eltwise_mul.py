@@ -23,7 +23,7 @@ from stream.compiler.kernels.aie_kernel import (
 
 @dataclass(kw_only=True)
 class EltwiseMulKernel(AIEKernel):
-    DIMS: ClassVar[Mapping[str, int]] = {"m": 0, "n": 1}
+    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
     m: int = 32
     n: int = 64
     layout: str

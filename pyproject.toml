@@ -84,6 +84,11 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 [project.entry-points."stream.constraints"]
 aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 
+# Optional allocation-model constraint families, selected per solve by SolveOptions.families. The
+# entry-point name is the family's `name`, its object a ConstraintFamily factory.
+[project.entry-points."stream.constraint_families"]
+memory_ports = "stream.opt.allocation.constraint_optimization.families.memory_ports:MemoryPorts"
+
 # Core-cost estimator backends: the entry-point name is the backend's `name` (= metadata["backend"]),
 # its object a CoreCostBackend that `claims` the cores it models and `make`s the estimator. The engine's
 # own AIE and ZigZag backends register here -- the public path is the plugin path -- so an out-of-tree

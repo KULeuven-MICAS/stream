@@ -41,7 +41,7 @@ class SoftmaxKernel(AIEKernel):
     normalizing it, so the tile also has to say where its first row sits globally.
     """
 
-    DIMS: ClassVar[Mapping[str, int]] = {"m": 0, "n": 1}
+    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
     m: int = 1
     n: int
     layout: str
@@ -93,7 +93,7 @@ class SoftmaxKernel(AIEKernel):
         drives, named by the ``layer_dim`` its rewrite left on it.
         """
         space = cast(StrensorType, op.output.type).ssis.data
-        row_dim = next(iter(space.get_kernel_variables())).dim
+        row_dim = self.output_axes(op)[0]
         # A point variable carries its position where a sized one carries its size.
         position = {var.dim: var.size for var in (op.spatial_index.data.vars if op.spatial_index else ())}
         ops: list[Operation] = []
@@ -122,8 +122,8 @@ class SoftmaxKernel(AIEKernel):
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         shape = tuple(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
         ops: list[Operation] = [
-            rows := ConstantOp.from_int_and_width(shape[0], i32),
-            row_len := ConstantOp.from_int_and_width(shape[1], i32),
+            rows := ConstantOp.from_int_and_width(shape[-2], i32),
+            row_len := ConstantOp.from_int_and_width(shape[-1], i32),
         ]
         arguments: list[SSAValue] = [op.inputs[0], op.inputs[1], rows.result, row_len.result]
         if self.causal:

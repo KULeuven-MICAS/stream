@@ -1,26 +1,9 @@
-"""Pluggable core backends for Stream.
+"""Core backends: the hardware details a :class:`~stream.hardware.architecture.core.Core` delegates to, built
+per core-type namespace by :data:`BACKEND_BUILDERS`. Each backend implements the methods ``Core`` calls on it and
+``memory_ports``, its top-level memory ports as :class:`~stream.hardware.ports.PortSpec` (empty when none)."""
 
-Each backend supplies the hardware-specific details that a :class:`~stream.hardware.architecture.core.Core`
-delegates to.  The base :class:`Core` is backend-agnostic; it only holds identity and
-stream-level scheduling attributes.
-
-Both backends implement the same protocol:
-- ``get_memory_capacity() -> int``
-- ``get_max_memory_bandwidth(type) -> int``
-- ``get_ir() -> dict``
-
-Available backends
-------------------
-
-``ZigZagCoreBackend``
-    Thin wrapper around :mod:`zigzag.hardware.architecture.accelerator.Accelerator`
-    — full operational-array + memory-hierarchy model used by the ZigZag cost
-    estimator.
-
-``AIE2CoreBackend``
-    Lightweight description for AIE2 tiles carrying memory capacity and
-    bandwidth for the simplified cost model.
-"""
+from collections.abc import Callable
+from typing import Any
 
 from stream.hardware.architecture.backends.aie2 import AIE2CoreBackend
 from stream.hardware.architecture.backends.zigzag import ZigZagCoreBackend
@@ -29,7 +12,14 @@ from stream.hardware.architecture.backends.zigzag import ZigZagCoreBackend
 #: Extend this when adding a new backend.
 AnyBackend = ZigZagCoreBackend | AIE2CoreBackend
 
+#: Core-type namespace to the builder of its backend from (core data, core id, shared memory group id).
+BACKEND_BUILDERS: dict[str, Callable[[dict[str, Any], int, int | None], AnyBackend]] = {
+    "aie2": AIE2CoreBackend.from_core_data,
+    "zigzag": ZigZagCoreBackend.from_core_data,
+}
+
 __all__ = [
+    "BACKEND_BUILDERS",
     "AIE2CoreBackend",
     "AnyBackend",
     "ZigZagCoreBackend",

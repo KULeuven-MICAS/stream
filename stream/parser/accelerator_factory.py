@@ -1,13 +1,12 @@
 from typing import Any
 
-from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
-
 from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
-from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
+from stream.hardware.architecture.backends import BACKEND_BUILDERS
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
+from stream.parser.accelerator_validator import parse_memory_ref, parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -44,18 +43,33 @@ class AcceleratorFactory:
         cores_graph = self.create_core_graph(cores)
 
         # Take next available core id
-        return Accelerator(
+        accelerator = Accelerator(
             name=self.data["name"],
             cores=cores_graph,
             offchip_core_id=offchip_core_id,
             shared_mem_group_ids=shared_mem_group_ids,
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
             bandwidth={
-                int(core): BandwidthModel.from_description(model)
+                core: BandwidthModel.from_description(model)
                 for core, model in self.data.get("bandwidth", {}).items()
+                if isinstance(core, int)
             },
             reconfiguration=self.data.get("reconfiguration"),
+            port_bandwidth={
+                parse_port_ref(ref): BandwidthModel.from_description(model)
+                for ref, model in self.data.get("bandwidth", {}).items()
+                if isinstance(ref, str)
+            },
+            memory_aliases={
+                parse_memory_ref(alias): parse_memory_ref(group[0])
+                for group in self.data.get("memory_aliases") or []
+                for alias in group[1:]
+            },
         )
+        if accelerator.port_bandwidth:
+            # Building the registry rejects a port key that names no port a core's backend models.
+            _ = accelerator.ports
+        return accelerator
 
     def create_core(
         self,
@@ -80,52 +94,24 @@ class AcceleratorFactory:
         # Read operator_types from raw core_data before any validation strips unknown fields
         operator_types = core_data.get("operator_types", None)
 
-        if namespace == "aie2":
-            # ---- AIE2 native path: lightweight backend ----
-            mem = core_data["memory"]
-            backend = AIE2CoreBackend(
-                memory_capacity_bits=mem["capacity"],
-                bandwidth_min=mem.get("bandwidth_min", 0),
-                bandwidth_max=mem.get("bandwidth_max", 0),
+        builder = BACKEND_BUILDERS.get(namespace)
+        if builder is None:
+            raise ValueError(
+                f"Unknown core namespace '{namespace}' in core type '{core_type}'. "
+                f"Supported namespaces: {', '.join(sorted(ALLOWED_NAMESPACES))}"
             )
-            core = Core(
-                backend=backend,
-                core_id=core_id,
-                name=core_data.get("name", f"core_{core_id}"),
-                core_type=core_type,
-                utilization=core_data.get("utilization", 100),
-                max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
-                col_id=col_id,
-                row_id=row_id,
-            )
-            core.operator_types = operator_types
-            return core
-
-        if namespace == "zigzag":
-            # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
-            zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=shared_mem_group_id)
-            # ZigZagCoreFactory returns a raw zigzag Accelerator — upgrade to
-            # our ZigZagCoreBackend subclass so the backend protocol methods
-            # (get_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
-            zigzag_core.__class__ = ZigZagCoreBackend
-
-            core = Core(
-                backend=zigzag_core,
-                core_id=zigzag_core.id,
-                name=zigzag_core.name,
-                core_type=core_type,
-                utilization=core_data.get("utilization", 100),
-                max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
-                col_id=col_id,
-                row_id=row_id,
-            )
-            core.operator_types = operator_types
-            return core
-
-        raise ValueError(
-            f"Unknown core namespace '{namespace}' in core type '{core_type}'. "
-            f"Supported namespaces: {', '.join(sorted(ALLOWED_NAMESPACES))}"
+        core = Core(
+            backend=builder(core_data, core_id, shared_mem_group_id),
+            core_id=core_id,
+            name=core_data.get("name", f"core_{core_id}"),
+            core_type=core_type,
+            utilization=core_data.get("utilization", 100),
+            max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
+            col_id=col_id,
+            row_id=row_id,
         )
+        core.operator_types = operator_types
+        return core
 
     def get_shared_mem_group_id(self, core_id: int):
         """Calculate the memory group id for the given core. If the core shares the top level memory with other cores,

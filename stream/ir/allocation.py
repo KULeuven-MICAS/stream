@@ -24,6 +24,10 @@ class LatencyInfo(BaseModel):
     overlap_between_iterations: int = Field(
         description="Overlap cycles between consecutive iterations (pipeline depth)"
     )
+    fill: int = Field(
+        default=0,
+        description="Cycles each run waits before its first iteration for the tensors it holds in one buffer",
+    )
 
 
 class CostModelsIR(BaseModel):
@@ -357,6 +361,24 @@ class MemoryOccupancyIR(BaseModel):
     )
 
 
+class PortActivityIR(BaseModel):
+    """One resource under the memory_ports family, in ZigZag's port-activity terms."""
+
+    kind: str = Field(default="memory_port", description="'memory_port', 'shared_bandwidth' or 'link'")
+    port: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
+    core_ids: list[int] = Field(description="Cores sharing the resource")
+    core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
+    bw_bits_per_cycle: float = Field(description="Port bandwidth")
+    bits_per_iteration: float = Field(description="Bits the solved schedule moves through the port per iteration")
+    req_bw_aver: float | None = Field(description="Average bandwidth required over the initiation interval")
+    real_cycle: float = Field(description="Cycles the port needs for one iteration's bits")
+    allowed_cycle: float = Field(description="Initiation interval: the cycles one iteration gives the port")
+    stall_or_slack: float = Field(description="real_cycle - allowed_cycle; negative is slack")
+    utilization: float | None = Field(description="real_cycle / allowed_cycle; 1 when the port sets the interval")
+    burst_utilization: float | None = Field(description="Highest per-slot bits / (bandwidth * slot latency)")
+    burst_slot: int | None = Field(description="Slot where burst_utilization occurs")
+
+
 class AllocationPerformanceView(BaseModel):
     """Performance-persona projection of AllocationIR.
 
@@ -382,6 +404,9 @@ class AllocationPerformanceView(BaseModel):
     memory_occupancy: list[MemoryOccupancyIR] = Field(
         default_factory=list,
         description="Per-core solved residency vs declared capacity: the floor on any capacity reduction",
+    )
+    memory_ports: list[PortActivityIR] = Field(
+        default_factory=list, description="Per-port activity, busiest first; empty unless memory_ports is on"
     )
 
 
@@ -490,6 +515,7 @@ class AllocationIR(BaseModel):
                 overlap=OverlapIR(**perf_raw["overlap"]) if perf_raw.get("overlap") else None,
                 tensor_reuse=[TensorReuseIR(**d) for d in perf_raw.get("tensor_reuse") or []],
                 memory_occupancy=[MemoryOccupancyIR(**d) for d in perf_raw.get("memory_occupancy") or []],
+                memory_ports=[PortActivityIR(**d) for d in perf_raw.get("memory_ports") or []],
             )
             if perf_raw
             else None

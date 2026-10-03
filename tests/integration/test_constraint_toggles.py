@@ -28,7 +28,6 @@ ACCELERATOR = os.path.join(
 )
 REL_TOL = 0.01
 
-_ALLOC_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation.create_solver"
 _TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 _BUILD_TRANSFER_CONTEXT = (
@@ -223,14 +222,8 @@ def test_buffer_descriptor_flip():
 
 @pytest.mark.slow
 def test_dma_channels_flip():
-    """dma_channels guard: tight DMA limit causes infeasibility; disabling restores feasibility.
-
-    The guard in _overlap_and_objective() is structurally wired. Proof:
-    - DMA channels=1 (all tiles) + dma_channels=True  -> RuntimeError
-    - DMA channels=1 (all tiles) + dma_channels=False -> success
-
-    Patch target: build_transfer_context in TTA's own namespace (imported at line 22).
-    """
+    """A tight DMA limit is infeasible with dma_channels on and feasible with it off (the guard in _objective);
+    build_transfer_context is patched in the allocator's own namespace."""
     # Enabled + tight limit -> infeasible
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch(_BUILD_TRANSFER_CONTEXT, side_effect=_build_transfer_context_tight_dma):
@@ -321,7 +314,6 @@ def test_cross_backend_parity(cs: ConstraintSelection):
     ort_factory = _make_ortools_factory()
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
-            patch(_ALLOC_CREATE_SOLVER, side_effect=ort_factory),
             patch(_TTA_CREATE_SOLVER, side_effect=ort_factory),
             patch(_LICENSE_CHECK),
         ):

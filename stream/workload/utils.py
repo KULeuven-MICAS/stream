@@ -256,7 +256,8 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
     for node in workload.get_iteration_space_nodes():
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
-        unrollings = workload.get_unique_dims_inter_core_tiling(node, mapping)
+        # A factor of one spreads nothing: the node then has no spatial variable of that dimension.
+        unrollings = tuple(u for u in workload.get_unique_dims_inter_core_tiling(node, mapping) if u[1] > 1)
         _reject_illegal_spatial_unroll(workload, node, unrollings, node_mapping.kernel is not None)
         spatial_unrollings[node] = unrollings
 

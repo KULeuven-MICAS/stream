@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+import re
 from functools import reduce
 from itertools import combinations
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
+from stream.hardware.ports import MemoryRef, PortRef
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,21 @@ FILENAME_REGEX = (
     r"[A-Za-z0-9_\-]+"  # file name
     r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
 )
+
+# "<core id>.<memory instance name>.<port name>", e.g. "2.dram.rw_port_1"
+PORT_REF_REGEX = r"^\d+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$"
+
+
+def parse_port_ref(ref: str) -> PortRef:
+    """Split a ``bandwidth:`` port key into (core id, memory instance name, port name)."""
+    core, memory, port = ref.split(".")
+    return PortRef(int(core), memory, port)
+
+
+def parse_memory_ref(ref: str) -> MemoryRef:
+    """Split a ``memory_aliases`` entry ``<core id>.<memory name>``."""
+    core, _, memory = ref.partition(".")
+    return int(core), memory
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
@@ -79,8 +96,13 @@ class AcceleratorValidator:
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
-        # Core id -> measured bandwidth every transfer through that core shares
-        "bandwidth": {"type": "dict", "required": False, "keysrules": {"type": "integer"}},
+        # Core id -> measured bandwidth every transfer through that core shares, or a port key ->
+        # measured bandwidth replacing that top-level port's declared width
+        "bandwidth": {
+            "type": "dict",
+            "required": False,
+            "keysrules": {"anyof": [{"type": "integer"}, {"type": "string", "regex": PORT_REF_REGEX}]},
+        },
         # What reconfiguring the array between designs costs, read by the namespace constraints
         "reconfiguration": {"type": "dict", "required": False},
         # Optional unit_energy_cost used for connections that don't specify their own
@@ -177,6 +199,7 @@ class AcceleratorValidator:
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
         self.validate_memory_aliases()
+        self.validate_bandwidth()
 
         if not self.is_valid and self.errors:
             logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
@@ -369,6 +392,20 @@ class AcceleratorValidator:
             conn.setdefault("type", "link")
             conn.setdefault("unit_energy_cost", self.data.get("unit_energy_cost", 0))
 
+    def validate_bandwidth(self) -> None:
+        """Every ``bandwidth:`` key names an existing core; the accelerator factory checks that a port key
+        names a modelled port."""
+        keys = self.data.get("bandwidth", {})
+        measured_cores = {key for key in keys if isinstance(key, int)}
+        for core_id in measured_cores - set(self.data["cores"]):
+            self.invalidate(f"`bandwidth` names unknown core {core_id}.")
+        for ref in (key for key in keys if isinstance(key, str) and re.match(PORT_REF_REGEX, key)):
+            core_id, _, _ = parse_port_ref(ref)
+            if core_id not in self.data["cores"]:
+                self.invalidate(f"`bandwidth.{ref}`: unknown core {core_id}.")
+            elif core_id in measured_cores:
+                self.invalidate(f"`bandwidth.{ref}`: core {core_id} already has a measured core bandwidth.")
+
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints
         mem_sharing_data = self.data["core_memory_sharing"]
@@ -402,8 +439,7 @@ class AcceleratorValidator:
         """Every ``<core id>.<memory name>`` in `memory_aliases` must name a memory that exists."""
         for group in self.data.get("memory_aliases", []):
             for ref in group:
-                core_id_str, _, mem_name = ref.partition(".")
-                core_id = int(core_id_str)
+                core_id, mem_name = parse_memory_ref(ref)
                 core_data = self.data["cores"].get(core_id)
                 if core_data is None:
                     self.invalidate(f"`memory_aliases` entry '{ref}' names unknown core id {core_id}.")

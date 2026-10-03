@@ -1,9 +1,5 @@
-"""Verify no gurobipy imports leaked outside the solver backend.
-
-The only permitted gurobipy imports are:
-1. stream/opt/solver/solver.py (the backend implementation)
-2. transfer_and_tensor_allocation.py: `from gurobipy import GRB` (callback constants)
-"""
+"""No gurobipy import outside the solver backend (stream/opt/solver/solver.py), except
+`from gurobipy import GRB` in transfer_and_tensor_allocation.py for callback codes and status names."""
 
 import ast
 from pathlib import Path
@@ -13,7 +9,6 @@ CO_DIR = REPO_ROOT / "stream" / "opt" / "allocation" / "constraint_optimization"
 
 # Files that MUST NOT have any gurobipy imports
 CLEAN_FILES = [
-    CO_DIR / "allocation.py",
     CO_DIR / "context.py",
     CO_DIR / "utils.py",
     REPO_ROOT / "stream" / "api.py",

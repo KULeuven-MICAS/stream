@@ -17,7 +17,7 @@ from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing, tiled_layou
 
 @dataclass(kw_only=True)
 class GemmKernel(AIEKernelWithZeroing):
-    DIMS: ClassVar[Mapping[str, int]] = {"m": 0, "k": 1, "n": 2}
+    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "k": (0, -1), "n": (-1, -1)}
     m: int
     k: int
     n: int
@@ -61,6 +61,9 @@ class GemmKernel(AIEKernelWithZeroing):
         assert op.output is not None
         for operand, expected in zip(op.inputs, ((self.m, self.k), (self.k, self.n), (self.m, self.n)), strict=True):
             shape = tuple(cast(MemRefType[AnyDenseElement], operand.type).get_shape())
+            # Leading axes of extent one are the batch index the call is made at.
+            while len(shape) > len(expected) and shape[0] == 1:
+                shape = shape[1:]
             if shape != expected:
                 raise ValueError(
                     f"kernel {self.function_name} takes a {expected[0]}x{expected[1]} operand "
