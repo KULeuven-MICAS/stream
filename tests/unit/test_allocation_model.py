@@ -9,6 +9,7 @@ import pytest
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     LATENCY,
+    ScreeningFamily,
     drop_families,
     load_families,
     overlap,
@@ -45,6 +46,14 @@ def test_a_family_left_out_builds_nothing():
     selection = load_families(drop_families(DEFAULT_FAMILIES, ["memory_capacity", "dma_channels"]))
     assert {"memory_capacity", "dma_channels"}.isdisjoint(name for name, _ in selection.steps)
     assert {"memory_capacity", "dma_channels"}.isdisjoint(family.name for family in selection.families)
+
+
+def test_the_capacity_screen_goes_with_memory_capacity():
+    """Leaving memory_capacity out leaves out the screen that fails a solve before its model is built."""
+    screens = [f.name for f in load_families(DEFAULT_FAMILIES).families if isinstance(f, ScreeningFamily)]
+    assert screens == ["memory_capacity"]
+    dropped = load_families(drop_families(DEFAULT_FAMILIES, ["memory_capacity"])).families
+    assert not any(isinstance(f, ScreeningFamily) for f in dropped)
 
 
 def test_without_dma_channels_the_primary_objective_is_the_latency():

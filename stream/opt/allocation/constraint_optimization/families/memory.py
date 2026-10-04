@@ -13,7 +13,7 @@ from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.families import BUFFERING
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
-from stream.opt.solver import ObjectiveLevel, SolverModel, SolverVar, SolverVarType
+from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.iterator_type import is_state_operand
 
 if TYPE_CHECKING:
@@ -32,11 +32,35 @@ def _held_bits(terms: Held) -> Any:
 
 
 class MemoryCapacity:
-    """What each memory holds fits in its capacity, less what the toolchain reserves."""
+    """What each memory holds fits in its capacity, less what the toolchain reserves; a memory that cannot fit the
+    tensors pinned to it under any reuse choice fails the solve before the model is built."""
 
     name: ClassVar[str] = "memory_capacity"
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
+
+    def screen(self, ctx: FormulationContext) -> None:
+        space = ctx.space
+        pinned: dict[Core, int] = defaultdict(int)
+        for node in space.workload.get_iteration_space_nodes():
+            carried = [x for x in node.inputs if is_state_operand(node, x)]
+            for t in (*node.outputs, *carried):
+                candidates = space.candidate_cores(t)
+                if len(candidates) != 1:
+                    continue
+                (c,) = candidates
+                tile = space.workload.get_tensor_single_core(t, node, space.mapping)
+                pinned[space.accelerator.memory_of(c)] += _min_resident_bits(space, t, tile.size_bits())
+        for c, bits in pinned.items():
+            cap = space.memory_capacity_bits(c)
+            if bits > cap:
+                raise InfeasibleAllocationError(
+                    structural_infeasibility(
+                        f"Core {c.id}: tensors pinned to it need at least {bits / 8192:.1f} KB "
+                        f"under every reuse choice, but its memory is {cap / 8192:.1f} KB",
+                        ctx.model,
+                    )
+                )
 
     def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         """What each memory holds, keyed by the core owning it, so cores sharing one memory share its capacity."""
@@ -108,30 +132,6 @@ class MemoryCapacity:
             ledger.bounds[("memory_capacity", memory.id)] = cap / 8  # bytes
             ctx.add_resource_constr(
                 expr <= cap, name=f"mem_cap_{_resource_key(memory)}", kind="memory_capacity", resource=memory
-            )
-
-
-def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
-    """Fail before building the model when a memory cannot fit its pinned tensors under any reuse choice."""
-    pinned: dict[Core, int] = defaultdict(int)
-    for node in space.workload.get_iteration_space_nodes():
-        carried = [x for x in node.inputs if is_state_operand(node, x)]
-        for t in (*node.outputs, *carried):
-            candidates = space.candidate_cores(t)
-            if len(candidates) != 1:
-                continue
-            (c,) = candidates
-            tile = space.workload.get_tensor_single_core(t, node, space.mapping)
-            pinned[space.accelerator.memory_of(c)] += _min_resident_bits(space, t, tile.size_bits())
-    for c, bits in pinned.items():
-        cap = space.memory_capacity_bits(c)
-        if bits > cap:
-            raise InfeasibleAllocationError(
-                structural_infeasibility(
-                    f"Core {c.id}: tensors pinned to it need at least {bits / 8192:.1f} KB "
-                    f"under every reuse choice, but its memory is {cap / 8192:.1f} KB",
-                    model,
-                )
             )
 
 

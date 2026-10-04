@@ -36,8 +36,8 @@ from stream.opt.allocation.constraint_optimization.families import (
     FamilySelection,
     ObjectiveFamily,
     ReportingFamily,
+    ScreeningFamily,
 )
-from stream.opt.allocation.constraint_optimization.families.memory import capacity_screen
 from stream.opt.allocation.constraint_optimization.formulation import DecisionVariables, FormulationContext
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, Placement
@@ -94,11 +94,13 @@ class TransferAndTensorAllocator:
         self._build_model()
 
     def _build_model(self) -> None:
-        with span("capacity_screen"):
-            capacity_screen(self.space, self.model)
         with span("variables"):
             self.vars = self._create_variables()
         self.context = FormulationContext(self.space, self.vars, self.model, self.quantities)
+        with span("capacity_screen"):
+            for family in self.families.families:
+                if isinstance(family, ScreeningFamily):
+                    family.screen(self.context)
         for name, build in self.families.steps:
             with span(f"family_{name}"):
                 build(self.context, self.quantities)

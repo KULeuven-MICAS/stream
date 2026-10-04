@@ -67,6 +67,14 @@ class DeclaringFamily(Protocol):
 
 
 @runtime_checkable
+class ScreeningFamily(Protocol):
+    """A family that can tell from the problem alone that its constraints have no solution: ``screen`` runs before
+    any family builds and raises :class:`~stream.ir.infeasibility.InfeasibleAllocationError`."""
+
+    def screen(self, ctx: FormulationContext) -> None: ...
+
+
+@runtime_checkable
 class ObjectiveFamily(Protocol):
     """A family that contributes to the lexicographic objective once every family has built: the levels of one
     name, which share a priority, are summed into one."""
