@@ -10,7 +10,11 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.hardware.architecture.core import Core
 from stream.ir.infeasibility import InfeasibleAllocationError
-from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
+from stream.opt.allocation.constraint_optimization.diagnosis import (
+    ConstraintTag,
+    ResourceKind,
+    structural_infeasibility,
+)
 from stream.opt.allocation.constraint_optimization.families import BUFFERING
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
@@ -24,6 +28,52 @@ if TYPE_CHECKING:
 
 # (indicator, bits when it is 1, tensor): one term of what holding a tensor in a memory takes
 Held = list[tuple[SolverVar, int, str]]
+
+MEMORY_CAPACITY = ResourceKind(
+    "memory_capacity",
+    "on-chip memory capacity exceeded",
+    unit="bytes",
+    demand_label="tensors resident on",
+    bound_label="on-chip memory of",
+    demand_input="workload tensor sizes × mapping intra-core tiling",
+    bound_input="hardware spec: core memory size",
+    term_detail="min resident (1 tile)",
+    levers=(
+        "Increase {core} on-chip memory (hardware spec)",
+        "Tile the fused group finer so fewer / smaller tiles are resident (mapping intra_core_tiling)",
+        "Reduce the workload's tensor sizes (fewer channels, smaller spatial, shorter sequence)",
+    ),
+)
+OBJECT_FIFO_DEPTH = ResourceKind(
+    "object_fifo_depth",
+    "object-FIFO depth exceeded",
+    unit="FIFO slots",
+    demand_label="concurrently buffered tiles on",
+    bound_label="object-FIFO depth of",
+    demand_input="mapping reuse levels × fused tiles",
+    bound_input="hardware spec: tile object-FIFO depth",
+    term_detail="min buffered tiles",
+    levers=(
+        "Increase {core}'s object-FIFO depth (hardware spec)",
+        "Lower buffering: reduce reuse / double-buffering (mapping)",
+        "Route fewer tensors through {core} (mapping)",
+    ),
+)
+BUFFER_DESCRIPTORS = ResourceKind(
+    "buffer_descriptors",
+    "buffer-descriptor count exceeded",
+    unit="descriptors",
+    demand_label="buffer descriptors on",
+    bound_label="buffer-descriptor budget of",
+    demand_input="mapping tiling × transfers through the tile",
+    bound_input="hardware spec: tile buffer-descriptor count",
+    term_detail="min descriptors",
+    levers=(
+        "Increase {core}'s buffer-descriptor budget (hardware spec)",
+        "Reduce distinct transfers / reuse levels through {core} (mapping)",
+        "Fuse fewer tensors through {core} (mapping)",
+    ),
+)
 
 
 def _held_bits(terms: Held) -> Any:
@@ -94,7 +144,10 @@ class MemoryCapacity:
                         least = ceil(space.resident_tiles(t, stop, single) * tensor_size)
                         min_req = least if min_req is None else min(min_req, least)
                         uz = ctx.binary_product(
-                            a=u, b=z_stop[(t, stop)], base_name=f"memload_{t.name}_{_resource_key(holder)}_L{stop}"
+                            a=u,
+                            b=z_stop[(t, stop)],
+                            base_name=f"memload_{t.name}_{_resource_key(holder)}_L{stop}",
+                            tag=ConstraintTag(holder, MEMORY_CAPACITY, t.name),
                         )
                         held[(t, memory)].append((uz, req_size, t.name))
                         if single:
@@ -103,12 +156,13 @@ class MemoryCapacity:
                                 a=u,
                                 b=z_single[(t, stop)],
                                 base_name=f"memsingle_{t.name}_{_resource_key(holder)}_L{stop}",
+                                tag=ConstraintTag(holder),
                             )
                             held[(t, memory)].append((us, least - req_size, t.name))
                     if min_req is not None:  # bytes this tensor's tile adds if resident on holder
                         least_bytes[memory] += min_req / 8
                 for memory, value in least_bytes.items():
-                    ledger.terms[("memory_capacity", memory.id)][t.name] = {
+                    ledger.terms[(MEMORY_CAPACITY, memory.id)][t.name] = {
                         "value": value,
                         "dims": tile_dims,
                         "dtype": tile_dtype,
@@ -123,15 +177,18 @@ class MemoryCapacity:
             for memory in dict.fromkeys(space.accelerator.memory_of(c) for c in readers):
                 load[memory] = load[memory] + bits
                 ledger.handover_bits[memory.id] = ledger.handover_bits.get(memory.id, 0) + bits
-                terms = ledger.terms[("memory_capacity", memory.id)]
+                terms = ledger.terms[(MEMORY_CAPACITY, memory.id)]
                 handed = terms.get("handover", {}).get("value", 0) + bits / 8
                 terms["handover"] = {"value": handed, "dims": (), "dtype": ""}
 
         for memory, expr in load.items():
             cap = space.memory_capacity_bits(memory)
-            ledger.bounds[("memory_capacity", memory.id)] = cap / 8  # bytes
-            ctx.add_resource_constr(
-                expr <= cap, name=f"mem_cap_{_resource_key(memory)}", kind="memory_capacity", resource=memory
+            ctx.add_constr(
+                expr <= cap,
+                name=f"mem_cap_{_resource_key(memory)}",
+                resource=memory,
+                kind=MEMORY_CAPACITY,
+                bound=cap / 8,
             )
 
 
@@ -158,33 +215,25 @@ def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Core], Held]
         source = held.get((copies[t], memory), [])
         name = f"inplace_{t.name}_{_resource_key(memory)}"
         extra = ctx.model.add_var(vtype=SolverVarType.CONTINUOUS, name=name)
-        ctx.model.add_constr(extra >= _held_bits(terms) - _held_bits(source), name=f"{name}_ge")
+        ctx.add_constr(extra >= _held_bits(terms) - _held_bits(source), name=f"{name}_ge", resource=memory)
         load[memory] = load[memory] + extra._raw
         ledger.memory[memory.id] += [(indicator, -bits, t.name) for indicator, bits, _ in source]
     return load
 
 
-def _tile_shape(space: DecisionSpace, node: Any, tensor: Any, tile: Any) -> tuple[list[tuple[str, int]], str]:
-    """The per-dimension tile sizes of ``tensor`` on one core, each labelled by its loop-dim symbol
-    (the same symbols the affine graph view shows), plus the dtype -- so a memory term shows *why* a
-    tile is large, not just its total. Best-effort: falls back to bare axis sizes."""
-    dtype = str(getattr(tile, "operand_type", "")) if tile is not None else ""
-    shape = tuple(getattr(tile, "shape", ()) or ())
-    try:
-        results = node.get_mapping(tensor).results
-        node_dims = space.workload.get_dims(node)
-        dims: list[tuple[str, int]] = []
-        for i, r in enumerate(results):
-            if i >= len(shape):
-                break
-            if isinstance(r, AffineDimExpr) and r.position < len(node_dims):
-                label = str(node_dims[r.position])
-            else:
-                label = f"axis{i}"
-            dims.append((label, int(shape[i])))
-        return dims, dtype
-    except Exception:  # noqa: BLE001 -- shape labelling is best-effort diagnostics
-        return [(f"axis{i}", int(s)) for i, s in enumerate(shape)], dtype
+def _tile_shape(space: DecisionSpace, node: Any, tensor: Tensor, tile: Tensor) -> tuple[list[tuple[str, int]], str]:
+    """The per-dimension tile sizes of ``tensor`` on one core, each labelled by its loop-dim symbol (the symbols the
+    affine graph view shows) or its axis, and the dtype -- so a memory term shows why a tile is large."""
+    node_dims = space.workload.get_dims(node)
+    shape = tuple(tile.shape)
+    dims = [
+        (
+            str(node_dims[r.position]) if isinstance(r, AffineDimExpr) and r.position < len(node_dims) else f"axis{i}",
+            int(size),
+        )
+        for i, (r, size) in enumerate(zip(node.get_mapping(tensor).results, shape, strict=False))
+    ]
+    return dims, str(tile.operand_type)
 
 
 class ObjectFifoDepth:
@@ -212,13 +261,15 @@ class ObjectFifoDepth:
                         tiles_needed = counted[(t, stop)]
                         min_tiles = tiles_needed if min_tiles is None else min(min_tiles, tiles_needed)
                         uz = ctx.binary_product(
-                            a=u, b=z_stop[(t, stop)], base_name=f"objfifo_{t.name}_{_resource_key(c)}_L{stop}"
+                            a=u,
+                            b=z_stop[(t, stop)],
+                            base_name=f"objfifo_{t.name}_{_resource_key(c)}_L{stop}",
+                            tag=ConstraintTag(c, OBJECT_FIFO_DEPTH, t.name),
                         )
                         depth[c] = depth[c] + tiles_needed * uz._raw
-                        ledger.loads[("object_fifo_depth", c.id)].append((uz, tiles_needed))
+                        ledger.loads[(OBJECT_FIFO_DEPTH, c.id)].append((uz, tiles_needed))
                     if min_tiles is not None:
-                        ledger.terms[("object_fifo_depth", c.id)][t.name] = min_tiles
-        ledger.record_capacity_bounds("object_fifo_depth", depth, "aie2_obj_fifo_depth")
+                        ledger.terms[(OBJECT_FIFO_DEPTH, c.id)][t.name] = min_tiles
         for core, expr in depth.items():
             q.add("object_fifo_depth", expr, index=core)
 
@@ -253,10 +304,9 @@ class BufferDescriptors:
                     terms = _descriptor_terms(ctx, tr, t, c, u)
                     for indicator, bds_needed in terms:
                         bd_depth[c] = bd_depth[c] + bds_needed * indicator._raw
-                        ledger.loads[("buffer_descriptors", c.id)].append((indicator, bds_needed))
+                        ledger.loads[(BUFFER_DESCRIPTORS, c.id)].append((indicator, bds_needed))
                     if terms:
-                        ledger.terms[("buffer_descriptors", c.id)][t.name] = min(n for _, n in terms)
-        ledger.record_capacity_bounds("buffer_descriptors", bd_depth, "aie2_bd_depth")
+                        ledger.terms[(BUFFER_DESCRIPTORS, c.id)][t.name] = min(n for _, n in terms)
         for core, expr in bd_depth.items():
             q.add("buffer_descriptor_depth", expr, index=core)
 
@@ -267,9 +317,12 @@ def _descriptor_terms(
     """Per reuse stop of ``t`` on ``c``: the binary that holds there, and the descriptors it then takes."""
     space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
     terms: list[tuple[SolverVar, int]] = []
+    held = ConstraintTag(c, BUFFER_DESCRIPTORS, t.name)
     if c.type == "compute":
         for stop in space.stops(t):
-            uz = ctx.binary_product(a=u, b=z_stop[(t, stop)], base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}")
+            uz = ctx.binary_product(
+                a=u, b=z_stop[(t, stop)], base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}", tag=held
+            )
             terms.append((uz, space.tiles_needed_levels[(t, stop)]))
         return terms
     # If the core is a memory core, we add bd usage only if the eq. tensor on compute
@@ -291,10 +344,19 @@ def _descriptor_terms(
         gate_var = model.add_var(
             vtype=SolverVarType.BINARY, name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}"
         )
-        model.add_constr(
-            gate_var == 1 - src_tensor_reuse, name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}"
+        ctx.add_constr(
+            gate_var == 1 - src_tensor_reuse,
+            name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
+            resource=c,
         )
-        uz = ctx.binary_product(a=u, b=z_stop[(t, stop)], base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}")
-        uzgate = ctx.binary_product(a=uz, b=gate_var, base_name=f"bddepth_active_{t.name}_{_resource_key(c)}_L{stop}")
+        uz = ctx.binary_product(
+            a=u, b=z_stop[(t, stop)], base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}", tag=held
+        )
+        uzgate = ctx.binary_product(
+            a=uz,
+            b=gate_var,
+            base_name=f"bddepth_active_{t.name}_{_resource_key(c)}_L{stop}",
+            tag=ConstraintTag(c, BUFFER_DESCRIPTORS),
+        )
         terms.append((uzgate, space.bds_needed_levels[(t, stop)]))
     return terms

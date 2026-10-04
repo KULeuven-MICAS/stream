@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.opt.allocation.constraint_optimization.context import MemoryReuseEntry
+from stream.opt.allocation.constraint_optimization.diagnosis import StructuralRule
 from stream.opt.solver import SolverVarType
 from stream.workload.node import TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType
@@ -53,11 +54,26 @@ class ReuseRates:
             q.add("reuse_factor", reuse_factor._raw, index=tr)
 
 
-def _held_from(ctx: FormulationContext, t: Tensor, first: int, levels: int, name: str) -> None:
+FUSED_INTERMEDIATE = StructuralRule(
+    "Fused intermediate must stay resident",
+    "A fused group's intermediate is pinned on-chip and re-read rather than spilled to HBM (the AIE "
+    "code-gen cannot stream partial results out and back), which fixes its reuse level across the fused loop.",
+)
+RESIDENT_OUTPUT = StructuralRule(
+    "Output must stay resident",
+    "An operator's output is pinned resident and reused in place (no partial spill to HBM), which fixes its reuse "
+    "level.",
+)
+
+
+def _held_from(
+    ctx: FormulationContext, t: Tensor, first: int, levels: int, name: str, rule: StructuralRule | None = None
+) -> None:
     """Hold ``t`` at least up to level ``first`` of its ``levels``."""
-    ctx.model.add_constr(
+    ctx.add_constr(
         ctx.model.quicksum(ctx.vars.z_stop[(t, s)]._raw for s in range(first, levels)) >= 1,
         name=name,
+        rule=rule,
     )
 
 
@@ -79,7 +95,8 @@ class ReuseLevels:
                     if r is False:
                         last_irrelevant = i
                 if last_irrelevant >= 0:
-                    _held_from(ctx, t, last_irrelevant, len(relevancies), f"force_intermediate_reuse_{tr.name}")
+                    name = f"force_intermediate_reuse_{tr.name}"
+                    _held_from(ctx, t, last_irrelevant, len(relevancies), name, FUSED_INTERMEDIATE)
 
 
 class OutputReuse:
@@ -100,7 +117,8 @@ class OutputReuse:
                     if r is False:
                         last_irrelevant = i
                 if last_irrelevant >= 0:
-                    _held_from(ctx, t, last_irrelevant, len(relevancies), f"force_output_reuse_{tr.name}")
+                    name = f"force_output_reuse_{tr.name}"
+                    _held_from(ctx, t, last_irrelevant, len(relevancies), name, RESIDENT_OUTPUT)
 
 
 class ReuseCompatibility:

@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from stream.opt.allocation.constraint_optimization.families import overlap
-from stream.opt.allocation.constraint_optimization.formulation import DecisionVariables, FormulationContext
+from stream.opt.allocation.constraint_optimization.formulation import (
+    DecisionVariables,
+    FormulationContext,
+    ResourceLedger,
+)
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.opt.solver import SolverBackend, SolverParams, SolverVarType, create_solver
@@ -64,7 +68,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
     space.transfer_latency_for_path = lambda transfer, path: cycles[transfer][0]  # type: ignore[method-assign]
     space.shared_cycles = lambda core, transfer, path, rate: cycles[transfer][1]  # type: ignore[method-assign]
     q = QuantityRegistry()
-    ctx = FormulationContext(space, DecisionVariables({}, y, z_stop, z_single, {}), model, q)
+    ctx = FormulationContext(space, DecisionVariables({}, y, z_stop, z_single, {}), model, q, ResourceLedger())
     overlap._resident_fill(ctx, q)
     fill = q.get("fill").expr
     model.set_objective(fill)

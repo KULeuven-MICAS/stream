@@ -5,7 +5,11 @@ from __future__ import annotations
 from xdsl.dialects.builtin import bf16
 
 from stream.opt.allocation.constraint_optimization.families.routing import destination_coherence
-from stream.opt.allocation.constraint_optimization.formulation import DecisionVariables, FormulationContext
+from stream.opt.allocation.constraint_optimization.formulation import (
+    DecisionVariables,
+    FormulationContext,
+    ResourceLedger,
+)
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.opt.solver import SolverBackend, SolverParams, SolverVarType, create_solver
@@ -40,7 +44,7 @@ def _placed(one_tile: bool) -> tuple[str, ...]:
     model.add_constr(y[(transfer, path)] == 1)
     space.choice_dst_cores = {(transfer, path): {tile_a} if one_tile else {tile_a, tile_b}}
     space.choice_has_empty_path = {(transfer, path): False}
-    ctx = FormulationContext(space, DecisionVariables(x, y, {}, {}, {}), model, QuantityRegistry())
+    ctx = FormulationContext(space, DecisionVariables(x, y, {}, {}, {}), model, QuantityRegistry(), ResourceLedger())
     destination_coherence(ctx, transfer, (path,))
     # Spreading the key would let the next transfer read it from more tiles at once.
     model.set_objective(-x[(key, placements[1])]._raw)

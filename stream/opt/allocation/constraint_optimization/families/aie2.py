@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from stream.opt.allocation.constraint_optimization.families.dma import DMA_CHANNELS
+from stream.opt.allocation.constraint_optimization.families.memory import BUFFER_DESCRIPTORS, OBJECT_FIFO_DEPTH
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 
 if TYPE_CHECKING:
@@ -25,8 +27,12 @@ class ObjectFifoDepth:
     def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         for core, depth in q.indexed("object_fifo_depth").items():
             if core.namespace == NAMESPACE:
-                ctx.model.add_constr(
-                    depth.expr <= core.max_object_fifo_depth, name=f"aie2_obj_fifo_depth_Core_{core.id}"
+                ctx.add_constr(
+                    depth.expr <= core.max_object_fifo_depth,
+                    name=f"aie2_obj_fifo_depth_Core_{core.id}",
+                    resource=core,
+                    kind=OBJECT_FIFO_DEPTH,
+                    bound=float(core.max_object_fifo_depth),
                 )
 
 
@@ -40,7 +46,13 @@ class BufferDescriptors:
     def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         for core, depth in q.indexed("buffer_descriptor_depth").items():
             if core.namespace == NAMESPACE:
-                ctx.model.add_constr(depth.expr <= core.max_object_fifo_depth, name=f"aie2_bd_depth_Core_{core.id}")
+                ctx.add_constr(
+                    depth.expr <= core.max_object_fifo_depth,
+                    name=f"aie2_bd_depth_Core_{core.id}",
+                    resource=core,
+                    kind=BUFFER_DESCRIPTORS,
+                    bound=float(core.max_object_fifo_depth),
+                )
 
 
 class MemoryReuse:
@@ -56,9 +68,10 @@ class MemoryReuse:
             if entry.core.namespace != NAMESPACE:
                 continue
             for i, (mem_stop, compute_stop) in enumerate(entry.unexpressible):
-                ctx.model.add_constr(
+                ctx.add_constr(
                     mem_stop._raw + compute_stop._raw <= 1,
                     name=f"aie2_mem_replay_{entry.name}_Core_{entry.core.id}_P{i}",
+                    resource=entry.core,
                 )
 
 
@@ -84,7 +97,12 @@ class DmaChannels:
         for direction in ("in", "out"):
             for core, usage in q.indexed(f"dma_{direction}").items():
                 limit = self.channels(core, ctx.space.offchip_core_id)
-                ctx.model.add_constr(usage.expr <= limit, name=f"dma_{direction}_cap_{_resource_key(core)}")
+                ctx.add_constr(
+                    usage.expr <= limit,
+                    name=f"dma_{direction}_cap_{_resource_key(core)}",
+                    resource=core,
+                    kind=DMA_CHANNELS,
+                )
 
     def channels(self, core: Core, offchip_core_id: int | None) -> int:
         """The DMA channels ``core`` has in each direction."""

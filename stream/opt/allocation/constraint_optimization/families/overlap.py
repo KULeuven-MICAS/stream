@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
 from stream.opt.allocation.constraint_optimization.families import LATENCY, SLOT_PRESSURE
 from stream.opt.allocation.constraint_optimization.families.latency import node_runtime, reuse_selectors
+from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
 from stream.opt.allocation.constraint_optimization.space import core_id
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
@@ -148,14 +150,11 @@ def _resource_activity(ctx: FormulationContext) -> list[tuple[Resource, list[Any
         active_s = [model.quicksum(per_slot.get(s, ())) for s in range(max_s + 1)]
         lu = model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{_resource_key(link)}")
         sum_active = model.quicksum(active_s)
-        ctx.add_resource_constr(
-            sum_active >= lu, name=f"link_used_def_{_resource_key(link)}", kind="link_contention", resource=link
+        ctx.add_constr(
+            sum_active >= lu, name=f"link_used_def_{_resource_key(link)}", resource=link, kind=LINK_CONTENTION
         )
-        ctx.add_resource_constr(
-            sum_active <= big_m * lu,
-            name=f"link_used_def2_{_resource_key(link)}",
-            kind="link_contention",
-            resource=link,
+        ctx.add_constr(
+            sum_active <= big_m * lu, name=f"link_used_def2_{_resource_key(link)}", resource=link, kind=LINK_CONTENTION
         )
         out.append((link, active_s, lu))
 
@@ -167,7 +166,7 @@ def _resource_activity(ctx: FormulationContext) -> list[tuple[Resource, list[Any
                 core_active_slots[core].add(s)
     for core, active_slots in core_active_slots.items():
         lu = model.add_var(vtype=SolverVarType.BINARY, name=f"coreUsed_{_resource_key(core)}")
-        model.add_constr(lu == 1, name=f"core_used_def_{_resource_key(core)}")
+        ctx.add_constr(lu == 1, name=f"core_used_def_{_resource_key(core)}", resource=core)
         out.append((core, [1 if s in active_slots else 0 for s in range(max_s + 1)], lu))
     return out
 
@@ -209,9 +208,9 @@ def _occupancy_indicators(
         indicators.append([idle])
         # Activity is a path-choice expr for a link but a plain int for a core -- pin it to a var first.
         act = model.add_var(vtype=SolverVarType.INTEGER, name=f"act_{key}_{s}")
-        model.add_constr(act == active_s[s], name=f"act_def_{key}_{s}")
-        model.add_constr(act <= big_m * (1 - idle), name=f"idle_off_{key}_{s}")
-        model.add_constr(act >= 1 - idle, name=f"idle_on_{key}_{s}")
+        ctx.add_constr(act == active_s[s], name=f"act_def_{key}_{s}", resource=res)
+        ctx.add_constr(act <= big_m * (1 - idle), name=f"idle_off_{key}_{s}", resource=res)
+        ctx.add_constr(act >= 1 - idle, name=f"idle_on_{key}_{s}", resource=res)
     return indicators
 
 
@@ -223,18 +222,20 @@ def _idle_latency_vars(
     idle_lat: dict[Resource, SolverVar] = {}
     for res in {res for res in idle}:
         key = _resource_key(res)
+        tag = ConstraintTag(res)
         terms = [
             ctx.binary_scaled_continuous(
                 binary_var=ind,
                 continuous_var=slot_latency[s],
                 continuous_ub=slot_latency_ub,
                 base_name=f"idle{i}_lat_{key}_{s}",
+                tag=tag,
             )
             for s, indicators in enumerate(idle[res])
             for i, ind in enumerate(indicators)
         ]
         v = model.add_var(vtype=SolverVarType.INTEGER, name=f"idleLat_{key}")
-        model.add_constr(v == model.quicksum(t._raw for t in terms), name=f"idleLat_def_{key}")
+        ctx.add_constr(v == model.quicksum(t._raw for t in terms), name=f"idleLat_def_{key}", resource=res)
         idle_lat[res] = v
     return idle_lat
 
@@ -263,9 +264,10 @@ def _skipped_step_floor(
                 if core not in space.choice_src_cores[key] and core not in space.choice_dst_cores[key]:
                     continue
                 tr, choice = key
-                ctx.model.add_constr(
+                ctx.add_constr(
                     overlap <= iteration - busy - (1.0 - fraction) * latency[key],
                     name=f"skip_floor_{n.name}_{_resource_key(core)}_{tr.name}_{hash(choice)}",
+                    resource=core,
                 )
 
 

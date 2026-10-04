@@ -6,12 +6,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 from stream.opt.solver import SolverModel, SolverVar, SolverVarType
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.mapping.mapping import Resource
+    from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, StructuralRule
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import Choice, DecisionSpace, Placement
     from stream.workload.workload import Tensor
@@ -32,44 +34,64 @@ class DecisionVariables:
 
 @dataclass
 class ResourceLedger:
-    """What the resource constraints bind, for the infeasibility diagnosis and the capacity reports: the
-    resource each named constraint binds, each (family, core)'s bound, demand terms and solved load terms,
-    each memory's residency terms and the handover bits it holds."""
+    """What the constraints of one model stand for, for the infeasibility diagnosis and the capacity reports: each
+    named constraint's tag; per (limit, core) its bound, its demand terms and the indicators of its solved load; per
+    memory the residency terms of what it holds and the handover bits it holds."""
 
-    constraints: dict[str, tuple[str, Resource]] = field(default_factory=dict)
-    bounds: dict[tuple[str, int], float] = field(default_factory=dict)
-    terms: dict[tuple[str, int], dict[str, Any]] = field(default_factory=lambda: defaultdict(dict))
-    loads: dict[tuple[str, int], list[tuple[SolverVar, int]]] = field(default_factory=lambda: defaultdict(list))
+    tags: dict[str, ConstraintTag] = field(default_factory=dict)
+    bounds: dict[tuple[ResourceKind, int], float] = field(default_factory=dict)
+    terms: dict[tuple[ResourceKind, int], dict[str, Any]] = field(default_factory=lambda: defaultdict(dict))
+    loads: dict[tuple[ResourceKind, int], list[tuple[SolverVar, int]]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
     memory: dict[int, list[tuple[SolverVar, int, str]]] = field(default_factory=lambda: defaultdict(list))
     handover_bits: dict[int, int] = field(default_factory=dict)
-
-    def record_capacity_bounds(self, family: str, cores: Any, name_prefix: str) -> None:
-        """For a per-core capacity family whose bound constraint a namespace family adds (object FIFO / buffer
-        descriptors), record the hardware bound and the deterministic constraint name ``{name_prefix}_Core_{id}``
-        so the IIS maps back to the family and core. Only tiles that expose ``max_object_fifo_depth`` are bound."""
-        for c in cores:
-            bound = getattr(c, "max_object_fifo_depth", None)
-            if bound is None:
-                continue
-            self.bounds[(family, c.id)] = float(bound)
-            self.constraints[f"{name_prefix}_Core_{c.id}"] = (family, c)
 
 
 class FormulationContext:
     """What a family builds from: ``space``, the read-only problem and the choices derived from it; ``vars``, the
-    core decision variables; ``model``; ``quantities``; ``ledger``; and the modelling helpers every family shares.
-    One context serves one model build."""
+    core decision variables; ``model``; ``quantities``; ``ledger``, what its constraints stand for; and the modelling
+    helpers every family shares. One context serves one model build."""
 
     def __init__(
-        self, space: DecisionSpace, variables: DecisionVariables, model: SolverModel, quantities: QuantityRegistry
+        self,
+        space: DecisionSpace,
+        variables: DecisionVariables,
+        model: SolverModel,
+        quantities: QuantityRegistry,
+        ledger: ResourceLedger,
     ) -> None:
         self.space = space
         self.vars = variables
         self.model = model
         self.quantities = quantities
-        self.ledger = ResourceLedger()
+        self.ledger = ledger
         self._names: dict[str, int] = {}
         self._on_core: dict[tuple[Tensor, Core], SolverVar] = {}
+
+    def add_constr(
+        self,
+        expr: Any,
+        *,
+        name: str,
+        resource: Resource | None = None,
+        kind: ResourceKind | None = None,
+        subject: str | None = None,
+        rule: StructuralRule | None = None,
+        bound: float | None = None,
+    ) -> None:
+        """Add a constraint with what it stands for (see :class:`ConstraintTag`); ``bound`` is the value of the
+        limit ``kind`` on ``resource`` it states."""
+        self.model.add_constr(expr, name=name)
+        self.ledger.tags[name] = ConstraintTag(resource, kind, subject, rule)
+        if bound is not None:
+            assert kind is not None and resource is not None
+            self.ledger.bounds[(kind, resource.id)] = bound
+
+    def _add_tagged(self, expr: Any, name: str, tag: ConstraintTag | None) -> None:
+        self.model.add_constr(expr, name=name)
+        if tag is not None:
+            self.ledger.tags[name] = tag
 
     def unique_name(self, name: str) -> str:
         """``name`` with whitespace and colons replaced, suffixed with a count when this build used it before
@@ -97,7 +119,12 @@ class FormulationContext:
             return u
         u = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{_resource_key(core)}")
         self._on_core[key] = u
-        self.model.add_constr(u == self.tensor_on_core_expr(t, core), name=f"u_eq_{t.name}_{_resource_key(core)}")
+        self.add_constr(
+            u == self.tensor_on_core_expr(t, core),
+            name=f"u_eq_{t.name}_{_resource_key(core)}",
+            resource=core,
+            subject=t.name,
+        )
         return u
 
     def tensor_in_memory_var(self, t: Tensor, cores: list[Core]) -> SolverVar:
@@ -113,19 +140,21 @@ class FormulationContext:
             occ = self.model.quicksum(
                 self.vars.x[(t, choice)]._raw for choice in space.tensor_choices[t] if any(c in choice for c in cores)
             )
-        self.model.add_constr(v == occ, name=f"u_eq_{t.name}_{key}")
+        self.add_constr(v == occ, name=f"u_eq_{t.name}_{key}", resource=cores[0], subject=t.name)
         return v
 
     # ------------------------------------------------------------ #
     # products and ratios                                          #
     # ------------------------------------------------------------ #
-    def binary_product(self, *, a: SolverVar, b: SolverVar, base_name: str) -> SolverVar:
-        """A binary equal to ``a * b`` for binaries ``a`` and ``b``."""
+    def binary_product(
+        self, *, a: SolverVar, b: SolverVar, base_name: str, tag: ConstraintTag | None = None
+    ) -> SolverVar:
+        """A binary equal to ``a * b`` for binaries ``a`` and ``b``, its constraints tagged with ``tag``."""
         n = self.unique_name(base_name)
         w = self.model.add_var(vtype=SolverVarType.BINARY, name=f"{n}__and")
-        self.model.add_constr(w <= a, name=f"{n}__ub1")
-        self.model.add_constr(w <= b, name=f"{n}__ub2")
-        self.model.add_constr(w >= a + b - 1, name=f"{n}__lb")
+        self._add_tagged(w <= a, f"{n}__ub1", tag)
+        self._add_tagged(w <= b, f"{n}__ub2", tag)
+        self._add_tagged(w >= a + b - 1, f"{n}__lb", tag)
         return w
 
     def binary_scaled_continuous(
@@ -136,15 +165,17 @@ class FormulationContext:
         continuous_ub: float,
         base_name: str,
         result_lb: float = 0.0,
+        tag: ConstraintTag | None = None,
     ) -> SolverVar:
-        """The exact linearization of ``binary_var * continuous_var`` for ``0 <= continuous_var <= continuous_ub``."""
+        """The exact linearization of ``binary_var * continuous_var`` for ``0 <= continuous_var <= continuous_ub``,
+        its constraints tagged with ``tag``."""
         assert continuous_ub >= 0.0, "continuous_ub must be nonnegative"
         n = self.unique_name(base_name)
         z = self.model.add_var(vtype=SolverVarType.CONTINUOUS, lb=result_lb, ub=continuous_ub, name=f"{n}__prod")
-        self.model.add_constr(z <= continuous_var, name=f"{n}__prod_ub1")
-        self.model.add_constr(z <= continuous_ub * binary_var, name=f"{n}__prod_ub2")
-        self.model.add_constr(z >= continuous_var - continuous_ub * (1 - binary_var), name=f"{n}__prod_lb1")
-        self.model.add_constr(z >= 0.0, name=f"{n}__prod_lb2")
+        self._add_tagged(z <= continuous_var, f"{n}__prod_ub1", tag)
+        self._add_tagged(z <= continuous_ub * binary_var, f"{n}__prod_ub2", tag)
+        self._add_tagged(z >= continuous_var - continuous_ub * (1 - binary_var), f"{n}__prod_lb1", tag)
+        self._add_tagged(z >= 0.0, f"{n}__prod_lb2", tag)
         return z
 
     def binary_times_const_over_linexpr(
@@ -213,12 +244,3 @@ class FormulationContext:
             name=f"{n}__def_div",
         )
         return result
-
-    # ------------------------------------------------------------ #
-    # resource constraints                                         #
-    # ------------------------------------------------------------ #
-    def add_resource_constr(self, expr: Any, *, name: str, kind: str, resource: Resource) -> None:
-        """Add a constraint that binds a physical resource, recording which so an infeasible model's IIS maps
-        back to the offending core or link."""
-        self.model.add_constr(expr, name=name)
-        self.ledger.constraints[name] = (kind, resource)

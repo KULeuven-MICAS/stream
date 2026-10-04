@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
+from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import ROUTE_HOPS
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
@@ -72,9 +73,10 @@ def _source_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[
         for i, choice in enumerate(choices):
             y = ctx.vars.y[(tr, choice)]
             for src_core in ctx.space.choice_src_cores[(tr, choice)]:
-                ctx.model.add_constr(
+                ctx.add_constr(
                     y <= ctx.tensor_on_core_expr(src_tensor, src_core),
                     name=f"path_src_match_{tr.name}_{src_tensor.name}_{_resource_key(src_core)}_choice_{i}",
+                    resource=src_core,
                 )
 
 
@@ -87,9 +89,10 @@ def destination_coherence(ctx: FormulationContext, tr: TransferNode, choices: tu
         for i, choice in enumerate(choices):
             y = ctx.vars.y[(tr, choice)]
             for dst_core in space.choice_dst_cores[(tr, choice)]:
-                model.add_constr(
+                ctx.add_constr(
                     y <= ctx.tensor_on_core_expr(dst_tensor, dst_core),
                     name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{_resource_key(dst_core)}_choice_{i}",
+                    resource=dst_core,
                 )
         # And the tensor sits only where the chosen path delivers it: a core holding a copy
         # nothing wrote cannot be where a later transfer reads it from. An empty path moves
@@ -102,9 +105,10 @@ def destination_coherence(ctx: FormulationContext, tr: TransferNode, choices: tu
                 for choice in choices
                 if core in space.choice_dst_cores[(tr, choice)] or space.choice_has_empty_path[(tr, choice)]
             ]
-            model.add_constr(
+            ctx.add_constr(
                 ctx.tensor_on_core_expr(dst_tensor, core) <= model.quicksum(delivering),
                 name=f"dst_delivered_{tr.name}_{dst_tensor.name}_{_resource_key(core)}",
+                resource=core,
             )
 
 
@@ -157,10 +161,13 @@ def _same_core_var(
     v = colocated[key] = model.add_var(vtype=SolverVarType.BINARY, name=f"same_{suffix}")
     src_occ = ctx.tensor_on_core_expr(src_tensor, core)
     dst_occ = ctx.tensor_on_core_expr(dst_tensor, core)
-    model.add_constr(v <= src_occ, name=f"same_src_ub_{suffix}")
-    model.add_constr(v <= dst_occ, name=f"same_dst_ub_{suffix}")
-    model.add_constr(v >= src_occ + dst_occ - 1, name=f"same_lb_{suffix}")
+    ctx.add_constr(v <= src_occ, name=f"same_src_ub_{suffix}", resource=core)
+    ctx.add_constr(v <= dst_occ, name=f"same_dst_ub_{suffix}", resource=core)
+    ctx.add_constr(v >= src_occ + dst_occ - 1, name=f"same_lb_{suffix}", resource=core)
     return v
+
+
+LINK_CONTENTION = ResourceKind("link_contention", "communication link over-subscribed")
 
 
 class LinkContention:
@@ -178,6 +185,9 @@ class LinkContention:
             for link in links[(tr, choice)]:
                 usage[(link, s)].append(y)
         for (link, s), vars_ in usage.items():
-            ctx.model.add_constr(
-                ctx.model.quicksum(v._raw for v in vars_) <= 1, name=f"link_usage_{_resource_key(link)}_{s}"
+            ctx.add_constr(
+                ctx.model.quicksum(v._raw for v in vars_) <= 1,
+                name=f"link_usage_{_resource_key(link)}_{s}",
+                resource=link,
+                kind=LINK_CONTENTION,
             )

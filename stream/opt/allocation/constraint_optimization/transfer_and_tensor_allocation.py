@@ -1,7 +1,6 @@
 import logging
 import math
 import os
-import re
 from collections import defaultdict
 from dataclasses import replace
 from math import ceil
@@ -21,24 +20,24 @@ from stream.allocation.problem import SteadyStateProblem
 from stream.allocation.solution import AllocationSolution, Latency, end_to_end_mac_utilization
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
-from stream.ir.infeasibility import (
-    ConstraintTermIR,
-    ImplicatedResourceIR,
-    InfeasibilityReportIR,
-    InfeasibleAllocationError,
-    ResourceRefIR,
-    StructuralConflictIR,
-    TileDimIR,
-    UnmetConstraintIR,
+from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.opt.allocation.constraint_optimization.diagnosis import (
+    ConstraintTag,
+    StructuralRule,
+    infeasibility_report,
 )
-from stream.mapping.mapping import Resource
 from stream.opt.allocation.constraint_optimization.families import (
     FamilySelection,
     ObjectiveFamily,
     ReportingFamily,
     ScreeningFamily,
 )
-from stream.opt.allocation.constraint_optimization.formulation import DecisionVariables, FormulationContext
+from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
+from stream.opt.allocation.constraint_optimization.formulation import (
+    DecisionVariables,
+    FormulationContext,
+    ResourceLedger,
+)
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, Placement
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
@@ -60,6 +59,12 @@ from stream.workload.workload import Tensor, TransferNode
 _logger = logging.getLogger(__name__)
 
 _OCCUPANCY_TOP_TENSORS = 8
+
+REUSE_CHOICE = StructuralRule(
+    "No consistent reuse schedule",
+    "A tensor's reuse level (how long it stays resident) has no value consistent with the other pinned tensors "
+    "-- typically a streamed (K-tiled) weight competing with a pinned activation for the same on-chip budget.",
+)
 
 TensorReuseLevels: TypeAlias = dict[Tensor, int]
 TensorDepths: TypeAlias = dict[Tensor, int]
@@ -90,13 +95,14 @@ class TransferAndTensorAllocator:
         self.model.set_param(SolverParams.VERBOSITY, 1)
         self.model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
         self.quantities = QuantityRegistry()
+        self.ledger = ResourceLedger()
         self.optimization_trace: list[dict[str, float | str | None]] = []
         self._build_model()
 
     def _build_model(self) -> None:
         with span("variables"):
             self.vars = self._create_variables()
-        self.context = FormulationContext(self.space, self.vars, self.model, self.quantities)
+        self.context = FormulationContext(self.space, self.vars, self.model, self.quantities, self.ledger)
         with span("capacity_screen"):
             for family in self.families.families:
                 if isinstance(family, ScreeningFamily):
@@ -142,10 +148,9 @@ class TransferAndTensorAllocator:
             levels = len(space.ssis[t].get_applicable_temporal_sizes())
             for stop in range(-1, levels):
                 z_stop[(t, stop)] = model.add_var(vtype=SolverVarType.BINARY, name=f"zStop_{t.name}_L{stop}")
-            model.add_constr(
-                model.quicksum(z_stop[(t, s)]._raw for s in range(-1, levels)) == 1,
-                name=f"zStop_Choose_One_{t.name}",
-            )
+            name = f"zStop_Choose_One_{t.name}"
+            model.add_constr(model.quicksum(z_stop[(t, s)]._raw for s in range(-1, levels)) == 1, name=name)
+            self.ledger.tags[name] = ConstraintTag(rule=REUSE_CHOICE)
             if t in optimized:
                 continue
             reuses = space.ssis[t].get_temporal_reuses()
@@ -181,404 +186,6 @@ class TransferAndTensorAllocator:
         return dict(sorted(levels.items(), key=lambda item: -item[1].priority))
 
     # ------------------------------------------------------------------ #
-    # infeasibility diagnosis                                            #
-    # ------------------------------------------------------------------ #
-    # Constraint family -> human reason. New resource-bound families add one line here.
-    _KIND_REASON: dict[str, str] = {
-        "memory_capacity": "on-chip memory capacity exceeded",
-        "link_contention": "communication link over-subscribed",
-        "object_fifo_depth": "object-FIFO depth exceeded",
-        "buffer_descriptors": "buffer-descriptor count exceeded",
-        "dma_channels": "DMA channel limit exceeded",
-    }
-    # Untagged IIS constraint name-prefix -> resource-limit family. Only these contribute a *reason*;
-    # placement/indicator constraints (u_, z_, one-hot selectors) merely attribute to the resource.
-    _LIMIT_PREFIXES: tuple[tuple[str, str], ...] = (
-        ("mem_cap", "memory_capacity"),
-        ("memload", "memory_capacity"),
-        ("aie2_obj_fifo", "object_fifo_depth"),
-        ("objfifo", "object_fifo_depth"),
-        ("aie2_bd", "buffer_descriptors"),
-        ("bddepth", "buffer_descriptors"),
-        ("link_used", "link_contention"),
-        ("dma", "dma_channels"),
-    )
-
-    # Structural (non-capacity) conflict families: IIS constraint-name prefix -> (short title, cause).
-    # Most specific prefix first; a new structural rule adds one line.
-    _STRUCTURAL_FAMILIES: tuple[tuple[str, str, str], ...] = (
-        (
-            "force_intermediate_reuse",
-            "Fused intermediate must stay resident",
-            "A fused group's intermediate is pinned on-chip and re-read rather than spilled to HBM (the AIE "
-            "code-gen cannot stream partial results out and back), which fixes its reuse level across the fused loop.",
-        ),
-        (
-            "force_output_reuse",
-            "Output must stay resident",
-            "An operator's output is pinned resident and reused in place (no partial spill to HBM), "
-            "which fixes its reuse level.",
-        ),
-        (
-            "zStop_Choose_One",
-            "No consistent reuse schedule",
-            "A tensor's reuse level (how long it stays resident) has no value consistent with the other pinned tensors "
-            "-- typically a streamed (K-tiled) weight competing with a pinned activation for the same on-chip budget.",
-        ),
-    )
-
-    def _structural_conflicts(self, names: list[str]) -> list[StructuralConflictIR]:
-        """Group structural IIS constraint names into plain-language conflicts; unmatched names are left out."""
-        buckets: dict[str, StructuralConflictIR] = {}
-        for name in names:
-            match = next((fam for fam in self._STRUCTURAL_FAMILIES if name.startswith(fam[0])), None)
-            if match is None:
-                continue
-            key, title, explanation = match
-            bucket = buckets.setdefault(key, StructuralConflictIR(title=title, explanation=explanation, constraints=[]))
-            bucket.constraints.append(name)
-        return list(buckets.values())
-
-    # Per resource-capacity family: how to phrase and quantify its unmet inequality. `term_prefixes`
-    # are the IIS constraint-name prefixes whose subject is a demand contributor for this family. A new
-    # capacity family becomes quantifiable by adding one entry here + recording its bound/terms.
-    _FAMILY_META: dict[str, dict[str, Any]] = {
-        "memory_capacity": {
-            "unit": "bytes",
-            "demand_label": "tensors resident on",
-            "bound_label": "on-chip memory of",
-            "demand_input": "workload tensor sizes × mapping intra-core tiling",
-            "bound_input": "hardware spec: core memory size",
-            "term_prefixes": ("memload_", "u_eq_"),
-            "term_detail": "min resident (1 tile)",
-            "levers": (
-                "Increase {core} on-chip memory (hardware spec)",
-                "Tile the fused group finer so fewer / smaller tiles are resident (mapping intra_core_tiling)",
-                "Reduce the workload's tensor sizes (fewer channels, smaller spatial, shorter sequence)",
-            ),
-        },
-        "object_fifo_depth": {
-            "unit": "FIFO slots",
-            "demand_label": "concurrently buffered tiles on",
-            "bound_label": "object-FIFO depth of",
-            "demand_input": "mapping reuse levels × fused tiles",
-            "bound_input": "hardware spec: tile object-FIFO depth",
-            "term_prefixes": ("objfifo_", "u_eq_"),
-            "term_detail": "min buffered tiles",
-            "levers": (
-                "Increase {core}'s object-FIFO depth (hardware spec)",
-                "Lower buffering: reduce reuse / double-buffering (mapping)",
-                "Route fewer tensors through {core} (mapping)",
-            ),
-        },
-        "buffer_descriptors": {
-            "unit": "descriptors",
-            "demand_label": "buffer descriptors on",
-            "bound_label": "buffer-descriptor budget of",
-            "demand_input": "mapping tiling × transfers through the tile",
-            "bound_input": "hardware spec: tile buffer-descriptor count",
-            "term_prefixes": ("bddepth_", "u_eq_"),
-            "term_detail": "min descriptors",
-            "levers": (
-                "Increase {core}'s buffer-descriptor budget (hardware spec)",
-                "Reduce distinct transfers / reuse levels through {core} (mapping)",
-                "Fuse fewer tensors through {core} (mapping)",
-            ),
-        },
-    }
-
-    def _limit_kind_from_name(self, name: str) -> str | None:
-        """Map an untagged IIS constraint name to a resource-limit family (or None if it is a
-        placement/indicator constraint that pins a resource but is not itself a hardware limit)."""
-        return next((kind for prefix, kind in self._LIMIT_PREFIXES if name.startswith(prefix)), None)
-
-    @staticmethod
-    def _fmt_bytes(n: float) -> str:
-        """Human-readable byte size for the diagnosis."""
-        if abs(n) >= 1 << 20:
-            return f"{n / (1 << 20):.2f} MB"
-        if abs(n) >= 1 << 10:
-            return f"{n / (1 << 10):.1f} KB"
-        return f"{n:.0f} B"
-
-    @staticmethod
-    def _fmt_qty(value: float, unit: str) -> str:
-        """Human-readable quantity for the diagnosis: bytes scale to KB/MB, counts stay integral."""
-        if unit == "bytes":
-            return TransferAndTensorAllocator._fmt_bytes(value)
-        rounded = int(round(value))
-        return f"{rounded} {unit}"
-
-    @staticmethod
-    def _term_value(info: Any) -> float:
-        """A demand term is either a bare value or a ``{value, dims, dtype}`` record."""
-        return float(info["value"]) if isinstance(info, dict) else float(info)
-
-    @staticmethod
-    def _term_meta(info: Any) -> tuple[list[tuple[str, int]], str]:
-        """The tile shape (per-dim label+size) and dtype of a tensor demand term, if it carries them."""
-        if isinstance(info, dict):
-            return info.get("dims", []), info.get("dtype", "")
-        return [], ""
-
-    def _forced_terms(self, terms: dict[str, float], core_id: int, prefixes: tuple[str, ...], names: list[str]) -> dict:
-        """The demand contributors the IIS actually forces onto this core: the exact subjects of its
-        constraints whose prefix marks this family. Extracts the subject (up to the ``_Core_<id>``
-        marker) rather than substring-matching, so a base tensor name is not double-counted with its
-        partitions."""
-        markers = (f"_Core_{core_id}", f"_Core {core_id}")
-        forced: dict[str, float] = {}
-        for cn in names:
-            prefix = next((p for p in prefixes if cn.startswith(p)), None)
-            if prefix is None:
-                continue
-            rest = cn[len(prefix) :]
-            cut = min((rest.index(m) for m in markers if m in rest), default=-1)
-            subject = rest[:cut] if cut >= 0 else rest
-            if subject in terms:
-                forced[subject] = terms[subject]
-        return forced
-
-    def _build_unmet(self, family: str, core_id: int, constraint_names: list[str]) -> UnmetConstraintIR | None:
-        """The quantitative constraint the designer must satisfy for this resource family, as an
-        intuitive ``demand <= bound`` inequality with per-contributor terms, input provenance, and the
-        levers that would make it fit. Family-agnostic: driven by the recorded bound/terms + the family
-        descriptor, so every recorded resource-capacity family (memory, object-FIFO, buffer descriptors)
-        is quantified the same way. Uses only the terms the IIS forces onto this core."""
-        meta = self._FAMILY_META.get(family)
-        terms_all = self.context.ledger.terms.get((family, core_id))
-        if meta is None or not terms_all:
-            return None
-        forced = self._forced_terms(terms_all, core_id, meta["term_prefixes"], constraint_names)
-        return self._unmet_from_terms(family, core_id, forced)
-
-    def _unmet_from_terms(self, family: str, core_id: int, forced: dict[str, Any]) -> UnmetConstraintIR | None:
-        """Build the ``demand <= bound`` inequality for a family+core from an already-selected set of
-        demand terms (used both by the IIS path and by the backend-agnostic capacity fallback)."""
-        meta = self._FAMILY_META.get(family)
-        bound = self.context.ledger.bounds.get((family, core_id))
-        if meta is None or bound is None or not forced:
-            return None
-        unit = meta["unit"]
-        demand = sum(self._term_value(v) for v in forced.values())
-        gap = demand - bound
-        core = f"Core {core_id}"
-        terms = []
-        for label, info in sorted(forced.items(), key=lambda kv: -self._term_value(kv[1])):
-            dims, dtype = self._term_meta(info)
-            terms.append(
-                ConstraintTermIR(
-                    label=label,
-                    value=self._term_value(info),
-                    detail=meta["term_detail"],
-                    dtype=dtype,
-                    dims=[TileDimIR(label=lbl, size=sz) for lbl, sz in dims],
-                )
-            )
-        return UnmetConstraintIR(
-            family=family,
-            statement=(
-                f"{meta['demand_label']} {core} need {self._fmt_qty(demand, unit)}, but the "
-                f"{meta['bound_label']} {core} is {self._fmt_qty(bound, unit)} (short by {self._fmt_qty(gap, unit)})"
-            ),
-            demand_label=f"{meta['demand_label']} {core}",
-            demand_value=demand,
-            demand_input=meta["demand_input"],
-            bound_label=f"{meta['bound_label']} {core}",
-            bound_value=bound,
-            bound_input=meta["bound_input"],
-            operator="<=",
-            gap=gap,
-            unit=unit,
-            terms=terms,
-            levers=[lever.format(core=core) for lever in meta["levers"]],
-        )
-
-    def _build_unmet_direct(self, family: str, core_id: int) -> UnmetConstraintIR | None:
-        """The unmet inequality from *all* recorded demand terms for a family+core, with no IIS
-        filtering -- how the backend-agnostic fallback quantifies an over-budget resource."""
-        terms_all = self.context.ledger.terms.get((family, core_id))
-        if not terms_all:
-            return None
-        return self._unmet_from_terms(family, core_id, dict(terms_all))
-
-    def _direct_capacity_overflows(self) -> list[ImplicatedResourceIR]:
-        """Backend-agnostic infeasibility diagnosis: when the solver reports no IIS (e.g. OR-Tools), a
-        per-core capacity is still over its budget in the recorded demand vs bound. Report each family
-        whose recorded demand exceeds its *non-zero* hardware bound, most over-budget first, as the same
-        quantitative unmet inequality the IIS path produces. A zero bound is a hardware concept that does
-        not apply to this core (e.g. AIE object-FIFOs on a TPU-like core), so it is skipped -- the
-        diagnosis highlights only real, actionable limits instead of every incidental constraint."""
-        cores_by_id: dict[int, Core] = {
-            res.id: res for _k, res in self.context.ledger.constraints.values() if isinstance(res, Core)
-        }
-        overflows: list[tuple[float, str, int]] = []
-        for (family, core_id), terms in self.context.ledger.terms.items():
-            bound = self.context.ledger.bounds.get((family, core_id))
-            if not bound or bound <= 0:
-                continue
-            demand = sum(self._term_value(v) for v in terms.values())
-            if demand > bound:
-                overflows.append((demand - bound, family, core_id))
-        overflows.sort(reverse=True)  # biggest overshoot first, so the worst offender leads the report
-        resources: list[ImplicatedResourceIR] = []
-        for _gap, family, core_id in overflows:
-            core = cores_by_id.get(core_id)
-            ref = (
-                self._resource_ref_ir(core)
-                if core is not None
-                else ResourceRefIR(kind="core", id=str(core_id), label=f"Core {core_id}")
-            )
-            resources.append(
-                ImplicatedResourceIR(
-                    resource=ref,
-                    constraint_kinds=[family],
-                    reason=self._KIND_REASON.get(family, family.replace("_", " ")),
-                    constraints=[],
-                    unmet=self._build_unmet_direct(family, core_id),
-                )
-            )
-        return resources
-
-    def _resolve_iis_constraint(self, name: str) -> tuple[ResourceRefIR | None, str | None]:
-        """Resolve one IIS constraint name to (physical-resource ref, resource-limit family). A tagged
-        constraint yields a precise, detailed ref; otherwise a core id is recovered from the name
-        (``Core 3`` / sanitized ``Core_3``). Returns ``(None, None)`` for a structural constraint."""
-        tag = self.context.ledger.constraints.get(name)
-        if tag is not None:
-            kind, resource = tag
-            return self._resource_ref_ir(resource), kind
-        match = re.search(r"Core[ _](\d+)", name)
-        if match:
-            cid = match.group(1)
-            return ResourceRefIR(kind="core", id=cid, label=f"Core {cid}"), self._limit_kind_from_name(name)
-        return None, None
-
-    def _resource_ref_ir(self, resource: Resource) -> ResourceRefIR:
-        """Serialize a physical resource to the IR the architecture view highlights. Extend with new
-        ``isinstance`` arms as new resource kinds get bound to constraints."""
-        if isinstance(resource, Core):
-            detail: dict[str, str] = {"core_type": str(resource.core_type)}
-            try:
-                detail["memory_capacity_bits"] = str(resource.get_memory_capacity())
-            except Exception:  # noqa: BLE001 -- a missing capacity must not break the diagnosis
-                pass
-            return ResourceRefIR(kind="core", id=str(resource.id), label=f"Core {resource.id}", detail=detail)
-        return ResourceRefIR(kind="link", id=_resource_key(resource), label=_resource_key(resource))
-
-    def _implicated_resource(self, entry: dict[str, Any]) -> ImplicatedResourceIR:
-        """Build the diagnosis for one implicated resource: its reason and -- when a recorded capacity
-        family (memory / object-FIFO / buffer descriptors) is among its conflicts -- the quantitative
-        unmet inequality."""
-        kinds = sorted(entry["kinds"])
-        ref = entry["ref"]
-        unmet: UnmetConstraintIR | None = None
-        if ref.kind == "core" and ref.id.isdigit():
-            for fam in kinds:  # quantify the first family with recorded bound + demand
-                unmet = self._build_unmet(fam, int(ref.id), entry["constraints"])
-                if unmet is not None:
-                    break
-        # gap > 0 is a real overflow (report the limit it broke). A non-positive gap means the IIS pulled
-        # this capacity constraint into a structural conflict without the core being over budget ("involved", not over).
-        overflow = unmet is not None and unmet.gap > 0
-        capacity_kinds = self._FAMILY_META.keys() | {"memory_capacity"}
-        if overflow:
-            reason = "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
-        else:
-            unmet = None
-            if kinds and all(k in capacity_kinds for k in kinds):
-                reason = "involved in a reuse/scheduling conflict (not over budget)"
-            elif kinds:
-                reason = "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
-            else:
-                reason = "conflicting allocation constraints"
-        return ImplicatedResourceIR(
-            resource=ref, constraint_kinds=kinds, reason=reason, constraints=entry["constraints"], unmet=unmet
-        )
-
-    def _build_infeasibility_report(self, status: str, group: str | None = None) -> InfeasibilityReportIR:
-        """Turn an infeasible solve into a per-resource diagnosis. Uses the solver's IIS (Gurobi) to
-        get the minimal conflicting constraint set, maps each back to its physical resource via the
-        registry (falling back to a ``Core N`` name match for any untagged per-core constraint), and
-        groups the result so a consumer can highlight the offending cores/links with a reason."""
-        stats = self.model.solve_stats()
-        iis_available = self.model.supports_iis
-        iis_names: list[str] = []
-        if iis_available:
-            try:
-                self.model.compute_iis()
-                iis_names = self.model.iis_constraints()
-            except Exception as exc:  # noqa: BLE001 -- IIS is best-effort diagnostics
-                _logger.warning(f"IIS computation failed: {exc}")
-                iis_available = False
-
-        grouped: dict[str, dict[str, Any]] = {}
-        unbound: list[str] = []
-        for name in iis_names:
-            ref, kind = self._resolve_iis_constraint(name)
-            if ref is None:
-                unbound.append(name)
-                continue
-            entry = grouped.setdefault(f"{ref.kind}:{ref.id}", {"ref": ref, "kinds": set(), "constraints": []})
-            if ref.detail and not entry["ref"].detail:
-                entry["ref"] = ref  # prefer the detailed (tagged) ref so the tooltip has capacity facts
-            if kind:
-                entry["kinds"].add(kind)
-            entry["constraints"].append(name)
-
-        resources = [self._implicated_resource(entry) for entry in grouped.values()]
-        # Backend-agnostic fallback: if the IIS pinned nothing to a resource (or is unavailable, e.g. on
-        # OR-Tools), diagnose directly from the recorded per-core demand vs bound so an OR-Tools solve
-        # still yields the same actionable per-resource diagnosis instead of a bare "infeasible".
-        if not resources:
-            resources = self._direct_capacity_overflows()
-
-        # Group structural constraints (unbound + overflow-less resources) into plain-language causes.
-        structural_names = list(unbound) + [c for r in resources if r.unmet is None for c in r.constraints]
-        conflicts = self._structural_conflicts(structural_names)
-
-        quantified = next((r for r in resources if r.unmet is not None), None)
-        involved_cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
-        if quantified is not None:
-            nature = "capacity"
-            summary = f"Infeasible mapping — {quantified.resource.label}: {quantified.unmet.statement}"
-        elif conflicts:
-            nature = "structural"
-            lead = conflicts[0]
-            summary = f"Infeasible mapping — structural conflict: {lead.title.lower()}. {lead.explanation}" + (
-                f" Involves {involved_cores}." if involved_cores else ""
-            )
-        elif resources:
-            nature = "unknown"
-            summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved_cores}" if involved_cores else "")
-        elif not iis_available:
-            nature = "unknown"
-            summary = (
-                f"Infeasible mapping ({status}); no single per-core capacity is over its recorded budget, "
-                f"so the conflict is structural (e.g. transfer routing). The {stats.backend} backend cannot "
-                "compute an IIS -- re-run with the Gurobi backend for the minimal conflict set."
-            )
-        else:
-            nature = "unknown"
-            summary = (
-                f"Infeasible mapping ({status}); {len(iis_names)} conflicting constraints, "
-                "none pinned to a single resource."
-            )
-
-        return InfeasibilityReportIR(
-            status=status,
-            backend=stats.backend,
-            solver=stats.solver,
-            group=group,
-            iis_available=iis_available,
-            nature=nature,
-            resources=resources,
-            conflicts=conflicts,
-            unbound_constraints=unbound,
-            summary=summary,
-        )
-
-    # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
     def solve(self, *, time_limit_s: float, tee: bool = False, total_mac_ops: int | None = None) -> AllocationSolution:
@@ -598,7 +205,7 @@ class TransferAndTensorAllocator:
             # Produce a structured, per-resource diagnosis (this computes the IIS on backends that
             # support it) instead of a bare failure, so a launch with an invalid mapping still yields
             # an inspectable result. The .ilp (Gurobi's IIS) is still written for offline debugging.
-            report = self._build_infeasibility_report(self.model.get_status())
+            report = infeasibility_report(self.model, self.ledger, status)
             try:
                 os.makedirs(self.output_path, exist_ok=True)
                 self.model.write(os.path.join(self.output_path, "model.ilp"))
@@ -1048,15 +655,15 @@ class TransferAndTensorAllocator:
         for row in self._memory_occupancy():
             slack.setdefault(row["core_id"], {})["memory_bytes"] = (row["capacity_bits"] - row["resident_bits"]) / 8
         ledger = self.context.ledger
-        for (family, core_id), terms in ledger.loads.items():
-            bound = ledger.bounds.get((family, core_id))
+        for (kind, core_id), terms in ledger.loads.items():
+            bound = ledger.bounds.get((kind, core_id))
             if bound is None:
                 continue
             try:
                 used = sum(count for var, count in terms if float(var.X) > self.VAR_THRESHOLD)
             except Exception:  # noqa: BLE001
                 continue
-            slack.setdefault(core_id, {})[family] = bound - used
+            slack.setdefault(core_id, {})[kind.name] = bound - used
         return slack
 
     def _memory_occupancy(self) -> list[dict[str, Any]]:
@@ -1083,7 +690,7 @@ class TransferAndTensorAllocator:
                 per_tensor["handover"] = handed
             resident = sum(per_tensor.values())
             try:
-                bound = ledger.bounds.get(("memory_capacity", core_id))
+                bound = ledger.bounds.get((MEMORY_CAPACITY, core_id))
                 capacity = int(bound * 8) if bound is not None else int(core.get_memory_capacity())
             except Exception:  # noqa: BLE001
                 continue

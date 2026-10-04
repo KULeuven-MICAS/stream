@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import LATENCY
 from stream.opt.allocation.constraint_optimization.space import unique_tensors
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import TransferNode
+
+
+DMA_CHANNELS = ResourceKind("dma_channels", "DMA channel limit exceeded")
 
 
 class DmaChannels:
@@ -50,16 +54,16 @@ class DmaChannels:
             out_expr = model.quicksum(_channels(ctx, tr, core, False) for tr in space.transfer_nodes)
             in_expr = in_expr + handover_in[core]
             out_expr = out_expr + handover_out[core]
-            model.add_constr(v_in == in_expr, name=f"coreDmaInConstr_{_resource_key(core)}")
-            model.add_constr(v_out == out_expr, name=f"coreDmaOutConstr_{_resource_key(core)}")
+            ctx.add_constr(v_in == in_expr, name=f"coreDmaInConstr_{_resource_key(core)}", resource=core)
+            ctx.add_constr(v_out == out_expr, name=f"coreDmaOutConstr_{_resource_key(core)}", resource=core)
             core_dma_in[core] = v_in
             core_dma_out[core] = v_out
 
         max_in = model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaIn")
         max_out = model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaOut")
         for core in dma_cores:
-            model.add_constr(max_in >= core_dma_in[core], name=f"maxCoreDmaIn_lb_{_resource_key(core)}")
-            model.add_constr(max_out >= core_dma_out[core], name=f"maxCoreDmaOut_lb_{_resource_key(core)}")
+            ctx.add_constr(max_in >= core_dma_in[core], name=f"maxCoreDmaIn_lb_{_resource_key(core)}", resource=core)
+            ctx.add_constr(max_out >= core_dma_out[core], name=f"maxCoreDmaOut_lb_{_resource_key(core)}", resource=core)
 
         for core, usage in core_dma_in.items():
             q.add("dma_in", usage, index=core)
@@ -113,9 +117,9 @@ def _side_uses_core_var(ctx: FormulationContext, tr: TransferNode, core: Core, i
     tensors = unique_tensors(tr.outputs if incoming else tr.inputs)
     occ_exprs = [ctx.tensor_on_core_expr(t, core) for t in tensors]
     if not occ_exprs:
-        model.add_constr(u == 0, name=f"us_zero_{name}")
+        ctx.add_constr(u == 0, name=f"us_zero_{name}", resource=core)
         return u
     for i, occ in enumerate(occ_exprs):
-        model.add_constr(u >= occ, name=f"us_lb_{name}_{i}")
-    model.add_constr(u <= model.quicksum(occ_exprs), name=f"us_ub_{name}")
+        ctx.add_constr(u >= occ, name=f"us_lb_{name}_{i}", resource=core)
+    ctx.add_constr(u <= model.quicksum(occ_exprs), name=f"us_ub_{name}", resource=core)
     return u
