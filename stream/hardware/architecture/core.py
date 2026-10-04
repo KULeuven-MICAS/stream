@@ -94,13 +94,30 @@ class Core:
         if self.id != other.id:
             return False
         if self._backend is not None and other._backend is not None:
-            return self._backend.same_hardware(other._backend)
+            if type(self._backend) is not type(other._backend):
+                return False
+            if isinstance(self._backend, ZigZagCoreBackend):
+                return (
+                    self._backend.operational_array == other._backend.operational_array
+                    and self._backend.memory_hierarchy == other._backend.memory_hierarchy
+                    and self._backend.dataflows == other._backend.dataflows
+                )
+            # For AIE2 and any future frozen-dataclass backends, __eq__ is auto-generated
+            return self._backend == other._backend
         return True
 
     def has_same_performance(self, other: Core) -> bool:
         if self._backend is None or other._backend is None:
             return self.id == other.id
-        return self._backend.has_same_performance(other._backend)
+        if type(self._backend) is not type(other._backend):
+            return False
+        if isinstance(self._backend, ZigZagCoreBackend):
+            return (
+                self._backend.operational_array == other._backend.operational_array
+                and self._backend.memory_hierarchy.has_same_performance(other._backend.memory_hierarchy)
+                and self._backend.dataflows == other._backend.dataflows
+            )
+        return self._backend == other._backend
 
     def __hash__(self) -> int:
         return self.id
@@ -144,6 +161,12 @@ class Core:
     # Serialization                                                      #
     # ------------------------------------------------------------------ #
 
+    def _get_type_specific_ir(self) -> dict:
+        """Return type-specific IR attributes based on the namespace."""
+        if self.namespace == "aie2":
+            return {"max_object_fifo_depth": self.max_object_fifo_depth}
+        return {}
+
     def get_ir(self) -> dict:
         """Return a dictionary representation of this core for serialization."""
         d: dict = {
@@ -159,5 +182,7 @@ class Core:
         # Merge backend-specific fields (uniform protocol)
         if self._backend is not None:
             d.update(self._backend.get_ir())
-            d.update({field: getattr(self, field) for field in self._backend.core_ir_fields})
+
+        # Merge type-specific attributes last
+        d.update(self._get_type_specific_ir())
         return d

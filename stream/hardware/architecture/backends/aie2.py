@@ -14,7 +14,7 @@ concepts that do not apply to the AIE2 architecture.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal
+from typing import Literal
 
 from stream.hardware.ports import ANY_OPERAND, READ, WRITE, PortSpec
 
@@ -41,36 +41,7 @@ class AIE2CoreBackend:
     dma_channel_bits: int = 0
     dma_buffer_descriptors: int = 0
     dma_iterations: int = 0
-    core_id: int = field(default=-1, compare=False)
-
-    #: Core attributes this backend adds to the core's IR.
-    core_ir_fields: ClassVar[tuple[str, ...]] = ("max_object_fifo_depth",)
-
-    @classmethod
-    def from_core_data(
-        cls, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None
-    ) -> AIE2CoreBackend:
-        """The backend of a validated ``aie2`` core description; tiles share no memory, so a tile's DMA ports
-        are its own."""
-        del shared_mem_group_id
-        mem, dma = core_data["memory"], core_data.get("dma", {})
-        return cls(
-            memory_capacity_bits=mem["capacity"],
-            bandwidth_min=mem.get("bandwidth_min", 0),
-            bandwidth_max=mem.get("bandwidth_max", 0),
-            dma_mm2s=dma.get("mm2s", 0),
-            dma_s2mm=dma.get("s2mm", 0),
-            dma_channel_bits=dma.get("channel_bits", 0),
-            dma_buffer_descriptors=dma.get("buffer_descriptors", 0),
-            dma_iterations=dma.get("iterations", 0),
-            core_id=core_id,
-        )
-
-    def same_hardware(self, other: object) -> bool:
-        return self == other
-
-    def has_same_performance(self, other: object) -> bool:
-        return self == other
+    share_group: int = field(default=-1, compare=False)
 
     # ------------------------------------------------------------------
     # Backend protocol — same interface as ZigZagCoreBackend
@@ -90,7 +61,7 @@ class AIE2CoreBackend:
             return ()
         return tuple(
             PortSpec(
-                self.core_id,
+                self.share_group,
                 "dma",
                 name,
                 channels * self.dma_channel_bits,
