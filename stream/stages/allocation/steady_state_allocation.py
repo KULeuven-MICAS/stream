@@ -1,9 +1,11 @@
 import logging
 import os
 
-from stream.allocation.artifacts import write_artifacts
+from stream.allocation import artifacts
+from stream.allocation.artifacts import SolveProgress, write_artifacts, write_infeasible_model
 from stream.allocation.problem import SteadyStateProblem
 from stream.allocation.schedule import SteadyStateSchedule, solved_iteration_spaces, solved_mapping
+from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.families import FamilySelection, load_families
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.profiling import span
@@ -45,9 +47,17 @@ class AllocationStage(Stage):
                 families=self.families,
                 backend=self.backend,
             )
-        solution = allocator.solve(
-            tee=self.solver_log, time_limit_s=self.time_limit_s, total_mac_ops=self.ctx.get("total_mac_ops")
-        )
+        progress = SolveProgress() if artifacts.active() else None
+        try:
+            solution = allocator.solve(
+                tee=self.solver_log,
+                time_limit_s=self.time_limit_s,
+                total_mac_ops=self.ctx.get("total_mac_ops"),
+                callback=progress,
+            )
+        except InfeasibleAllocationError:
+            write_infeasible_model(allocator.model, self.output_path)
+            raise
         with span("apply_solution"):
             schedule = SteadyStateSchedule(
                 problem=problem,
@@ -57,7 +67,7 @@ class AllocationStage(Stage):
                 families=self.families.specs(),
                 solution=solution,
             )
-        write_artifacts(allocator, schedule)
+        write_artifacts(allocator, schedule, progress)
         self.ctx.set(allocation=schedule, workload=schedule.workload, mapping=schedule.mapping)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()

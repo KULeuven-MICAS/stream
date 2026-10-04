@@ -105,7 +105,7 @@ def test_without_bounds_the_family_only_reports(solve: Solve, base: Any, model_s
     report_only = solve([{"memory_ports": {"interval": False, "burst": False}}])
     assert model_size(report_only) == model_size(base)
     assert total(report_only) == total(base)
-    rows = report_only.compute_performance_stats()["memory_ports"]
+    rows = MemoryPorts().report(report_only.context, report_only.quantities)["memory_ports"]
     assert {row["kind"] for row in rows} == {"memory_port", "link"}
     assert rows[0]["utilization"] == max(row["utilization"] for row in rows)
 

@@ -85,7 +85,12 @@ class MemoryPorts:
         bits, ``allowed_cycle`` the initiation interval, and ``stall_or_slack`` their difference. Resources are
         memory ports, measured shared bandwidth and links; the last two are read from the solved transfers."""
         interval = ctx.model.value(q.get("iteration").expr) - ctx.model.value(q.get("overlap").expr)
-        rows = [*self._port_rows(ctx, q, interval), *_shared_rows(ctx, q, interval), *_link_rows(ctx, interval)]
+        streams = _stream_bits(ctx)
+        rows = [
+            *self._port_rows(ctx, q, interval),
+            *_shared_rows(ctx, q, interval, streams),
+            *_link_rows(ctx, interval, streams),
+        ]
         rows.sort(key=lambda row: -(row["utilization"] or 0.0))
         return {"memory_ports": rows}
 
@@ -149,10 +154,11 @@ def _stream_bits(ctx: FormulationContext) -> list[tuple[DmaStream, float]]:
     return [(stream, ctx.model.value(stream.bits_per_cycle * stream.active_cycles)) for stream in dma_streams(ctx)]
 
 
-def _shared_rows(ctx: FormulationContext, q: QuantityRegistry, interval: float) -> list[dict[str, Any]]:
+def _shared_rows(
+    ctx: FormulationContext, q: QuantityRegistry, interval: float, streams: list[tuple[DmaStream, float]]
+) -> list[dict[str, Any]]:
     """A core with a measured bandwidth: its solved busy time, which counts the access pattern's slow down."""
     rows = []
-    streams = _stream_bits(ctx)
     for core_id, model in ctx.space.shared_bandwidth.items():
         bits = sum(b for s, b in streams if any(c.id == core_id for c in (*s.choice.sources, *s.choice.targets)))
         row = _activity_row(ctx, "shared_bandwidth", "measured", (core_id,), model.ceiling, bits, interval)
@@ -167,9 +173,11 @@ def _shared_rows(ctx: FormulationContext, q: QuantityRegistry, interval: float) 
     return rows
 
 
-def _link_rows(ctx: FormulationContext, interval: float) -> list[dict[str, Any]]:
+def _link_rows(
+    ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, float]]
+) -> list[dict[str, Any]]:
     bits: dict[Any, float] = defaultdict(float)
-    for stream, stream_bits in _stream_bits(ctx):
+    for stream, stream_bits in streams:
         for link in stream.choice.links_used:
             bits[link] += stream_bits
     return [
