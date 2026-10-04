@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from copy import copy
 from dataclasses import dataclass
 from math import prod
@@ -25,7 +24,6 @@ if TYPE_CHECKING:
     from stream.workload.node import ComputationNode, HasIterationSpace
     from stream.workload.workload import Workload
 
-logger = logging.getLogger(__name__)
 
 IterationSpaces = dict["HasIterationSpace | Tensor", SteadyStateIterationSpace]
 
@@ -124,16 +122,14 @@ class SteadyStateSchedule:
     def _core_loops(self, cn: ComputationNode) -> list[dict]:
         """The loop nest inside one core (ZigZag mapping), as ``core_*`` loops; empty for a non-ZigZag core."""
         # Resolve by name -- the mapping is keyed by steady-state nodes, the cost LUT by the costed node.
-        try:
-            lut_node = next(n for n in self.cost_lut.get_nodes() if n.name == cn.name)
-            allocation = self.mapping.get(lut_node).resource_allocation
-            cores = [c for slot in (allocation or ()) for c in slot if isinstance(c, Core)]
-            if not cores:
-                return []
-            entry = self.cost_lut.get_cost(lut_node, cores[0])
-        except Exception:  # noqa: BLE001
+        lut_node = next((n for n in self.cost_lut.get_nodes() if n.name == cn.name), None)
+        if lut_node is None or lut_node not in self.mapping:
             return []
-        mapping = getattr(entry, "mapping", None)
+        allocation = self.mapping.get(lut_node).resource_allocation
+        cores = [c for slot in (allocation or ()) for c in slot if isinstance(c, Core)]
+        if not cores or not self.cost_lut.has_cost(lut_node, cores[0]):
+            return []
+        mapping = getattr(self.cost_lut.get_cost(lut_node, cores[0]), "mapping", None)
         if mapping is None:
             return []
 
@@ -157,66 +153,62 @@ class SteadyStateSchedule:
                 add(str(layer_dim), size, "core_temporal")
         return loops
 
-    def _steady_state_ir(self) -> dict | None:
-        """Serialise the tiled/steady-state inspection view (operators, loop nest, transfer graph); None on failure."""
-        try:
-            operators = [
+    def _steady_state_ir(self) -> dict:
+        """Serialise the tiled/steady-state inspection view: operators, loop nest and transfer graph."""
+        operators = [
+            {
+                "name": cn.name,
+                "op": getattr(cn, "type", "computation"),
+                "tensors": [{"name": t.name, "shape": [int(s) for s in t.shape]} for t in cn.tensors],
+            }
+            for cn in self.source_workload.get_computation_nodes()
+        ]
+        # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1).
+        loops: list[dict] = []
+        seen: set = set()
+        for ssis in self.ssis.values():
+            for iv in ssis.variables:
+                # ABSENT: the node lacks the dim (unrolling replicates it); counting it double-counts one unrolling.
+                if iv.effect is LoopEffect.ABSENT:
+                    continue
+                key = (str(iv.dimension), int(iv.size))
+                if int(iv.size) > 1 and key not in seen:
+                    seen.add(key)
+                    loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
+        # Below the tile: expand each node's intra-core mapping per node (fused groups stay separate).
+        expanded = False
+        for cn in self.source_workload.get_computation_nodes():
+            core_loops = self._core_loops(cn)
+            for loop in core_loops:
+                loop["node"] = cn.name
+            loops.extend(core_loops)
+            expanded = expanded or bool(core_loops)
+        if expanded:
+            # Drop the kernel stand-in once expanded (it would double-count the intra-core work).
+            loops = [loop for loop in loops if loop["type"] != "kernel"]
+
+        def _nest_order(loop: dict) -> tuple[str, int]:
+            return loop.get("node") or "", _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH))
+
+        loops.sort(key=_nest_order)
+        # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
+        tiled_nodes: list[dict] = []
+        for cn in self.workload.get_computation_nodes():
+            tiled_nodes.append({"name": cn.name, "kind": "compute", "op": getattr(cn, "type", "computation")})
+        for tn in self.workload.get_transfer_nodes():
+            out = tn.outputs[0] if tn.outputs else None
+            transfer_type = getattr(tn, "transfer_type", None)
+            tiled_nodes.append(
                 {
-                    "name": cn.name,
-                    "op": getattr(cn, "type", "computation"),
-                    "tensors": [{"name": t.name, "shape": [int(s) for s in t.shape]} for t in cn.tensors],
+                    "name": tn.name,
+                    "kind": "transfer",
+                    "transfer_type": getattr(transfer_type, "name", None),
+                    "tensor": out.name if out is not None else None,
+                    "elements": int(prod(out.shape)) if out is not None else 0,
                 }
-                for cn in self.source_workload.get_computation_nodes()
-            ]
-            # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1).
-            loops: list[dict] = []
-            seen: set = set()
-            for ssis in self.ssis.values():
-                for iv in ssis.variables:
-                    # ABSENT: the node lacks the dim (unrolling replicates it); counting it double-counts one unrolling.
-                    if iv.effect is LoopEffect.ABSENT:
-                        continue
-                    key = (str(iv.dimension), int(iv.size))
-                    if int(iv.size) > 1 and key not in seen:
-                        seen.add(key)
-                        loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
-            # Below the tile: expand each node's intra-core mapping per node (fused groups stay separate).
-            expanded = False
-            for cn in self.source_workload.get_computation_nodes():
-                core_loops = self._core_loops(cn)
-                for loop in core_loops:
-                    loop["node"] = cn.name
-                loops.extend(core_loops)
-                expanded = expanded or bool(core_loops)
-            if expanded:
-                # Drop the kernel stand-in once expanded (it would double-count the intra-core work).
-                loops = [loop for loop in loops if loop["type"] != "kernel"]
-
-            def _nest_order(loop: dict) -> tuple[str, int]:
-                return loop.get("node") or "", _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH))
-
-            loops.sort(key=_nest_order)
-            # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
-            tiled_nodes: list[dict] = []
-            for cn in self.workload.get_computation_nodes():
-                tiled_nodes.append({"name": cn.name, "kind": "compute", "op": getattr(cn, "type", "computation")})
-            for tn in self.workload.get_transfer_nodes():
-                out = tn.outputs[0] if tn.outputs else None
-                transfer_type = getattr(tn, "transfer_type", None)
-                tiled_nodes.append(
-                    {
-                        "name": tn.name,
-                        "kind": "transfer",
-                        "transfer_type": getattr(transfer_type, "name", None),
-                        "tensor": out.name if out is not None else None,
-                        "elements": int(prod(out.shape)) if out is not None else 0,
-                    }
-                )
-            edges = [{"source": s.name, "target": t.name} for s, t in self.workload.edges()]
-            return {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
-        except Exception as exc:  # noqa: BLE001 -- inspection view must never break a solved run
-            logger.warning("could not build steady-state IR: %s", exc)
-            return None
+            )
+        edges = [{"source": s.name, "target": t.name} for s, t in self.workload.edges()]
+        return {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
 
 
 def solved_iteration_spaces(
