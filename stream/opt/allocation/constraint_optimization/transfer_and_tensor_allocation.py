@@ -61,6 +61,7 @@ from stream.opt.solver import (
     SolverVarType,
     create_solver,
 )
+from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
@@ -815,16 +816,23 @@ class TransferAndTensorAllocator:
     # model construction                                           #
     # ------------------------------------------------------------ #
     def _build_model(self):
-        self._capacity_screen()
-        self._create_vars()
-        self._index_choice_metadata()
-        self._create_constraints()
+        with span("capacity_screen"):
+            self._capacity_screen()
+        with span("variables"):
+            self._create_vars()
+            self._index_choice_metadata()
+        with span("constraints"):
+            self._create_constraints()
         for family in self.families:
-            family.declare(self, self.quantities)
-        self._overlap()
+            with span(f"family_{family.name}"):
+                family.declare(self, self.quantities)
+        with span("overlap"):
+            self._overlap()
         for family in self.families:
-            family.constrain(self, self.quantities)
-        self._dma_channels_and_objective()
+            with span(f"family_{family.name}"):
+                family.constrain(self, self.quantities)
+        with span("dma_and_objective"):
+            self._dma_channels_and_objective()
 
     # ...................... VARIABLES ................... #
     def _create_vars(self):
@@ -918,27 +926,26 @@ class TransferAndTensorAllocator:
 
     # ...................... CONSTRAINTS ................... #
     def _create_constraints(self):
-        self._tensor_placement_constraints()
-        self._path_choice_constraints()
-        self._reuse_factor_rate_constraints()
-        self._link_contention_constraints()
-        if self.constraint_selection.memory_capacity:
-            self._memory_capacity_constraints()
-        else:
-            _logger.warning("ConstraintSelection: skipping memory_capacity constraints")
-        if self.constraint_selection.object_fifo_depth:
-            self._object_fifo_depth_constraints()
-        else:
-            _logger.warning("ConstraintSelection: skipping object_fifo_depth constraints")
-        if self.constraint_selection.buffer_descriptors:
-            self._buffer_descriptor_constraints()
-        else:
-            _logger.warning("ConstraintSelection: skipping buffer_descriptors constraints")
-        self._slot_latency_constraints()
-        self._force_nonconstant_reuse_levels()
-        self._force_final_output_reuse_levels()
-        self._ensure_memory_and_compute_reuse_compatibility()
-        self._force_reuse_includes_spatial()
+        groups = [
+            ("placement", self._tensor_placement_constraints, True),
+            ("paths", self._path_choice_constraints, True),
+            ("reuse_rates", self._reuse_factor_rate_constraints, True),
+            ("link_contention", self._link_contention_constraints, True),
+            ("memory_capacity", self._memory_capacity_constraints, self.constraint_selection.memory_capacity),
+            ("object_fifo_depth", self._object_fifo_depth_constraints, self.constraint_selection.object_fifo_depth),
+            ("buffer_descriptors", self._buffer_descriptor_constraints, self.constraint_selection.buffer_descriptors),
+            ("slot_latency", self._slot_latency_constraints, True),
+            ("reuse_levels", self._force_nonconstant_reuse_levels, True),
+            ("output_reuse", self._force_final_output_reuse_levels, True),
+            ("reuse_compatibility", self._ensure_memory_and_compute_reuse_compatibility, True),
+            ("spatial_reuse", self._force_reuse_includes_spatial, True),
+        ]
+        for name, build, selected in groups:
+            if not selected:
+                _logger.warning("ConstraintSelection: skipping %s constraints", name)
+                continue
+            with span(name):
+                build()
 
     def _reuse_factor_rate_constraints(self):
         self.reuse_factors: dict[TransferNode, SolverVar] = {}
@@ -2363,7 +2370,8 @@ class TransferAndTensorAllocator:
     ) -> tuple[TensorReuseLevels, TensorDepths, TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:
         self.model.set_param(SolverParams.VERBOSITY, 1 if tee else 0)
         self.model.set_param(SolverParams.TIME_LIMIT, self.SOLVE_TIME_LIMIT_S)
-        self.model.optimize(self._mip_progress_callback)
+        with span("milp_optimize"):
+            self.model.optimize(self._mip_progress_callback)
         status = self.model.get_status()
         if status == "TIME_LIMIT" and self.model.get_sol_count() > 0:
             _logger.warning(
@@ -2381,19 +2389,20 @@ class TransferAndTensorAllocator:
                 pass
             raise InfeasibleAllocationError(report)
 
-        tensor_alloc = self.get_tensor_allocations()
-        routing = self.get_transfer_routing()
-        chosen_memory_cores = self.get_chosen_memory_cores()
-        tensor_reuse_levels = self.get_tensor_reuse_levels()
-        tensor_depths = self.get_tensor_depths()
+        with span("milp_extract"):
+            tensor_alloc = self.get_tensor_allocations()
+            routing = self.get_transfer_routing()
+            chosen_memory_cores = self.get_chosen_memory_cores()
+            tensor_reuse_levels = self.get_tensor_reuse_levels()
+            tensor_depths = self.get_tensor_depths()
 
-        # Visualize the optimization progress
-        self.plot_optimization_progress(
-            show=False, save_path=os.path.join(self.output_path, "optimization_progress.png")
-        )
-        self.save_optimization_trace(os.path.join(self.output_path, "optimization_trace.yaml"))
-        self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
-        self.save_slot_latency_breakdown(save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml"))
+        with span("milp_files"):
+            self.plot_optimization_progress(
+                show=False, save_path=os.path.join(self.output_path, "optimization_progress.png")
+            )
+            self.save_optimization_trace(os.path.join(self.output_path, "optimization_trace.yaml"))
+            self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
+            self.save_slot_latency_breakdown(save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml"))
 
         assert self.total_latency is not None, "Total latency variable was not created."
         total_latency = int(self.total_latency.X)

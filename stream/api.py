@@ -24,6 +24,7 @@ from stream.instrumentation import build_instrumentation, fail_instrumentation, 
 from stream.opt.allocation.constraint_optimization.context import build_transfer_context
 from stream.opt.allocation.constraint_optimization.families import load_families
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
+from stream.profiling import span
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.codegen.backends import codegen_backend_for
 from stream.stages.context import StageContext
@@ -166,17 +167,21 @@ def _solve(
     options: SolveOptions,
     codegen: bool,
 ) -> MappingEstimate:
-    accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
+    observers = build_instrumentation("generate_code" if codegen else "evaluate_mapping", options.instrumentation)
+    with span("parse_accelerator"):
+        accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
     backend = SolverBackend[options.backend.upper()]
     if backend in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
-        GurobiBackend.check_license()
+        with span("solver_license"):
+            GurobiBackend.check_license()
     proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
     emission = [codegen_backend_for(accelerator).stage()] if codegen else []
     stages = [AcceleratorParserStage, *proposal, FusionGroupIterationStage, *emission, *_ALLOCATION_STAGES]
-    observers = build_instrumentation("generate_code" if codegen else "evaluate_mapping", options.instrumentation)
+    with span("load_workload"):
+        loaded = workload if isinstance(workload, Workload) else load_workload(workload)
     ctx = StageContext.from_kwargs(
         accelerator=accelerator,
-        workload=workload if isinstance(workload, Workload) else load_workload(workload),
+        workload=loaded,
         mapping_path=mapping,
         output_path=output_path,
         loma_lpf_limit=6,

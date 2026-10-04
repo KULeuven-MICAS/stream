@@ -23,6 +23,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
     TransferAndTensorAllocator,
 )
 from stream.opt.solver import ConstraintSelection, SolveStats
+from stream.profiling import span
 from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.iterator_type import is_state_operand, streamed_operands
 from stream.workload.node import (
@@ -304,42 +305,33 @@ class SteadyStateScheduler:
         Returns:
             TimeSlotAllocation: The scheduled workload.
         """
-        # Update the workload graph to include transfer nodes
-        self.ssw = self.build_transfer_graph()
-        # Update the fusion_splits based on the new workload with transfer nodes
-        self.fusion_splits = self.update_fusion_splits()
-        # Save the new workload with transfers
-        # self.ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
-        # Update the mapping for the new workload graph
-        self.mapping = self.update_mapping()
-        # Update the cost lut for the new workload graph
-        self.cost_lut = self.update_cost_lut()
-        # Update the steady state iteration spaces to include transfer nodes and tensors
-        self.ssis = self.generate_ssis()
-        # Calculate the number of iterations based on the steady state iteration spaces
-        self.iterations = self.calculate_iterations()
-        # Calculate the multiplicity of each node's execution in the steady state workload
-        multiplicities = self.calculate_multiplicities()
-        # Get the timeslots for all nodes (resource-aware: same slot allowed iff a
-        # disjoint core/link assignment exists across same-class nodes in that slot).
-        timeslots = self.ssw.get_timeslots(self.mapping)
-        # timeslots = self.ssw.get_timeslots_simple()  # baseline: one slot per node, no resource awareness
-        # At this point, the only nodes without an allocation are the transfer nodes
-        tta = TransferAndTensorAllocator(
-            self.ssw,
-            timeslots,
-            accelerator=self.accelerator,
-            iterations=self.iterations,
-            ssis=self.ssis,
-            multiplicities=multiplicities,
-            mapping=self.mapping,
-            cost_lut=self.cost_lut,
-            nb_cols_to_use=self.nb_cols_to_use,
-            context=self.transfer_context,
-            output_path=self.output_path,
-            backend=self.backend,
-            constraint_selection=self.constraint_selection,
-        )
+        with span("transfer_graph"):
+            self.ssw = self.build_transfer_graph()
+            self.fusion_splits = self.update_fusion_splits()
+            self.mapping = self.update_mapping()
+            self.cost_lut = self.update_cost_lut()
+        with span("iteration_spaces"):
+            self.ssis = self.generate_ssis()
+            self.iterations = self.calculate_iterations()
+            multiplicities = self.calculate_multiplicities()
+        with span("timeslots"):
+            timeslots = self.ssw.get_timeslots(self.mapping)
+        with span("milp_build"):
+            tta = TransferAndTensorAllocator(
+                self.ssw,
+                timeslots,
+                accelerator=self.accelerator,
+                iterations=self.iterations,
+                ssis=self.ssis,
+                multiplicities=multiplicities,
+                mapping=self.mapping,
+                cost_lut=self.cost_lut,
+                nb_cols_to_use=self.nb_cols_to_use,
+                context=self.transfer_context,
+                output_path=self.output_path,
+                backend=self.backend,
+                constraint_selection=self.constraint_selection,
+            )
         (
             tensor_reuse_levels,
             tensor_depths,
@@ -350,61 +342,54 @@ class SteadyStateScheduler:
             overlap,
             latency_per_iteration,
         ) = tta.solve()
-        # Capture solve statistics before tta goes out of scope (tta.model is a local variable)
-        self.solve_stats = tta.model.solve_stats()
-        # Capture the read-only performance summary while the solved tta is still in scope.
-        try:
-            self.performance_stats = tta.compute_performance_stats()
-        except Exception as exc:  # observability must never break the solve
-            logger.warning("Failed to compute performance stats: %s", exc)
-        try:
-            self.capacity_slack = tta.capacity_slack()
-        except Exception as exc:
-            logger.warning("Failed to compute capacity slack: %s", exc)
-            self.capacity_slack = {}
-        self.throughput_bound = tta.throughput_bound()
-        self.primary_cost = tta.primary_cost()
-        # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
-        # assert total == total_latency_solver, (
-        #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
-        # )
-        self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = (
-            total_latency,
-            latency_per_iteration,
-            overlap,
-        )
-        self.latency_fill = round(tta.fill.X)
-        self.single_buffered = tta.get_single_buffered()
-        # End-to-end MAC utilization: useful MACs vs the whole chip's peak over the full runtime
-        # (so it folds in spatial fill, temporal stalls, idle cores AND transfer overhead). Purely
-        # observational; never let it break the solve.
-        try:
-            self._augment_performance_stats_end_to_end()
-        except Exception as exc:
-            logger.warning("Failed to compute end-to-end MAC utilization: %s", exc)
-        # Export Perfetto-compatible JSON traces of the solved schedule
-        fname = ""
-        trace_path = ""
-        try:
-            for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
-                trace_path = export_steady_state_trace(
-                    tta=tta,
-                    iterations=self.iterations,
-                    overlap=overlap,
-                    latency_per_iteration=latency_per_iteration,
-                    output_path=self.output_path,
-                    compact=compact,
-                    filename=fname,
-                )
-            logger.info("Steady-state schedule trace: %s", trace_path)
-        except Exception as exc:  # never let a visualisation failure abort the run
-            logger.warning("Failed to export steady-state trace (%s): %s", fname, exc)
-        # Check that all nodes in the steady state workload have a chosen resource allocation
-        # self.check_steady_state_workload_allocations(self.ssw)
-        self.update_tensor_steady_state_iteration_spaces(tensor_reuse_levels)
-        self.update_mapping_with_allocations(transfer_allocations, memory_allocations)
-        self.ssw.visualize(os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping, self.ssis)
-        # tla = TensorLifetimeAnalyzer(self.ssw)
+        with span("milp_report"):
+            self.solve_stats = tta.model.solve_stats()
+            try:
+                self.performance_stats = tta.compute_performance_stats()
+            except Exception as exc:  # observability must never break the solve
+                logger.warning("Failed to compute performance stats: %s", exc)
+            try:
+                self.capacity_slack = tta.capacity_slack()
+            except Exception as exc:
+                logger.warning("Failed to compute capacity slack: %s", exc)
+                self.capacity_slack = {}
+            self.throughput_bound = tta.throughput_bound()
+            self.primary_cost = tta.primary_cost()
+            self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = (
+                total_latency,
+                latency_per_iteration,
+                overlap,
+            )
+            self.latency_fill = round(tta.fill.X)
+            self.single_buffered = tta.get_single_buffered()
+            try:
+                self._augment_performance_stats_end_to_end()
+            except Exception as exc:
+                logger.warning("Failed to compute end-to-end MAC utilization: %s", exc)
+        with span("trace_export"):
+            fname = ""
+            trace_path = ""
+            try:
+                for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
+                    trace_path = export_steady_state_trace(
+                        tta=tta,
+                        iterations=self.iterations,
+                        overlap=overlap,
+                        latency_per_iteration=latency_per_iteration,
+                        output_path=self.output_path,
+                        compact=compact,
+                        filename=fname,
+                    )
+                logger.info("Steady-state schedule trace: %s", trace_path)
+            except Exception as exc:  # never let a visualisation failure abort the run
+                logger.warning("Failed to export steady-state trace (%s): %s", fname, exc)
+        with span("apply_solution"):
+            self.update_tensor_steady_state_iteration_spaces(tensor_reuse_levels)
+            self.update_mapping_with_allocations(transfer_allocations, memory_allocations)
+        with span("visualize"):
+            self.ssw.visualize(
+                os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping, self.ssis
+            )
         self.steady_state_workload = self.ssw
         return self.ssw
 
