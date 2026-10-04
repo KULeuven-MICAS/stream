@@ -44,7 +44,7 @@ class AIECostEstimator:
     @staticmethod
     def _kernel_cycles(kernel, macs: int) -> tuple[int | None, dict]:
         """Cycles for ``macs`` operations of this kernel, from its measured call or its family rate."""
-        if kernel is None or kernel.library is None or kernel.library.spec(kernel.library_key) is None:
+        if kernel is None or kernel.library is None or kernel.library.spec(kernel.function_name) is None:
             return None, {}
         spec = kernel.spec
         if measured := spec.call_cycles(kernel.call_shape()):

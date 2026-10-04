@@ -7,7 +7,6 @@ from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,
-    FunctionType,
     MemRefType,
     i32,
 )
@@ -34,13 +33,6 @@ class EltwiseMulKernel(AIEKernel):
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return [elementwise_operand_layout(self.m, self.n, self.layout, self.mac) for _ in range(3)]
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(
-            inputs=[op.inputs[0].type, op.inputs[1].type, op.inputs[2].type, i32],
-            outputs=[],
-        )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         len = prod(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())

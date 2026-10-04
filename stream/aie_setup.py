@@ -8,9 +8,10 @@ script installs them into the active environment::
     stream-setup-aie --dry-run        # print the steps without running them
     stream-setup-aie --with-mlir-aie  # additionally install the mlir_aie/llvm-aie wheels
 
-``mlir_aie``/``llvm-aie`` are NOT installed by default: codegen never imports the ``aie``
-bindings, and the host that compiles the emitted MLIR (e.g. amd/iron) already pins its own,
-newer wheels -- reinstalling here would downgrade and break it. ``--with-mlir-aie`` is the
+``mlir_aie``/``llvm-aie`` are NOT installed by default: codegen imports the ``aie`` bindings
+only to bind kernels the library takes from ``aie.iron.kernels``, and the host that compiles the
+emitted MLIR (e.g. amd/iron) already pins its own, newer wheels -- reinstalling here would
+downgrade and break it. ``--with-mlir-aie`` is the
 opt-in for a standalone toolchain, and is itself a no-op when a ``mlir_aie`` is already present.
 """
 

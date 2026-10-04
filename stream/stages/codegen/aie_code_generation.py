@@ -26,6 +26,7 @@ from stream.compiler.dialects.stream import (
     YieldOp,
 )
 from stream.compiler.fifo_depths import FifoDepths, TileBudget
+from stream.compiler.kernels.binding import Bindings
 from stream.compiler.transforms.aie_add_tracing_script import MAX_TRACED_TILES, AIEAddTracingScript
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
@@ -444,6 +445,7 @@ class AIECodeGenerationStage(Stage):
         workload: Workload = self.ctx.get("workload")
         assert workload is not None
         mapping = self.ctx.get("scheduler").mapping
+        self.context.bindings = Bindings(self.npu)
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
             self.context.registered_kernels[kernel.unique_name] = kernel
 
@@ -482,6 +484,7 @@ class AIECodeGenerationStage(Stage):
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
+        self.context.bindings.write(output_path + "/kernels.json")
         HoistFlashScaleAcquires().apply(self.context, module)
         with open(output_path + "/to_aie.mlir", "w") as f:
             f.write(str(module))

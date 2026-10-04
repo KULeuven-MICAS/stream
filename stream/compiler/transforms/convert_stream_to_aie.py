@@ -392,7 +392,7 @@ class ConvertStreamToAIEPass(ModulePass):
         PatternRewriteWalker(SetKernelLayouts(ctx.registered_kernels)).rewrite_module(op)
         PatternRewriteWalker(HoistLayoutCasts()).rewrite_module(op)
         PatternRewriteWalker(SquashLayoutCasts()).rewrite_module(op)
-        PatternRewriteWalker(ConvertAIEKernels(ctx.registered_kernels)).rewrite_module(op)
+        PatternRewriteWalker(ConvertAIEKernels(ctx.registered_kernels, ctx.bindings)).rewrite_module(op)
         # symbol table stuff messes up my terminator op:
         PatternRewriteWalker(PutEndAtEnd()).rewrite_module(op)
 

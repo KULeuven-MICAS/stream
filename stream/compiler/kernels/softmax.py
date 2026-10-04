@@ -6,7 +6,6 @@ from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.arith import AddiOp, ConstantOp, IndexCastOp, MuliOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,
-    FunctionType,
     MemRefType,
     i32,
 )
@@ -73,14 +72,6 @@ class SoftmaxKernel(AIEKernel):
                 TiledStride([Stride(rows * self.n, self.m // rows), Stride(self.n, rows)]),
                 TiledStride([Stride(cols, self.n // cols), Stride(1, cols)]),
             ]
-        )
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        scalars = [i32, i32, i32] if self.causal else [i32, i32]
-        return FunctionType.from_lists(
-            inputs=[op.inputs[0].type, op.inputs[1].type, *scalars],
-            outputs=[],
         )
 
     def row_offset(self, op: ComputationNodeOp) -> tuple[Sequence[Operation], SSAValue]:

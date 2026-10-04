@@ -22,10 +22,10 @@ kernel artifacts the binding creates, the way :class:`AIEKernelWithZeroing` crea
 zeroing call that belongs to a GEMM rather than to the graph.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import ceil, prod
-from typing import cast
+from typing import ClassVar, cast
 
 from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.arith import AddiOp, CmpiOp, ConstantOp, ExtUIOp, IndexCastOp, MuliOp, RemUIOp, TruncFOp
@@ -33,23 +33,20 @@ from xdsl.dialects.builtin import (
     ArrayAttr,
     DenseArrayBase,
     FloatAttr,
-    FunctionType,
     IndexType,
     IntAttr,
     IntegerAttr,
     IntegerType,
-    MemRefType,
     StringAttr,
     f32,
     i32,
 )
-from xdsl.dialects.func import CallOp, FuncOp
+from xdsl.dialects.func import CallOp
 from xdsl.dialects.memref import StoreOp
 from xdsl.dialects.scf import IfOp, IndexSwitchOp, YieldOp
 from xdsl.ir import Block, Operation, OpResult, Region, SSAValue
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.rewriter import InsertPoint
-from xdsl.traits import SymbolTable
 from xdsl_aie.dialects.aie import (
     BufferOp,
     CoreOp,
@@ -69,9 +66,11 @@ from stream.compiler.dialects.stream import (
 from stream.compiler.kernels.aie_kernel import (
     AIEKernel,
     StateOperand,
+    device_of,
     induction_variable,
     tiled_layout,
 )
+from stream.compiler.kernels.binding import Bindings
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
@@ -90,14 +89,6 @@ LOG2E = 1.4453125
 It is the *whole* factor: a design reaching these kernels hands in a query already
 scaled by 1/sqrt(d_head), so scaling here as well would square it.
 """
-
-
-def _device(op: Operation) -> DeviceOp:
-    parent = op.parent_op()
-    while parent is not None and not isinstance(parent, DeviceOp):
-        parent = parent.parent_op()
-    assert isinstance(parent, DeviceOp)
-    return parent
 
 
 def _tile(op: Operation) -> TileOp:
@@ -447,6 +438,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     # the plain kernel; either one takes the mode-selectable entry point.
     tiled_in: bool = False
     tiled_out: bool = False
+    FALLBACK: ClassVar[Mapping[str, tuple[str, str | None]]] = {SNAPSHOT: (SNAPSHOT, SNAPSHOT_OBJECT)}
 
     @property
     def function_name(self) -> str:
@@ -472,47 +464,13 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         mac = tiled_layout(self.m, self.n, self.mac["m"], self.mac["n"])
         return [mac if self.tiled_in else self._row_major(), mac if self.tiled_out else self._row_major()]
 
-    def _scale_type(self) -> MemRefType:
-        return MemRefType(self.element_type, (SCALE_ROWS * self.m,))
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        return FunctionType.from_lists(
-            inputs=[
-                op.inputs[0].type,
-                op.inputs[1].type,
-                self._scale_type(),
-                MemRefType(i32, (2,)),
-                self.element_type,
-                i32,
-                i32,
-                i32,
-                i32,
-                *([i32] if self.mode else []),
-            ],
-            outputs=[],
-        )
-
-    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        device, tile = _device(op), _tile(op)
+    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter, bindings: Bindings) -> None:
+        device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
         for target in _partners(device, op, "matmul_PV"):
             _scale_fifo(device, rewriter, tile, target, self.element_type, SCALE_ROWS * self.m)
-        SymbolTable.insert_or_update(
-            device,
-            FuncOp(
-                "init_scale_buffer",
-                FunctionType.from_lists([self._scale_type(), i32], []),
-                Region(),
-                "private",
-            ),
-        )
-        snapshot = FuncOp(
-            SNAPSHOT, FunctionType.from_lists([self._scale_type(), self._scale_type(), i32], []), Region(), "private"
-        )
-        snapshot.attributes["link_with"] = StringAttr(SNAPSHOT_OBJECT)
-        SymbolTable.insert_or_update(device, snapshot)
-        AIEKernel.rewrite(self, op, rewriter)
+        AIEKernel.rewrite(self, op, rewriter, bindings)
 
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
         return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
@@ -526,7 +484,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         return [STATE_SCALE]
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
-        device, tile = _device(op), _tile(op)
+        device, tile = device_of(op), _tile(op)
         query, key = self.output_axes(op)
         key_ops, key_block, key_blocks = _block_index(op, key)
         query_ops, query_block, query_blocks = _block_index(op, query)
@@ -589,24 +547,14 @@ class FusedScoreSoftmaxKernel(GemmKernel):
     that crosses to ``matmul_PV``, are the same as when the softmax stands on its own.
     """
 
-    @property
-    def unique_name(self) -> str:
-        return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
-
-    @property
-    def library_key(self) -> str:
-        return self.function_name
+    FALLBACK: ClassVar[Mapping[str, tuple[str, str | None]]] = {
+        **GemmKernel.FALLBACK,
+        SNAPSHOT: (SNAPSHOT, SNAPSHOT_OBJECT),
+    }
 
     @property
     def function_name(self) -> str:
         return "matmul_softmax"
-
-    @property
-    def zero_name(self) -> str:
-        return "zero_bf16"
-
-    def _scale_type(self) -> MemRefType:
-        return MemRefType(self.element_type, (SCALE_ROWS * self.m,))
 
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
         return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
@@ -619,42 +567,16 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         """
         return [STATE_SCALE]
 
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        return FunctionType.from_lists(
-            inputs=[
-                op.inputs[0].type,
-                op.inputs[1].type,
-                op.inputs[2].type,
-                self._scale_type(),
-                MemRefType(i32, (2,)),
-                self.element_type,
-                i32,
-                i32,
-                i32,
-                i32,
-            ],
-            outputs=[],
-        )
-
-    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        device, tile = _device(op), _tile(op)
+    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter, bindings: Bindings) -> None:
+        device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
         for target in _partners(device, op, "matmul_PV"):
             _scale_fifo(device, rewriter, tile, target, self.element_type, SCALE_ROWS * self.m)
-        SymbolTable.insert_or_update(
-            device,
-            FuncOp("init_scale_buffer", FunctionType.from_lists([self._scale_type(), i32], []), Region(), "private"),
-        )
-        snapshot = FuncOp(
-            SNAPSHOT, FunctionType.from_lists([self._scale_type(), self._scale_type(), i32], []), Region(), "private"
-        )
-        snapshot.attributes["link_with"] = StringAttr(SNAPSHOT_OBJECT)
-        SymbolTable.insert_or_update(device, snapshot)
-        GemmKernel.rewrite(self, op, rewriter)
+        GemmKernel.rewrite(self, op, rewriter, bindings)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
-        device, tile = _device(op), _tile(op)
+        device, tile = device_of(op), _tile(op)
         query, key = self.output_axes(op)
         key_ops, key_block, key_blocks = _block_index(op, key)
         query_ops, query_block, query_blocks = _block_index(op, query)
@@ -716,56 +638,19 @@ class FlashKernel(GemmKernel):
     """
 
     @property
-    def unique_name(self) -> str:
-        return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
-
-    @property
-    def library_key(self) -> str:
-        return self.function_name
-
-    @property
     def function_name(self) -> str:
         return "matmul_PV"
 
-    @property
-    def zero_name(self) -> str:
-        return "zero_bf16"
-
-    def _scale_type(self) -> MemRefType:
-        return MemRefType(self.element_type, (SCALE_ROWS * self.m,))
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        return FunctionType.from_lists(
-            inputs=[
-                op.inputs[0].type,
-                op.inputs[1].type,
-                op.inputs[2].type,
-                self._scale_type(),
-                i32,
-                i32,
-                MemRefType(i32, (2,)),
-                i32,
-            ],
-            outputs=[],
-        )
-
-    def _rescale_type(self, op: ComputationNodeOp) -> FunctionType:
-        return FunctionType.from_lists(
-            inputs=[op.inputs[2].type, self._scale_type(), i32, MemRefType(i32, (2,))],
-            outputs=[],
-        )
-
-    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        device, tile = _device(op), _tile(op)
+    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter, bindings: Bindings) -> None:
+        device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         for source in _partners(device, op, SCORE_SIDE):
             _scale_fifo(device, rewriter, source, tile, self.element_type, SCALE_ROWS * self.m)
-        SymbolTable.insert_or_update(device, FuncOp("rescale_O", self._rescale_type(op), Region(), "private"))
-        GemmKernel.rewrite(self, op, rewriter)
+        GemmKernel.rewrite(self, op, rewriter, bindings)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         self.check_operands(op)
-        device, tile = _device(op), _tile(op)
+        device, tile = device_of(op), _tile(op)
         sources = _partners(device, op, SCORE_SIDE)
         kernel_dims = self.output_axes(op)
         space = cast(StrensorType, op.output.type).ssis.data
