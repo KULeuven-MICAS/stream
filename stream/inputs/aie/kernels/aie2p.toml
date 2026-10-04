@@ -10,10 +10,6 @@ family = "matmul"
 binding = "stream.compiler.kernels.mlir_aie:mm"
 dims = [{ name = "k", divisor = 8 }, { name = "n", divisor = 16 }, { name = "m", divisor = 16 }]
 
-[kernel.matvec_vectorized_bf16_bf16]
-family = "vector"
-object = "mv.o"
-
 [kernel.silu_bf16_size]
 family = "vector"
 binding = "stream.compiler.kernels.mlir_aie:silu"

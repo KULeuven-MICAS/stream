@@ -41,18 +41,15 @@ def make_swiglu_mapping(  # noqa: PLR0915
     )
 
     # Left Gemm
-    if seq_len_tile_size == 1:
-        kernel_gemm = {"name": "matvec", "kwargs": {"layout": "default"}}
-    else:
-        kernel_gemm = {
-            "name": "gemm",
-            "kwargs": {
-                "m": seq_len_tile_size,
-                "k": INPUT_CHANNEL_TILE_SIZE,
-                "n": OUTPUT_CHANNEL_TILE_SIZE,
-                "layout": "default",
-            },
-        }
+    kernel_gemm = {
+        "name": "gemm",
+        "kwargs": {
+            "m": seq_len_tile_size,
+            "k": INPUT_CHANNEL_TILE_SIZE,
+            "n": OUTPUT_CHANNEL_TILE_SIZE,
+            "layout": "default",
+        },
+    }
     inter_core_tiling_gemm_left = [
         [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}],
     ]
