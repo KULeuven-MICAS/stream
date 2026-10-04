@@ -1,4 +1,4 @@
-"""Tests for get_ir() methods on Mapping and SteadyStateScheduler."""
+"""Tests for get_ir() methods on Mapping and SteadyStateSchedule."""
 
 from __future__ import annotations
 
@@ -179,67 +179,62 @@ class TestMappingGetIr:
 
 
 # ---------------------------------------------------------------------------
-# SteadyStateScheduler.get_ir() tests
+# SteadyStateSchedule.get_ir() tests
 # ---------------------------------------------------------------------------
 
 
-class TestSteadyStateSchedulerGetIr:
-    def _make_scheduler(self, **overrides):
-        """Create a SteadyStateScheduler with minimal mock dependencies."""
-        from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+class TestSteadyStateScheduleGetIr:
+    def _make_schedule(self, latency=(1000, 250, 50, 120), **overrides):
+        """Create a SteadyStateSchedule with minimal mock dependencies."""
+        from stream.allocation.schedule import SteadyStateSchedule
+        from stream.allocation.solution import AllocationSolution, Latency
+        from stream.opt.solver import SolveStats
 
-        workload = MagicMock()
-        accelerator = MagicMock()
-        mapping = Mapping()
-        fusion_splits = {}
-        cost_lut = MagicMock()
-
-        # Patch os.makedirs to avoid filesystem side effects
-        scheduler = SteadyStateScheduler(
-            workload=workload,
-            accelerator=accelerator,
-            mapping=mapping,
-            fusion_splits=fusion_splits,
-            cost_lut=cost_lut,
-            output_path="",  # empty = no makedirs
-            **overrides,
+        solution = AllocationSolution(
+            tensor_placements={},
+            transfer_routes={},
+            memory_cores={},
+            reuse_levels={},
+            depths={},
+            single_buffered=frozenset(),
+            latency=Latency(*latency),
+            primary_cost=float(latency[0]),
+            throughput_bound=float(latency[0]),
+            solve_stats=SolveStats("ORTOOLS", "gscip", "OPTIMAL", 1.0, 0.1, 0.0, 1, 1),
+            performance=None,
+            capacity_slack={},
         )
-        return scheduler
+        fields = {
+            "source_workload": MagicMock(),
+            "workload": MagicMock(),
+            "mapping": Mapping(),
+            "ssis": {},
+            "iterations": 1,
+            "fusion_splits": {},
+            "accelerator": MagicMock(),
+            "cost_lut": MagicMock(),
+            "backend": "ORTOOLS_GSCIP",
+            "constraint_selection": None,
+            "solution": solution,
+        } | overrides
+        return SteadyStateSchedule(**fields)
 
-    def test_pre_solve_sentinel_values(self):
-        """Test 1: Pre-solve scheduler returns latency sentinel values of -1."""
-        scheduler = self._make_scheduler()
-        result = scheduler.get_ir()
-
-        assert isinstance(result, dict)
-        assert "latency" in result
-        assert result["latency"]["total"] == -1
-        assert result["latency"]["per_iteration"] == -1
-        assert result["latency"]["overlap_between_iterations"] == -1
-
-    def test_post_solve_latency_values(self):
-        """Test 2: After setting latency values, get_ir() returns those exact values."""
-        scheduler = self._make_scheduler()
-        scheduler.latency_total = 1000
-        scheduler.latency_per_iteration = 250
-        scheduler.overlap_between_iterations = 50
-        scheduler.latency_fill = 120
-
-        result = scheduler.get_ir()
+    def test_latency_values(self):
+        """get_ir() returns the solved latencies."""
+        result = self._make_schedule().get_ir()
         assert result["latency"]["total"] == 1000
         assert result["latency"]["per_iteration"] == 250
         assert result["latency"]["overlap_between_iterations"] == 50
         assert result["latency"]["fill"] == 120
 
     def test_backend_and_constraint_selection_in_ir(self):
-        """Test 3: get_ir() includes backend (str) and constraint_selection (dict or None)."""
+        """get_ir() includes backend (str) and constraint_selection (dict or None)."""
         from stream.opt.solver import ConstraintSelection
 
         cs = ConstraintSelection(
             memory_capacity=True, object_fifo_depth=False, buffer_descriptors=True, dma_channels=False
         )
-        scheduler = self._make_scheduler(backend="ORTOOLS_HIGHS", constraint_selection=cs)
-        result = scheduler.get_ir()
+        result = self._make_schedule(backend="ORTOOLS_HIGHS", constraint_selection=cs).get_ir()
 
         assert result["backend"] == "ORTOOLS_HIGHS"
         assert result["constraint_selection"] is not None
@@ -249,13 +244,11 @@ class TestSteadyStateSchedulerGetIr:
         assert result["constraint_selection"]["dma_channels"] is False
 
     def test_constraint_selection_none(self):
-        """Test 3b: When constraint_selection is None, get_ir() returns null for that field."""
-        scheduler = self._make_scheduler(constraint_selection=None)
-        result = scheduler.get_ir()
-        assert result["constraint_selection"] is None
+        """When constraint_selection is None, get_ir() returns null for that field."""
+        assert self._make_schedule().get_ir()["constraint_selection"] is None
 
     def test_mapping_included_in_ir(self):
-        """Test 4: get_ir() includes 'mapping' key containing Mapping.get_ir() output."""
+        """get_ir() includes 'mapping' key containing Mapping.get_ir() output."""
         node = make_node("op_0")
         core0 = make_core(0)
         node_mapping = NodeMapping(
@@ -265,45 +258,31 @@ class TestSteadyStateSchedulerGetIr:
         )
         mapping = Mapping(initial={node: node_mapping})
 
-        scheduler = self._make_scheduler()
-        scheduler.mapping = mapping
-
-        result = scheduler.get_ir()
+        result = self._make_schedule(mapping=mapping).get_ir()
         assert "mapping" in result
         assert "op_0" in result["mapping"]["nodes"]
 
-    def test_scheduler_get_ir_json_round_trip(self):
-        """Test 5: json.dumps(scheduler.get_ir()) succeeds without TypeError."""
+    def test_schedule_get_ir_json_round_trip(self):
+        """json.dumps(schedule.get_ir()) succeeds without TypeError."""
         from stream.opt.solver import ConstraintSelection
 
-        cs = ConstraintSelection()
-        scheduler = self._make_scheduler(backend="ORTOOLS_GSCIP", constraint_selection=cs)
-        scheduler.latency_total = 500
-        scheduler.latency_per_iteration = 125
-        scheduler.overlap_between_iterations = 25
-        scheduler.fusion_splits = {"M": 4, "K": 2}
-
-        result = scheduler.get_ir()
-        serialized = json.dumps(result)
-        deserialized = json.loads(serialized)
+        schedule = self._make_schedule(
+            latency=(500, 125, 25, 0), constraint_selection=ConstraintSelection(), fusion_splits={"M": 4, "K": 2}
+        )
+        deserialized = json.loads(json.dumps(schedule.get_ir()))
 
         assert deserialized["latency"]["total"] == 500
         assert deserialized["backend"] == "ORTOOLS_GSCIP"
+        assert deserialized["solve"]["status"] == "OPTIMAL"
 
-    def test_scheduler_ir_has_required_keys(self):
+    def test_schedule_ir_has_required_keys(self):
         """The get_ir() dict contains all required top-level keys."""
-        scheduler = self._make_scheduler()
-        result = scheduler.get_ir()
-
         required_keys = {"latency", "backend", "constraint_selection", "fusion_splits", "mapping"}
-        assert required_keys.issubset(result.keys())
+        assert required_keys.issubset(self._make_schedule().get_ir().keys())
 
     def test_fusion_splits_serialized_as_string_keys(self):
         """fusion_splits LayerDim keys are serialized as strings."""
-        scheduler = self._make_scheduler()
-        scheduler.fusion_splits = {"M": 4, "K": 2}
-
-        result = scheduler.get_ir()
+        result = self._make_schedule(fusion_splits={"M": 4, "K": 2}).get_ir()
         assert result["fusion_splits"] == {"M": 4, "K": 2}
         # All keys must be strings (JSON-serializable)
         for k in result["fusion_splits"].keys():

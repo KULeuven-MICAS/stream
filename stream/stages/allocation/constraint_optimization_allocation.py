@@ -2,6 +2,7 @@ import logging
 import os
 from typing import TypeAlias
 
+from stream.allocation.schedule import SteadyStateSchedule
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
@@ -53,14 +54,13 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
-        workload, scheduler = self.find_best_tensor_transfer_allocation()
-        mapping = scheduler.mapping
-        self.ctx.set(workload=workload, mapping=mapping, scheduler=scheduler)
+        schedule = self.find_best_tensor_transfer_allocation()
+        self.ctx.set(workload=schedule.workload, mapping=schedule.mapping, allocation=schedule)
         logger.info("End ConstraintOptimizationAllocationStage.")
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
-    def find_best_tensor_transfer_allocation(self):
+    def find_best_tensor_transfer_allocation(self) -> SteadyStateSchedule:
         """
         Run a simple scheduler that finds the optimal tensor transfer allocation for the workload.
         """
@@ -77,8 +77,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             constraint_selection=self.constraint_selection,
             total_mac_ops=self.ctx.get("total_mac_ops"),
         )
-        workload = scheduler.run()
-        return workload, scheduler
+        return scheduler.run()
 
     def is_leaf(self) -> bool:
         return False

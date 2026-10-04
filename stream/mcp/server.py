@@ -403,8 +403,7 @@ async def get_allocation_ir(
         from stream.ir import AllocationIR  # noqa: PLC0415
 
         ctx = job["result"]["ctx"]
-        scheduler = ctx.get("scheduler")
-        ir = AllocationIR.from_internal(scheduler)
+        ir = AllocationIR.from_internal(ctx.get("allocation"))
         return ir.model_dump()
     except ValueError as e:
         return {"status": "error", "error_type": "solve_failed", "message": str(e)}
@@ -450,7 +449,7 @@ async def get_solve_stats(
     import dataclasses  # noqa: PLC0415
 
     ctx = job["result"]["ctx"]
-    scheduler = ctx.get("scheduler")
-    if scheduler is None or scheduler.solve_stats is None:
+    schedule = ctx.get("allocation")
+    if schedule is None:
         return {"status": "error", "error_type": "solve_failed", "message": "No solve statistics available"}
-    return dataclasses.asdict(scheduler.solve_stats)
+    return dataclasses.asdict(schedule.solution.solve_stats)

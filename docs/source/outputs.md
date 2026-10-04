@@ -9,7 +9,7 @@ A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfi
 | Key | What it is |
 |-----|-----------|
 | `group_latencies` | Per-fusion-group latency breakdown. |
-| `scheduler` | The `SteadyStateScheduler` - the full schedule and timing. |
+| `allocation` | The `SteadyStateSchedule` - the solved workload, mapping and iteration spaces, and its `solution` (placements, routes, latencies, solve statistics, performance report). |
 | `workload` | The parsed computation graph. |
 | `accelerator` | The parsed hardware model. |
 
@@ -17,7 +17,8 @@ A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfi
 estimate = evaluate_mapping(...)
 print(estimate.cycles)
 ctx = estimate.context
-scheduler = ctx.get("scheduler")
+schedule = ctx.get("allocation")
+print(schedule.solution.latency.total)
 ```
 
 ## Files written to disk
@@ -37,7 +38,7 @@ from stream.ir import WorkloadIR, AcceleratorIR, AllocationIR
 
 workload_ir    = WorkloadIR.from_internal(ctx.get("workload"))
 accelerator_ir = AcceleratorIR.from_internal(ctx.get("accelerator"))
-allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))
+allocation_ir  = AllocationIR.from_internal(ctx.get("allocation"))
 
 allocation_data = allocation_ir.model_dump()      # JSON-compatible dict
 ```

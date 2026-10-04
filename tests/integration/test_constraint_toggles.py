@@ -73,8 +73,7 @@ def _make_ortools_factory(solver_type: mathopt.SolverType = mathopt.SolverType.G
 
 def _extract_latency_total(ctx) -> float:
     """Extract ``latency_total`` (solver objective) from a completed pipeline context."""
-    scheduler = ctx.get("scheduler")
-    return float(scheduler.latency_total)
+    return float(ctx.get("allocation").solution.latency.total)
 
 
 def _build_transfer_context_tight_dma(*args, **kwargs):

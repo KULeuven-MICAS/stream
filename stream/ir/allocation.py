@@ -1,6 +1,6 @@
 """AllocationIR Pydantic model with per-persona view methods.
 
-Wraps the output of SteadyStateScheduler.get_ir() in a typed, versioned Pydantic model.
+Wraps the output of SteadyStateSchedule.get_ir() in a typed, versioned Pydantic model.
 Construction is always via the from_internal() classmethod.
 """
 
@@ -13,11 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from stream.plugins import loaded_overlays
 
 if TYPE_CHECKING:
-    from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+    from stream.allocation.schedule import SteadyStateSchedule
 
 
 class LatencyInfo(BaseModel):
-    """Latency metrics from a solved SteadyStateScheduler."""
+    """Latency metrics from a solved SteadyStateSchedule."""
 
     total: int = Field(description="Total schedule latency in cycles across all iterations")
     per_iteration: int = Field(description="Latency of a single steady-state iteration in cycles")
@@ -413,13 +413,10 @@ class AllocationPerformanceView(BaseModel):
 
 
 class AllocationIR(BaseModel):
-    """Typed Pydantic model wrapping SteadyStateScheduler.get_ir() output.
+    """Typed Pydantic model wrapping SteadyStateSchedule.get_ir() output.
 
     schema_version '1.1': minor bumps for additive fields, major bumps (2.0) for
     removed/renamed fields. Construction is always via from_internal().
-
-    Note: from_internal() raises ValueError if called on a pre-solve scheduler
-    (latency_total == -1 sentinel).
     """
 
     model_config = ConfigDict(
@@ -474,18 +471,13 @@ class AllocationIR(BaseModel):
     )
 
     @classmethod
-    def from_internal(cls, scheduler: SteadyStateScheduler) -> AllocationIR:
-        """Construct AllocationIR from a post-solve SteadyStateScheduler.
+    def from_internal(cls, schedule: SteadyStateSchedule) -> AllocationIR:
+        """Construct AllocationIR from a solved SteadyStateSchedule.
 
-        Calls scheduler.get_ir() once, maps the resulting dict fields to Pydantic types,
-        and validates on construction. Raises ValueError if the scheduler has not been solved
-        (latency_total == -1 sentinel from SteadyStateScheduler.__init__).
+        Calls schedule.get_ir() once, maps the resulting dict fields to Pydantic types,
+        and validates on construction.
         """
-
-        if scheduler.latency_total == -1:
-            raise ValueError("Cannot build AllocationIR from unsolved SteadyStateScheduler")
-
-        raw = scheduler.get_ir()
+        raw = schedule.get_ir()
         cs_raw = raw.get("constraint_selection")
         constraint_selection = ConstraintSelectionIR(**cs_raw) if cs_raw else None
 

@@ -102,6 +102,36 @@ def generate_steady_state_iteration_spaces(
     return ssis_dict
 
 
+def generate_tensor_ssis(
+    workload: "Workload",
+    tensor: Tensor,
+    node: "HasIterationSpace",
+    ssis: dict["HasIterationSpace | Tensor", SteadyStateIterationSpace],
+) -> SteadyStateIterationSpace:
+    """The iteration space of ``tensor`` as ``node`` produces or reads it: ``node``'s loops, each varying
+    where it indexes the tensor."""
+    producer_ssis = ssis.get(node, None)
+    if producer_ssis is None:
+        raise KeyError(f"Node {node.name} does not have a valid producer SSIS.")
+    tensor_dims = workload.get_tensor_dimensions(tensor)
+    tensor_ivs = []
+    for prod_iv in producer_ssis.variables:
+        prod_iv_dim = prod_iv.dimension
+        if prod_iv_dim in tensor_dims:
+            tensor_effect = LoopEffect.VARYING
+        else:
+            tensor_effect = LoopEffect.ABSENT if prod_iv.effect == LoopEffect.ABSENT else LoopEffect.INVARIANT
+        tensor_ivs.append(
+            IterationVariable(
+                dimension=prod_iv_dim,
+                size=prod_iv.size,
+                type=prod_iv.type,
+                effect=tensor_effect,
+            )
+        )
+    return SteadyStateIterationSpace(variables=tuple(tensor_ivs))
+
+
 def _create_steady_state_iteration_spaces(iteration_variables, workload: "Workload"):
     """Create the steady state iteration spaces for each computation node."""
     ssis_dict: dict[ComputationNode, SteadyStateIterationSpace] = {}

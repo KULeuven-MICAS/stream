@@ -53,6 +53,7 @@ from stream.workload.steady_state.iteration_space import (
     SteadyStateIterationSpace,
 )
 from stream.workload.tensor import Tensor
+from stream.workload.utils import generate_tensor_ssis
 from stream.workload.workload import (
     ComputationNode,
     HasInputs,
@@ -186,7 +187,7 @@ class AIECodeGenerationStage(Stage):
 
     def _buffers(self, tensor: Tensor) -> int:
         """The buffers the solve holds a moving window of ``tensor`` in."""
-        return 1 if tensor in self.ctx.get("scheduler").single_buffered else DOUBLE_BUFFERED
+        return 1 if tensor in self.ctx.get("allocation").solution.single_buffered else DOUBLE_BUFFERED
 
     @staticmethod
     def _readers(node: TransferNode, workload: Workload) -> list[HasInputs]:
@@ -272,7 +273,6 @@ class AIECodeGenerationStage(Stage):
         ssis_dict: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
     ) -> ModuleOp:
         ops: dict[Node, Operation] = {}
-        scheduler = self.ctx.get("scheduler")
 
         def get_layer_dims(tensor: Tensor) -> Iterable[LayerDim]:
             strides = workload.strides_for_tensor(tensor)
@@ -356,9 +356,7 @@ class AIECodeGenerationStage(Stage):
                     spaces = [ssis_to_strensorspace(node.outputs[0])]
                 else:
                     spaces = [
-                        ssis_to_strensorspace(
-                            output, scheduler.generate_tensor_ssis(workload, output, reader, ssis_dict)
-                        )
+                        ssis_to_strensorspace(output, generate_tensor_ssis(workload, output, reader, ssis_dict))
                         for output, reader in zip(node.outputs, self._readers(node, workload), strict=True)
                     ]
                 ops[node] = self.create_transfer_op(
@@ -422,12 +420,12 @@ class AIECodeGenerationStage(Stage):
 
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused."""
-        scheduler = self.ctx.get("scheduler")
-        slack = getattr(scheduler, "capacity_slack", None)
+        schedule = self.ctx.get("allocation")
+        slack = schedule.solution.capacity_slack
         if not slack:
             return None
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in scheduler.accelerator.core_list:
+        for core in schedule.accelerator.core_list:
             per_core = slack.get(core.id)
             if per_core is None or core.col_id is None or core.row_id is None:
                 continue
@@ -444,14 +442,14 @@ class AIECodeGenerationStage(Stage):
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
         assert workload is not None
-        mapping = self.ctx.get("scheduler").mapping
+        mapping = self.ctx.get("allocation").mapping
         self.context.bindings = Bindings(self.npu)
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
             self.context.registered_kernels[kernel.unique_name] = kernel
 
         assert isinstance(mapping, Mapping)
 
-        ssis_dict: dict[Tensor, SteadyStateIterationSpace] = self.ctx.get("scheduler").ssis
+        ssis_dict: dict[Tensor, SteadyStateIterationSpace] = self.ctx.get("allocation").ssis
 
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 

@@ -9,15 +9,15 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
 if TYPE_CHECKING:
-    from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+    from stream.allocation.schedule import SteadyStateSchedule
 
 logger = logging.getLogger(__name__)
 
 
-def _compute_columns(scheduler: "SteadyStateScheduler") -> tuple[int, ...]:
+def _compute_columns(schedule: "SteadyStateSchedule") -> tuple[int, ...]:
     """The distinct compute-tile columns the solved allocation occupies."""
     columns: set[int] = set()
-    for node_mapping in scheduler.mapping.values():
+    for node_mapping in schedule.mapping.values():
         for allocation in node_mapping.resource_allocation or ():
             items = allocation if isinstance(allocation, (list, tuple)) else (allocation,)
             for item in items:
@@ -73,17 +73,17 @@ class FusionGroupIterationStage(Stage):
             assert len(ctxs) == 1, f"Expected 1 context from inner pipeline, got {len(ctxs)}"
             ctx = ctxs[0]
 
-            scheduler = ctx.get("scheduler")
-            group_latency = scheduler.cost_to_rank
+            schedule = ctx.get("allocation")
+            group_latency = schedule.cost_to_rank
             total_latency += group_latency
             group_latencies[i] = group_latency
-            group_columns[i] = _compute_columns(scheduler)
-            group_cycles[i] = scheduler.estimated_cycles
+            group_columns[i] = _compute_columns(schedule)
+            group_cycles[i] = schedule.estimated_cycles
             # Capture the full allocation IR (latency + solver backend + intra-core performance:
             # per-node MAC utilization, compute efficiency, compute-vs-transfer bottleneck) per group,
             # so the exploration result can surface cost-model transparency and intra-core-cost viz.
             try:
-                group_allocations[i] = AllocationIR.from_internal(scheduler).model_dump()
+                group_allocations[i] = AllocationIR.from_internal(schedule).model_dump()
             except Exception as exc:  # noqa: BLE001 -- a missing perf summary must not fail the solve
                 logger.warning(f"Group {i}: could not build AllocationIR: {exc}")
                 group_allocations[i] = None

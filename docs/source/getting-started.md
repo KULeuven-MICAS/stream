@@ -30,7 +30,7 @@ print("cycles:", estimate.cycles)
 print("per group:", estimate.group_cycles)
 ```
 
-Stream parses the hardware and workload, proposes a mapping, and runs the allocation of each fused group - **generate tilings** → **estimate per-core cost** → **MILP allocation** (the `TransferAndTensorAllocator`) → **memory estimation**. It finishes in a few seconds. `cycles` is the steady-state estimate summed over the fused groups, plus whatever reconfiguring the array between them costs on hardware that declares it. The solved `estimate.context` holds the `scheduler`, `workload`, `accelerator` and `group_latencies`.
+Stream parses the hardware and workload, proposes a mapping, and runs the allocation of each fused group - **generate tilings** → **estimate per-core cost** → **MILP allocation** (the `TransferAndTensorAllocator`) → **memory estimation**. It finishes in a few seconds. `cycles` is the steady-state estimate summed over the fused groups, plus whatever reconfiguring the array between them costs on hardware that declares it. The solved `estimate.context` holds the `allocation`, `workload`, `accelerator` and `group_latencies`.
 
 `evaluate_mapping` takes the mapping YAML as its fourth argument, `select_mapping` picks the cheapest of several candidate mappings, and `SolveOptions` sets the solver backend (default `"ortools_gscip"`; also `"ortools_highs"` and `"gurobi"`), the columns and the constraint selection.
 

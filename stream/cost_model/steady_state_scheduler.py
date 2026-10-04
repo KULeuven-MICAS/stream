@@ -8,6 +8,7 @@ from typing import cast
 from xdsl.ir.affine import AffineMap
 
 # if TYPE_CHECKING:
+from stream.allocation.schedule import SteadyStateSchedule, solved_iteration_spaces, solved_mapping
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.datatypes import InterCoreTiling, LayerDim
@@ -15,14 +16,8 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.context import build_transfer_context
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-    MemoryAlloc,
-    TensorDepths,
-    TensorReuseLevels,
-    TransferAlloc,
-    TransferAndTensorAllocator,
-)
-from stream.opt.solver import ConstraintSelection, SolveStats
+from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
+from stream.opt.solver import ConstraintSelection
 from stream.profiling import span
 from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.iterator_type import is_state_operand, streamed_operands
@@ -38,38 +33,20 @@ from stream.workload.node import (
     TransferNode,
     TransferType,
 )
-from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import (
-    IterationVariable,
-    IterationVariableType,
-    LoopEffect,
-    Reuse,
     SteadyStateIterationSpace,
 )
 from stream.workload.utils import (
     generate_steady_state_iteration_spaces,
+    generate_tensor_ssis,
     get_compute_predecessors_successors,
     get_equivalent_dimension,
     get_node_with_largest_resource_allocation,
-    is_mac_operator_type,
     is_reused_on_chip,
 )
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
-
-#: Nest depth of each steady-state loop kind, outermost first.
-_LOOP_NEST_DEPTH: dict[str, int] = {
-    "temporal": 0,
-    "spatiotemporal": 1,
-    "spatial": 2,
-    "core_temporal": 3,
-    "core_spatial": 4,
-    "kernel": 5,
-}
-
-#: Core kinds that model a memory/DMA endpoint, not a compute engine -- never in a compute roofline.
-_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
 
 
 def largest_divisor_leq(n: int, cap: int) -> int:
@@ -108,18 +85,6 @@ class SteadyStateScheduler:
         self.mapping = mapping.copy()
         self.fusion_splits = fusion_splits
         self.cost_lut = cost_lut
-        self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
-        self.constant_tensors: dict[int, InEdge | OutEdge] = {}
-        self.ssw: Workload | None = None
-
-        # Cost model parameters
-        self.latency_total = -1
-        self.latency_per_iteration = -1
-        self.overlap_between_iterations = -1
-        self.latency_fill = 0
-        self.performance_stats: dict | None = None
-        self.tensor_depths: TensorDepths = {}
-        self.single_buffered: set[Tensor] = set()
 
         self.nb_cols_to_use = nb_cols_to_use
         self.transfer_context = build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
@@ -131,185 +96,13 @@ class SteadyStateScheduler:
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
 
-        self.solve_stats: SolveStats | None = None
-        self.throughput_bound: float | None = None
-        self.primary_cost: float | None = None
-
-    @property
-    def cost_to_rank(self) -> float:
-        """What two solved designs should be compared by: the latency objective the solve minimised first."""
-        return float(self.latency_total) if self.primary_cost is None else self.primary_cost
-
-    @property
-    def estimated_cycles(self) -> float:
-        """What running this steady state takes: a lone node pipelines to its throughput bound,
-        while a fused group is held to how its nodes overlap, which the solved cost captures."""
-        if self.throughput_bound is not None and len(self.workload.get_computation_nodes()) == 1:
-            return self.throughput_bound
-        return self.cost_to_rank
-
-    def get_ir(self) -> dict:
-        """Return a dictionary representation of the scheduler state for serialization/inspection.
-
-        This captures:
-        - Latency metrics (total, per-iteration, overlap)
-        - Backend and constraint configuration used for the solve
-        - Fusion splits applied
-        - Mapping with node-to-resource allocations
-        - Solve statistics (status, optimality gap, wall time)
-        """
-        stats = self.solve_stats
-        solve_ir = (
-            {
-                "status": stats.status,
-                "solver": stats.solver,
-                "mip_gap": stats.mip_gap,
-                "objective": stats.objective,
-                "solve_time_s": stats.solve_time_s,
-                "node_count": stats.node_count,
-                "iteration_count": stats.iteration_count,
-            }
-            if stats is not None
-            else None
-        )
-        cs = self.constraint_selection
-        constraint_selection_ir = (
-            {
-                "memory_capacity": cs.memory_capacity,
-                "object_fifo_depth": cs.object_fifo_depth,
-                "buffer_descriptors": cs.buffer_descriptors,
-                "dma_channels": cs.dma_channels,
-            }
-            if cs is not None
-            else None
-        )
-        return {
-            "latency": {
-                "total": self.latency_total,
-                "per_iteration": self.latency_per_iteration,
-                "overlap_between_iterations": self.overlap_between_iterations,
-                "fill": self.latency_fill,
-            },
-            "backend": self.backend,
-            "solve": solve_ir,
-            "constraint_selection": constraint_selection_ir,
-            "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
-            "mapping": self.mapping.get_ir(),
-            "performance": self.performance_stats,
-            "steady_state": self._steady_state_ir(),
-        }
-
-    def _core_loops(self, cn: ComputationNode) -> list[dict]:
-        """The loop nest inside one core (ZigZag mapping), as ``core_*`` loops; empty for a non-ZigZag core."""
-        # Resolve by name -- the mapping is keyed by steady-state nodes, the cost LUT by the costed node.
-        try:
-            lut_node = next(n for n in self.cost_lut.get_nodes() if n.name == cn.name)
-            allocation = self.mapping.get(lut_node).resource_allocation
-            cores = [c for slot in (allocation or ()) for c in slot if isinstance(c, Core)]
-            if not cores:
-                return []
-            entry = self.cost_lut.get_cost(lut_node, cores[0])
-        except Exception:  # noqa: BLE001
-            return []
-        mapping = getattr(entry, "mapping", None)
-        if mapping is None:
-            return []
-
-        loops: list[dict] = []
-
-        def add(dim: str, size: int, kind: str) -> None:
-            # No de-dup: ZigZag splits one dim over several levels, so equal-size loops are real levels.
-            if int(size) > 1:
-                loops.append({"dim": dim, "size": int(size), "type": kind, "node": cn.name})
-
-        # ZigZag annotates the nest once per operand; take one operand's view (summing multiplies every dim).
-        def one_operand(per_operand: dict) -> list:
-            return next(iter(per_operand.values()), [])
-
-        # Array unrollings first: these run in parallel, so they sit outside the temporal walk.
-        for level in one_operand(getattr(mapping.spatial_mapping, "mapping_dict_origin", {})):
-            for layer_dim, size in level:
-                add(str(layer_dim), size, "core_spatial")
-        for level in one_operand(getattr(mapping.temporal_mapping, "mapping_dic_stationary", {})):
-            for layer_dim, size in level:
-                add(str(layer_dim), size, "core_temporal")
-        return loops
-
-    def _steady_state_ir(self) -> dict | None:
-        """Serialise the tiled/steady-state inspection view (operators, loop nest, transfer graph); None on failure."""
-        try:
-            operators = [
-                {
-                    "name": cn.name,
-                    "op": getattr(cn, "type", "computation"),
-                    "tensors": [{"name": t.name, "shape": [int(s) for s in t.shape]} for t in cn.tensors],
-                }
-                for cn in self.workload.get_computation_nodes()
-            ]
-            # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1).
-            loops: list[dict] = []
-            seen: set = set()
-            for ssis in (self.ssis or {}).values():
-                for iv in ssis.variables:
-                    # ABSENT: the node lacks the dim (unrolling replicates it); counting it double-counts one unrolling.
-                    if iv.effect is LoopEffect.ABSENT:
-                        continue
-                    key = (str(iv.dimension), int(iv.size))
-                    if int(iv.size) > 1 and key not in seen:
-                        seen.add(key)
-                        loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
-            # Below the tile: expand each node's intra-core mapping per node (fused groups stay separate).
-            expanded = False
-            for cn in self.workload.get_computation_nodes():
-                core_loops = self._core_loops(cn)
-                for loop in core_loops:
-                    loop["node"] = cn.name
-                loops.extend(core_loops)
-                expanded = expanded or bool(core_loops)
-            if expanded:
-                # Drop the kernel stand-in once expanded (it would double-count the intra-core work).
-                loops = [loop for loop in loops if loop["type"] != "kernel"]
-
-            def _nest_order(loop: dict) -> tuple[str, int]:
-                return loop.get("node") or "", _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH))
-
-            loops.sort(key=_nest_order)
-            # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
-            tiled_nodes: list[dict] = []
-            edges: list[dict] = []
-            if self.ssw is not None:
-                for cn in self.ssw.get_computation_nodes():
-                    tiled_nodes.append({"name": cn.name, "kind": "compute", "op": getattr(cn, "type", "computation")})
-                for tn in self.ssw.get_transfer_nodes():
-                    out = tn.outputs[0] if tn.outputs else None
-                    transfer_type = getattr(tn, "transfer_type", None)
-                    tiled_nodes.append(
-                        {
-                            "name": tn.name,
-                            "kind": "transfer",
-                            "transfer_type": getattr(transfer_type, "name", None),
-                            "tensor": out.name if out is not None else None,
-                            "elements": int(prod(out.shape)) if out is not None else 0,
-                        }
-                    )
-                edges = [{"source": s.name, "target": t.name} for s, t in self.ssw.edges()]
-            return {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
-        except Exception as exc:  # noqa: BLE001 -- inspection view must never break a solved run
-            logger.warning("could not build steady-state IR: %s", exc)
-            return None
-
-    def run(self) -> Workload:
-        """
-        Run the steady state scheduler on the given workload.
-
-        Returns:
-            TimeSlotAllocation: The scheduled workload.
-        """
+    def run(self) -> SteadyStateSchedule:
+        """Lower the workload to its transfer graph, solve its allocation and return the solved schedule."""
         with span("transfer_graph"):
             self.ssw = self.build_transfer_graph()
             self.fusion_splits = self.update_fusion_splits()
             self.mapping = self.update_mapping()
-            self.cost_lut = self.update_cost_lut()
+            self.cost_lut = self.cost_lut.with_nodes(self.ssw.get_computation_nodes())
         with span("iteration_spaces"):
             self.ssis = self.generate_ssis()
             self.iterations = self.calculate_iterations()
@@ -332,40 +125,7 @@ class SteadyStateScheduler:
                 backend=self.backend,
                 constraint_selection=self.constraint_selection,
             )
-        (
-            tensor_reuse_levels,
-            tensor_depths,
-            tensor_allocations,
-            transfer_allocations,
-            memory_allocations,
-            total_latency,
-            overlap,
-            latency_per_iteration,
-        ) = tta.solve()
-        with span("milp_report"):
-            self.solve_stats = tta.model.solve_stats()
-            try:
-                self.performance_stats = tta.compute_performance_stats()
-            except Exception as exc:  # observability must never break the solve
-                logger.warning("Failed to compute performance stats: %s", exc)
-            try:
-                self.capacity_slack = tta.capacity_slack()
-            except Exception as exc:
-                logger.warning("Failed to compute capacity slack: %s", exc)
-                self.capacity_slack = {}
-            self.throughput_bound = tta.throughput_bound()
-            self.primary_cost = tta.primary_cost()
-            self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = (
-                total_latency,
-                latency_per_iteration,
-                overlap,
-            )
-            self.latency_fill = round(tta.fill.X)
-            self.single_buffered = tta.get_single_buffered()
-            try:
-                self._augment_performance_stats_end_to_end()
-            except Exception as exc:
-                logger.warning("Failed to compute end-to-end MAC utilization: %s", exc)
+        solution = tta.solve(total_mac_ops=self.total_mac_ops)
         with span("trace_export"):
             fname = ""
             trace_path = ""
@@ -374,8 +134,8 @@ class SteadyStateScheduler:
                     trace_path = export_steady_state_trace(
                         tta=tta,
                         iterations=self.iterations,
-                        overlap=overlap,
-                        latency_per_iteration=latency_per_iteration,
+                        overlap=solution.latency.overlap,
+                        latency_per_iteration=solution.latency.per_iteration,
                         output_path=self.output_path,
                         compact=compact,
                         filename=fname,
@@ -384,105 +144,24 @@ class SteadyStateScheduler:
             except Exception as exc:  # never let a visualisation failure abort the run
                 logger.warning("Failed to export steady-state trace (%s): %s", fname, exc)
         with span("apply_solution"):
-            self.update_tensor_steady_state_iteration_spaces(tensor_reuse_levels)
-            self.update_mapping_with_allocations(transfer_allocations, memory_allocations)
+            schedule = SteadyStateSchedule(
+                source_workload=self.workload,
+                workload=self.ssw,
+                mapping=solved_mapping(self.ssw, self.mapping, solution),
+                ssis=solved_iteration_spaces(self.ssw, self.ssis, solution.reuse_levels),
+                iterations=self.iterations,
+                fusion_splits=self.fusion_splits,
+                accelerator=self.accelerator,
+                cost_lut=self.cost_lut,
+                backend=self.backend,
+                constraint_selection=self.constraint_selection,
+                solution=solution,
+            )
         with span("visualize"):
             self.ssw.visualize(
-                os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping, self.ssis
+                os.path.join(self.output_path, "steady_state_workload_final.png"), schedule.mapping, schedule.ssis
             )
-        self.steady_state_workload = self.ssw
-        return self.ssw
-
-    def _mac_roofline_peak(self) -> tuple[int, int]:
-        """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
-        offchip_id = self.accelerator.offchip_core_id
-        peak = 0
-        n_cores = 0
-        for core in self.accelerator.core_list:
-            if core.id == offchip_id or core.type in _NON_COMPUTE_CORE_TYPES:
-                continue
-            op_types = getattr(core, "operator_types", None)
-            if op_types is not None and not any(is_mac_operator_type(t) for t in op_types):
-                continue
-            units = getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
-            if not units:
-                continue
-            peak += units
-            n_cores += 1
-        return peak, n_cores
-
-    def _augment_performance_stats_end_to_end(self) -> None:
-        """Add end-to-end MAC utilization (``total_mac_ops / (peak_macs_per_cycle * total_latency)``,
-        both restricted to the matmul/conv family) to performance_stats['aggregate'] in place."""
-        if not isinstance(self.performance_stats, dict):
-            return
-        agg = self.performance_stats.get("aggregate")
-        if not isinstance(agg, dict):
-            return
-        peak, mac_cores = self._mac_roofline_peak()
-        macs = self.total_mac_ops
-        lat = self.latency_total
-        util = (macs / (peak * lat)) if (macs and peak and lat and lat > 0) else None
-        agg["total_mac_ops"] = macs
-        agg["peak_macs_per_cycle"] = peak
-        agg["mac_capable_cores"] = mac_cores
-        agg["end_to_end_mac_utilization"] = util
-
-    def update_tensor_steady_state_iteration_spaces(self, tensor_reuse_levels: TensorReuseLevels):
-        for t, ssis in self.ssis.items():
-            if isinstance(t, Tensor):
-                assert t in tensor_reuse_levels, f"Tensor {t.name} does not have a reuse level assigned."
-                reuse_level = tensor_reuse_levels[t]
-                for i, iv in enumerate(ssis.get_applicable_temporal_variables()):
-                    if i <= reuse_level:
-                        iv.reuse = Reuse.REUSE
-                    else:
-                        iv.reuse = Reuse.NO_REUSE
-        # Propagate spatial reuse across transfer boundaries: when one side of a
-        # transfer has a SPATIAL variable that is represented as a SPATIOTEMPORAL on the
-        # other side (same dimension and size), mark that spatiotemporal as REUSE so that
-        # both endpoints display the same reuse boundary.
-        for node in self.ssw.get_transfer_nodes():
-            for src in node.inputs:
-                for dst in node.outputs:
-                    self._propagate_spatial_reuse(src, dst)
-                    self._propagate_spatial_reuse(dst, src)
-        # Mirror solved reuse from the moved tensor's SSIS (priced) onto each transfer's SSIS, by (dim, size).
-        for node in self.ssw.get_transfer_nodes():
-            governing = next(
-                (t for t in (*node.outputs, *node.inputs) if isinstance(t, Tensor) and t in self.ssis), None
-            )
-            if governing is None:
-                continue
-            reuse_by_loop = {(v.dimension, v.size): v.reuse for v in self.ssis[governing].get_temporal_variables()}
-            for iv in self.ssis[node].get_temporal_variables():
-                if (iv.dimension, iv.size) in reuse_by_loop:
-                    iv.reuse = reuse_by_loop[(iv.dimension, iv.size)]
-
-    def _propagate_spatial_reuse(self, spatial_side: Tensor, temporal_side: Tensor) -> None:
-        """Mark spatiotemporal variables on ``temporal_side`` as REUSE when they
-        match (dimension, size) of an applicable spatial variable on ``spatial_side``."""
-        if spatial_side not in self.ssis or temporal_side not in self.ssis:
-            return
-        spatial_keys_not_in_temporal = {
-            (iv.dimension, iv.size)
-            for iv in self.ssis[spatial_side].variables
-            if iv.type == IterationVariableType.SPATIAL
-            and iv.applicable
-            and iv not in self.ssis[temporal_side].variables  # only look at temporal side vars that are not spatial
-        }
-        if not spatial_keys_not_in_temporal:
-            return
-        seen_spatial_keys = set()
-        for iv in self.ssis[temporal_side].variables:
-            is_spatiotemporal = iv.type in (IterationVariableType.SPATIOTEMPORAL,)
-            match = (iv.dimension, iv.size) in spatial_keys_not_in_temporal
-            not_seen = (iv.dimension, iv.size) not in seen_spatial_keys
-            if is_spatiotemporal and match and not_seen:
-                is_applicable = iv.applicable
-                if is_applicable:  # Only set to reuse if it's applicable
-                    iv.reuse = Reuse.REUSE
-                seen_spatial_keys.add((iv.dimension, iv.size))
+        return schedule
 
     def build_transfer_graph(self) -> Workload:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
@@ -683,35 +362,6 @@ class SteadyStateScheduler:
             self.update_mapping_for_transfer(node, src, dsts)
         return self.mapping.with_updated_workload(self.ssw, self.workload)  # updates FusedGroups
 
-    def update_mapping_with_allocations(
-        self,
-        transfer_allocations: TransferAlloc,
-        memory_allocations: MemoryAlloc,
-    ):
-        for tr, alloc in transfer_allocations.items():
-            if tr in memory_allocations:
-                assert isinstance(memory_allocations[tr], tuple)
-                memory_allocation = memory_allocations[tr]
-            else:
-                memory_allocation = tuple()
-            self.mapping.set_for_node(
-                tr,
-                resource_allocation=(alloc,),
-                inter_core_tiling=tuple(),
-                memory_allocation=memory_allocation,
-            )
-        for tr in self.ssw.get_transfer_nodes():
-            assert len(self.mapping.get(tr).resource_allocation) == 1, (
-                f"Transfer node {tr.name} should have exactly one resource allocation after update."
-            )
-
-    def update_cost_lut(self):
-        # The new workload contains same computation node names but with different input tensors
-        for new_node in self.ssw.get_computation_nodes():
-            old_node = next(n for n in self.cost_lut.get_nodes() if n.name == new_node.name)
-            self.cost_lut.replace_node(old_node, new_node)
-        return self.cost_lut
-
     def generate_transfer_node(
         self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType, out_name: str = ""
     ) -> tuple[TransferNode, list[Tensor]]:
@@ -770,7 +420,7 @@ class SteadyStateScheduler:
                     f"Tensor {tensor.name} already has an SSIS, cannot assign the same tensor multiple SSIS."
                 )
                 succ = next(workload.successors(in_edge))
-                tensor_ssis = self.generate_tensor_ssis(workload, tensor, succ, ssis)
+                tensor_ssis = generate_tensor_ssis(workload, tensor, succ, ssis)
                 ssis[tensor] = tensor_ssis
         # Generate the new tensor SSIS of node outputs, and of the state a node keeps: the
         # state's iteration space is the node's own, since it is resident there.
@@ -780,38 +430,9 @@ class SteadyStateScheduler:
                 assert tensor not in ssis, (
                     f"Tensor {tensor.name} already has an SSIS, cannot assign the same tensor multiple SSIS."
                 )
-                tensor_ssis = self.generate_tensor_ssis(workload, tensor, node, ssis)
+                tensor_ssis = generate_tensor_ssis(workload, tensor, node, ssis)
                 ssis[tensor] = tensor_ssis
         return ssis
-
-    def generate_tensor_ssis(
-        self,
-        workload: Workload,
-        tensor: Tensor,
-        node: HasIterationSpace,
-        ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
-    ) -> SteadyStateIterationSpace:
-        producer_ssis = ssis.get(node, None)
-        if producer_ssis is None:
-            raise KeyError(f"Node {node.name} does not have a valid producer SSIS.")
-        tensor_dims = workload.get_tensor_dimensions(tensor)
-        tensor_ivs = []
-        for prod_iv in producer_ssis.variables:
-            prod_iv_dim = prod_iv.dimension
-            if prod_iv_dim in tensor_dims:
-                tensor_effect = LoopEffect.VARYING
-            else:
-                tensor_effect = LoopEffect.ABSENT if prod_iv.effect == LoopEffect.ABSENT else LoopEffect.INVARIANT
-            tensor_ivs.append(
-                IterationVariable(
-                    dimension=prod_iv_dim,
-                    size=prod_iv.size,
-                    type=prod_iv.type,
-                    effect=tensor_effect,
-                )
-            )
-        tensor_ssis = SteadyStateIterationSpace(variables=tuple(tensor_ivs))
-        return tensor_ssis
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_dst_allocs = self.determine_possible_memory_allocations(node, src, dsts)
