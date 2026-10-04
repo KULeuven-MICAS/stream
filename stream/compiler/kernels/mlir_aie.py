@@ -10,11 +10,17 @@ from aie.iron.kernels import activation, eltwise, linalg
 from aie.utils import set_current_device
 from ml_dtypes import bfloat16
 
+from stream.compiler.kernels.flash import SCALE_ROWS
+
 INDEX = np.ndarray[(2,), np.dtype[np.int32]]
 
 
 def _tile(size: int) -> type[np.ndarray]:
     return np.ndarray[(size,), np.dtype[bfloat16]]
+
+
+def _scale(rows: int) -> type[np.ndarray]:
+    return _tile(SCALE_ROWS * rows)
 
 
 def _target(npu: str) -> None:
@@ -50,7 +56,7 @@ class Entry(ExternalFunction):
             compile_flags=owner.compile_flags,
             symbol_prefix=owner.object_file.symbol_prefix,
         )
-        self.owner, self.rows, self.scale = owner, rows, _tile(4 * rows)
+        self.owner, self.rows, self.scale = owner, rows, _scale(rows)
 
     @property
     def zero(self) -> ExternalFunction:
@@ -67,7 +73,7 @@ class Entry(ExternalFunction):
     @property
     def passThroughLine(self) -> "Entry":
         """The copy of 16-bit lanes that hands the running scale on, declared on the bf16 buffers it copies."""
-        copy = eltwise.passthrough(4 * self.rows, np.int16)
+        copy = eltwise.passthrough(SCALE_ROWS * self.rows, np.int16)
         return Entry(copy, "passThroughLine", [self.scale, self.scale, np.int32], self.rows)
 
 
@@ -80,13 +86,13 @@ def partial_softmax(npu: str, m: int, n: int) -> Entry:
     """An online-softmax step over an m-query by n-key block; mha.cc sizes the block by its head, so n is both."""
     scores = _tile(m * n)
     return Entry(
-        _mha(npu, m, n, n), "partial_softmax", [scores, scores, _tile(4 * m), INDEX, bfloat16, *[np.int32] * 4], m
+        _mha(npu, m, n, n), "partial_softmax", [scores, scores, _scale(m), INDEX, bfloat16, *[np.int32] * 4], m
     )
 
 
 def matmul_pv(npu: str, m: int, k: int, n: int) -> Entry:
     mha = _mha(npu, m, k, n)
-    return Entry(mha, "matmul_PV", [*mha.arg_types()[:3], _tile(4 * m), np.int32, np.int32, INDEX, np.int32], m)
+    return Entry(mha, "matmul_PV", [*mha.arg_types()[:3], _scale(m), np.int32, np.int32, INDEX, np.int32], m)
 
 
 def softmax_rows(npu: str, m: int, n: int) -> Entry:
