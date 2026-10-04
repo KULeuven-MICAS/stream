@@ -1,6 +1,6 @@
 """stream/visualization/steady_state_trace.py
 -----------------------------------------------
-Export a solved steady-state schedule (from TransferAndTensorAllocator) to a
+Export a solved steady-state schedule (the formulation of a solved allocation model) to a
 Perfetto / Chrome-Trace-Viewer JSON file.
 
 Usage
@@ -8,7 +8,8 @@ Usage
     from stream.visualization.steady_state_trace import export_steady_state_trace
 
     trace_path = export_steady_state_trace(
-        tta=tta,
+        ctx=allocator.context,
+        routing=solution.transfer_routes,
         iterations=iterations,
         overlap=overlap,
         latency_per_iteration=latency_per_iteration,
@@ -53,6 +54,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from math import ceil
 from typing import TYPE_CHECKING
 
@@ -66,9 +68,7 @@ from stream.workload.node import TransferNode
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
-    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-        TransferAndTensorAllocator,
-    )
+    from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,8 @@ def _core_group_sort_key(cores: tuple[Core, ...]) -> int:
 
 
 def export_steady_state_trace(  # noqa: PLR0912, PLR0915
-    tta: TransferAndTensorAllocator,
+    ctx: FormulationContext,
+    routing: Mapping[TransferNode, MulticastPathPlan],
     iterations: int,
     overlap: int,
     latency_per_iteration: float,
@@ -173,8 +174,10 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
 
     Parameters
     ----------
-    tta:
-        A *solved* ``TransferAndTensorAllocator``.
+    ctx:
+        The formulation of a *solved* allocation model.
+    routing:
+        The route the solve chose for each transfer.
     iterations:
         Total number of steady-state iterations (metadata only).
     overlap:
@@ -197,8 +200,9 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         Absolute path of the written JSON file.
     """
     # ── 1.  Slot timings from solver ─────────────────────────────────── #
-    max_slot = tta.max_slot
-    slot_lat: dict[int, float] = {s: float(tta.slot_latency[s].X) for s in range(max_slot + 1)}
+    space = ctx.space
+    max_slot = space.max_slot
+    slot_lat: dict[int, float] = {s: float(ctx.vars.slot_latency[s].X) for s in range(max_slot + 1)}
 
     # Cumulative start of each slot *within* one iteration
     slot_starts: dict[int, float] = {}
@@ -212,8 +216,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
 
     # ── 2.  Resolve chosen transfer paths ────────────────────────────── #
     path_of: dict = {}  # transfer node → chosen MulticastPathPlan
-    routing = tta.get_transfer_routing()
-    for node in tta.transfer_nodes:
+    for node in space.transfer_nodes:
         choice = routing.get(node)
         if choice is not None:
             path_of[node] = choice
@@ -231,8 +234,8 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         # Collect unique core groups (inner tuples of resource_allocation)
         unique_core_groups: list[tuple[Core, ...]] = []
         # Map: core group → list of nodes that use it
-        for node in tta.ssc_nodes:
-            for group in tta.mapping.get(node).resource_allocation:
+        for node in space.ssc_nodes:
+            for group in space.mapping.get(node).resource_allocation:
                 if group not in unique_core_groups:
                     unique_core_groups.append(group)
         unique_core_groups.sort(key=_core_group_sort_key)
@@ -245,8 +248,8 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         tid_of_transfer: dict[TransferNode, int] = {}
         # Sort transfer nodes by slot so the track order matches the schedule
         sorted_transfers = sorted(
-            (node for node in tta.transfer_nodes if node in path_of),
-            key=lambda n: tta.slot_of[n],
+            (node for node in space.transfer_nodes if node in path_of),
+            key=lambda n: space.slot_of[n],
         )
         next_tid = len(unique_core_groups)
         for node in sorted_transfers:
@@ -279,20 +282,20 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
                     "ph": "M",
                     "pid": pid,
                     "tid": tid,
-                    "args": {"sort_index": 1_000_000 + tta.slot_of[node]},
+                    "args": {"sort_index": 1_000_000 + space.slot_of[node]},
                 }
             )
 
         # ── Computation node events (one per core group) ── #
-        for node in tta.ssc_nodes:
-            slot = tta.slot_of[node]
-            eq_node = tta.cost_lut.get_equal_node(node)
+        for node in space.ssc_nodes:
+            slot = space.slot_of[node]
+            eq_node = space.cost_lut.get_equal_node(node)
             if eq_node is not None:
-                lut_cores = tta.cost_lut.get_cores(eq_node)
+                lut_cores = space.cost_lut.get_cores(eq_node)
                 if lut_cores:
-                    latencies = [tta.cost_lut.get_cost(eq_node, c).latency_total for c in lut_cores]
+                    latencies = [space.cost_lut.get_cost(eq_node, c).latency_total for c in lut_cores]
                     latency = ceil(max(latencies))
-                    active_latency = get_active_latency(node, latency, tta.ssis)
+                    active_latency = get_active_latency(node, latency, space.ssis)
                 else:
                     latency = slot_lat[slot]
                     active_latency = slot_lat[slot]
@@ -304,7 +307,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
             for rel_iter in shown_iterations:
                 label = _ITER_LABEL[rel_iter]
                 abs_start = (rel_iter + 1) * ts_offset + slot_starts[slot]
-                for group in tta.mapping.get(node).resource_allocation:
+                for group in space.mapping.get(node).resource_allocation:
                     if group not in tid_of_group:
                         continue
                     core_ids = sorted(c.id for c in group)
@@ -331,25 +334,27 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
                     )
 
         # ── Transfer node events (one per transfer node) ── #
-        for node in tta.transfer_nodes:
-            slot = tta.slot_of[node]
+        for node in space.transfer_nodes:
+            slot = space.slot_of[node]
             chosen_path = path_of.get(node)
             if chosen_path is None:
                 continue
 
-            one_transfer_lat = float(tta.transfer_latency_for_path(node, chosen_path))
-            reuse_factor = tta.reuse_factors[node].X
-            ssis = tta.ssis[node]
-            active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, tta.ssis)
+            one_transfer_lat = float(space.transfer_latency_for_path(node, chosen_path))
+            reuse_factor = ctx.model.value(ctx.quantities.get("reuse_factor", node).expr)
+            ssis = space.ssis[node]
+            active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, space.ssis)
             reuse_summary = ssis.reuse_summary()
 
-            is_const_io = tta._is_const_io(node)
-            is_const_i = tta._is_const_i(node)
-            is_const_o = tta._is_const_o(node)
+            is_const_io = space.is_const_io(node)
+            is_const_i = space.is_const_i(node)
+            is_const_o = space.is_const_o(node)
             cname = _CNAME_TRANSFER_CONST if is_const_io else _CNAME_TRANSFER
 
-            input_of: list[str] = [n.name for n in tta.workload.successors(node) if isinstance(n, _ComputationNode)]
-            output_of: list[str] = [n.name for n in tta.workload.predecessors(node) if isinstance(n, _ComputationNode)]
+            input_of: list[str] = [n.name for n in space.workload.successors(node) if isinstance(n, _ComputationNode)]
+            output_of: list[str] = [
+                n.name for n in space.workload.predecessors(node) if isinstance(n, _ComputationNode)
+            ]
 
             for rel_iter in shown_iterations:
                 label = _ITER_LABEL[rel_iter]
@@ -387,14 +392,14 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         all_resources: list = []
 
         # Cores (computation nodes)
-        for node in tta.ssc_nodes:
-            for core_group in tta.mapping.get(node).resource_allocation:
+        for node in space.ssc_nodes:
+            for core_group in space.mapping.get(node).resource_allocation:
                 for core in core_group:
                     if core not in all_resources:
                         all_resources.append(core)
 
         # Links from chosen transfer paths
-        for node in tta.transfer_nodes:
+        for node in space.transfer_nodes:
             choice = path_of.get(node)
             if choice is not None:
                 for link in choice.links_used:
@@ -420,15 +425,15 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
             )
 
         # Computation node events
-        for node in tta.ssc_nodes:
-            slot = tta.slot_of[node]
-            eq_node = tta.cost_lut.get_equal_node(node)
+        for node in space.ssc_nodes:
+            slot = space.slot_of[node]
+            eq_node = space.cost_lut.get_equal_node(node)
             if eq_node is not None:
-                lut_cores = tta.cost_lut.get_cores(eq_node)
+                lut_cores = space.cost_lut.get_cores(eq_node)
                 if lut_cores:
-                    latencies = [tta.cost_lut.get_cost(eq_node, c).latency_total for c in lut_cores]
+                    latencies = [space.cost_lut.get_cost(eq_node, c).latency_total for c in lut_cores]
                     latency = ceil(max(latencies))
-                    active_latency = get_active_latency(node, latency, tta.ssis)
+                    active_latency = get_active_latency(node, latency, space.ssis)
                 else:
                     latency = slot_lat[slot]
                     active_latency = slot_lat[slot]
@@ -437,7 +442,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
                 latency = slot_lat[slot]
                 active_latency = slot_lat[slot]
 
-            alloc_cores = [core for group in tta.mapping.get(node).resource_allocation for core in group]
+            alloc_cores = [core for group in space.mapping.get(node).resource_allocation for core in group]
 
             for rel_iter in shown_iterations:
                 label = _ITER_LABEL[rel_iter]
@@ -470,25 +475,27 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
                     )
 
         # Transfer node events
-        for node in tta.transfer_nodes:
-            slot = tta.slot_of[node]
+        for node in space.transfer_nodes:
+            slot = space.slot_of[node]
             chosen_path = path_of.get(node)
             if chosen_path is None:
                 continue
 
-            one_transfer_lat = float(tta.transfer_latency_for_path(node, chosen_path))
-            ssis = tta.ssis[node]
-            reuse_factor = tta.reuse_factors[node].X
-            active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, tta.ssis)
+            one_transfer_lat = float(space.transfer_latency_for_path(node, chosen_path))
+            ssis = space.ssis[node]
+            reuse_factor = ctx.model.value(ctx.quantities.get("reuse_factor", node).expr)
+            active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, space.ssis)
             reuse_summary = ssis.reuse_summary()
 
-            is_const_io = tta._is_const_io(node)
-            is_const_i = tta._is_const_i(node)
-            is_const_o = tta._is_const_o(node)
+            is_const_io = space.is_const_io(node)
+            is_const_i = space.is_const_i(node)
+            is_const_o = space.is_const_o(node)
             cname = _CNAME_TRANSFER_CONST if is_const_io else _CNAME_TRANSFER
 
-            input_of: list[str] = [n.name for n in tta.workload.successors(node) if isinstance(n, _ComputationNode)]
-            output_of: list[str] = [n.name for n in tta.workload.predecessors(node) if isinstance(n, _ComputationNode)]
+            input_of: list[str] = [n.name for n in space.workload.successors(node) if isinstance(n, _ComputationNode)]
+            output_of: list[str] = [
+                n.name for n in space.workload.predecessors(node) if isinstance(n, _ComputationNode)
+            ]
 
             for rel_iter in shown_iterations:
                 label = _ITER_LABEL[rel_iter]

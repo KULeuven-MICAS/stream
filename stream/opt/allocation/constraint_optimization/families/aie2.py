@@ -9,10 +9,8 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import _r
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.opt.allocation.constraint_optimization.context import MemoryReuseEntry
+    from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
-    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-        TransferAndTensorAllocator,
-    )
 
 NAMESPACE = "aie2"
 
@@ -24,10 +22,10 @@ class ObjectFifoDepth:
     requires: ClassVar[tuple[str, ...]] = ("object_fifo_depth",)
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         for core, depth in q.indexed("object_fifo_depth").items():
             if core.namespace == NAMESPACE:
-                alloc.model.add_constr(
+                ctx.model.add_constr(
                     depth.expr <= core.max_object_fifo_depth, name=f"aie2_obj_fifo_depth_Core_{core.id}"
                 )
 
@@ -39,10 +37,10 @@ class BufferDescriptors:
     requires: ClassVar[tuple[str, ...]] = ("buffer_descriptor_depth",)
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         for core, depth in q.indexed("buffer_descriptor_depth").items():
             if core.namespace == NAMESPACE:
-                alloc.model.add_constr(depth.expr <= core.max_object_fifo_depth, name=f"aie2_bd_depth_Core_{core.id}")
+                ctx.model.add_constr(depth.expr <= core.max_object_fifo_depth, name=f"aie2_bd_depth_Core_{core.id}")
 
 
 class MemoryReuse:
@@ -52,13 +50,13 @@ class MemoryReuse:
     requires: ClassVar[tuple[str, ...]] = ("memory_reuse",)
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         entries: tuple[MemoryReuseEntry, ...] = q.get("memory_reuse").expr
         for entry in entries:
             if entry.core.namespace != NAMESPACE:
                 continue
             for i, (mem_stop, compute_stop) in enumerate(entry.unexpressible):
-                alloc.model.add_constr(
+                ctx.model.add_constr(
                     mem_stop._raw + compute_stop._raw <= 1,
                     name=f"aie2_mem_replay_{entry.name}_Core_{entry.core.id}_P{i}",
                 )
@@ -82,11 +80,11 @@ class DmaChannels:
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
         self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
 
-    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         for direction in ("in", "out"):
             for core, usage in q.indexed(f"dma_{direction}").items():
-                limit = self.channels(core, alloc.offchip_core_id)
-                alloc.model.add_constr(usage.expr <= limit, name=f"dma_{direction}_cap_{_resource_key(core)}")
+                limit = self.channels(core, ctx.space.offchip_core_id)
+                ctx.model.add_constr(usage.expr <= limit, name=f"dma_{direction}_cap_{_resource_key(core)}")
 
     def channels(self, core: Core, offchip_core_id: int | None) -> int:
         """The DMA channels ``core`` has in each direction."""

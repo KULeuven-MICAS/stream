@@ -53,6 +53,10 @@ def rate(alloc: tta.TransferAndTensorAllocator, key: Any) -> float:
     return alloc.quantities.get("port_rate", key).expr
 
 
+def total(alloc: tta.TransferAndTensorAllocator) -> float:
+    return alloc.model.value(alloc.quantities.get("total_latency").expr)
+
+
 @pytest.mark.slow
 def test_memory_ports_add_constraints_but_no_variables(base: Any, ports: Any, model_size: Callable) -> None:
     (base_vars, base_cons), (port_vars, port_cons) = model_size(base), model_size(ports)
@@ -75,7 +79,7 @@ def test_every_port_moves_each_slot_demand_within_that_slot(ports: Any) -> None:
 
 @pytest.mark.slow
 def test_offchip_port_binds_and_stretches_the_schedule(base: Any, ports: Any, interval: Callable) -> None:
-    assert ports.total_latency.X > base.total_latency.X
+    assert total(ports) > total(base)
     utilisation = {
         key: ports.model.value(d.expr) / (rate(ports, key) * interval(ports))
         for key, d in ports.quantities.indexed("port_demand").items()
@@ -100,21 +104,21 @@ def test_burst_off_builds_one_constraint_per_port(solve: Solve, base: Any, model
 def test_without_bounds_the_family_only_reports(solve: Solve, base: Any, model_size: Callable) -> None:
     report_only = solve([{"memory_ports": {"interval": False, "burst": False}}])
     assert model_size(report_only) == model_size(base)
-    assert report_only.total_latency.X == base.total_latency.X
+    assert total(report_only) == total(base)
     rows = report_only.compute_performance_stats()["memory_ports"]
     assert {row["kind"] for row in rows} == {"memory_port", "link"}
     assert rows[0]["utilization"] == max(row["utilization"] for row in rows)
 
 
 def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
-    alloc = MagicMock()
+    ctx = MagicMock()
     registry = QuantityRegistry()
-    MemoryPorts().build(alloc, registry)
-    alloc.model.add_constr.assert_not_called()
+    MemoryPorts().build(ctx, registry)
+    ctx.model.add_constr.assert_not_called()
 
 
 def port_registry() -> tuple[MagicMock, QuantityRegistry]:
-    alloc = MagicMock()
+    ctx = MagicMock()
     registry = QuantityRegistry()
     for name, value in (("iteration", 10), ("overlap", 2)):
         registry.add(name, value)
@@ -122,37 +126,37 @@ def port_registry() -> tuple[MagicMock, QuantityRegistry]:
     registry.add("port_demand", 256.0, index=DRAM)
     registry.add("port_demand_slot", 256.0, index=(DRAM, 0))
     registry.add("slot_latency", 4, index=0)
-    return alloc, registry
+    return ctx, registry
 
 
-def constraint_names(alloc: MagicMock) -> list[str]:
-    return [call.kwargs["name"] for call in alloc.model.add_constr.call_args_list]
+def constraint_names(ctx: MagicMock) -> list[str]:
+    return [call.kwargs["name"] for call in ctx.model.add_constr.call_args_list]
 
 
 def test_burst_off_keeps_only_the_interval_bound() -> None:
-    alloc, registry = port_registry()
-    MemoryPorts(burst=False).build(alloc, registry)
-    assert constraint_names(alloc) == ["port_interval_6_dram_rw_port_1"]
+    ctx, registry = port_registry()
+    MemoryPorts(burst=False).build(ctx, registry)
+    assert constraint_names(ctx) == ["port_interval_6_dram_rw_port_1"]
 
 
 def test_interval_off_keeps_only_the_burst_bound() -> None:
-    alloc, registry = port_registry()
-    MemoryPorts(interval=False).build(alloc, registry)
-    assert constraint_names(alloc) == ["port_burst_6_dram_rw_port_1_0"]
+    ctx, registry = port_registry()
+    MemoryPorts(interval=False).build(ctx, registry)
+    assert constraint_names(ctx) == ["port_burst_6_dram_rw_port_1_0"]
 
 
 def test_a_stream_whose_active_latency_rounds_to_zero_keeps_its_bits(monkeypatch: pytest.MonkeyPatch) -> None:
-    tr, choice, alloc = MagicMock(), MagicMock(), MagicMock()
+    tr, choice, ctx = MagicMock(), MagicMock(), MagicMock()
     tr.inputs[0].size_bits.return_value = 4096
-    alloc.quantities = QuantityRegistry()
-    alloc.quantities.add("transfer_latency", "gated", index=(tr, choice))
-    alloc.transfer_latency_for_path.return_value = 1
+    ctx.quantities = QuantityRegistry()
+    ctx.quantities.add("transfer_latency", "gated", index=(tr, choice))
+    ctx.space.transfer_latency_for_path.return_value = 1
     loops = [SimpleNamespace(size=2, effect=LoopEffect.INVARIANT), SimpleNamespace(size=8, effect=LoopEffect.ABSENT)]
-    alloc.ssis.get.return_value.get_temporal_variables.return_value = loops
-    alloc.y_path_choice = {(tr, choice): SimpleNamespace(_raw="y")}
-    alloc.slot_of = {tr: 0}
+    ctx.space.ssis.get.return_value.get_temporal_variables.return_value = loops
+    ctx.vars.y = {(tr, choice): SimpleNamespace(_raw="y")}
+    ctx.space.slot_of = {tr: 0}
     monkeypatch.setattr(traffic, "_sides", lambda *_: [])
-    (stream,) = traffic.dma_streams(alloc)
+    (stream,) = traffic.dma_streams(ctx)
     # Active for 1 of 8 iterations: 1 cycle rounds to 0, while 4096 / 8 bits still move.
     assert (stream.active_cycles, stream.bits_per_cycle * stream.latency_ub) == ("y", 512)
 

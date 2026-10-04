@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from stream.ir.infeasibility import (
     ImplicatedResourceIR,
     InfeasibilityReportIR,
@@ -59,13 +61,13 @@ def test_resource_kind_is_open_for_new_hardware():
 def _bare_allocator():
     """A TransferAndTensorAllocator with only the quantitative-diagnosis state populated -- enough to
     exercise the family-agnostic _build_unmet without constructing a full MILP."""
+    from stream.opt.allocation.constraint_optimization.formulation import ResourceLedger
     from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
         TransferAndTensorAllocator,
     )
 
     alloc = object.__new__(TransferAndTensorAllocator)
-    alloc._resource_bounds = {}
-    alloc._resource_terms = {}
+    alloc.context = SimpleNamespace(ledger=ResourceLedger())
     return alloc
 
 
@@ -73,8 +75,8 @@ def test_unmet_generalizes_beyond_memory():
     """The same builder quantifies a non-memory capacity family (object-FIFO depth) from the IIS
     witness -- proving the diagnosis is not memory-specific."""
     alloc = _bare_allocator()
-    alloc._resource_bounds[("object_fifo_depth", 2)] = 4.0
-    alloc._resource_terms[("object_fifo_depth", 2)] = {"tA": 3, "tB": 3}
+    alloc.context.ledger.bounds[("object_fifo_depth", 2)] = 4.0
+    alloc.context.ledger.terms[("object_fifo_depth", 2)] = {"tA": 3, "tB": 3}
     iis = ["aie2_obj_fifo_depth_Core_2", "objfifo_tA_Core_2_L-1__lb", "objfifo_tB_Core_2_L0__lb"]
 
     unmet = alloc._build_unmet("object_fifo_depth", 2, iis)
@@ -90,8 +92,8 @@ def test_unmet_generalizes_beyond_memory():
 def test_unmet_forced_terms_avoid_partition_double_count():
     """A base tensor name is a prefix of its partitions; only the exact IIS subjects count."""
     alloc = _bare_allocator()
-    alloc._resource_bounds[("memory_capacity", 3)] = 2_000_000.0
-    alloc._resource_terms[("memory_capacity", 3)] = {"conv_out": 1_600_000, "conv_out_1": 1_600_000}
+    alloc.context.ledger.bounds[("memory_capacity", 3)] = 2_000_000.0
+    alloc.context.ledger.terms[("memory_capacity", 3)] = {"conv_out": 1_600_000, "conv_out_1": 1_600_000}
     # Only the "_1" partition is in the IIS -> the base must NOT be double-counted.
     iis = ["mem_cap_Core 3", "memload_conv_out_1_Core_3_L-1__lb"]
     unmet = alloc._build_unmet("memory_capacity", 3, iis)
@@ -105,8 +107,8 @@ def test_unmet_memory_term_carries_tile_shape():
     dtype, and the value still drives the demand -- so the designer sees which tile (and why) fills the
     core, not just the total."""
     alloc = _bare_allocator()
-    alloc._resource_bounds[("memory_capacity", 3)] = 2_000_000.0
-    alloc._resource_terms[("memory_capacity", 3)] = {
+    alloc.context.ledger.bounds[("memory_capacity", 3)] = 2_000_000.0
+    alloc.context.ledger.terms[("memory_capacity", 3)] = {
         "conv_out": {"value": 1_600_000, "dims": [("z32", 64), ("z3", 112), ("z4", 112)], "dtype": "f32"}
     }
     iis = ["mem_cap_Core 3", "memload_conv_out_Core_3_L-1__lb"]

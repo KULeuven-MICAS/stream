@@ -10,15 +10,18 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 from stream.plugins import load_group, overlay_allowlist
 
 if TYPE_CHECKING:
+    from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
-    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-        TransferAndTensorAllocator,
-    )
+    from stream.opt.solver import ObjectiveLevel
 
 FAMILY_GROUP = "stream.constraint_families"
 SLOT_PRESSURE = "slot_pressure"
 FamilySpec = str | Mapping[str, Any]
-Build = Callable[["TransferAndTensorAllocator", "QuantityRegistry"], None]
+Build = Callable[["FormulationContext", "QuantityRegistry"], None]
+
+LATENCY, OFFCHIP_TRAFFIC, BUFFERING, ROUTE_HOPS = 4, 3, 2, 1
+"""The priorities of Stream's objective levels: the latency decides first, then the off-chip traffic, the
+buffering depth and the route length each break the ties of the level above."""
 
 DEFAULT_FAMILIES: tuple[str, ...] = (
     "placement",
@@ -43,13 +46,13 @@ DEFAULT_FAMILIES: tuple[str, ...] = (
 class ConstraintFamily(Protocol):
     """Constraints and the quantities they define. ``build`` runs after every family that provides a name in
     ``requires``, and defines what ``provides`` names; a family is shared by the solves of a run, so it keeps
-    no state of its own. The allocator's variables exist before any family runs."""
+    no state of its own. The core decision variables exist before any family runs."""
 
     name: ClassVar[str]
     requires: ClassVar[tuple[str, ...]]
     provides: ClassVar[tuple[str, ...]]
 
-    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
+    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None: ...
 
 
 @runtime_checkable
@@ -60,14 +63,22 @@ class DeclaringFamily(Protocol):
     declare_requires: ClassVar[tuple[str, ...]]
     declares: ClassVar[tuple[str, ...]]
 
-    def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
+    def declare(self, ctx: FormulationContext, q: QuantityRegistry) -> None: ...
+
+
+@runtime_checkable
+class ObjectiveFamily(Protocol):
+    """A family that contributes to the lexicographic objective once every family has built: the levels of one
+    name, which share a priority, are summed into one."""
+
+    def objective(self, ctx: FormulationContext, q: QuantityRegistry) -> list[ObjectiveLevel]: ...
 
 
 @runtime_checkable
 class ReportingFamily(Protocol):
     """A family that adds sections to the solved schedule's performance report."""
 
-    def report(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> dict[str, Any]: ...
+    def report(self, ctx: FormulationContext, q: QuantityRegistry) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)

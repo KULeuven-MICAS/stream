@@ -11,6 +11,9 @@ CO_DIR = REPO_ROOT / "stream" / "opt" / "allocation" / "constraint_optimization"
 CLEAN_FILES = [
     CO_DIR / "context.py",
     CO_DIR / "utils.py",
+    CO_DIR / "space.py",
+    CO_DIR / "formulation.py",
+    *sorted((CO_DIR / "families").glob("*.py")),
     REPO_ROOT / "stream" / "api.py",
 ]
 

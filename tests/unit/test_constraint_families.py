@@ -7,15 +7,16 @@ from stream.api import SolveOptions, default_families
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization import families
-from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
 from stream.opt.allocation.constraint_optimization.context import AIE2Constraints
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     SLOT_PRESSURE,
     drop_families,
     load_families,
+    overlap,
     parse_spec,
 )
+from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -35,13 +36,13 @@ class CapIteration:
     def __init__(self, cap: float = 1e12) -> None:
         self.cap = cap
 
-    def declare(self, alloc: tta.TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def declare(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         q.add(SLOT_PRESSURE, 0, index="test", upper_bound=PRESSURE_BOUND)
 
-    def build(self, alloc: tta.TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
         iteration = q.get("iteration").expr
         q.add("capped_iteration", iteration)
-        alloc.model.add_constr(iteration <= self.cap, name="cap_iteration")
+        ctx.model.add_constr(iteration <= self.cap, name="cap_iteration")
 
 
 class Needs:
@@ -50,7 +51,7 @@ class Needs:
     def __init__(self, name: str, requires: tuple[str, ...], provides: tuple[str, ...] = ()) -> None:
         self.name, self.requires, self.provides = name, requires, provides
 
-    def build(self, alloc: Any, q: QuantityRegistry) -> None: ...
+    def build(self, ctx: Any, q: QuantityRegistry) -> None: ...
 
 
 @pytest.fixture
@@ -174,8 +175,8 @@ def test_family_adds_its_constraint_quantity_and_slot_bound(
     assert family_cons == base_cons + 1
     assert "capped_iteration" in with_family.quantities
     assert "capped_iteration" not in base.quantities
-    assert with_family._slot_pressure_bound() == PRESSURE_BOUND
-    assert base._slot_pressure_bound() < PRESSURE_BOUND
+    assert overlap._slot_pressure_bound(with_family.quantities) == PRESSURE_BOUND
+    assert overlap._slot_pressure_bound(base.quantities) < PRESSURE_BOUND
 
 
 def test_a_default_family_takes_options_by_name():

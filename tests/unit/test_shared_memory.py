@@ -75,19 +75,18 @@ def test_a_handover_between_cores_sharing_a_memory_stays_in_it():
     alloc = solved_allocator(fusemax())
     handovers = [
         tr
-        for tr in alloc.transfer_nodes
-        if {c.id for choice in alloc.possible_transfer_allocations[tr] for c in (*choice.sources, *choice.targets)}
-        == {0, 1}
+        for tr in alloc.space.transfer_nodes
+        if {c.id for choice in alloc.space.path_choices[tr] for c in (*choice.sources, *choice.targets)} == {0, 1}
     ]
     assert handovers
     for tr in handovers:
-        for choice in alloc.possible_transfer_allocations[tr]:
-            assert alloc.transfer_latency_for_path(tr, choice) == 0
-            assert not alloc.links_in_choice[(tr, choice)]
+        for choice in alloc.space.path_choices[tr]:
+            assert alloc.space.transfer_latency_for_path(tr, choice) == 0
+            assert not alloc.space.links_in_choice[(tr, choice)]
     # Each copy is its source's buffer, and these hold nothing beyond their sources.
     copies = {t.name for tr in handovers for t in tr.outputs}
     beyond = dict.fromkeys(copies, 0)
-    for indicator, bits, name in alloc._memory_load_terms[0]:
+    for indicator, bits, name in alloc.context.ledger.memory[0]:
         if name in copies and float(indicator.X) > 0.5:
             beyond[name] += bits
     assert all(bits <= 0 for bits in beyond.values())

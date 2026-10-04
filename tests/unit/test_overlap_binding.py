@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from stream.hardware.architecture.core import Core
+from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
     TransferAndTensorAllocator,
 )
@@ -13,9 +14,13 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
 def make_allocator(slack: dict[object, int], overlap: int | None, recurrence: int = 0):
     """An allocator stub carrying only what the overlap section reads, so no solve is needed."""
     allocator = object.__new__(TransferAndTensorAllocator)
-    allocator.idle_lat = {res: SimpleNamespace(X=float(cycles)) for res, cycles in slack.items()}
-    allocator.overlap = None if overlap is None else SimpleNamespace(X=float(overlap))
-    allocator.recurrence_bound = recurrence
+    allocator.model = SimpleNamespace(value=float)
+    allocator.quantities = q = QuantityRegistry()
+    for res, cycles in slack.items():
+        q.add("idle_latency", cycles, index=res)
+    if overlap is not None:
+        q.add("overlap", overlap)
+    q.add("recurrence_bound", recurrence)
     return allocator
 
 

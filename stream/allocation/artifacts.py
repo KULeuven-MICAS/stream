@@ -56,7 +56,8 @@ def write_artifacts(allocator: TransferAndTensorAllocator, schedule: SteadyState
         try:
             for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
                 trace_path = export_steady_state_trace(
-                    tta=allocator,
+                    allocator.context,
+                    schedule.solution.transfer_routes,
                     iterations=schedule.iterations,
                     overlap=latency.overlap,
                     latency_per_iteration=latency.per_iteration,

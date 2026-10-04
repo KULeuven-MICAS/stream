@@ -111,7 +111,8 @@ def _model_size(alloc: tta.TransferAndTensorAllocator) -> tuple[int, int]:
 
 def _interval(alloc: tta.TransferAndTensorAllocator) -> float:
     """The solved initiation interval: the iteration minus the overlap with the next one."""
-    return alloc.model.value(alloc.quantities.get("iteration").expr) - alloc.overlap.X
+    value, q = alloc.model.value, alloc.quantities
+    return value(q.get("iteration").expr) - value(q.get("overlap").expr)
 
 
 @pytest.fixture(scope="session")

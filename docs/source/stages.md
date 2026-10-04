@@ -45,19 +45,19 @@ The allocation model is built from constraint families, each a group of constrai
 | Family | What it constrains | Options |
 |--------|--------------------|---------|
 | `placement` | each movable tensor takes one of its placements | |
-| `path_choice` | each transfer takes one route, whose ends hold the tensors it moves | |
+| `path_choice` | each transfer takes one route, whose ends hold the tensors it moves; the route length is the last objective level | |
 | `reuse_rates` | how many iterations one firing of a transfer serves | |
 | `link_contention` | a link carries at most one transfer per slot | |
 | `memory_capacity` | what each memory holds fits in its capacity | |
-| `object_fifo_depth` | the object-fifo depth each core's tensors need | |
+| `object_fifo_depth` | the object-fifo depth each core's tensors need; the buffering depth is an objective level | |
 | `buffer_descriptors` | the buffer descriptors each core's transfers need | |
 | `slot_latency` | a slot lasts as long as the slowest node or transfer in it | |
 | `reuse_levels`, `output_reuse` | a tensor handed between cores, and a final output, are held up to their outermost irrelevant loop | |
 | `reuse_compatibility` | the reuse levels on either side of a memory-to-compute transfer agree | |
 | `spatial_reuse` | reuse covers every temporal loop inside a tensor's outermost spatial loop | |
-| `overlap` | how much of an iteration the next one overlaps, and the fill before the first | `model` (`occupancy` or `span`), `transfer_contention`, `offchip_contention` |
+| `overlap` | how much of an iteration the next one overlaps, the fill before the first, and the latency they add up to | `model` (`occupancy` or `span`), `transfer_contention`, `offchip_contention` |
 | `dma_channels` | the DMA channels each core drives, whose peaks the latency objective charges | |
-| `offchip_traffic` | the bits crossing the off-chip boundary, charged in the latency objective | |
+| `offchip_traffic` | the bits crossing the off-chip boundary, an objective level and charged in the latency objective | |
 | `aie2_object_fifo_depth`, `aie2_buffer_descriptors` | an AIE2 tile's fifo depth and buffer descriptors stay within `max_object_fifo_depth` | |
 | `aie2_memory_reuse` | a memory tile outlives its reader only where one replay expresses the re-read | |
 | `aie2_dma_channels` | a tile drives at most its DMA channels in each direction | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6), `max_shim_tile_dma_channels` (2) |
@@ -73,6 +73,8 @@ no_dma = SolveOptions(families=default_families(hardware, without=["dma_channels
 span = SolveOptions(families=[*default_families(hardware, without=["overlap"]), {"overlap": {"model": "span"}}])
 ports = SolveOptions(families=[*default_families(hardware), "memory_ports"])
 ```
+
+A family's `build(ctx, q)` (and `declare`) receives a `FormulationContext`: `ctx.space`, the read-only problem and the choices derived from it (each tensor's placements, each transfer's routes and the links they use, each tensor's reuse stops and the tiles they hold); `ctx.vars`, the core decision variables (`x` places a tensor, `y` routes a transfer, `z_stop` stops a tensor's reuse, `z_single` holds its window in one buffer, `slot_latency`); `ctx.model`, the `SolverModel`; `ctx.quantities`, the `QuantityRegistry` passed as `q`; and the modelling helpers families share, such as `binary_product`, `tensor_uses_core_var` and `add_resource_constr`. A family can also contribute to the objective: `objective(ctx, q)` runs once every family has built and returns `ObjectiveLevel`s; the levels of one name are summed and the solve minimizes them lexicographically, highest priority first. Stream's levels are `latency` (priority 4: the run's latency from `overlap`, the DMA peaks from `dma_channels` and the weighted off-chip traffic from `offchip_traffic`), `offchip_traffic` (3), `buffering` (2, from `object_fifo_depth`) and `route_hops` (1, from `path_choice`).
 
 A core namespace (a `NamespaceConstraints` in the `stream.constraints` group) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs.
 
