@@ -54,3 +54,14 @@ def test_a_timed_stage_excludes_the_stages_it_runs():
     outer, leaf = recorded.spans[("_Outer",)], recorded.spans[("_Outer", "_Leaf")]
     assert outer.exclusive_ns < leaf.exclusive_ns
     assert outer.inclusive_ns >= outer.exclusive_ns + leaf.inclusive_ns
+
+
+def test_a_solve_that_fails_before_its_stages_run_closes_its_profile(monkeypatch, tmp_path):
+    from stream import api
+    from stream.profiling import TimingInstrumentation
+
+    monkeypatch.setattr(api, "build_instrumentation", lambda *_: [TimingInstrumentation(run_name="run")])
+    with pytest.raises(FileNotFoundError):
+        api.evaluate_mapping(str(tmp_path / "missing.yaml"), "workload.onnx", str(tmp_path))
+    with profile():
+        pass

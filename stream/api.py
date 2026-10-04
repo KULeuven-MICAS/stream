@@ -168,32 +168,32 @@ def _solve(
     codegen: bool,
 ) -> MappingEstimate:
     observers = build_instrumentation("generate_code" if codegen else "evaluate_mapping", options.instrumentation)
-    with span("parse_accelerator"):
-        accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
-    backend = SolverBackend[options.backend.upper()]
-    if backend in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
-        with span("solver_license"):
-            GurobiBackend.check_license()
-    proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
-    emission = [codegen_backend_for(accelerator).stage()] if codegen else []
-    stages = [AcceleratorParserStage, *proposal, FusionGroupIterationStage, *emission, *_ALLOCATION_STAGES]
-    with span("load_workload"):
-        loaded = workload if isinstance(workload, Workload) else load_workload(workload)
-    ctx = StageContext.from_kwargs(
-        accelerator=accelerator,
-        workload=loaded,
-        mapping_path=mapping,
-        output_path=output_path,
-        loma_lpf_limit=6,
-        temporal_mapping_type=TemporalMappingType[options.temporal_mapping_type.upper()],
-        nb_cols_to_use=options.nb_cols_to_use,
-        backend=backend.value,
-        constraint_selection=options.resolved_constraint_selection(),
-        kernel_library=options.kernel_library,
-        tile_search=options.tile_search,
-        **options.stage_options,
-    )
     try:
+        with span("parse_accelerator"):
+            accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
+        backend = SolverBackend[options.backend.upper()]
+        if backend in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
+            with span("solver_license"):
+                GurobiBackend.check_license()
+        proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
+        emission = [codegen_backend_for(accelerator).stage()] if codegen else []
+        stages = [AcceleratorParserStage, *proposal, FusionGroupIterationStage, *emission, *_ALLOCATION_STAGES]
+        with span("load_workload"):
+            loaded = workload if isinstance(workload, Workload) else load_workload(workload)
+        ctx = StageContext.from_kwargs(
+            accelerator=accelerator,
+            workload=loaded,
+            mapping_path=mapping,
+            output_path=output_path,
+            loma_lpf_limit=6,
+            temporal_mapping_type=TemporalMappingType[options.temporal_mapping_type.upper()],
+            nb_cols_to_use=options.nb_cols_to_use,
+            backend=backend.value,
+            constraint_selection=options.resolved_constraint_selection(),
+            kernel_library=options.kernel_library,
+            tile_search=options.tile_search,
+            **options.stage_options,
+        )
         (ctx,) = MainStage(instrument(stages, observers), ctx).run()
     except BaseException as exc:
         fail_instrumentation(observers, str(exc) or exc.__class__.__name__)
