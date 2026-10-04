@@ -204,15 +204,11 @@ class TestSteadyStateScheduleGetIr:
             performance=None,
             capacity_slack={},
         )
+        problem = MagicMock(fusion_splits=overrides.pop("fusion_splits", {}), iterations=1)
         fields = {
-            "source_workload": MagicMock(),
-            "workload": MagicMock(),
+            "problem": problem,
             "mapping": Mapping(),
             "ssis": {},
-            "iterations": 1,
-            "fusion_splits": {},
-            "accelerator": MagicMock(),
-            "cost_lut": MagicMock(),
             "backend": "ORTOOLS_GSCIP",
             "constraint_selection": None,
             "solution": solution,

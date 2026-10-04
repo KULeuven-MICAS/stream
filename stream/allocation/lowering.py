@@ -85,7 +85,6 @@ class _Lowering:
         with span("iteration_spaces"):
             self.ssis = self.generate_ssis()
             self.iterations = self.calculate_iterations()
-            multiplicities = self.calculate_multiplicities()
         with span("timeslots"):
             timeslots = self.ssw.get_timeslots(self.mapping)
         return SteadyStateProblem(
@@ -96,11 +95,9 @@ class _Lowering:
             cost_lut=cost_lut,
             ssis=self.ssis,
             iterations=self.iterations,
-            multiplicities=multiplicities,
             timeslots=timeslots,
             accelerator=self.accelerator,
             transfer_context=self.transfer_context,
-            nb_cols_to_use=self.nb_cols_to_use,
         )
 
     def build_transfer_graph(self) -> Workload:
@@ -518,14 +515,6 @@ class _Lowering:
         iterations_per_node = {node: prod(ssis.get_temporal_sizes()) for node, ssis in self.ssis.items()}
         # For now, return the minimum number of iterations across all nodes
         return min(iterations_per_node.values())
-
-    def calculate_multiplicities(self) -> dict[ComputationNode, int]:
-        """Calculate the multiplicity of each computation node in the steady state workload."""
-        multiplicities = {}
-        for node, ssis in self.ssis.items():
-            total_iterations = prod(ssis.get_temporal_sizes())
-            multiplicities[node] = total_iterations // self.iterations
-        return multiplicities
 
     def _retrieve_core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
         if isinstance(node, InEdge):

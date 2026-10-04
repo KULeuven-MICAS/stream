@@ -38,16 +38,7 @@ class AllocationStage(Stage):
         problem = self.problem
         with span("milp_build"):
             allocator = TransferAndTensorAllocator(
-                problem.workload,
-                problem.timeslots,
-                accelerator=problem.accelerator,
-                iterations=problem.iterations,
-                ssis=problem.ssis,
-                multiplicities=problem.multiplicities,
-                mapping=problem.mapping,
-                cost_lut=problem.cost_lut,
-                nb_cols_to_use=problem.nb_cols_to_use,
-                context=problem.transfer_context,
+                problem,
                 output_path=self.output_path,
                 backend=self.backend,
                 constraint_selection=self.constraint_selection,
@@ -57,14 +48,9 @@ class AllocationStage(Stage):
         )
         with span("apply_solution"):
             schedule = SteadyStateSchedule(
-                source_workload=problem.source_workload,
-                workload=problem.workload,
+                problem=problem,
                 mapping=solved_mapping(problem.workload, problem.mapping, solution),
                 ssis=solved_iteration_spaces(problem.workload, problem.ssis, solution.reuse_levels),
-                iterations=problem.iterations,
-                fusion_splits=problem.fusion_splits,
-                accelerator=problem.accelerator,
-                cost_lut=problem.cost_lut,
                 backend=self.backend,
                 constraint_selection=self.constraint_selection,
                 solution=solution,

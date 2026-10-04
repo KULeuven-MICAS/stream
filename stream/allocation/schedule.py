@@ -16,6 +16,7 @@ from stream.workload.steady_state.iteration_space import (
 )
 
 if TYPE_CHECKING:
+    from stream.allocation.problem import SteadyStateProblem
     from stream.allocation.solution import AllocationSolution
     from stream.cost_model.core_cost_lut import CoreCostLUT
     from stream.datatypes import LayerDim
@@ -42,21 +43,41 @@ _LOOP_NEST_DEPTH: dict[str, int] = {
 
 @dataclass(frozen=True)
 class SteadyStateSchedule:
-    """A solved steady state as downstream reads it: the workload with its transfers, the mapping and
-    iteration spaces the solution decided, and the solution itself. ``source_workload`` is the fused
-    group's workload before its transfers were made explicit."""
+    """A solved steady state as downstream reads it: the problem it solves, the mapping and iteration
+    spaces the solution decided, and the solution itself."""
 
-    source_workload: Workload
-    workload: Workload
+    problem: SteadyStateProblem
     mapping: Mapping
     ssis: IterationSpaces
-    iterations: int
-    fusion_splits: dict[LayerDim, int]
-    accelerator: Accelerator
-    cost_lut: CoreCostLUT
     backend: str
     constraint_selection: ConstraintSelection | None
     solution: AllocationSolution
+
+    @property
+    def source_workload(self) -> Workload:
+        """The fused group's workload before its transfers were made explicit."""
+        return self.problem.source_workload
+
+    @property
+    def workload(self) -> Workload:
+        """The steady-state workload, with its transfers."""
+        return self.problem.workload
+
+    @property
+    def iterations(self) -> int:
+        return self.problem.iterations
+
+    @property
+    def fusion_splits(self) -> dict[LayerDim, int]:
+        return self.problem.fusion_splits
+
+    @property
+    def accelerator(self) -> Accelerator:
+        return self.problem.accelerator
+
+    @property
+    def cost_lut(self) -> CoreCostLUT:
+        return self.problem.cost_lut
 
     @property
     def cost_to_rank(self) -> float:

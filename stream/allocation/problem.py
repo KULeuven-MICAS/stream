@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.mapping.mapping import Mapping
     from stream.opt.allocation.constraint_optimization.context import TransferAndTensorContext
-    from stream.workload.node import ComputationNode, Node
+    from stream.workload.node import Node
     from stream.workload.workload import Workload
 
 
@@ -26,8 +26,6 @@ class SteadyStateProblem:
     cost_lut: CoreCostLUT
     ssis: IterationSpaces
     iterations: int
-    multiplicities: dict[ComputationNode, int]
     timeslots: dict[Node, int]
     accelerator: Accelerator
     transfer_context: TransferAndTensorContext
-    nb_cols_to_use: int

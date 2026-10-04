@@ -18,11 +18,10 @@ try:
 except ModuleNotFoundError:
     GRB = None  # type: ignore[assignment]
 
+from stream.allocation.problem import SteadyStateProblem
 from stream.allocation.solution import AllocationSolution, Latency, end_to_end_mac_utilization
 from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
 from stream.cost_model.communication_manager import MulticastPathPlan
-from stream.cost_model.core_cost_lut import CoreCostLUT
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.ir.infeasibility import (
@@ -35,12 +34,8 @@ from stream.ir.infeasibility import (
     TileDimIR,
     UnmetConstraintIR,
 )
-from stream.mapping.mapping import Mapping, Resource
-from stream.opt.allocation.constraint_optimization.context import (
-    MemoryReuseEntry,
-    TransferAndTensorContext,
-    build_transfer_context,
-)
+from stream.mapping.mapping import Resource
+from stream.opt.allocation.constraint_optimization.context import MemoryReuseEntry
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, ReportingFamily, load_families
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
@@ -68,7 +63,6 @@ from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
     Reuse,
-    SteadyStateIterationSpace,
 )
 from stream.workload.steady_state.node import Node
 from stream.workload.workload import (
@@ -78,7 +72,6 @@ from stream.workload.workload import (
     OutEdge,
     Tensor,
     TransferNode,
-    Workload,
 )
 
 _logger = logging.getLogger(__name__)
@@ -126,39 +119,28 @@ class TransferAndTensorAllocator:
     # False: count tensor-core occupancy separately for each transfer that uses it
     # True:  count tensor-core occupancy only once across all transfers
 
-    def __init__(  # noqa: PLR0913, PLR0915
+    def __init__(  # noqa: PLR0915
         self,
-        workload: Workload,
-        timeslots: dict[Node, int],
-        accelerator: Accelerator,
-        iterations: int,
-        ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
-        multiplicities: dict[ComputationNode, int],
-        mapping: Mapping,
-        cost_lut: CoreCostLUT,
+        problem: SteadyStateProblem,
         *,
         big_m: int | None = None,
         gurobi_verbosity: int = 1,
-        nb_cols_to_use: int = 4,
         output_path: str = "",
-        context: TransferAndTensorContext | None = None,
         backend: str = "ORTOOLS_GSCIP",
         constraint_selection: ConstraintSelection | None = None,
     ):
-        self.workload = workload
-        self.slot_of = timeslots
-        self.accelerator = accelerator
-        self.context = context or build_transfer_context(
-            accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=True
-        )
+        self.problem = problem
+        self.workload = workload = problem.workload
+        self.slot_of = timeslots = problem.timeslots
+        self.accelerator = accelerator = problem.accelerator
+        self.context = problem.transfer_context
         self.offchip_core_id = self.context.offchip_core_id
         self.shared_bandwidth: dict[int, BandwidthModel] = dict(accelerator.bandwidth)
         self.shared_busy: dict[int, SolverVar] = {}
-        self.iterations = iterations
-        self.ssis = ssis
-        self.multiplicities = multiplicities
-        self.mapping = mapping
-        self.cost_lut = cost_lut
+        self.iterations = problem.iterations
+        self.ssis = problem.ssis
+        self.mapping = problem.mapping
+        self.cost_lut = problem.cost_lut
         self.output_path = output_path
         self.backend_str = backend
         self.constraint_selection = constraint_selection or ConstraintSelection()
