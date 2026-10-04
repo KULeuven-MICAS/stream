@@ -7,6 +7,7 @@ import re
 import pytest
 
 pytest.importorskip("snaxc", reason="the AIE dialects are a separate install, via stream-setup-aie")
+pytest.importorskip("aie.iron.kernels", reason="the library binds its kernels through mlir-aie")
 
 from stream.api import SolveOptions, generate_code  # noqa: E402
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping  # noqa: E402
@@ -36,4 +37,4 @@ def test_a_single_tile_gemm_generates_an_npu2_design(tmp_path):
     mapping = make_gemm_mapping(64, 64, 64, 64, 64, 64, nb_rows_to_use=1, nb_cols_to_use=1)
     options = SolveOptions(nb_cols_to_use=1, stage_options={"npu": "npu2"})
     module = str(generate_code(ACCELERATOR, workload, str(tmp_path), mapping, options).context.get("module"))
-    assert module.count("func.call @matmul_bf16_bf16_64_64_64") == 1
+    assert len(re.findall(r'func\.call @"?\w+_matmul_bf16_bf16"?\(', module)) == 1

@@ -8,9 +8,10 @@ script installs them into the active environment::
     stream-setup-aie --dry-run        # print the steps without running them
     stream-setup-aie --with-mlir-aie  # additionally install the mlir_aie/llvm-aie wheels
 
-``mlir_aie``/``llvm-aie`` are NOT installed by default: codegen never imports the ``aie``
-bindings, and the host that compiles the emitted MLIR (e.g. amd/iron) already pins its own,
-newer wheels -- reinstalling here would downgrade and break it. ``--with-mlir-aie`` is the
+``mlir_aie``/``llvm-aie`` are NOT installed by default: codegen imports the ``aie`` bindings
+only to bind kernels the library takes from ``aie.iron.kernels``, and the host that compiles the
+emitted MLIR (e.g. amd/iron) already pins its own, newer wheels -- reinstalling here would
+downgrade and break it. ``--with-mlir-aie`` is the
 opt-in for a standalone toolchain, and is itself a no-op when a ``mlir_aie`` is already present.
 """
 
@@ -30,8 +31,8 @@ from pathlib import Path
 _XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@f2540442628aa782847ababd1dc76c0e323ba459"
 _SNAX_MLIR = "git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf"
 
-_MLIR_AIE_PIN = "mlir_aie==1.4.4.dev43+g1d7b9ea"
-_LLVM_AIE_PIN = "llvm-aie==22.0.0.2026091701+773413fb"
+_MLIR_AIE_PIN = "mlir_aie==1.4.4.dev73+g18ca6c1"
+_LLVM_AIE_PIN = "llvm-aie==22.0.0.2026092101+0006955e"
 _AIE_WHEEL_INDICES = [
     "--extra-index-url",
     "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4",

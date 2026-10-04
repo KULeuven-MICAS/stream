@@ -7,7 +7,7 @@ ops_per_cycle = 16.0
 
 [kernel.matmul_bf16_bf16]
 family = "matmul"
-object = "mm_{m}_{k}_{n}.o"
+binding = "stream.compiler.kernels.mlir_aie:mm"
 dims = [{ name = "k", divisor = 8 }, { name = "n", divisor = 16 }, { name = "m", divisor = 16 }]
 
 [kernel.matvec_vectorized_bf16_bf16]
@@ -16,27 +16,27 @@ object = "mv.o"
 
 [kernel.silu_bf16_size]
 family = "vector"
-object = "silu.o"
+binding = "stream.compiler.kernels.mlir_aie:silu"
 dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
 
 [kernel.eltwise_mul_bf16_vector_size]
 family = "vector"
-object = "mul.o"
+binding = "stream.compiler.kernels.mlir_aie:mul"
 dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
 
 [kernel.softmax_rows_bf16]
 family = "vector"
-object = "softmax.o"
+binding = "stream.compiler.kernels.mlir_aie:softmax_rows"
 dims = [{ name = "n", divisor = 32 }, { name = "m", runtime = true }]
 
 [kernel.softmax_rows_causal_bf16]
 family = "vector"
-object = "softmax.o"
+binding = "stream.compiler.kernels.mlir_aie:softmax_rows_causal"
 dims = [{ name = "n", divisor = 32 }, { name = "m", runtime = true }]
 
 [kernel.partial_softmax]
 family = "vector"
-object = "mha.o"
+binding = "stream.compiler.kernels.mlir_aie:partial_softmax"
 dims = [{ name = "n", fixed = 64 }, { name = "m", fixed = 64 }]
 
 [kernel.partial_softmax_mode]
@@ -51,5 +51,5 @@ dims = [{ name = "k", fixed = 64 }, { name = "n", fixed = 64 }, { name = "m", fi
 
 [kernel.matmul_PV]
 family = "matmul"
-object = "mha.o"
+binding = "stream.compiler.kernels.mlir_aie:matmul_pv"
 dims = [{ name = "k", fixed = 64 }, { name = "n", fixed = 64 }, { name = "m", fixed = 64 }]

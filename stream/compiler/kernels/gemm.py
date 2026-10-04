@@ -3,11 +3,7 @@ from dataclasses import dataclass
 from typing import ClassVar, cast
 
 from snaxc.ir.tsl import TiledStridedLayout
-from xdsl.dialects.builtin import (
-    AnyDenseElement,
-    FunctionType,
-    MemRefType,
-)
+from xdsl.dialects.builtin import AnyDenseElement, MemRefType
 from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
@@ -24,18 +20,11 @@ class GemmKernel(AIEKernelWithZeroing):
     layout: str
 
     @property
-    def zero_name(self) -> str:
-        return f"zero_{self.element_type}_{self.m}_{self.k}_{self.n}"
-
-    def zero_type(self, op: ComputationNodeOp) -> FunctionType:
-        return FunctionType.from_lists(inputs=[op.inputs[2].type], outputs=[])
+    def unique_name(self) -> str:
+        return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
 
     @property
     def function_name(self) -> str:
-        return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
-
-    @property
-    def library_key(self) -> str:
         return f"matmul_{self.element_type}_{self.element_type}"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
@@ -45,15 +34,6 @@ class GemmKernel(AIEKernelWithZeroing):
             tiled_layout(self.k, self.n, s, t),
             tiled_layout(self.m, self.n, r, t),
         ]
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(
-            inputs=[op.inputs[0].type]  # A
-            + [op.inputs[1].type]  # b
-            + [op.inputs[2].type],  # c
-            outputs=[],
-        )
 
     def check_operands(self, op: ComputationNodeOp) -> None:
         """The object file is compiled for one tile, so a mapping that tiles the loop
@@ -66,7 +46,7 @@ class GemmKernel(AIEKernelWithZeroing):
                 shape = shape[1:]
             if shape != expected:
                 raise ValueError(
-                    f"kernel {self.function_name} takes a {expected[0]}x{expected[1]} operand "
+                    f"kernel {self.unique_name} takes a {expected[0]}x{expected[1]} operand "
                     f"but the tiling gives it {shape}"
                 )
 

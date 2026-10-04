@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 pytest.importorskip("snaxc", reason="the AIE dialects are a separate install, via stream-setup-aie")
+pytest.importorskip("aie.iron.kernels", reason="the library binds mha.cc through mlir-aie")
 
 from pathlib import Path  # noqa: E402
 
@@ -64,6 +65,7 @@ def _column(split):
         StrensorVarAttr,
         StrensorVarType,
     )
+    from stream.compiler.kernels.binding import Bindings
     from stream.compiler.kernels.flash import CausalGemmKernel, FlashKernel, PartialSoftmaxKernel
     from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
     from stream.datatypes import LayerDim
@@ -121,15 +123,15 @@ def _column(split):
         ),
     )
     kernels = {kernel.unique_name: kernel for kernel in (scores, softmax, context)}
-    PatternRewriteWalker(ConvertAIEKernels(kernels)).rewrite_module(ModuleOp([device]))
+    PatternRewriteWalker(ConvertAIEKernels(kernels, Bindings("npu2"))).rewrite_module(ModuleOp([device]))
     return device
 
 
 def _call(device, name):
-    """The one call to ``name`` in the rewritten column."""
+    """The one call to ``name``, under the prefix its binding gives it, in the rewritten column."""
     from xdsl.dialects.func import CallOp
 
-    calls = [op for op in device.walk() if isinstance(op, CallOp) and op.callee.root_reference.data == name]
+    calls = [op for op in device.walk() if isinstance(op, CallOp) and op.callee.root_reference.data.endswith(name)]
     assert len(calls) == 1, f"{len(calls)} calls to {name}"
     return calls[0]
 
@@ -163,7 +165,7 @@ def test_the_score_gemm_skips_only_the_blocks_past_the_diagonal(column):
 
     from stream.datatypes import LayerDim
 
-    condition = _guard(_call(column, "matmul_bf16_bf16_64_64_64"))
+    condition = _guard(_call(column, "matmul_bf16_bf16"))
     assert isinstance(condition, CmpiOp) and "arith.cmpi sle," in str(condition)
     assert _driven_by(condition.lhs, LayerDim(2)) and _driven_by(condition.rhs, LayerDim(0))
 

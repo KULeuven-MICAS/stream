@@ -6,7 +6,6 @@ from typing import ClassVar, cast
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,
-    FunctionType,
     MemRefType,
     i32,
 )
@@ -22,27 +21,11 @@ class MatVecKernel(AIEKernelWithZeroing):
     # The output's rows, and the vector's length that a call takes whole.
     OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -1), "n": (0, -1)}
 
-    @property
-    def zero_name(self) -> str:
-        return f"zero_vectorized_{self.element_type}"
-
-    def zero_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(inputs=[op.output.type], outputs=[])
+    FALLBACK: ClassVar[Mapping[str, tuple[str, str | None]]] = {"zero": ("zero_vectorized_bf16", None)}
 
     @property
     def function_name(self) -> str:
         return f"matvec_vectorized_{self.element_type}_{self.element_type}"
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(
-            inputs=[i32, i32, i32]
-            + [op.inputs[1].type]  # A
-            + [op.inputs[0].type]  # b
-            + [op.output.type],  # c
-            outputs=[],
-        )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         k = prod(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
