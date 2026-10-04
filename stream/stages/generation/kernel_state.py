@@ -64,7 +64,7 @@ class KernelStateStage(Stage):
                 rebuilt[node.name] = node
                 continue
             inputs, maps = list(node.inputs), list(node.operand_mapping)
-            positions = kernel.positions(node)
+            positions = kernel.dim_positions(node)
             for state in declared:
                 built = state_tensor(node, state, positions)
                 if built is None:

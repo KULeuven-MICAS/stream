@@ -23,7 +23,7 @@ from stream.compiler.kernels.aie_kernel import (
 
 @dataclass(kw_only=True)
 class EltwiseMulKernel(AIEKernel):
-    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
     m: int = 32
     n: int = 64
     layout: str

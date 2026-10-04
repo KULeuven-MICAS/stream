@@ -666,7 +666,7 @@ SOLVER_EVIDENCE_RAW: dict = {
     "performance": {
         "memory_ports": [
             {
-                "port": "dram.rw_port_1",
+                "resource": "dram.rw_port_1",
                 "core_ids": [6],
                 "bw_bits_per_cycle": 64.0,
                 "bits_per_iteration": 196864.0,
@@ -755,7 +755,7 @@ class TestAllocationIRSolverEvidence:
 
     def test_port_activity_survives(self):
         (port,) = self._ir().performance.memory_ports
-        assert (port.port, port.utilization, port.stall_or_slack) == ("dram.rw_port_1", 1.0, 0.0)
+        assert (port.resource, port.utilization, port.stall_or_slack) == ("dram.rw_port_1", 1.0, 0.0)
 
     def test_aggregate_extras_survive(self):
         aggregate = self._ir().performance.aggregate

@@ -55,7 +55,7 @@ class AIE2CoreBackend:
         """Memory bandwidth in bits/cycle."""
         return self.bandwidth_max
 
-    def memory_ports(self) -> tuple[PortSpec, ...]:
+    def port_specs(self) -> tuple[PortSpec, ...]:
         """The tile DMA: MM2S channels read the tile memory onto streams, S2MM channels write into it."""
         if not self.dma_channel_bits:
             return ()

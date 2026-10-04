@@ -46,6 +46,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
 from stream.opt.allocation.constraint_optimization.utils import (
+    active_fraction,
     get_active_latency,
     get_transfer_latency_for_path,
 )
@@ -64,7 +65,6 @@ from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
-    LoopEffect,
     Reuse,
     SteadyStateIterationSpace,
 )
@@ -824,7 +824,7 @@ class TransferAndTensorAllocator:
         self._overlap()
         for family in self.families:
             family.constrain(self, self.quantities)
-        self._objective()
+        self._dma_channels_and_objective()
 
     # ...................... VARIABLES ................... #
     def _create_vars(self):
@@ -1505,7 +1505,7 @@ class TransferAndTensorAllocator:
         for core_id, terms in shared.items():
             self.model.add_constr(fill >= self.model.quicksum(terms), name=f"fill_shared_{core_id}")
 
-    def _objective(self) -> None:
+    def _dma_channels_and_objective(self) -> None:
         if self.constraint_selection.dma_channels:
             self._add_dma_usage_constraints()
         else:
@@ -1879,20 +1879,14 @@ class TransferAndTensorAllocator:
         )
 
         self.quantities.add("primary", primary_expr)
-        self.quantities.add("offchip_traffic", traffic_expr)
-        self.quantities.add("buffering", buffering_expr)
-        self.quantities.add("route_hops", hops_expr)
         levels = [
-            ("latency", "primary"),
-            ("offchip_traffic", "offchip_traffic"),
-            ("buffering", "buffering"),
-            ("route_hops", "route_hops"),
+            ("latency", primary_expr),
+            ("offchip_traffic", traffic_expr),
+            ("buffering", buffering_expr),
+            ("route_hops", hops_expr),
         ]
         self.model.set_lexicographic_objectives(
-            [
-                ObjectiveLevel(expr=self.quantities.get(quantity).expr, priority=len(levels) - i, name=name)
-                for i, (name, quantity) in enumerate(levels)
-            ],
+            [ObjectiveLevel(expr=expr, priority=len(levels) - i, name=name) for i, (name, expr) in enumerate(levels)],
             sense="minimize",
         )
 
@@ -3253,12 +3247,8 @@ class TransferAndTensorAllocator:
                     latencies = [self.cost_lut.get_cost(n, c).latency_total for c in cores]
                     runtime = ceil(max(latencies)) if latencies else 0
                     active = get_active_latency(n, float(runtime), self.ssis)
-                    fraction: float | None = None
                     try:
-                        ssis_t = self.ssis.get(n).get_temporal_variables()
-                        total = prod([v.size for v in ssis_t])
-                        present = prod([v.size for v in ssis_t if v.effect != LoopEffect.ABSENT])
-                        fraction = (present / total) if total > 0 else 1.0
+                        fraction: float | None = active_fraction(n, self.ssis)
                     except Exception:
                         fraction = None
                     breakdown.setdefault(

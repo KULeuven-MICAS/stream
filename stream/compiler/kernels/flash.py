@@ -77,8 +77,7 @@ from stream.compiler.kernels.softmax import SoftmaxKernel
 
 SCALE_ROWS = 4
 
-# The running scale, carried over the key block and indexed by the query, which is the pair
-# of dimensions every flash node's iteration space is written in.
+# The running scale, carried over the key block ``n`` and indexed by the query block ``m``.
 STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over="n", indexed_by="m", handover=2)
 """Rows of ``B_q`` the scale buffer holds: m_{i-1}, m_i, l_i and exp2(m_{i-1} - m_i)."""
 

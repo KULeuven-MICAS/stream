@@ -42,7 +42,7 @@ class MemoryPorts:
         per_slot: dict[tuple[PortKey, int], Terms] = defaultdict(list)
         for stream in dma_streams(alloc):
             for side in stream.sides:
-                term = (stream.bits_per_cycle * side.share / side.efficiency, stream.gated, stream.latency_ub)
+                term = (stream.bits_per_cycle * side.share / side.efficiency, stream.active_cycles, stream.latency_ub)
                 per_iteration[side.port.key].append(term)
                 per_slot[(side.port.key, stream.slot)].append(term)
         for traffic in node_traffic(alloc):
@@ -128,7 +128,7 @@ def _activity_row(
     real_cycle = bits / rate
     return {
         "kind": kind,
-        "port": name,
+        "resource": name,
         "core_ids": list(core_ids),
         "core_types": core_types,
         "bw_bits_per_cycle": rate,
@@ -144,7 +144,7 @@ def _activity_row(
 
 
 def _stream_bits(alloc: TransferAndTensorAllocator) -> list[tuple[DmaStream, float]]:
-    return [(stream, alloc.model.value(stream.bits_per_cycle * stream.gated)) for stream in dma_streams(alloc)]
+    return [(stream, alloc.model.value(stream.bits_per_cycle * stream.active_cycles)) for stream in dma_streams(alloc)]
 
 
 def _shared_rows(alloc: TransferAndTensorAllocator, q: QuantityRegistry, interval: float) -> list[dict[str, Any]]:

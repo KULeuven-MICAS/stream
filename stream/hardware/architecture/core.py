@@ -152,10 +152,10 @@ class Core:
         assert self._backend is not None, f"{self} has no backend"
         return self._backend.get_max_memory_bandwidth(type)  # type: ignore[arg-type]
 
-    def memory_ports(self) -> tuple[PortSpec, ...]:
+    def port_specs(self) -> tuple[PortSpec, ...]:
         """The ports of the core's top-level memories its backend models; empty when it models none."""
         assert self._backend is not None, f"{self} has no backend"
-        return self._backend.memory_ports()
+        return self._backend.port_specs()
 
     # ------------------------------------------------------------------ #
     # Serialization                                                      #

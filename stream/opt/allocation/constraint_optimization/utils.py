@@ -29,12 +29,12 @@ def get_active_transfer_latency_for_path(tr: TransferNode, choice: MulticastPath
     return active_latency
 
 
+def active_fraction(n: Node, ssis: dict[ComputationNode, SteadyStateIterationSpace]) -> float:
+    """Fraction of the steady-state iterations in which ``n`` is not idle on an absent loop."""
+    temporal = ssis.get(n).get_temporal_variables()
+    total = prod(v.size for v in temporal)
+    return prod(v.size for v in temporal if v.effect != LoopEffect.ABSENT) / total if total else 1.0
+
+
 def get_active_latency(n: Node, runtime_constant: float, ssis: dict[ComputationNode, SteadyStateIterationSpace]) -> int:
-    # Get the temporal steady state fraction of 'ABSENT' loops
-    ssis_t = ssis.get(n).get_temporal_variables()
-    total_product = prod([ssis_var.size for ssis_var in ssis_t])
-    product_without_absent = prod([ssis_var.size for ssis_var in ssis_t if ssis_var.effect != LoopEffect.ABSENT])
-    fraction = product_without_absent / total_product if total_product > 0 else 1.0
-    # Scale the runtime constant by the fraction to get the effective latency
-    active_latency = int(round(runtime_constant * fraction))
-    return active_latency
+    return int(round(runtime_constant * active_fraction(n, ssis)))

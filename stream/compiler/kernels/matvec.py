@@ -20,7 +20,7 @@ from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
 @dataclass(kw_only=True)
 class MatVecKernel(AIEKernelWithZeroing):
     # The output's rows, and the vector's length that a call takes whole.
-    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -1), "n": (0, -1)}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -1), "n": (0, -1)}
 
     @property
     def zero_name(self) -> str:

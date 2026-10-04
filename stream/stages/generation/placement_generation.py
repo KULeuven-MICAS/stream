@@ -122,7 +122,7 @@ class PlacementGenerationStage(Stage):
     def _place_alone(self, node: ComputationNode, grid, columns, rows) -> None:
         kernel = self.mapping.get(node).kernel
         granule = call_sizes(kernel, node)
-        at = kernel.positions(node)
+        at = kernel.dim_positions(node)
         if bandwidth_bound(kernel):
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
             return
@@ -142,7 +142,7 @@ class PlacementGenerationStage(Stage):
 
     def _place_one_row(self, node, kernel, grid, columns, rows, mapping) -> None:
         row = rows[0]
-        at = kernel.positions(node)
+        at = kernel.dim_positions(node)
         width = self._fitting_split(node, at["m"], len(columns))
         cores = tuple(grid[(col, row)] for col in columns[:width])
         self._assign(node, cores, ((at["m"], width),), mapping)
@@ -157,7 +157,7 @@ class PlacementGenerationStage(Stage):
             if kernel is not None and any(s.handover for s in kernel.state_operands())
         )
         counts = row_counts([layer_cost(k) for k in kernels], len(rows), state_consumers=state_consumers)
-        rows_at = [kernel.positions(node)["m"] for node, kernel in zip(nodes, kernels, strict=True)]
+        rows_at = [kernel.dim_positions(node)["m"] for node, kernel in zip(nodes, kernels, strict=True)]
         granule = max(
             call_sizes(kernel, node).get(at, 1) for node, kernel, at in zip(nodes, kernels, rows_at, strict=True)
         )
@@ -189,7 +189,7 @@ class PlacementGenerationStage(Stage):
             tenant = columns[first : first + budget]
             first += budget
             granule = call_sizes(kernel, node)
-            at = kernel.positions(node)
+            at = kernel.dim_positions(node)
             width = 1
             split = [(at["m"], self._fitting_split(node, at["m"], len(rows), granule.get(at["m"], 1)))]
             if is_matmul(kernel) and budget > 1:
@@ -208,7 +208,7 @@ class PlacementGenerationStage(Stage):
         return 1
 
     def _row_width(self, node: ComputationNode, kernel, core: Core) -> int:
-        extent = self.workload.get_dimension_size(self.workload.get_dims(node)[kernel.positions(node)["n"]])
+        extent = self.workload.get_dimension_size(self.workload.get_dims(node)[kernel.dim_positions(node)["n"]])
         operands = max(MIN_CALL_OPERANDS, len(kernel.operand_layouts() or ()))
         budget = (core.get_memory_capacity() // 8) // (operands * BUFFERS * ELEMENT_BYTES)
         return max(w for w in range(1, min(extent, budget) + 1) if extent % w == 0)

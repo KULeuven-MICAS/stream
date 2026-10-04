@@ -6,6 +6,7 @@ import pytest
 from stream.api import SolveOptions
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.opt.allocation.constraint_optimization import families
 from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, load_families, parse_spec
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
@@ -55,18 +56,23 @@ def test_spec_forms_parse_to_name_and_options() -> None:
         parse_spec({"a": {}, "b": {}})
 
 
-def test_unknown_family_names_the_available_ones() -> None:
+@pytest.fixture
+def cap_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(families, "available_families", lambda: {CapIteration.name: CapIteration})
+
+
+def test_unknown_family_names_the_available_ones(cap_only: None) -> None:
     with pytest.raises(KeyError, match="available: cap_iteration"):
-        load_families(["cap_iterations"], {CapIteration.name: CapIteration})
+        load_families(["cap_iterations"])
 
 
-def test_family_selected_twice_is_rejected() -> None:
+def test_family_selected_twice_is_rejected(cap_only: None) -> None:
     with pytest.raises(ValueError, match="selected twice"):
-        load_families(["cap_iteration", {"cap_iteration": {"cap": 1}}], {CapIteration.name: CapIteration})
+        load_families(["cap_iteration", {"cap_iteration": {"cap": 1}}])
 
 
 def test_no_families_loads_nothing() -> None:
-    assert load_families([], {}) == ()
+    assert load_families([]) == ()
 
 
 def test_solve_options_fold_families_into_the_constraint_selection() -> None:
@@ -94,7 +100,7 @@ def test_family_adds_its_constraint_quantity_and_slot_bound(
 
 def test_a_bare_family_name_is_rejected() -> None:
     with pytest.raises(TypeError, match="list of names"):
-        load_families("cap_iteration", {CapIteration.name: CapIteration})
+        load_families("cap_iteration")
 
 
 def test_solve_options_reject_a_bare_family_name() -> None:

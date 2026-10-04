@@ -59,10 +59,6 @@ class PortSpec:
     bits_per_cycle: float
     serves: frozenset[Service]
 
-    @property
-    def key(self) -> PortKey:
-        return PortKey(self.share_group, self.memory, self.name)
-
 
 @dataclass(frozen=True)
 class Port:
@@ -94,7 +90,7 @@ class PortRegistry:
     def from_accelerator(cls, accelerator: Accelerator) -> PortRegistry:
         """Ports of every core, one per port of each physical memory; a core with a measured bandwidth has none,
         as that already covers its traffic. An aliased memory takes the ports of its group's first memory."""
-        specs = {core.id: core.memory_ports() for core in accelerator.cores.node_list}
+        specs = {core.id: core.port_specs() for core in accelerator.cores.node_list}
         share_group = {(core_id, spec.memory): spec.share_group for core_id in specs for spec in specs[core_id]}
         found: dict[PortKey, PortSpec] = {}
         core_ids: dict[PortKey, set[int]] = defaultdict(set)

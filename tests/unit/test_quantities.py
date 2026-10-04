@@ -42,17 +42,7 @@ def test_registry_rejects_duplicates_and_names_the_available_quantities() -> Non
 @pytest.mark.slow
 def test_allocator_registers_what_it_builds(alloc: tta.TransferAndTensorAllocator) -> None:
     expected = {"slot_latency", "overlap", "iteration", "transfer_latency", "primary"}
-    expected |= {"offchip_traffic", "buffering", "route_hops"}
     assert expected <= set(alloc.quantities.names())
     slots = alloc.quantities.indexed("slot_latency")
     iteration = alloc.model.value(alloc.quantities.get("iteration").expr)
     assert iteration == sum(alloc.model.value(q.expr) for q in slots.values())
-
-
-@pytest.mark.slow
-def test_primary_cost_is_the_solved_primary_quantity(alloc: tta.TransferAndTensorAllocator) -> None:
-    bandwidth = alloc._offchip_bandwidth()
-    weight = alloc.iterations / bandwidth if bandwidth else 0.0
-    traffic = alloc.model.value(alloc.quantities.get("offchip_traffic").expr)
-    dma = float(alloc.max_core_dma_in.X) + float(alloc.max_core_dma_out.X)
-    assert alloc.primary_cost() == pytest.approx(float(alloc.total_latency.X) + dma + weight * traffic)

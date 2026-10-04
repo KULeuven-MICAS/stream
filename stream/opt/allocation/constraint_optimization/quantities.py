@@ -11,7 +11,6 @@ from typing import Any
 class Quantity:
     """One model expression; ``upper_bound`` is a value the expression provably never exceeds."""
 
-    name: str
     expr: Any
     upper_bound: float | None = None
 
@@ -24,7 +23,7 @@ class QuantityRegistry:
         self._indexed: dict[str, dict[Hashable, Quantity]] = {}
 
     def add(self, name: str, expr: Any, *, index: Hashable | None = None, upper_bound: float | None = None) -> None:
-        quantity = Quantity(name, expr, upper_bound)
+        quantity = Quantity(expr, upper_bound)
         if index is None:
             if name in self._scalars or name in self._indexed:
                 raise ValueError(f"Quantity {name!r} is already registered")

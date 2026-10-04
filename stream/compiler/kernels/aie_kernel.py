@@ -94,7 +94,7 @@ class StateOperand:
 class AIEKernel(ABC):
     element_type: AnyDenseElement = bf16
     library: KernelLibrary | None = field(default=None, compare=False, repr=False)
-    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {}
     """Each call dimension's operand and axis: the operand indexes the node's operands, inputs
     then output (so ``-1`` is the output), and the axis counts from that operand's last. A
     kernel addresses only the trailing axes, so the node's leading ones are batch axes it is
@@ -126,10 +126,10 @@ class AIEKernel(ABC):
     def call_shape(self) -> dict[str, int]:
         return {d.name: int(getattr(self, d.name)) for d in self.spec.dims}
 
-    def positions(self, node: "ComputationNode") -> dict[str, int]:
+    def dim_positions(self, node: "ComputationNode") -> dict[str, int]:
         """Where each of the kernel's dimensions sits in ``node``'s iteration space."""
         positions = {}
-        for name, (operand, axis) in self.ROLES.items():
+        for name, (operand, axis) in self.OPERAND_AXES.items():
             expr = node.operand_mapping[operand].results[axis]
             if not isinstance(expr, AffineDimExpr):
                 raise ValueError(f"{node.name}'s {name} axis is not one iteration dimension")
@@ -137,13 +137,13 @@ class AIEKernel(ABC):
         return positions
 
     def output_axes(self, op: ComputationNodeOp) -> list:
-        """The output dimensions a call's rows and columns run along, where ``ROLES`` places ``m`` and ``n``."""
+        """The output dimensions a call's rows and columns run along, where ``OPERAND_AXES`` places ``m`` and ``n``."""
         kernel = [var.dim for var in cast(StrensorType, op.output.type).ssis.data.get_kernel_variables()]
-        return [kernel[self.ROLES[name][1]] for name in ("m", "n")]
+        return [kernel[self.OPERAND_AXES[name][1]] for name in ("m", "n")]
 
     def call_tile(self, node: "ComputationNode") -> list[tuple[int, int, CallDim]]:
         """Each call dimension the library declares, as (node dimension position, size, declaration)."""
-        positions = self.positions(node)
+        positions = self.dim_positions(node)
         return [(positions[d.name], int(getattr(self, d.name)), d) for d in self.spec.dims]
 
     def validate(self) -> None:
@@ -155,11 +155,11 @@ class AIEKernel(ABC):
         return self.spec.object.format(**self.call_shape())
 
     def call_object(self, op: ComputationNodeOp) -> str:
-        """The object one call links, at the extents its operands have, inputs then output as ``ROLES``
+        """The object one call links, at the extents its operands have, inputs then output as ``OPERAND_AXES``
         counts them. A runtime dimension's call takes the tile it is handed rather than the declared
         block, and an object compiled for its element count must be compiled for that tile."""
         shapes = [cast(MemRefType[AnyDenseElement], operand.type).get_shape() for operand in op.inputs]
-        extents = {name: shapes[operand][axis] for name, (operand, axis) in self.ROLES.items()}
+        extents = {name: shapes[operand][axis] for name, (operand, axis) in self.OPERAND_AXES.items()}
         return self.spec.object.format(**(self.call_shape() | extents))
 
     @property

@@ -361,11 +361,11 @@ class MemoryOccupancyIR(BaseModel):
     )
 
 
-class PortActivityIR(BaseModel):
+class ResourceActivityIR(BaseModel):
     """One resource under the memory_ports family, in ZigZag's port-activity terms."""
 
     kind: str = Field(default="memory_port", description="'memory_port', 'shared_bandwidth' or 'link'")
-    port: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
+    resource: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
     core_ids: list[int] = Field(description="Cores sharing the resource")
     core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
     bw_bits_per_cycle: float = Field(description="Port bandwidth")
@@ -405,8 +405,10 @@ class AllocationPerformanceView(BaseModel):
         default_factory=list,
         description="Per-core solved residency vs declared capacity: the floor on any capacity reduction",
     )
-    memory_ports: list[PortActivityIR] = Field(
-        default_factory=list, description="Per-port activity, busiest first; empty unless memory_ports is on"
+    memory_ports: list[ResourceActivityIR] = Field(
+        default_factory=list,
+        description="Activity of each memory port, shared-bandwidth core and link, busiest first; empty unless "
+        "memory_ports is on",
     )
 
 
@@ -515,7 +517,7 @@ class AllocationIR(BaseModel):
                 overlap=OverlapIR(**perf_raw["overlap"]) if perf_raw.get("overlap") else None,
                 tensor_reuse=[TensorReuseIR(**d) for d in perf_raw.get("tensor_reuse") or []],
                 memory_occupancy=[MemoryOccupancyIR(**d) for d in perf_raw.get("memory_occupancy") or []],
-                memory_ports=[PortActivityIR(**d) for d in perf_raw.get("memory_ports") or []],
+                memory_ports=[ResourceActivityIR(**d) for d in perf_raw.get("memory_ports") or []],
             )
             if perf_raw
             else None

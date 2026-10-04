@@ -82,6 +82,8 @@ class SolveOptions:
         """``constraint_selection`` with ``families`` folded in; an unknown family or option raises here."""
         if not self.families:
             return self.constraint_selection
+        if self.constraint_selection is not None and self.constraint_selection.families:
+            raise ValueError("Set constraint families through SolveOptions.families or constraint_selection, not both")
         load_families(self.families)
         return replace(self.constraint_selection or ConstraintSelection(), families=tuple(self.families))
 

@@ -207,7 +207,8 @@ total_latency = iterations * sum(slot_lat) - (iterations - 1) * overlap
 ```
 
 With fixed tiles `iterations` is a constant, and the code states the first
-line directly as one linear constraint on `total_latency`.
+line directly as one linear constraint on `total_latency`, plus `fill`: the
+cycles a run waits for the off-chip tensors it holds in one buffer.
 
 When tile sizes are variable, the iteration count changes because
 `T = workload_size / (K * S)` and `iterations = prod(T)` across all

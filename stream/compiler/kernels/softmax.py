@@ -41,7 +41,7 @@ class SoftmaxKernel(AIEKernel):
     normalizing it, so the tile also has to say where its first row sits globally.
     """
 
-    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
     m: int = 1
     n: int
     layout: str

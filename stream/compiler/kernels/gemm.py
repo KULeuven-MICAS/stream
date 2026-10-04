@@ -17,7 +17,7 @@ from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing, tiled_layou
 
 @dataclass(kw_only=True)
 class GemmKernel(AIEKernelWithZeroing):
-    ROLES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "k": (0, -1), "n": (-1, -1)}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "k": (0, -1), "n": (-1, -1)}
     m: int
     k: int
     n: int

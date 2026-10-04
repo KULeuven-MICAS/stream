@@ -70,7 +70,7 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         assert first_port is not None, f"{self} does not have a top level memory {type} port."
         return first_port.bw_max
 
-    def memory_ports(self) -> tuple[PortSpec, ...]:
+    def port_specs(self) -> tuple[PortSpec, ...]:
         """Ports of each operand's top memory level, with the (role, direction) pairs they serve at that level."""
         hierarchy = self.memory_hierarchy
         tops = {op: len(hierarchy.get_memory_levels(op)) - 1 for op in hierarchy.get_operands()}

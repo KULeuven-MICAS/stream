@@ -114,9 +114,8 @@ def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
     alloc.model.add_constr.assert_not_called()
 
 
-def port_registry(transfer_contention: bool) -> tuple[MagicMock, QuantityRegistry]:
+def port_registry() -> tuple[MagicMock, QuantityRegistry]:
     alloc = MagicMock()
-    alloc.constraint_selection.transfer_contention = transfer_contention
     registry = QuantityRegistry()
     for name, value in (("iteration", 10), ("overlap", 2)):
         registry.add(name, value)
@@ -131,15 +130,14 @@ def constraint_names(alloc: MagicMock) -> list[str]:
     return [call.kwargs["name"] for call in alloc.model.add_constr.call_args_list]
 
 
-@pytest.mark.parametrize("transfer_contention", [True, False])
-def test_the_interval_bound_holds_with_or_without_transfer_contention(transfer_contention: bool) -> None:
-    alloc, registry = port_registry(transfer_contention)
+def test_burst_off_keeps_only_the_interval_bound() -> None:
+    alloc, registry = port_registry()
     MemoryPorts(burst=False).constrain(alloc, registry)
     assert constraint_names(alloc) == ["port_interval_6_dram_rw_port_1"]
 
 
 def test_interval_off_keeps_only_the_burst_bound() -> None:
-    alloc, registry = port_registry(transfer_contention=True)
+    alloc, registry = port_registry()
     MemoryPorts(interval=False).constrain(alloc, registry)
     assert constraint_names(alloc) == ["port_burst_6_dram_rw_port_1_0"]
 
@@ -157,7 +155,7 @@ def test_a_stream_whose_active_latency_rounds_to_zero_keeps_its_bits(monkeypatch
     monkeypatch.setattr(traffic, "_sides", lambda *_: [])
     (stream,) = traffic.dma_streams(alloc)
     # Active for 1 of 8 iterations: 1 cycle rounds to 0, while 4096 / 8 bits still move.
-    assert (stream.gated, stream.bits_per_cycle * stream.latency_ub) == ("y", 512)
+    assert (stream.active_cycles, stream.bits_per_cycle * stream.latency_ub) == ("y", 512)
 
 
 def zigzag_stall(real_cycles: list[int], window: int, periods: int) -> float:

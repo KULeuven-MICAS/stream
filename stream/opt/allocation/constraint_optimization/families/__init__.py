@@ -55,15 +55,13 @@ def parse_spec(spec: FamilySpec) -> tuple[str, dict[str, Any]]:
     return name, dict(options or {})
 
 
-def load_families(
-    specs: Sequence[FamilySpec], factories: Mapping[str, Callable[..., ConstraintFamily]] | None = None
-) -> tuple[ConstraintFamily, ...]:
+def load_families(specs: Sequence[FamilySpec]) -> tuple[ConstraintFamily, ...]:
     """Instantiate the families ``specs`` name, in order; an unknown name raises with the known ones."""
     if not specs:
         return ()
     if isinstance(specs, str):
         raise TypeError(f"Constraint families are a list of names, got the string {specs!r}")
-    known = available_families() if factories is None else factories
+    known = available_families()
     families: list[ConstraintFamily] = []
     for name, options in map(parse_spec, specs):
         if name not in known:

@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import prod
 from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.bandwidth import contiguous_span_bytes
 from stream.hardware.ports import OUTPUT, READ, WRITE, Port, input_role
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
-from stream.workload.steady_state.iteration_space import LoopEffect
 from stream.workload.workload import ComputationNode, TransferNode
 
 if TYPE_CHECKING:
@@ -34,11 +32,11 @@ class PortShare:
 
 @dataclass(frozen=True)
 class DmaStream:
-    """``bits_per_cycle * gated`` is the stream's bits per iteration; ``gated`` never exceeds ``latency_ub``. It is
-    the gated latency, or the path choice when the active latency rounds to 0 and has no gated latency to scale."""
+    """``bits_per_cycle * active_cycles`` is the stream's bits per iteration; ``active_cycles``, at most
+    ``latency_ub``, is the transfer's latency on its chosen path, or that path's choice when the latency rounds to 0."""
 
     choice: MulticastPathPlan
-    gated: Any
+    active_cycles: Any
     bits_per_cycle: float
     latency_ub: float
     slot: int
@@ -54,14 +52,7 @@ class NodeTraffic:
     slot: int
 
 
-def active_fraction(node: Any, alloc: TransferAndTensorAllocator) -> float:
-    """Fraction of the steady-state iterations in which ``node`` is not idle on an absent loop."""
-    temporal = alloc.ssis.get(node).get_temporal_variables()
-    total = prod(v.size for v in temporal)
-    return prod(v.size for v in temporal if v.effect != LoopEffect.ABSENT) / total if total else 1.0
-
-
-def tensor_role(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
+def transfer_operand_role(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
     """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
     producer = next(iter(alloc.workload.predecessors(tr)), None)
     if read_side and isinstance(producer, ComputationNode):
@@ -97,7 +88,7 @@ def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> 
         (choice.sources, READ, 1.0 / len(choice.sources)),
         (choice.targets, WRITE, write_share),
     ):
-        operand = tensor_role(alloc, tr, read_side=direction == READ)
+        operand = transfer_operand_role(alloc, tr, read_side=direction == READ)
         for core in cores:
             port = ports.port_for(core, direction, operand)
             if port is None:
@@ -111,7 +102,7 @@ def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> 
 
 
 def dma_streams(alloc: TransferAndTensorAllocator) -> list[DmaStream]:
-    """Every gated transfer latency that moves bits, with the ports its sources read and its targets write."""
+    """Every transfer latency on a path choice that moves bits, with the ports its sources read and targets write."""
     streams: list[DmaStream] = []
     if "transfer_latency" not in alloc.quantities:
         return []
@@ -120,7 +111,7 @@ def dma_streams(alloc: TransferAndTensorAllocator) -> list[DmaStream]:
         if link_latency <= 0:
             continue
         latency = get_active_latency(tr, link_latency, alloc.ssis)
-        bits = tr.inputs[0].size_bits() * active_fraction(tr, alloc)
+        bits = tr.inputs[0].size_bits() * active_fraction(tr, alloc.ssis)
         sides = tuple(_sides(alloc, tr, choice))
         if latency > 0:
             stream = DmaStream(choice, quantity.expr, bits / latency, latency, alloc.slot_of[tr], sides)
@@ -138,7 +129,7 @@ def node_traffic(alloc: TransferAndTensorAllocator) -> list[NodeTraffic]:
     backends: dict[Core, CoreCostBackend] = {}
     for node in alloc.ssc_nodes:
         placed = {core for group in alloc.mapping.get(node).resource_allocation for core in group}
-        fraction = active_fraction(node, alloc)
+        fraction = active_fraction(node, alloc.ssis)
         for core in alloc.cost_lut.get_cores(node):
             if core not in placed:
                 continue
