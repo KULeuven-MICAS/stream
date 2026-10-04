@@ -12,6 +12,7 @@ from stream.opt.allocation.constraint_optimization.context import (
     build_transfer_context,
     namespace_constraints_for,
 )
+from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.plugins import LoadedPlugin
@@ -33,9 +34,6 @@ def _config(accelerator) -> NamespaceConstraintConfig:
         offchip_core_id=accelerator.offchip_core_id,
         mem_cores=(),
         nb_cols_to_use=4,
-        max_compute_tile_dma_channels=8,
-        max_mem_tile_dma_channels=6,
-        max_shim_tile_dma_channels=2,
     )
 
 
@@ -44,18 +42,19 @@ def test_builtin_aie2_constraints_attach_through_the_plugin_path():
     accelerator = _accelerator(_AIE)
     strategies = build_transfer_context(accelerator).namespace_constraints
     assert [type(s).__name__ for s in strategies] == ["AIE2Constraints"]
-    assert strategies[0].max_mem_tile_dma_channels == 6
 
 
-def test_builder_arguments_reach_the_strategy():
-    accelerator = _accelerator(_AIE)
-    strategies = build_transfer_context(accelerator, max_mem_tile_dma_channels=3).namespace_constraints
-    assert strategies[0].max_mem_tile_dma_channels == 3
+def test_a_namespace_adds_its_families_to_the_default_set():
+    """The AIE2 limits are families the namespace contributes, after Stream's own."""
+    context = build_transfer_context(_accelerator(_AIE))
+    assert context.default_families == (*DEFAULT_FAMILIES, *AIE2Constraints.families)
+    assert "aie2_dma_channels" in AIE2Constraints.families
 
 
 def test_a_namespace_the_accelerator_lacks_contributes_nothing():
-    accelerator = _accelerator(_ZIGZAG)
-    assert build_transfer_context(accelerator).namespace_constraints == ()
+    context = build_transfer_context(_accelerator(_ZIGZAG))
+    assert context.namespace_constraints == ()
+    assert context.default_families == DEFAULT_FAMILIES
 
 
 def test_an_overlay_namespace_is_picked_up(monkeypatch):
@@ -113,12 +112,12 @@ def test_highest_priority_registration_wins(monkeypatch):
     assert [type(s).__name__ for s in strategies] == ["Override"]
 
 
-def test_from_config_maps_the_aie2_knobs():
+def test_from_config_maps_the_aie2_reconfiguration():
     accelerator = _accelerator(_AIE)
     built = AIE2Constraints.from_config(_config(accelerator))
-    assert built.max_compute_tile_dma_channels == 8
-    assert built.max_shim_tile_dma_channels == 2
-    assert built.offchip_core_id == accelerator.offchip_core_id
+    reconfiguration = accelerator.reconfiguration
+    assert built.cycles_per_column == float(reconfiguration.get("cycles_per_column", 0.0))
+    assert built.reset_cycles == float(reconfiguration.get("reset_cycles", 0.0))
 
 
 def test_compute_tiles_reserve_the_toolchain_stack():

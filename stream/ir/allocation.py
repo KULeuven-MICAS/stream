@@ -61,13 +61,11 @@ class SolveStatsIR(BaseModel):
     iteration_count: int | None = Field(default=None, description="Simplex iterations")
 
 
-class ConstraintSelectionIR(BaseModel):
-    """IR representation of the ConstraintSelection configuration used during the solve."""
+class ConstraintFamilyIR(BaseModel):
+    """One constraint family the allocation model was built from."""
 
-    memory_capacity: bool = Field(description="Whether memory capacity constraints were active during solve")
-    object_fifo_depth: bool = Field(description="Whether object FIFO depth constraints were active during solve")
-    buffer_descriptors: bool = Field(description="Whether buffer descriptor constraints were active during solve")
-    dma_channels: bool = Field(description="Whether DMA channel constraints were active during solve")
+    name: str = Field(description="The family's name, as SolveOptions.families selects it")
+    options: dict[str, Any] = Field(default_factory=dict, description="The options the family was built with")
 
 
 class NodeAllocationIR(BaseModel):
@@ -175,18 +173,18 @@ class SteadyStateIR(BaseModel):
 class AllocationAlgorithmicView(BaseModel):
     """Algorithmic-persona projection of AllocationIR.
 
-    Contains latency totals, solver backend, constraint configuration, and fusion splits.
+    Contains latency totals, solver backend, constraint families, and fusion splits.
     Suitable for algorithmic engineers reasoning about schedule quality and solver behaviour.
     """
 
-    schema_version: Literal["1.1"] = "1.1"
+    schema_version: Literal["2.0"] = "2.0"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
         default=None, description="Solver status and optimality gap: the noise floor for any latency comparison"
     )
-    constraint_selection: ConstraintSelectionIR | None = Field(
-        description="Constraint groups active during solve, or None if no selection was specified"
+    families: list[ConstraintFamilyIR] = Field(
+        description="The constraint families the allocation model was built from"
     )
     fusion_splits: dict[str, int] = Field(description="Fusion split factors per dimension applied before scheduling")
 
@@ -415,7 +413,7 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping SteadyStateSchedule.get_ir() output.
 
-    schema_version '1.1': minor bumps for additive fields, major bumps (2.0) for
+    schema_version '2.0': minor bumps for additive fields, major bumps (2.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 
@@ -426,7 +424,7 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["1.5"] = "1.5"
+    schema_version: Literal["2.0"] = "2.0"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
@@ -436,8 +434,8 @@ class AllocationIR(BaseModel):
     cost_models: CostModelsIR | None = Field(
         default=None, description="Which cost models produced this result (transparency); always set by from_internal"
     )
-    constraint_selection: ConstraintSelectionIR | None = Field(
-        description="Constraint groups active during solve, or None if no selection was specified"
+    families: list[ConstraintFamilyIR] = Field(
+        description="The constraint families the allocation model was built from"
     )
     fusion_splits: dict[str, int] = Field(description="Fusion split factors per dimension applied before scheduling")
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
@@ -478,8 +476,6 @@ class AllocationIR(BaseModel):
         and validates on construction.
         """
         raw = schedule.get_ir()
-        cs_raw = raw.get("constraint_selection")
-        constraint_selection = ConstraintSelectionIR(**cs_raw) if cs_raw else None
 
         mapping = raw["mapping"]
         mapping_nodes = {
@@ -549,7 +545,7 @@ class AllocationIR(BaseModel):
             backend=raw["backend"],
             solve=solve,
             cost_models=CostModelsIR.for_backend(raw["backend"]),
-            constraint_selection=constraint_selection,
+            families=[ConstraintFamilyIR(**family) for family in raw["families"]],
             fusion_splits=raw["fusion_splits"],
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
@@ -561,12 +557,12 @@ class AllocationIR(BaseModel):
         )
 
     def algorithmic_view(self) -> AllocationAlgorithmicView:
-        """Return algorithmic-persona projection: latency, backend, constraint selection, fusion splits."""
+        """Return algorithmic-persona projection: latency, backend, constraint families, fusion splits."""
         return AllocationAlgorithmicView(
             latency=self.latency,
             backend=self.backend,
             solve=self.solve,
-            constraint_selection=self.constraint_selection,
+            families=self.families,
             fusion_splits=self.fusion_splits,
         )
 

@@ -13,7 +13,7 @@ from stream.api import SolveOptions
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
-from stream.opt.allocation.constraint_optimization.families import traffic
+from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES, traffic
 from stream.opt.allocation.constraint_optimization.families.memory_ports import MemoryPorts
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.workload.steady_state.iteration_space import LoopEffect
@@ -33,8 +33,7 @@ def solve(
             make_2_conv_workload(two_conv),
             str(tmp_path_factory.mktemp("two_conv")),
             make_2_conv_mapping(two_conv),
-            SolveOptions(families=family_specs),
-            families_available={MemoryPorts.name: MemoryPorts},
+            SolveOptions(families=[*DEFAULT_FAMILIES, *family_specs]),
         )
 
     return run
@@ -110,7 +109,7 @@ def test_without_bounds_the_family_only_reports(solve: Solve, base: Any, model_s
 def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
     alloc = MagicMock()
     registry = QuantityRegistry()
-    MemoryPorts().constrain(alloc, registry)
+    MemoryPorts().build(alloc, registry)
     alloc.model.add_constr.assert_not_called()
 
 
@@ -132,13 +131,13 @@ def constraint_names(alloc: MagicMock) -> list[str]:
 
 def test_burst_off_keeps_only_the_interval_bound() -> None:
     alloc, registry = port_registry()
-    MemoryPorts(burst=False).constrain(alloc, registry)
+    MemoryPorts(burst=False).build(alloc, registry)
     assert constraint_names(alloc) == ["port_interval_6_dram_rw_port_1"]
 
 
 def test_interval_off_keeps_only_the_burst_bound() -> None:
     alloc, registry = port_registry()
-    MemoryPorts(interval=False).constrain(alloc, registry)
+    MemoryPorts(interval=False).build(alloc, registry)
     assert constraint_names(alloc) == ["port_burst_6_dram_rw_port_1_0"]
 
 

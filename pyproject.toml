@@ -77,10 +77,10 @@ stream-setup-aie = "stream.aie_setup:main"
 onnx = "stream.frontends.onnx:OnnxFrontend"
 torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 
-# Namespace-specific MILP constraints: the entry-point name is the core namespace, its object a
-# NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a
-# core of that namespace, so an out-of-tree extension supplies constraints for its own hardware
-# namespace. The built-in aie2 strategy registers here too -- the public path is the plugin path.
+# Namespace facts for the allocation model: the entry-point name is the core namespace, its object a
+# NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a core
+# of that namespace, whose constraint families it adds to the default set (its `families`). The
+# built-in aie2 namespace registers here too -- the public path is the plugin path.
 [project.entry-points."stream.constraints"]
 aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 
@@ -90,9 +90,29 @@ aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 timing = "stream.profiling:TimingInstrumentation"
 allocation_artifacts = "stream.allocation.artifacts:AllocationArtifacts"
 
-# Optional allocation-model constraint families, selected per solve by SolveOptions.families. The
-# entry-point name is the family's `name`, its object a ConstraintFamily factory.
+# The constraint families an allocation model is built from, selected per solve by SolveOptions.families
+# (by default Stream's own and those of the accelerator's namespaces). The entry-point name is the
+# family's `name`, its object a ConstraintFamily factory whose keyword arguments are the family's options.
 [project.entry-points."stream.constraint_families"]
+placement = "stream.opt.allocation.constraint_optimization.families.builtin:Placement"
+path_choice = "stream.opt.allocation.constraint_optimization.families.builtin:PathChoice"
+reuse_rates = "stream.opt.allocation.constraint_optimization.families.builtin:ReuseRates"
+link_contention = "stream.opt.allocation.constraint_optimization.families.builtin:LinkContention"
+memory_capacity = "stream.opt.allocation.constraint_optimization.families.builtin:MemoryCapacity"
+object_fifo_depth = "stream.opt.allocation.constraint_optimization.families.builtin:ObjectFifoDepth"
+buffer_descriptors = "stream.opt.allocation.constraint_optimization.families.builtin:BufferDescriptors"
+slot_latency = "stream.opt.allocation.constraint_optimization.families.builtin:SlotLatency"
+reuse_levels = "stream.opt.allocation.constraint_optimization.families.builtin:ReuseLevels"
+output_reuse = "stream.opt.allocation.constraint_optimization.families.builtin:OutputReuse"
+reuse_compatibility = "stream.opt.allocation.constraint_optimization.families.builtin:ReuseCompatibility"
+spatial_reuse = "stream.opt.allocation.constraint_optimization.families.builtin:SpatialReuse"
+overlap = "stream.opt.allocation.constraint_optimization.families.builtin:Overlap"
+dma_channels = "stream.opt.allocation.constraint_optimization.families.builtin:DmaChannels"
+offchip_traffic = "stream.opt.allocation.constraint_optimization.families.builtin:OffchipTraffic"
+aie2_object_fifo_depth = "stream.opt.allocation.constraint_optimization.families.aie2:ObjectFifoDepth"
+aie2_buffer_descriptors = "stream.opt.allocation.constraint_optimization.families.aie2:BufferDescriptors"
+aie2_memory_reuse = "stream.opt.allocation.constraint_optimization.families.aie2:MemoryReuse"
+aie2_dma_channels = "stream.opt.allocation.constraint_optimization.families.aie2:DmaChannels"
 memory_ports = "stream.opt.allocation.constraint_optimization.families.memory_ports:MemoryPorts"
 
 # Core-cost estimator backends: the entry-point name is the backend's `name` (= metadata["backend"]),

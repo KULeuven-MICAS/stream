@@ -1,53 +1,48 @@
 """Unit tests for pipeline threading of the solve options into the allocation stage.
 
 Covers:
-  - SolveOptions carries constraint_selection, None by default
-  - AllocationStage reads constraint_selection, the time limit and the solver log from context
-  - AllocationStage defaults to ConstraintSelection(), 300 s and no solver log when absent
+  - SolveOptions carries the constraint families, None (the default set) by default
+  - AllocationStage reads the families, the time limit and the solver log from context
+  - AllocationStage defaults to the problem's default families, 300 s and no solver log when absent
 """
 
 from unittest.mock import MagicMock
 
-from stream.opt.solver import ConstraintSelection
+from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES, drop_families, load_families
 from stream.stages.allocation.steady_state_allocation import AllocationStage
 from stream.stages.context import StageContext
 
 
-def test_solve_options_carry_constraint_selection():
+def test_solve_options_carry_families():
     from stream.api import SolveOptions
 
-    assert SolveOptions().constraint_selection is None
-    selection = ConstraintSelection(dma_channels=False)
-    assert SolveOptions(constraint_selection=selection).constraint_selection is selection
+    assert SolveOptions().families is None
+    assert SolveOptions(families=["placement"]).families == ["placement"]
 
 
 def test_stage_reads_solve_options_from_context():
-    """AllocationStage reads constraint_selection, time_limit_s and solver_log from context."""
-    cs = ConstraintSelection(dma_channels=False)
+    """AllocationStage reads families, time_limit_s and solver_log from context."""
+    families = load_families(drop_families(DEFAULT_FAMILIES, ["dma_channels"]))
     ctx = StageContext.from_kwargs(
         steady_state_problem=MagicMock(),
         output_path="/tmp/test",
         backend="ORTOOLS_GSCIP",
-        constraint_selection=cs,
+        families=families,
         time_limit_s=12.5,
         solver_log=True,
     )
     stage = AllocationStage([MagicMock()], ctx)
-    assert stage.constraint_selection.dma_channels is False, "Stage must read constraint_selection from context"
+    assert stage.families is families, "Stage must read the families from context"
     assert stage.time_limit_s == 12.5
     assert stage.solver_log is True
 
 
 def test_stage_defaults_when_absent():
-    """AllocationStage defaults to ConstraintSelection(), a 300 s limit and a silent solver."""
-    ctx = StageContext.from_kwargs(
-        steady_state_problem=MagicMock(),
-        output_path="/tmp/test",
-        backend="ORTOOLS_GSCIP",
-    )
+    """AllocationStage defaults to the problem's default families, a 300 s limit and a silent solver."""
+    problem = MagicMock()
+    problem.transfer_context.default_families = DEFAULT_FAMILIES
+    ctx = StageContext.from_kwargs(steady_state_problem=problem, output_path="/tmp/test", backend="ORTOOLS_GSCIP")
     stage = AllocationStage([MagicMock()], ctx)
-    assert stage.constraint_selection == ConstraintSelection(), (
-        "Stage must default constraint_selection to ConstraintSelection() (all True)"
-    )
+    assert [name for name, _ in stage.families.specs()] == list(DEFAULT_FAMILIES)
     assert stage.time_limit_s == 300
     assert stage.solver_log is False

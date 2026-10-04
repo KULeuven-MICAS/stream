@@ -210,7 +210,7 @@ class TestSteadyStateScheduleGetIr:
             "mapping": Mapping(),
             "ssis": {},
             "backend": "ORTOOLS_GSCIP",
-            "constraint_selection": None,
+            "families": (),
             "solution": solution,
         } | overrides
         return SteadyStateSchedule(**fields)
@@ -223,25 +223,16 @@ class TestSteadyStateScheduleGetIr:
         assert result["latency"]["overlap_between_iterations"] == 50
         assert result["latency"]["fill"] == 120
 
-    def test_backend_and_constraint_selection_in_ir(self):
-        """get_ir() includes backend (str) and constraint_selection (dict or None)."""
-        from stream.opt.solver import ConstraintSelection
-
-        cs = ConstraintSelection(
-            memory_capacity=True, object_fifo_depth=False, buffer_descriptors=True, dma_channels=False
-        )
-        result = self._make_schedule(backend="ORTOOLS_HIGHS", constraint_selection=cs).get_ir()
+    def test_backend_and_families_in_ir(self):
+        """get_ir() includes the backend and each constraint family with its options, in selection order."""
+        families = (("placement", {}), ("overlap", {"model": "span"}))
+        result = self._make_schedule(backend="ORTOOLS_HIGHS", families=families).get_ir()
 
         assert result["backend"] == "ORTOOLS_HIGHS"
-        assert result["constraint_selection"] is not None
-        assert result["constraint_selection"]["memory_capacity"] is True
-        assert result["constraint_selection"]["object_fifo_depth"] is False
-        assert result["constraint_selection"]["buffer_descriptors"] is True
-        assert result["constraint_selection"]["dma_channels"] is False
-
-    def test_constraint_selection_none(self):
-        """When constraint_selection is None, get_ir() returns null for that field."""
-        assert self._make_schedule().get_ir()["constraint_selection"] is None
+        assert result["families"] == [
+            {"name": "placement", "options": {}},
+            {"name": "overlap", "options": {"model": "span"}},
+        ]
 
     def test_mapping_included_in_ir(self):
         """get_ir() includes 'mapping' key containing Mapping.get_ir() output."""
@@ -260,10 +251,8 @@ class TestSteadyStateScheduleGetIr:
 
     def test_schedule_get_ir_json_round_trip(self):
         """json.dumps(schedule.get_ir()) succeeds without TypeError."""
-        from stream.opt.solver import ConstraintSelection
-
         schedule = self._make_schedule(
-            latency=(500, 125, 25, 0), constraint_selection=ConstraintSelection(), fusion_splits={"M": 4, "K": 2}
+            latency=(500, 125, 25, 0), families=(("placement", {}),), fusion_splits={"M": 4, "K": 2}
         )
         deserialized = json.loads(json.dumps(schedule.get_ir()))
 
@@ -273,7 +262,7 @@ class TestSteadyStateScheduleGetIr:
 
     def test_schedule_ir_has_required_keys(self):
         """The get_ir() dict contains all required top-level keys."""
-        required_keys = {"latency", "backend", "constraint_selection", "fusion_splits", "mapping"}
+        required_keys = {"latency", "backend", "families", "fusion_splits", "mapping"}
         assert required_keys.issubset(self._make_schedule().get_ir().keys())
 
     def test_fusion_splits_serialized_as_string_keys(self):

@@ -36,7 +36,7 @@ from stream.ir.infeasibility import (
 )
 from stream.mapping.mapping import Resource
 from stream.opt.allocation.constraint_optimization.context import MemoryReuseEntry
-from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, ReportingFamily, load_families
+from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, FamilySelection, ReportingFamily
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
@@ -47,7 +47,6 @@ from stream.opt.allocation.constraint_optimization.utils import (
     get_transfer_latency_for_path,
 )
 from stream.opt.solver import (
-    ConstraintSelection,
     ObjectiveLevel,
     PipeliningModel,
     SolverBackend,
@@ -123,11 +122,11 @@ class TransferAndTensorAllocator:
         self,
         problem: SteadyStateProblem,
         *,
+        families: FamilySelection,
         big_m: int | None = None,
         gurobi_verbosity: int = 1,
         output_path: str = "",
         backend: str = "ORTOOLS_GSCIP",
-        constraint_selection: ConstraintSelection | None = None,
     ):
         self.problem = problem
         self.workload = workload = problem.workload
@@ -143,7 +142,7 @@ class TransferAndTensorAllocator:
         self.cost_lut = problem.cost_lut
         self.output_path = output_path
         self.backend_str = backend
-        self.constraint_selection = constraint_selection or ConstraintSelection()
+        self.families = families
 
         self.max_slot = max(timeslots.values()) if timeslots else 0
         self.big_m = big_m or len(workload.nodes()) + 5
@@ -211,7 +210,6 @@ class TransferAndTensorAllocator:
         self.total_latency: SolverVar | None = None
         self.recurrence_bound: int = 0
         self.quantities = QuantityRegistry()
-        self.families = load_families(self.constraint_selection.families)
 
         # transfer fire helpers init
         self._ensure_same_ssis_for_all_transfers()
@@ -803,18 +801,11 @@ class TransferAndTensorAllocator:
         with span("variables"):
             self._create_vars()
             self._index_choice_metadata()
-        with span("constraints"):
-            self._create_constraints()
-        for family in self.families:
-            with span(f"family_{family.name}"):
-                family.declare(self, self.quantities)
-        with span("overlap"):
-            self._overlap()
-        for family in self.families:
-            with span(f"family_{family.name}"):
-                family.constrain(self, self.quantities)
-        with span("dma_and_objective"):
-            self._dma_channels_and_objective()
+        for name, build in self.families.steps:
+            with span(f"family_{name}"):
+                build(self, self.quantities)
+        with span("objective"):
+            self._set_total_latency_and_objective()
 
     # ...................... VARIABLES ................... #
     def _create_vars(self):
@@ -905,29 +896,6 @@ class TransferAndTensorAllocator:
                 == 1,
                 name=f"place_{t.name}",
             )
-
-    # ...................... CONSTRAINTS ................... #
-    def _create_constraints(self):
-        groups = [
-            ("placement", self._tensor_placement_constraints, True),
-            ("paths", self._path_choice_constraints, True),
-            ("reuse_rates", self._reuse_factor_rate_constraints, True),
-            ("link_contention", self._link_contention_constraints, True),
-            ("memory_capacity", self._memory_capacity_constraints, self.constraint_selection.memory_capacity),
-            ("object_fifo_depth", self._object_fifo_depth_constraints, self.constraint_selection.object_fifo_depth),
-            ("buffer_descriptors", self._buffer_descriptor_constraints, self.constraint_selection.buffer_descriptors),
-            ("slot_latency", self._slot_latency_constraints, True),
-            ("reuse_levels", self._force_nonconstant_reuse_levels, True),
-            ("output_reuse", self._force_final_output_reuse_levels, True),
-            ("reuse_compatibility", self._ensure_memory_and_compute_reuse_compatibility, True),
-            ("spatial_reuse", self._force_reuse_includes_spatial, True),
-        ]
-        for name, build, selected in groups:
-            if not selected:
-                _logger.warning("ConstraintSelection: skipping %s constraints", name)
-                continue
-            with span(name):
-                build()
 
     def _reuse_factor_rate_constraints(self):
         self.reuse_factors: dict[TransferNode, SolverVar] = {}
@@ -1210,7 +1178,6 @@ class TransferAndTensorAllocator:
                         self._capacity_load_terms[("object_fifo_depth", c.id)].append((uz, tiles_needed))
                     if min_tiles is not None:
                         self._resource_terms[("object_fifo_depth", c.id)][t.name] = min_tiles
-        self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
         self._record_capacity_bounds("object_fifo_depth", self.object_fifo_depth, "aie2_obj_fifo_depth")
 
     def _buffer_descriptor_constraints(self):
@@ -1280,7 +1247,6 @@ class TransferAndTensorAllocator:
                             self._capacity_load_terms[("buffer_descriptors", c.id)].append((uzgate, bds_needed))
                     if min_bd is not None:
                         self._resource_terms[("buffer_descriptors", c.id)][t.name] = min_bd
-        self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
         self._record_capacity_bounds("buffer_descriptors", self.bd_depth, "aie2_bd_depth")
 
     def _reuse_level_expr(self, t: Tensor):
@@ -1295,7 +1261,7 @@ class TransferAndTensorAllocator:
         levels = replay_unexpressible_levels(relevancies, read_levels)
         return tuple((self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)]) for s_m, s_c in levels)
 
-    def _ensure_memory_and_compute_reuse_compatibility(self):
+    def _ensure_memory_and_compute_reuse_compatibility(self) -> list[MemoryReuseEntry]:
         """
         Relate the reuse levels on either side of a transfer between a memory tile and
         a compute tile.
@@ -1357,7 +1323,7 @@ class TransferAndTensorAllocator:
                         for core in namespace_cores
                     )
 
-        self.context.add_memory_reuse_constraints(self.model, memory_reuse)
+        return memory_reuse
 
     def _force_reuse_includes_spatial(self):
         """
@@ -1403,6 +1369,19 @@ class TransferAndTensorAllocator:
             active_latency = self._active_transfer_latency(tr, choice, y)
             self.model.add_constr(self.slot_latency[s] >= active_latency, name=f"tr_lat_{tr.name}_{hash(choice)}")
 
+    def _longest_step(self) -> int:
+        """The most cycles any node or transfer takes in a slot, on any core or path."""
+        longest = 0
+        for n in self.ssc_nodes:
+            runtimes = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(runtimes)) if runtimes else 0
+            longest = max(longest, runtime)
+        for tr in self.transfer_nodes:
+            for choice in self._path_choices(tr):
+                lat = ceil(self.transfer_latency_for_path(tr, choice))
+                longest = max(longest, lat)
+        return longest
+
     def _force_nonconstant_reuse_levels(self):
         """
         Forces the reuse level at the destination of a compute to compute transfer.
@@ -1446,10 +1425,10 @@ class TransferAndTensorAllocator:
                     )
 
     # ...................... overlap + objective ................. #
-    def _overlap(self) -> None:
-        self._init_idle_indicators(self.max_slot, self.big_m)
+    def _overlap(self, pipelining: PipeliningModel, transfer_contention: bool, offchip_contention: bool) -> None:
+        self._init_idle_indicators(self.max_slot, self.big_m, self._effective_pipelining(pipelining))
         self._create_idle_latency_vars(self.max_slot)
-        self._define_overlap_var()
+        self._define_overlap_var(transfer_contention, offchip_contention)
         self._resident_fill()
 
     def _resident_fill(self) -> None:
@@ -1493,29 +1472,19 @@ class TransferAndTensorAllocator:
                 shared[core_id] += [tiles * share * w._raw for tiles, w in held]
         for core_id, terms in shared.items():
             self.model.add_constr(fill >= self.model.quicksum(terms), name=f"fill_shared_{core_id}")
+        self.quantities.add("fill", fill._raw)
 
-    def _dma_channels_and_objective(self) -> None:
-        if self.constraint_selection.dma_channels:
-            self._add_dma_usage_constraints()
-        else:
-            _logger.warning("ConstraintSelection: skipping dma_channels constraints")
-        self._set_total_latency_and_objective()
-
-    def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
+    def _init_idle_indicators(self, max_s: int, big_m: int, pipelining: PipeliningModel) -> None:
         """Per (resource, slot): the binaries whose sum is how much of that slot the next iteration may reclaim."""
         self.idle_ind: dict[tuple[Resource, int], list[SolverVar]] = {}
         for res, active_s, used in self._resource_activity(max_s, big_m):
             builder = (
-                self._add_occupancy_indicators
-                if self._pipelining is PipeliningModel.OCCUPANCY
-                else self._add_span_indicators
+                self._add_occupancy_indicators if pipelining is PipeliningModel.OCCUPANCY else self._add_span_indicators
             )
             builder(res, active_s, used, max_s, big_m)
 
-    @property
-    def _pipelining(self) -> PipeliningModel:
+    def _effective_pipelining(self, selected: PipeliningModel) -> PipeliningModel:
         """The overlap formulation actually in force (OCCUPANCY needs double buffering; else SPAN)."""
-        selected = self.constraint_selection.pipelining
         if selected is PipeliningModel.OCCUPANCY and not self.force_double_buffering:
             _logger.warning("PipeliningModel.OCCUPANCY needs double buffering; falling back to SPAN.")
             return PipeliningModel.SPAN
@@ -1609,19 +1578,7 @@ class TransferAndTensorAllocator:
 
     def _create_idle_latency_vars(self, max_s: int) -> None:
         self.idle_lat: dict[Resource, SolverVar] = {}
-
-        # Safe upper bound for slot latency
-        slot_latency_ub = 0
-        for n in self.ssc_nodes:
-            runtimes = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
-            runtime = ceil(max(runtimes)) if runtimes else 0
-            slot_latency_ub = max(slot_latency_ub, runtime)
-
-        for tr in self.transfer_nodes:
-            for choice in self._path_choices(tr):
-                lat = ceil(self.transfer_latency_for_path(tr, choice))
-                slot_latency_ub = max(slot_latency_ub, lat)
-        slot_latency_ub = max(slot_latency_ub, self._family_slot_pressure_bound())
+        slot_latency_ub = self._slot_pressure_bound()
 
         for res in {r for r, _ in self.idle_ind}:
             terms = []
@@ -1642,23 +1599,21 @@ class TransferAndTensorAllocator:
             )
             self.idle_lat[res] = v
 
-    def _family_slot_pressure_bound(self) -> int:
-        """The largest slot latency a family's constraints can force, 0 when no family declares one."""
-        if SLOT_PRESSURE not in self.quantities:
-            return 0
+    def _slot_pressure_bound(self) -> int:
+        """The largest slot latency the families' constraints can force, a safe bound on every slot."""
         pressures = self.quantities.indexed(SLOT_PRESSURE)
         if unbounded := [index for index, q in pressures.items() if q.upper_bound is None]:
             raise ValueError(f"{SLOT_PRESSURE} quantities need an upper_bound: {unbounded}")
         return ceil(max(q.upper_bound for q in pressures.values()))
 
-    def _define_overlap_var(self) -> None:
+    def _define_overlap_var(self, transfer_contention: bool, offchip_contention: bool) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
         self.overlap = overlap
         iteration = self.model.quicksum(v._raw for v in self.slot_latency.values())
         self.quantities.add("overlap", overlap._raw)
         self.quantities.add("iteration", iteration)
         for res, v in self.idle_lat.items():
-            if not self._bounds_overlap(res):
+            if not self._bounds_overlap(res, transfer_contention, offchip_contention):
                 continue
             busy = self._link_busy_expr(res) if isinstance(res, CommunicationLink) else None
             if busy is None:
@@ -1709,13 +1664,13 @@ class TransferAndTensorAllocator:
             return 0.0
         return float(sum(link.bandwidth for link in self.link_set if self._core_id(link.receiver) == off))
 
-    def _bounds_overlap(self, res: Resource) -> bool:
+    def _bounds_overlap(self, res: Resource, transfer_contention: bool, offchip_contention: bool) -> bool:
         """Whether this resource being busy is a reason the next iteration cannot start."""
         if isinstance(res, Core):
             return True
         if self._is_offchip_link(res):
-            return self.constraint_selection.offchip_contention
-        return self.constraint_selection.transfer_contention
+            return offchip_contention
+        return transfer_contention
 
     @staticmethod
     def _core_id(end: Core | str) -> int | None:
@@ -1810,17 +1765,12 @@ class TransferAndTensorAllocator:
                 name=f"maxCoreDmaOut_lb_{_resource_key(core)}",
             )
 
-        # Optional hard architectural constraints through the context
-        self.context.add_dma_usage_constraints(
-            self.model,
-            self.core_dma_in,
-            self.core_dma_out,
-        )
-
     def _set_total_latency_and_objective(self) -> None:
+        if self.overlap is None:
+            raise ValueError("The latency objective needs the overlap family")
+        q = self.quantities
         total_latency = self.model.add_var(vtype=SolverVarType.INTEGER, name="total_latency")
         self.total_latency = total_latency
-        assert self.overlap is not None, "Overlap variable must be initialized before objective."
         self.model.add_constr(
             total_latency
             == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
@@ -1828,9 +1778,9 @@ class TransferAndTensorAllocator:
             + self.fill
         )
 
-        # Primary objective: minimize total latency (+ DMA balancing if enabled)
-        if self.constraint_selection.dma_channels:
-            primary_expr = total_latency._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
+        # Primary objective: minimize total latency (+ DMA balancing with the dma_channels family)
+        if "dma_peak_in" in q:
+            primary_expr = total_latency._raw + q.get("dma_peak_in").expr + q.get("dma_peak_out").expr
         else:
             primary_expr = total_latency._raw
 
@@ -1845,14 +1795,8 @@ class TransferAndTensorAllocator:
         ]
         traffic_expr = self.model.quicksum(bits * z._raw for bits, z in traffic_terms)
 
-        traffic_weight = 0.0
-        if (
-            not self.shared_bandwidth
-            and self.constraint_selection.offchip_traffic_cost
-            and (bw := self._offchip_bandwidth())
-        ):
-            traffic_weight = self.iterations / bw
-            primary_expr = primary_expr + traffic_weight * traffic_expr
+        if "offchip_traffic_weight" in q:
+            primary_expr = primary_expr + q.get("offchip_traffic_weight").expr * traffic_expr
 
         # Buffering depth, minimised once latency and offchip traffic are settled.
         buffering_expr = self.model.quicksum(
@@ -1867,7 +1811,7 @@ class TransferAndTensorAllocator:
             for choice in self.possible_transfer_allocations[tr]
         )
 
-        self.quantities.add("primary", primary_expr)
+        q.add("primary", primary_expr)
         levels = [
             ("latency", primary_expr),
             ("offchip_traffic", traffic_expr),
@@ -3045,7 +2989,7 @@ class TransferAndTensorAllocator:
 
     def _family_reports(self) -> dict[str, Any]:
         reports: dict[str, Any] = {}
-        for family in self.families:
+        for family in self.families.families:
             if isinstance(family, ReportingFamily):
                 reports |= family.report(self, self.quantities)
         return reports

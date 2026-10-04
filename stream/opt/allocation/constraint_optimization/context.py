@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES
 from stream.plugins import load_group
 
 if TYPE_CHECKING:
-    from stream.opt.solver import LinExpr, SolverModel, SolverVar
+    from stream.opt.solver import LinExpr, SolverVar
 
 logger = logging.getLogger(__name__)
 
@@ -28,19 +28,21 @@ class MemoryReuseEntry:
 
 
 # ============================================================================
-# Namespace-specific MILP constraint strategies
+# Namespace facts and constraint families
 # ----------------------------------------------------------------------------
-# Every core namespace (e.g. "aie2", "zigzag") may impose additional
-# hardware-specific constraints on the transfer / tensor allocation MILP.
+# Every core namespace (e.g. "aie2", "zigzag") may state facts the allocation
+# model reads (which cores share memory, what the toolchain reserves, what a
+# dispatch costs) and contribute constraint families to the default set.
 #
 # HOW TO ADD A NEW NAMESPACE
 # --------------------------
-#   1. Subclass NamespaceConstraints, set NAMESPACE, override the
-#      add_*_constraints methods you need, and override from_config if the
-#      subclass takes constructor arguments.
+#   1. Subclass NamespaceConstraints, set NAMESPACE, override the facts that
+#      differ, list the namespace's constraint families in ``families``, and
+#      override from_config if the subclass takes constructor arguments.
 #   2. Register it in the "stream.constraints" entry-point group under the
-#      namespace name. It is then picked up whenever the accelerator has a core
-#      of that namespace -- in-tree here, or from an overlay with no fork.
+#      namespace name, and its families in "stream.constraint_families". They
+#      are then picked up whenever the accelerator has a core of that
+#      namespace -- in-tree here, or from an overlay with no fork.
 # ============================================================================
 
 
@@ -52,20 +54,14 @@ class NamespaceConstraintConfig:
     offchip_core_id: int | None
     mem_cores: tuple[Core, ...]
     nb_cols_to_use: int
-    max_compute_tile_dma_channels: int
-    max_mem_tile_dma_channels: int
-    max_shim_tile_dma_channels: int
 
 
 class NamespaceConstraints:
-    """Base class for namespace-specific MILP constraints.
-
-    Subclasses set :attr:`NAMESPACE` and override the ``add_*_constraints``
-    methods they need.  Methods that are *not* overridden default to a no-op,
-    so only the constraints relevant to a namespace are ever emitted.
-    """
+    """What a namespace tells the allocation model about its cores, and the constraint families it adds to
+    the default set. Subclasses set :attr:`NAMESPACE` and override the facts that differ from the defaults."""
 
     NAMESPACE: str = ""
+    families: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, config: NamespaceConstraintConfig) -> NamespaceConstraints:
@@ -88,137 +84,27 @@ class NamespaceConstraints:
         """Bits of the core's data memory the toolchain claims before any tensor lands."""
         return 0
 
-    # ---- object-FIFO depth ----
-
-    def add_object_fifo_constraints(
-        self,
-        model: SolverModel,
-        object_fifo_depth: dict[Core, LinExpr],
-    ) -> None:
-        """Enforce FIFO-depth limits for cores in this namespace."""
-
-    # ---- memory-tile reuse ----
-
-    def add_memory_reuse_constraints(
-        self,
-        model: SolverModel,
-        transfers: list[MemoryReuseEntry],
-    ) -> None:
-        """Narrow how much longer a memory tile may hold a tensor than its reader."""
-
-    # ---- buffer descriptors ----
-
-    def add_buffer_descriptor_constraints(
-        self,
-        model: SolverModel,
-        buffer_descriptor_depth: dict[Core, LinExpr],
-    ) -> None:
-        """Enforce buffer-descriptor limits for cores in this namespace."""
-
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
         """Cycles one dispatch spends configuring, given each design's column span."""
         return 0.0
 
-    # ---- DMA channel usage ----
-
-    def add_dma_usage_constraints(
-        self,
-        model: SolverModel,
-        dma_usage_in: dict[Core, SolverVar],
-        dma_usage_out: dict[Core, SolverVar],
-    ) -> list[SolverVar]:
-        """Enforce DMA channel limits.
-
-        Returns a (possibly empty) list of Gurobi variables representing
-        penalty terms that the caller should include in the MILP objective.
-        """
-        return []
-
 
 class AIE2Constraints(NamespaceConstraints):
-    """Hardware constraints specific to the AIE2 tile array.
-
-    * Object-FIFO depth: each tile has a per-core ``max_object_fifo_depth``.
-    * DMA channels: the mem-tile and shim-tile have a finite number of S2MM /
-      MM2S DMA channels.  The peak usage across all tiles of each kind is
-      constrained to the respective hardware limit.
-    """
+    """The AIE2 tile array: neighbouring tiles share memory, a core's stack is reserved, a dispatch of several
+    designs reconfigures their columns, and the object-fifo, buffer-descriptor, memory-tile replay and DMA
+    channel limits are its families."""
 
     NAMESPACE = "aie2"
+    families = ("aie2_object_fifo_depth", "aie2_buffer_descriptors", "aie2_memory_reuse", "aie2_dma_channels")
 
-    def __init__(
-        self,
-        *,
-        offchip_core_id: int | None,
-        max_compute_tile_dma_channels: int = 2,
-        max_mem_tile_dma_channels: int = 6,
-        max_shim_tile_dma_channels: int = 2,
-        reconfiguration: Mapping[str, float] | None = None,
-    ) -> None:
-        self.offchip_core_id = offchip_core_id
-        self.max_compute_tile_dma_channels = max_compute_tile_dma_channels
-        self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
-        self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
+    def __init__(self, *, reconfiguration: Mapping[str, float] | None = None) -> None:
         reconfiguration = reconfiguration or {}
         self.cycles_per_column = float(reconfiguration.get("cycles_per_column", 0.0))
         self.reset_cycles = float(reconfiguration.get("reset_cycles", 0.0))
 
     @classmethod
     def from_config(cls, config: NamespaceConstraintConfig) -> AIE2Constraints:
-        return cls(
-            offchip_core_id=config.offchip_core_id,
-            max_compute_tile_dma_channels=config.max_compute_tile_dma_channels,
-            max_mem_tile_dma_channels=config.max_mem_tile_dma_channels,
-            max_shim_tile_dma_channels=config.max_shim_tile_dma_channels,
-            reconfiguration=config.accelerator.reconfiguration,
-        )
-
-    # ---- object-FIFO depth ----
-
-    def add_object_fifo_constraints(
-        self,
-        model: SolverModel,
-        object_fifo_depth: dict[Core, LinExpr],
-    ) -> None:
-        for core, expr in object_fifo_depth.items():
-            if not self.applies_to(core):
-                continue
-            model.add_constr(
-                expr <= core.max_object_fifo_depth,
-                name=f"aie2_obj_fifo_depth_Core_{core.id}",
-            )
-
-    # ---- memory-tile reuse ----
-
-    def add_memory_reuse_constraints(
-        self,
-        model: SolverModel,
-        transfers: list[MemoryReuseEntry],
-    ) -> None:
-        """A memory tile may outlive its reader where one whole-object replay expresses the re-read."""
-        for entry in transfers:
-            if not self.applies_to(entry.core):
-                continue
-            for i, (mem_stop, compute_stop) in enumerate(entry.unexpressible):
-                model.add_constr(
-                    mem_stop._raw + compute_stop._raw <= 1,
-                    name=f"aie2_mem_replay_{entry.name}_Core_{entry.core.id}_P{i}",
-                )
-
-    # ---- buffer descriptors ----
-
-    def add_buffer_descriptor_constraints(
-        self,
-        model: SolverModel,
-        buffer_descriptor_depth: dict[Core, LinExpr],
-    ) -> None:
-        for core, expr in buffer_descriptor_depth.items():
-            if not self.applies_to(core):
-                continue
-            model.add_constr(
-                expr <= core.max_object_fifo_depth,
-                name=f"aie2_bd_depth_Core_{core.id}",
-            )
+        return cls(reconfiguration=config.accelerator.reconfiguration)
 
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
         """A dispatch of several designs configures each one's columns and resets the array once."""
@@ -233,7 +119,6 @@ class AIE2Constraints(NamespaceConstraints):
             return 0
         return self.DEFAULT_CORE_STACK_BYTES * 8
 
-    # ---- DMA channel usage ----
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether two tiles are served by one memory module.
 
@@ -253,31 +138,6 @@ class AIE2Constraints(NamespaceConstraints):
             return False
         return abs(one.col_id - other.col_id) + abs(one.row_id - other.row_id) == 1
 
-    def get_max_dma_channels(self, core: Core) -> int:
-        if core.id == self.offchip_core_id:
-            return self.max_shim_tile_dma_channels
-        elif core.type == "memory":
-            return self.max_mem_tile_dma_channels
-        elif core.type == "compute":
-            return self.max_compute_tile_dma_channels
-        else:
-            raise ValueError(f"Unexpected core type for DMA channel constraint: {core.type}")
-
-    def add_dma_usage_constraints(
-        self,
-        model: SolverModel,
-        dma_usage_in: dict[Core, SolverVar],
-        dma_usage_out: dict[Core, SolverVar],
-    ) -> list[SolverVar]:
-        # Filter to aie2 cores only
-        for core, v_in in dma_usage_in.items():
-            max_in = self.get_max_dma_channels(core)
-            model.add_constr(v_in <= max_in, name=f"dma_in_cap_{_resource_key(core)}")
-
-        for core, v_out in dma_usage_out.items():
-            max_out = self.get_max_dma_channels(core)
-            model.add_constr(v_out <= max_out, name=f"dma_out_cap_{_resource_key(core)}")
-
 
 # ============================================================================
 # TransferAndTensorContext – used by the *transfer / tensor* allocation stage
@@ -286,12 +146,8 @@ class AIE2Constraints(NamespaceConstraints):
 
 @dataclass(frozen=True)
 class TransferAndTensorContext:
-    """Shared context for the transfer and tensor allocation MILP.
-
-    Contains universal topology information and a list of
-    :class:`NamespaceConstraints` strategies that add hardware-specific
-    constraints to the model.
-    """
+    """Shared context for the transfer and tensor allocation MILP: the topology, and the
+    :class:`NamespaceConstraints` of the namespaces the accelerator has cores of."""
 
     accelerator: Accelerator
     offchip_core_id: int | None
@@ -300,34 +156,10 @@ class TransferAndTensorContext:
     force_io_transfers_on_mem_tile: bool
     namespace_constraints: tuple[NamespaceConstraints, ...] = ()
 
-    # ---- dispatch helpers ----
-
-    def add_object_fifo_constraints(
-        self,
-        model: SolverModel,
-        object_fifo_depth: dict[Core, LinExpr],
-    ) -> None:
-        """Dispatch object-FIFO depth constraints to all namespace strategies."""
-        for ns in self.namespace_constraints:
-            ns.add_object_fifo_constraints(model, object_fifo_depth)
-
-    def add_memory_reuse_constraints(
-        self,
-        model: SolverModel,
-        transfers: list[MemoryReuseEntry],
-    ) -> None:
-        """Dispatch memory-tile reuse constraints to all namespace strategies."""
-        for ns in self.namespace_constraints:
-            ns.add_memory_reuse_constraints(model, transfers)
-
-    def add_buffer_descriptor_constraints(
-        self,
-        model: SolverModel,
-        buffer_descriptor_depth: dict[Core, LinExpr],
-    ) -> None:
-        """Dispatch buffer-descriptor constraints to all namespace strategies."""
-        for ns in self.namespace_constraints:
-            ns.add_buffer_descriptor_constraints(model, buffer_descriptor_depth)
+    @property
+    def default_families(self) -> tuple[str, ...]:
+        """Stream's own constraint families and those each namespace contributes."""
+        return (*DEFAULT_FAMILIES, *(family for ns in self.namespace_constraints for family in ns.families))
 
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether the two cores use one memory, or a namespace lets one reach the other's."""
@@ -342,23 +174,6 @@ class TransferAndTensorContext:
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
         """Configuration cycles one dispatch pays, summed over the namespaces."""
         return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespace_constraints)
-
-    def add_dma_usage_constraints(
-        self,
-        model: SolverModel,
-        dma_usage_in: dict[Core, SolverVar],
-        dma_usage_out: dict[Core, SolverVar],
-    ) -> None:
-        """Dispatch DMA-usage constraints to all namespace strategies.
-
-        Returns the union of objective-penalty variables from every strategy.
-        """
-        for ns in self.namespace_constraints:
-            ns.add_dma_usage_constraints(
-                model,
-                dma_usage_in,
-                dma_usage_out,
-            )
 
 
 CONSTRAINTS_GROUP = "stream.constraints"
@@ -389,9 +204,6 @@ def build_transfer_context(
     nb_cols_to_use: int = 4,
     force_double_buffering: bool = True,
     force_io_transfers_on_mem_tile: bool = True,
-    max_compute_tile_dma_channels: int = 2,
-    max_mem_tile_dma_channels: int = 6,
-    max_shim_tile_dma_channels: int = 2,
 ) -> TransferAndTensorContext:
     offchip_core_id = accelerator.offchip_core_id
 
@@ -412,9 +224,6 @@ def build_transfer_context(
         offchip_core_id=offchip_core_id,
         mem_cores=tuple(mem_cores),
         nb_cols_to_use=nb_cols_to_use,
-        max_compute_tile_dma_channels=max_compute_tile_dma_channels,
-        max_mem_tile_dma_channels=max_mem_tile_dma_channels,
-        max_shim_tile_dma_channels=max_shim_tile_dma_channels,
     )
     ns_constraints = tuple(namespace_constraints_for(accelerator, config))
 

@@ -11,8 +11,8 @@ mapping generator that proposes a mapping when none is given, and the code gener
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from zigzag.mapping.temporal_mapping import TemporalMappingType
@@ -22,8 +22,8 @@ from stream.frontends import load_workload
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
 from stream.opt.allocation.constraint_optimization.context import build_transfer_context
-from stream.opt.allocation.constraint_optimization.families import load_families
-from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
+from stream.opt.allocation.constraint_optimization.families import FamilySpec, drop_families, load_families
+from stream.opt.solver import GurobiBackend, SolverBackend
 from stream.profiling import span
 from stream.stages.allocation.steady_state_allocation import DEFAULT_TIME_LIMIT_S, AllocationStage
 from stream.stages.allocation.steady_state_lowering import SteadyStateLoweringStage
@@ -42,7 +42,7 @@ from stream.stages.parsing.accelerator_parser import AcceleratorParserStage, par
 from stream.stages.stage import MainStage, StageCallable
 from stream.workload.workload import Workload
 
-__all__ = ["MappingEstimate", "SolveOptions", "evaluate_mapping", "generate_code", "select_mapping"]
+__all__ = ["MappingEstimate", "SolveOptions", "default_families", "evaluate_mapping", "generate_code", "select_mapping"]
 
 logger = logging.getLogger(__name__)
 
@@ -68,31 +68,27 @@ class SolveOptions:
     ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers to wrap the stages with, such as
     ``timing`` or ``allocation_artifacts`` (the traces, plots and reports of each solve). ``solver_log`` prints the
     solver's log, and ``time_limit_s`` bounds each allocation solve, after which its best incumbent is taken.
+    ``families`` are the constraint families the allocation model is built from, by name or ``{name: options}``;
+    None builds :func:`default_families`.
     """
 
     backend: str = "ortools_gscip"
     nb_cols_to_use: int = 4
     temporal_mapping_type: str = "uneven"
-    constraint_selection: ConstraintSelection | None = None
     kernel_library: KernelLibrary | str | Mapping[str, Any] | None = None
     tile_search: bool = False
     time_limit_s: float = DEFAULT_TIME_LIMIT_S
     solver_log: bool = False
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
-    families: Sequence[str | Mapping[str, Any]] | None = None
-    """Constraint families to add to the allocation model; None adds none. ``memory_ports`` bounds each top-level
-    memory port's bits per iteration by its rate (bits per cycle) times the initiation interval (option
-    ``interval``) and each slot's bits by its rate times the slot latency (option ``burst``), both on by default."""
+    families: Sequence[FamilySpec] | None = None
 
-    def resolved_constraint_selection(self) -> ConstraintSelection | None:
-        """``constraint_selection`` with ``families`` folded in; an unknown family or option raises here."""
-        if not self.families:
-            return self.constraint_selection
-        if self.constraint_selection is not None and self.constraint_selection.families:
-            raise ValueError("Set constraint families through SolveOptions.families or constraint_selection, not both")
-        load_families(self.families)
-        return replace(self.constraint_selection or ConstraintSelection(), families=tuple(self.families))
+
+def default_families(hardware: str | Accelerator, without: Iterable[str] = ()) -> tuple[FamilySpec, ...]:
+    """The constraint families a solve on ``hardware`` builds by default: Stream's own and those of each namespace
+    it has cores of. ``without`` leaves out the families it names and those that need what only they provide."""
+    accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
+    return drop_families(build_transfer_context(accelerator).default_families, without)
 
 
 @dataclass(frozen=True)
@@ -181,6 +177,11 @@ def _solve(
         if backend in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
             with span("solver_license"):
                 GurobiBackend.check_license()
+        with span("load_families"):
+            transfer_context = build_transfer_context(accelerator)
+            families = load_families(
+                options.families if options.families is not None else transfer_context.default_families
+            )
         proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
         emission = [codegen_backend_for(accelerator).stage()] if codegen else []
         stages = [AcceleratorParserStage, *proposal, FusionGroupIterationStage, *emission, *_ALLOCATION_STAGES]
@@ -195,7 +196,7 @@ def _solve(
             temporal_mapping_type=TemporalMappingType[options.temporal_mapping_type.upper()],
             nb_cols_to_use=options.nb_cols_to_use,
             backend=backend.value,
-            constraint_selection=options.resolved_constraint_selection(),
+            families=families,
             kernel_library=options.kernel_library,
             tile_search=options.tile_search,
             time_limit_s=options.time_limit_s,
@@ -212,6 +213,6 @@ def _solve(
     return MappingEstimate(
         mapping=mapping,
         group_cycles=tuple(ctx.get("group_cycles")[i] for i in groups),
-        dispatch_cycles=build_transfer_context(ctx.get("accelerator")).dispatch_overhead_cycles(columns),
+        dispatch_cycles=transfer_context.dispatch_overhead_cycles(columns),
         context=ctx,
     )

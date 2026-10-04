@@ -4,7 +4,7 @@ import logging
 from copy import copy
 from dataclasses import dataclass
 from math import prod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.core import Core
 from stream.workload.node import Tensor
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from stream.datatypes import LayerDim
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.mapping.mapping import Mapping
-    from stream.opt.solver import ConstraintSelection
     from stream.workload.node import ComputationNode, HasIterationSpace
     from stream.workload.workload import Workload
 
@@ -44,13 +43,14 @@ _LOOP_NEST_DEPTH: dict[str, int] = {
 @dataclass(frozen=True)
 class SteadyStateSchedule:
     """A solved steady state as downstream reads it: the problem it solves, the mapping and iteration
-    spaces the solution decided, and the solution itself."""
+    spaces the solution decided, the constraint families it was built from with their options, and the
+    solution itself."""
 
     problem: SteadyStateProblem
     mapping: Mapping
     ssis: IterationSpaces
     backend: str
-    constraint_selection: ConstraintSelection | None
+    families: tuple[tuple[str, dict[str, Any]], ...]
     solution: AllocationSolution
 
     @property
@@ -93,20 +93,9 @@ class SteadyStateSchedule:
         return self.cost_to_rank
 
     def get_ir(self) -> dict:
-        """The schedule as a plain dict: latencies, solve configuration and statistics, fusion splits,
+        """The schedule as a plain dict: latencies, solve configuration, statistics and families, fusion splits,
         mapping, performance report and the steady-state inspection view."""
         stats = self.solution.solve_stats
-        cs = self.constraint_selection
-        constraint_selection_ir = (
-            {
-                "memory_capacity": cs.memory_capacity,
-                "object_fifo_depth": cs.object_fifo_depth,
-                "buffer_descriptors": cs.buffer_descriptors,
-                "dma_channels": cs.dma_channels,
-            }
-            if cs is not None
-            else None
-        )
         latency = self.solution.latency
         return {
             "latency": {
@@ -125,7 +114,7 @@ class SteadyStateSchedule:
                 "node_count": stats.node_count,
                 "iteration_count": stats.iteration_count,
             },
-            "constraint_selection": constraint_selection_ir,
+            "families": [{"name": name, "options": options} for name, options in self.families],
             "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
             "mapping": self.mapping.get_ir(),
             "performance": self.solution.performance,

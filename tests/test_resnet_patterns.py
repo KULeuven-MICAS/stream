@@ -281,7 +281,8 @@ def test_resnet18_full_e2e(request, tmp_path):
     """
     from pathlib import Path  # noqa: PLC0415
 
-    from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
+    from stream.api import default_families  # noqa: PLC0415
+    from stream.opt.allocation.constraint_optimization.families import load_families  # noqa: PLC0415
 
     keep = request.config.getoption("--keep-output")
     if keep:
@@ -312,7 +313,7 @@ def test_resnet18_full_e2e(request, tmp_path):
         temporal_mapping_type=TemporalMappingType.UNEVEN,
         nb_cols_to_use=4,
         backend=SolverBackend.ORTOOLS_GSCIP.value,
-        constraint_selection=ConstraintSelection(memory_capacity=False),
+        families=load_families(default_families(_ACCELERATOR, without=["memory_capacity"])),
     )
 
     mainstage = MainStage(stages, ctx)

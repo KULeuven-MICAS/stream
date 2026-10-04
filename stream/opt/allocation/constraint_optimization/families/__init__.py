@@ -1,11 +1,13 @@
-"""Constraint families: optional groups of constraints and quantities an allocator builds on request."""
+"""Constraint families: the groups of constraints and quantities an allocation model is built from."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from functools import cache
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
-from stream.plugins import load_group
+from stream.plugins import load_group, overlay_allowlist
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
@@ -16,16 +18,49 @@ if TYPE_CHECKING:
 FAMILY_GROUP = "stream.constraint_families"
 SLOT_PRESSURE = "slot_pressure"
 FamilySpec = str | Mapping[str, Any]
+Build = Callable[["TransferAndTensorAllocator", "QuantityRegistry"], None]
+
+DEFAULT_FAMILIES: tuple[str, ...] = (
+    "placement",
+    "path_choice",
+    "reuse_rates",
+    "link_contention",
+    "memory_capacity",
+    "object_fifo_depth",
+    "buffer_descriptors",
+    "slot_latency",
+    "reuse_levels",
+    "output_reuse",
+    "reuse_compatibility",
+    "spatial_reuse",
+    "overlap",
+    "dma_channels",
+    "offchip_traffic",
+)
+"""Stream's own families, in every default set and built in this order where their requirements allow."""
 
 
 class ConstraintFamily(Protocol):
-    """``declare`` runs before the overlap is defined and ``constrain`` after it, both with the registry."""
+    """Constraints and the quantities they define. ``build`` runs after every family that provides a name in
+    ``requires``, and defines what ``provides`` names; a family is shared by the solves of a run, so it keeps
+    no state of its own. The allocator's variables exist before any family runs."""
 
     name: ClassVar[str]
+    requires: ClassVar[tuple[str, ...]]
+    provides: ClassVar[tuple[str, ...]]
+
+    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
+
+
+@runtime_checkable
+class DeclaringFamily(Protocol):
+    """A family that defines quantities others read before its own ``build`` can run: ``declare`` runs once
+    what ``declare_requires`` names is provided, and provides ``declares``."""
+
+    declare_requires: ClassVar[tuple[str, ...]]
+    declares: ClassVar[tuple[str, ...]]
 
     def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
-
-    def constrain(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
 
 
 @runtime_checkable
@@ -35,10 +70,30 @@ class ReportingFamily(Protocol):
     def report(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> dict[str, Any]: ...
 
 
+@dataclass(frozen=True)
+class FamilySelection:
+    """The families of a solve with the options each was built with, and ``steps``, the ``(family name,
+    build)`` calls that build the model, in order."""
+
+    families: tuple[ConstraintFamily, ...]
+    options: tuple[dict[str, Any], ...]
+    steps: tuple[tuple[str, Build], ...]
+
+    def specs(self) -> tuple[tuple[str, dict[str, Any]], ...]:
+        """Each family's name and options, in the order they were selected."""
+        return tuple((family.name, options) for family, options in zip(self.families, self.options, strict=True))
+
+
 def available_families() -> dict[str, Callable[..., ConstraintFamily]]:
-    """Family factories by name from the ``stream.constraint_families`` entry points."""
+    """Family factories by name from the ``stream.constraint_families`` entry points, discovered once per overlay
+    allowlist: every solve of a sweep resolves its families, and discovery costs more than many a model build."""
+    return dict(_discovered(overlay_allowlist()))
+
+
+@cache
+def _discovered(allow: frozenset[str] | None) -> dict[str, Callable[..., ConstraintFamily]]:
     factories: dict[str, Callable[..., ConstraintFamily]] = {}
-    for plugin in load_group(FAMILY_GROUP):
+    for plugin in load_group(FAMILY_GROUP, allow):
         if plugin.name in factories and factories[plugin.name] is not plugin.obj:
             raise ValueError(f"Constraint family {plugin.name!r} is registered twice")
         factories[plugin.name] = plugin.obj
@@ -55,21 +110,87 @@ def parse_spec(spec: FamilySpec) -> tuple[str, dict[str, Any]]:
     return name, dict(options or {})
 
 
-def load_families(specs: Sequence[FamilySpec]) -> tuple[ConstraintFamily, ...]:
-    """Instantiate the families ``specs`` name, in order; an unknown name raises with the known ones."""
-    if not specs:
-        return ()
+def load_families(specs: Sequence[FamilySpec]) -> FamilySelection:
+    """Instantiate the families ``specs`` name and order their steps; an unknown name raises with the known
+    ones, and a requirement no selected family provides raises with the family that needs it."""
     if isinstance(specs, str):
         raise TypeError(f"Constraint families are a list of names, got the string {specs!r}")
-    known = available_families()
+    known = available_families() if specs else {}
     families: list[ConstraintFamily] = []
-    for name, options in map(parse_spec, specs):
+    options: list[dict[str, Any]] = []
+    for name, family_options in map(parse_spec, specs):
         if name not in known:
             raise KeyError(f"Unknown constraint family {name!r}; available: {', '.join(sorted(known)) or 'none'}")
         if any(f.name == name for f in families):
             raise ValueError(f"Constraint family {name!r} is selected twice")
         try:
-            families.append(known[name](**options))
+            families.append(known[name](**family_options))
         except TypeError as exc:
             raise TypeError(f"Constraint family {name!r}: {exc}") from None
-    return tuple(families)
+        options.append(family_options)
+    return FamilySelection(tuple(families), tuple(options), _build_order(families))
+
+
+def drop_families(specs: Iterable[FamilySpec], names: Iterable[str]) -> tuple[FamilySpec, ...]:
+    """``specs`` less the families ``names`` and every family that then requires what none of the rest provide."""
+    kept = list(specs)
+    dropped = set(names)
+    if not dropped:
+        return tuple(kept)
+    known = available_families()
+    while True:
+        kept = [spec for spec in kept if parse_spec(spec)[0] not in dropped]
+        factories = [known.get(parse_spec(spec)[0]) for spec in kept]
+        provided = {name for factory in factories for name in _provided(factory)}
+        unmet = {
+            parse_spec(spec)[0]
+            for spec, factory in zip(kept, factories, strict=True)
+            if any(name not in provided for name in _required(factory))
+        }
+        if not unmet:
+            return tuple(kept)
+        dropped |= unmet
+
+
+def _provided(family: Any) -> tuple[str, ...]:
+    return (*getattr(family, "provides", ()), *getattr(family, "declares", ()))
+
+
+def _required(family: Any) -> tuple[str, ...]:
+    return (*getattr(family, "requires", ()), *getattr(family, "declare_requires", ()))
+
+
+def _build_order(families: Sequence[ConstraintFamily]) -> tuple[tuple[str, Build], ...]:
+    """A step runs once every step providing what it requires has: Stream's own families otherwise keep the
+    order of :data:`DEFAULT_FAMILIES`, and any other family runs as early as its requirements allow."""
+    steps: list[tuple[tuple[int, int], str, Build, tuple[str, ...], tuple[str, ...]]] = []
+    for index, family in enumerate(families):
+        rank = (1, DEFAULT_FAMILIES.index(family.name)) if family.name in DEFAULT_FAMILIES else (0, index)
+        if isinstance(family, DeclaringFamily):
+            steps.append((rank, family.name, family.declare, family.declare_requires, family.declares))
+            steps.append((rank, family.name, family.build, (*family.requires, *family.declares), family.provides))
+        else:
+            steps.append((rank, family.name, family.build, family.requires, family.provides))
+    providers: dict[str, list[int]] = {}
+    for i, (*_, provides) in enumerate(steps):
+        for name in provides:
+            providers.setdefault(name, []).append(i)
+    for _, family, _, requires, _ in steps:
+        for name in requires:
+            if name not in providers:
+                raise ValueError(f"Constraint family {family!r} requires {name!r}, which no selected family provides")
+    pending = sorted(range(len(steps)), key=lambda i: steps[i][0])
+    done: set[int] = set()
+    order: list[tuple[str, Build]] = []
+    while pending:
+        ready = next(
+            (i for i in pending if all(p in done or p == i for r in steps[i][3] for p in providers[r])),
+            None,
+        )
+        if ready is None:
+            cycle = sorted({steps[i][1] for i in pending})
+            raise ValueError(f"Constraint families {cycle} require each other's quantities")
+        pending.remove(ready)
+        done.add(ready)
+        order.append((steps[ready][1], steps[ready][2]))
+    return tuple(order)

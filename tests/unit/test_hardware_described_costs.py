@@ -30,9 +30,7 @@ def test_hardware_without_either_declares_neither():
 
 
 def test_aie2_charges_the_declared_reconfiguration_once_a_dispatch_holds_several_designs():
-    constraints = AIE2Constraints(
-        offchip_core_id=0, reconfiguration={"cycles_per_column": 69000, "reset_cycles": 63000}
-    )
+    constraints = AIE2Constraints(reconfiguration={"cycles_per_column": 69000, "reset_cycles": 63000})
     assert constraints.dispatch_overhead_cycles([8]) == 0.0
     assert constraints.dispatch_overhead_cycles([2, 3]) == 5 * 69000 + 63000
-    assert AIE2Constraints(offchip_core_id=0).dispatch_overhead_cycles([2, 3]) == 0.0
+    assert AIE2Constraints().dispatch_overhead_cycles([2, 3]) == 0.0

@@ -68,14 +68,15 @@ async def _run_solve_background(
     """Run evaluate_mapping in a background thread and update job state.
 
     Uses asyncio.to_thread to avoid blocking the event loop during the MILP solve.
-    Heavy imports (stream.api, ConstraintSelection) are lazy.
+    Heavy imports (stream.api) are lazy. A constraint group switched off leaves out its family.
     """
     state.jobs[job_id]["status"] = "running"
     try:
-        from stream.api import SolveOptions, evaluate_mapping  # noqa: PLC0415
-        from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
+        from stream.api import SolveOptions, default_families, evaluate_mapping  # noqa: PLC0415
 
-        options = SolveOptions(backend=backend, constraint_selection=ConstraintSelection(**constraint_dict))
+        off = [name for name, on in constraint_dict.items() if not on]
+        families = await asyncio.to_thread(default_families, hardware, off)
+        options = SolveOptions(backend=backend, families=families)
         estimate = await asyncio.to_thread(
             evaluate_mapping, hardware, workload, f"{output_path}/{job_id}", mapping, options
         )

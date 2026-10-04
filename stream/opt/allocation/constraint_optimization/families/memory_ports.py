@@ -30,6 +30,10 @@ class MemoryPorts:
     that slot's latency. With neither, the model is unchanged and the family only reports. Rates in bits/cycle."""
 
     name: ClassVar[str] = "memory_ports"
+    declare_requires: ClassVar[tuple[str, ...]] = ("transfer_latency",)
+    declares: ClassVar[tuple[str, ...]] = ("port_rate", "port_demand", "port_demand_slot", SLOT_PRESSURE)
+    requires: ClassVar[tuple[str, ...]] = ("iteration", "overlap")
+    provides: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, interval: bool = True, burst: bool = True) -> None:
         self.interval = interval
@@ -63,7 +67,7 @@ class MemoryPorts:
             # One cycle of margin against float rounding between this bound and the solved demand.
             q.add(SLOT_PRESSURE, cycles, index=("memory_ports", key), upper_bound=ceil(bound) + 1)
 
-    def constrain(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+    def build(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
         if "port_demand" not in q:
             return
         if self.interval:

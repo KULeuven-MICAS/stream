@@ -6,7 +6,7 @@ import datetime
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -94,30 +94,6 @@ class PipeliningModel(Enum):
 
     SPAN = "span"
     OCCUPANCY = "occupancy"
-
-
-@dataclass(frozen=True)
-class ConstraintSelection:
-    """Which constraint groups TransferAndTensorAllocator builds, and its overlap formulation."""
-
-    memory_capacity: bool = True
-    object_fifo_depth: bool = True
-    buffer_descriptors: bool = True
-    dma_channels: bool = True
-    transfer_contention: bool = True
-    offchip_contention: bool = True
-    offchip_traffic_cost: bool = True
-    pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
-    families: tuple[str | Mapping[str, Any], ...] = ()
-    """Constraint families to build, by entry-point name, or ``{name: options}``; none by default."""
-
-    def __post_init__(self) -> None:
-        if not self.memory_capacity and self.object_fifo_depth:
-            _logger.warning(
-                "ConstraintSelection: memory_capacity=False with object_fifo_depth=True "
-                "is nonsensical -- object-FIFO depth constraints assume memory capacity "
-                "is enforced. Continuing with this configuration."
-            )
 
 
 @dataclass(frozen=True)

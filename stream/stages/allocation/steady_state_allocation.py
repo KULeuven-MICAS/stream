@@ -4,8 +4,8 @@ import os
 from stream.allocation.artifacts import write_artifacts
 from stream.allocation.problem import SteadyStateProblem
 from stream.allocation.schedule import SteadyStateSchedule, solved_iteration_spaces, solved_mapping
+from stream.opt.allocation.constraint_optimization.families import FamilySelection, load_families
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
-from stream.opt.solver import ConstraintSelection
 from stream.profiling import span
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -19,7 +19,7 @@ class AllocationStage(Stage):
     """Solve the allocation of the steady-state problem -- where each tensor lives and which route each
     transfer takes -- and hand downstream the schedule it yields.
 
-    Reads: steady_state_problem, output_path, backend, constraint_selection, total_mac_ops, time_limit_s, solver_log
+    Reads: steady_state_problem, output_path, backend, families, total_mac_ops, time_limit_s, solver_log
     Writes: allocation, workload, mapping
     """
 
@@ -30,7 +30,9 @@ class AllocationStage(Stage):
         self.problem: SteadyStateProblem = self.ctx.get("steady_state_problem")
         self.output_path = os.path.join(self.ctx.get("output_path"), "tetra")
         self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")
-        self.constraint_selection = self.ctx.get("constraint_selection") or ConstraintSelection()
+        self.families: FamilySelection = self.ctx.get("families") or load_families(
+            self.problem.transfer_context.default_families
+        )
         self.time_limit_s: float = self.ctx.get("time_limit_s", DEFAULT_TIME_LIMIT_S)
         self.solver_log: bool = self.ctx.get("solver_log", False)
 
@@ -40,8 +42,8 @@ class AllocationStage(Stage):
             allocator = TransferAndTensorAllocator(
                 problem,
                 output_path=self.output_path,
+                families=self.families,
                 backend=self.backend,
-                constraint_selection=self.constraint_selection,
             )
         solution = allocator.solve(
             tee=self.solver_log, time_limit_s=self.time_limit_s, total_mac_ops=self.ctx.get("total_mac_ops")
@@ -52,7 +54,7 @@ class AllocationStage(Stage):
                 mapping=solved_mapping(problem.workload, problem.mapping, solution),
                 ssis=solved_iteration_spaces(problem.workload, problem.ssis, solution.reuse_levels),
                 backend=self.backend,
-                constraint_selection=self.constraint_selection,
+                families=self.families.specs(),
                 solution=solution,
             )
         write_artifacts(allocator, schedule)

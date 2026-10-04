@@ -15,6 +15,7 @@ import pytest
 
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.context import AIE2Constraints
+from stream.opt.allocation.constraint_optimization.families.aie2 import DmaChannels
 from stream.workload.node import TransferType
 
 
@@ -30,14 +31,14 @@ def _core(core_id: int, kind: str, col: int | None, row: int | None, namespace: 
 
 @pytest.fixture
 def aie2():
-    return AIE2Constraints(offchip_core_id=None)
+    return AIE2Constraints()
 
 
-def test_a_compute_tile_has_the_two_dma_channels_the_hardware_gives_it(aie2):
+def test_a_compute_tile_has_the_two_dma_channels_the_hardware_gives_it():
     """``AIE2TargetModel`` answers 2 for ``WireBundle::DMA`` on a compute tile, 6 on a
     memory tile. Modelling more is what lets an infeasible design reach aiecc."""
-    assert aie2.get_max_dma_channels(_core(0, "compute", 0, 2)) == 2
-    assert aie2.get_max_dma_channels(_core(1, "memory", 0, 1)) == 6
+    assert DmaChannels().channels(_core(0, "compute", 0, 2), None) == 2
+    assert DmaChannels().channels(_core(1, "memory", 0, 1), None) == 6
 
 
 @pytest.mark.parametrize(
