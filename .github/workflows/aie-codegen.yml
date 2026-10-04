@@ -78,7 +78,7 @@ jobs:
 
       - name: Install AIE toolchain via stream-setup-aie
         # The console script under test: pins + GitHub release index pages + .pth.
-        run: stream-setup-aie
+        run: stream-setup-aie --with-mlir-aie
 
       - name: Generate SwiGLU designs
         # Open-source GSCIP backend, so no Gurobi license is needed in CI: the whole block, and one

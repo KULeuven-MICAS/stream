@@ -31,8 +31,8 @@ from pathlib import Path
 _XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@f2540442628aa782847ababd1dc76c0e323ba459"
 _SNAX_MLIR = "git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf"
 
-_MLIR_AIE_PIN = "mlir_aie==1.4.4.dev43+g1d7b9ea"
-_LLVM_AIE_PIN = "llvm-aie==22.0.0.2026091701+773413fb"
+_MLIR_AIE_PIN = "mlir_aie==1.4.4.dev73+g18ca6c1"
+_LLVM_AIE_PIN = "llvm-aie==22.0.0.2026092101+0006955e"
 _AIE_WHEEL_INDICES = [
     "--extra-index-url",
     "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4",
