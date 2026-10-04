@@ -60,7 +60,7 @@ core_connectivity:
 | `offchip_core_id` | yes | The id of the core that fronts external memory (DRAM). Must appear in `cores`. No computation is ever placed here. |
 | `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
 | `bandwidth` | no | Map of core id to the measured bandwidth every transfer through that core shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes. The allocation then runs no transfer through the core faster than its access pattern allows, and bounds every step by the time the core spends on one iteration's transfers. A key can also name one memory port, see [Memory ports](#memory-ports). |
-| `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace constraints; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
+| `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
 | `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
@@ -72,7 +72,7 @@ A `bandwidth` key `<core id>.<memory>.<port>` (e.g. `2.dram.rw_port_1`) gives th
 
 A port belongs to a physical memory: cores in one `core_memory_sharing` group share it, and memories listed in one `memory_aliases` group share the ports of the group's first memory.
 
-The `memory_ports` constraint family (`SolveOptions(families=["memory_ports"])`) uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
+The `memory_ports` [constraint family](stages.md#constraint-families) (`SolveOptions(families=[*default_families(hardware), "memory_ports"])`) uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
 ### Connections: `link` vs `bus`
 
