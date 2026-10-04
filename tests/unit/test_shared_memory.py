@@ -82,7 +82,7 @@ def test_a_handover_between_cores_sharing_a_memory_stays_in_it():
     assert handovers
     for tr in handovers:
         for choice in alloc.possible_transfer_allocations[tr]:
-            assert alloc._transfer_latency_for_path(tr, choice) == 0
+            assert alloc.transfer_latency_for_path(tr, choice) == 0
             assert not alloc.links_in_choice[(tr, choice)]
     # Each copy is its source's buffer, and these hold nothing beyond their sources.
     copies = {t.name for tr in handovers for t in tr.outputs}

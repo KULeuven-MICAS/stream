@@ -8,6 +8,7 @@ from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
+from stream.parser.accelerator_validator import parse_memory_ref, parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -44,18 +45,33 @@ class AcceleratorFactory:
         cores_graph = self.create_core_graph(cores)
 
         # Take next available core id
-        return Accelerator(
+        accelerator = Accelerator(
             name=self.data["name"],
             cores=cores_graph,
             offchip_core_id=offchip_core_id,
             shared_mem_group_ids=shared_mem_group_ids,
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
             bandwidth={
-                int(core): BandwidthModel.from_description(model)
+                core: BandwidthModel.from_description(model)
                 for core, model in self.data.get("bandwidth", {}).items()
+                if isinstance(core, int)
             },
             reconfiguration=self.data.get("reconfiguration"),
+            port_bandwidth={
+                parse_port_ref(ref): BandwidthModel.from_description(model)
+                for ref, model in self.data.get("bandwidth", {}).items()
+                if isinstance(ref, str)
+            },
+            memory_aliases={
+                parse_memory_ref(alias): parse_memory_ref(group[0])
+                for group in self.data.get("memory_aliases") or []
+                for alias in group[1:]
+            },
         )
+        if accelerator.port_bandwidth:
+            # Building the registry rejects a port key that names no port a core's backend models.
+            _ = accelerator.ports
+        return accelerator
 
     def create_core(
         self,
@@ -83,10 +99,17 @@ class AcceleratorFactory:
         if namespace == "aie2":
             # ---- AIE2 native path: lightweight backend ----
             mem = core_data["memory"]
+            dma = core_data.get("dma", {})
             backend = AIE2CoreBackend(
                 memory_capacity_bits=mem["capacity"],
                 bandwidth_min=mem.get("bandwidth_min", 0),
                 bandwidth_max=mem.get("bandwidth_max", 0),
+                dma_mm2s=dma.get("mm2s", 0),
+                dma_s2mm=dma.get("s2mm", 0),
+                dma_channel_bits=dma.get("channel_bits", 0),
+                dma_buffer_descriptors=dma.get("buffer_descriptors", 0),
+                dma_iterations=dma.get("iterations", 0),
+                share_group=core_id if shared_mem_group_id is None else shared_mem_group_id,
             )
             core = Core(
                 backend=backend,

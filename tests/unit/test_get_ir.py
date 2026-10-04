@@ -223,11 +223,13 @@ class TestSteadyStateSchedulerGetIr:
         scheduler.latency_total = 1000
         scheduler.latency_per_iteration = 250
         scheduler.overlap_between_iterations = 50
+        scheduler.latency_fill = 120
 
         result = scheduler.get_ir()
         assert result["latency"]["total"] == 1000
         assert result["latency"]["per_iteration"] == 250
         assert result["latency"]["overlap_between_iterations"] == 50
+        assert result["latency"]["fill"] == 120
 
     def test_backend_and_constraint_selection_in_ir(self):
         """Test 3: get_ir() includes backend (str) and constraint_selection (dict or None)."""

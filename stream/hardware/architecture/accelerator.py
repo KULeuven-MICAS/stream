@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import Any
 
 from zigzag.mapping.spatial_mapping import SpatialMapping
@@ -7,6 +8,7 @@ from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
+from stream.hardware.ports import MemoryRef, PortRef, PortRegistry
 
 
 class CoreGraph(DiGraphWrapper[Core]):
@@ -20,7 +22,7 @@ class Accelerator:
     In this Stream version, the cores are actually a graph with directed edges representing communication links.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         name: str,
         cores: CoreGraph,
@@ -28,13 +30,20 @@ class Accelerator:
         offchip_core_id: int | None = None,
         kernel_library: KernelLibrary | None = None,
         bandwidth: dict[int, BandwidthModel] | None = None,
+        *,
         reconfiguration: dict | None = None,
+        port_bandwidth: dict[PortRef, BandwidthModel] | None = None,
+        memory_aliases: dict[MemoryRef, MemoryRef] | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
         self.cores = cores
         self.offchip_core_id = offchip_core_id
         self.bandwidth = bandwidth or {}
+        # (core id, memory instance, port name) -> measured model replacing the port's declared width
+        self.port_bandwidth = port_bandwidth or {}
+        # (core id, memory instance) -> the first memory of its `memory_aliases` group, the physical one
+        self.memory_aliases = memory_aliases or {}
         self.reconfiguration = reconfiguration or {}
         # core id -> the first core of its `core_memory_sharing` group, whose top-level memory it uses
         self.shared_mem_group_ids = shared_mem_group_ids
@@ -70,6 +79,11 @@ class Accelerator:
             return some_dataflow
 
         raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
+
+    @cached_property
+    def ports(self) -> PortRegistry:
+        """The top-level memory ports of every core."""
+        return PortRegistry.from_accelerator(self)
 
     @property
     def core_list(self) -> list[Core]:

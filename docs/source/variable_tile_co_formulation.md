@@ -9,8 +9,13 @@ alongside memory allocation, transfer scheduling, and FIFO sizing.
 The CO allocates tensors to cores, selects transfer paths, and schedules
 timeslots for an AIE array. Each workload dimension (e.g. seq_len, embedding,
 hidden) has a **tile size** that determines how much data each core processes
-per invocation. Previously tile sizes were fixed scalars chosen before the CO
-ran. Now they are decision variables *inside* the MILP.
+per invocation. This note describes tile sizes as decision variables *inside*
+the MILP.
+
+The current allocator (`TransferAndTensorAllocator`) solves with fixed tile
+sizes; `TileSearchStage` compares candidate tilings by solving each. Sections
+1, 2, 6a, 6b and 7 have no counterpart in the code; the `**Code:**` pointers
+name the methods that implement the fixed-tile form of the other sections.
 
 ## Variables at a glance
 
@@ -44,7 +49,7 @@ sum_k w[z0, k] == 1              (one-hot)
 tile_var[z0] == sum_k(tile[k] * w[z0, k])
 ```
 
-**Code:** `__create_tile_selection_vars` (~L730).
+**Code:** none; tile sizes are fixed per solve (`TileSearchStage` picks among candidates).
 
 ## 2. Joint candidate enumeration
 
@@ -79,8 +84,7 @@ tensor_size_expr = sum_combo(size[combo] * jw[combo])
 Since the `w` variables are one-hot per dimension, exactly one `jw` is 1, so
 the expression evaluates to the correct pre-computed size.
 
-**Code:** `_joint_candidates_for_tensor` (~L1850),
-`_joint_binary_for_combo` (~L1920).
+**Code:** none; `_add_binary_product` is the binary AND helper.
 
 ## 3. Memory capacity constraints
 
@@ -110,7 +114,7 @@ When a tensor depends on multiple tiled dimensions, the (SSIS candidate,
 tensor candidate) pairs are enumerated, producing pre-computed
 `ceil(sf * size)` coefficients for each pair.
 
-**Code:** `_memory_capacity_constraints` (~L960).
+**Code:** `_memory_capacity_constraints`.
 
 ## 4. SSIS loop sizes, reuse, and fire rates
 
@@ -144,9 +148,8 @@ fires[tr] = sum_s( z_stop[t,s] * sum_k(fires_coeff[k,s] * jw[k]) )
 The inner sum is a linear expression; multiplying by the `z_stop` binary uses
 the same big-M `lc` auxiliary pattern.
 
-**Code:** `_ssis_coefficients_for_transfer` (~L300),
-`_transfer_fire_rate_constraints` (~L780),
-`_reuse_factor_rate_constraints` (~L830).
+**Code:** `_init_transfer_fire_helpers` (per stop level reuse, tiles and
+buffer descriptor coefficients), `_reuse_factor_rate_constraints`.
 
 ## 5. Slot latency constraints
 
@@ -163,7 +166,7 @@ for each tile combo k:
 slot_latency[s] >= sum_k(raw_lat[k] * jw[k])
 ```
 
-**Code:** `_slot_latency_constraints` (~L1260).
+**Code:** `_slot_latency_constraints`.
 
 ### 5b. Transfer nodes
 
@@ -191,17 +194,21 @@ lat_sum = sum_s(lc_s)
 active_latency = y * lat_sum                       # gated by path choice
 ```
 
-**Code:** `_active_transfer_latency` (~L1960).
+**Code:** `_active_transfer_latency`.
 
 ## 6. Objective - variable iteration count
 
 The total latency across all steady-state iterations is:
 
 ```
-total = iterations * sum(slot_lat) - (iterations - 1) * overlap
-      = iterations * (sum(slot_lat) - overlap) + overlap
-      = iterations * per_iter_net + overlap
+total_latency = iterations * sum(slot_lat) - (iterations - 1) * overlap
+              = iterations * (sum(slot_lat) - overlap) + overlap
+              = iterations * per_iter_net + overlap
 ```
+
+With fixed tiles `iterations` is a constant, and the code states the first
+line directly as one linear constraint on `total_latency`, plus `fill`: the
+cycles a run waits for the off-chip tensors it holds in one buffer.
 
 When tile sizes are variable, the iteration count changes because
 `T = workload_size / (K * S)` and `iterations = prod(T)` across all
@@ -253,7 +260,7 @@ With 4 dimensions * 4 candidates each, there are 256 global combos.  Each
 adds 1 continuous auxiliary variable and 3 constraints - a negligible ~0.01%
 increase in model size.
 
-**Code:** `_set_total_latency_and_objective` (~L1585).
+**Code:** `_set_total_latency_and_objective` (fixed `iterations`, no `aux_k`).
 
 ### 6c. Why not scale slot latencies instead?
 
@@ -287,7 +294,8 @@ The `check_total` field in the objective section recomputes
 `true_iterations * per_iter - (true_iterations - 1) * overlap` from the
 extracted variable values, serving as an independent sanity check.
 
-**Code:** `build_solution_report`, `save_solution_report` (~L1780).
+**Code:** none; `save_slot_latency_breakdown` writes the closest report,
+`slot_latency_breakdown.yaml` (per-slot contributors, totals, slack and reuse).
 
 ## The big-M linearisation pattern
 

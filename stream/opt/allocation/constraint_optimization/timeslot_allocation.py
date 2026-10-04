@@ -112,43 +112,6 @@ class TimeSlotAllocation:
         self._node_types[node] = node_type
 
     # ................................................. public slot helpers
-    def add_node_to_next_slot(
-        self,
-        node: Node,
-        res: Resource,
-        *,
-        min_slot: int = 0,
-        node_type: NodeType = NodeType.STEADY_STATE,
-    ) -> int:
-        """Place *node* on *res* at the first free slot ≥ *min_slot*."""
-        next_slot = max(self._res_max_slot.get(res, -1) + 1, min_slot)
-        while next_slot in self._slot_res_to_node and res in self._slot_res_to_node[next_slot]:
-            next_slot += 1
-        self._add_alloc(next_slot, res, node, node_type)
-        return next_slot
-
-    def get_allocations_in_slot(self, slot: int) -> dict[Resource, Node]:
-        return dict(self._slot_res_to_node.get(slot, {}))
-
-    def get_resources_for_node(self, node: Node) -> set[Resource]:
-        return set(self._node_to_res.get(node, set()))
-
-    def get_resources_for_node_id(self, node_id: int) -> set[Resource]:
-        nodes = [n for n in self._node_to_res if n.id == node_id]
-        return set(res for n in nodes for res in self._node_to_res[n])
-
-    def get_timeslot_of_node_on_resource(self, node: Node, res: Resource) -> int:
-        for slot, res_map in self._slot_res_to_node.items():
-            if res_map.get(res) is node:
-                return slot
-        raise ValueError(f"{node.name} not on {_resource_key(res)}.")
-
-    def get_timeslot_of_node(self, node: Node) -> int:
-        slots = [slot for slot, res_map in self._slot_res_to_node.items() if node in res_map.values()]
-        if not slots:
-            raise ValueError(f"{node.name} not scheduled.")
-        return max(slots)
-
     def get_timeslot_runtime(self, slot: int) -> int:
         if slot < self.slot_min or slot > self.slot_max:
             raise ValueError(f"Slot {slot} is out of range ({self.slot_min} - {self.slot_max}).")

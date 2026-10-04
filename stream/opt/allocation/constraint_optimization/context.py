@@ -7,13 +7,6 @@ from typing import TYPE_CHECKING
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.config import (
-    ConstraintOptStageConfig,
-    CoreConstraintProfile,
-    CoreRole,
-    ensure_profile_registry,
-    pick_profile,
-)
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 from stream.plugins import load_group
 
@@ -32,58 +25,6 @@ class MemoryReuseEntry:
     mem_level: LinExpr
     compute_level: LinExpr
     unexpressible: tuple[tuple[SolverVar, SolverVar], ...]
-
-
-# ============================================================================
-# ConstraintContext – used by the *timeslot* allocation stage
-# ============================================================================
-
-
-@dataclass(frozen=True)
-class ConstraintContext:
-    core_profiles: dict[Core, CoreConstraintProfile]
-    compute_cores: list[Core]
-    cache_cores: list[Core]
-    io_cores: list[Core]
-    capacities: dict[Core, float]
-    offchip_core_id: int | None
-
-    def core_ids(self) -> list[int]:
-        return sorted(c.id for c in self.compute_cores)
-
-
-def build_constraint_context(accelerator: Accelerator, cfg: ConstraintOptStageConfig) -> ConstraintContext:
-    profiles_registry = ensure_profile_registry(cfg.profiles)
-
-    core_profiles: dict[Core, CoreConstraintProfile] = {}
-    for core in accelerator.core_list:
-        core_profiles[core] = pick_profile(profiles_registry, core.type)
-
-    def _cores_with(role: CoreRole) -> list[Core]:
-        return [c for c, p in core_profiles.items() if role in p.roles]
-
-    def _eligible_for_compute(core: Core) -> bool:
-        profile = core_profiles[core]
-        return bool(profile.roles)
-
-    compute_cores = [
-        c
-        for c in core_profiles
-        if _eligible_for_compute(c) and (accelerator.offchip_core_id is None or c.id != accelerator.offchip_core_id)
-    ]
-    cache_cores = _cores_with(CoreRole.CACHE)
-    io_cores = _cores_with(CoreRole.IO) + _cores_with(CoreRole.SHIM)
-
-    capacities: dict[Core, float] = {c: c.get_memory_capacity() for c in compute_cores}
-
-    return ConstraintContext(
-        core_profiles=core_profiles,
-        compute_cores=compute_cores,
-        cache_cores=cache_cores,
-        io_cores=io_cores,
-        capacities=capacities,
-        offchip_core_id=accelerator.offchip_core_id,
-    )
 
 
 # ============================================================================

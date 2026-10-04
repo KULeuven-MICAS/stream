@@ -3,8 +3,6 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
 
-ENABLE_BROADCASTING = False
-
 
 def get_bidirectional_edges(
     core_a: "Core",
@@ -18,10 +16,6 @@ def get_bidirectional_edges(
     bus = bus_instance or CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bidirectional=True)
     link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
     link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
-
-    # if have_shared_memory(core_a, core_b):
-    #     # No edge if the cores have a shared memory
-    #     return []
 
     return [
         #  A -> B

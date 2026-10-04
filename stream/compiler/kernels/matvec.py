@@ -1,7 +1,7 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import prod
-from typing import cast
+from typing import ClassVar, cast
 
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
@@ -19,6 +19,9 @@ from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
 
 @dataclass(kw_only=True)
 class MatVecKernel(AIEKernelWithZeroing):
+    # The output's rows, and the vector's length that a call takes whole.
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -1), "n": (0, -1)}
+
     @property
     def zero_name(self) -> str:
         return f"zero_vectorized_{self.element_type}"

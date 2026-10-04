@@ -5,25 +5,22 @@ from stream.workload.workload import ComputationNode, Tensor
 
 
 class MatMulParser(OnnxOperatorParser):
-    """Parses an ONNX MatMul into an affine ``ComputationNode``.
-
-    Semantics follow ``numpy.matmul``: the last two axes are the matrix axes ``(m, k) @ (k, n)`` and
-    leading axes are numpy-broadcast batch axes (right-aligned). Iteration space ``(batch..., m, n, k)``
-    with ``k`` the single contraction (REDUCTION); a broadcast batch axis (size 1 or absent) indexes
-    that operand at constant 0, keeping the map affine.
-    """
+    """Parses an ONNX MatMul, as ``numpy.matmul``, into a ``ComputationNode`` over ``(batch..., m, n, k)`` with
+    ``k`` the contraction. A broadcast batch axis (size 1 against a larger output axis, or absent) indexes its
+    operand at constant 0, keeping the map affine."""
 
     EXPECTED_NB_OF_INPUTS = 2  # A and B
 
     def _batch_exprs(self, operand_batch: tuple[int, ...], out_batch: tuple[int, ...]) -> list[AffineExpr]:
-        """Batch-axis index expressions: the iteration dim when the axis matches the output extent,
-        constant 0 when the operand broadcasts over it."""
+        """Batch-axis index expressions: the iteration dim when the axis matches the output extent, even
+        an extent of one, so every operand's axis stays the node's; constant 0 when the operand broadcasts
+        over it."""
         num_batch = len(out_batch)
         offset = num_batch - len(operand_batch)  # right-align operand batch axes to the output's
         exprs: list[AffineExpr] = []
         for j, size in enumerate(operand_batch):
             out_pos = offset + j
-            if size == out_batch[out_pos] and size != 1:
+            if size == out_batch[out_pos]:
                 exprs.append(AffineExpr.dimension(out_pos))
             else:
                 exprs.append(AffineExpr.constant(0))

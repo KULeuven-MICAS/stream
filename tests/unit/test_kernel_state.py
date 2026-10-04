@@ -42,7 +42,9 @@ def _softmax_with_state():
         outputs=(probs,),
         operand_mapping=(IDENTITY, IDENTITY),
     )
-    state, mapping = state_tensor(node, StateOperand("flash_state", ROWS, carried_over=1, indexed_by=0))
+    state, mapping = state_tensor(
+        node, StateOperand("flash_state", ROWS, carried_over="n", indexed_by="m"), {"m": 0, "n": 1}
+    )
     node = replace(node, inputs=(scores, state), operand_mapping=(IDENTITY, mapping, IDENTITY))
     workload = Workload([InEdge(name="scores_in", outputs=(scores,)), node, OutEdge(name="probs_out", inputs=(probs,))])
     return workload, node, state, probs

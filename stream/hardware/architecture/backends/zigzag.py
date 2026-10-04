@@ -11,7 +11,36 @@ from typing import Literal
 
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as _ZigZagAccelerator
-from zigzag.hardware.architecture.memory_port import MemoryPortType
+from zigzag.hardware.architecture.memory_level import MemoryLevel
+from zigzag.hardware.architecture.memory_port import DataDirection, MemoryPort, MemoryPortType
+
+from stream.hardware.ports import (
+    OUTPUT,
+    READ,
+    READ_BY_DATAPATH,
+    WRITE,
+    WRITE_BY_DATAPATH,
+    PortKey,
+    PortSpec,
+    Service,
+    input_role,
+)
+
+ZIGZAG_DIRECTION_NAMES = {
+    DataDirection.RD_OUT_TO_HIGH: READ,
+    DataDirection.WR_IN_BY_HIGH: WRITE,
+    DataDirection.RD_OUT_TO_LOW: READ_BY_DATAPATH,
+    DataDirection.WR_IN_BY_LOW: WRITE_BY_DATAPATH,
+}
+
+
+def operand_role(memory_operand: str) -> str:
+    """Neutral role of a ZigZag memory operand: ``O`` is the output, ``I<k>`` input k."""
+    if memory_operand == "O":
+        return OUTPUT
+    if memory_operand.startswith("I") and memory_operand[1:].isdigit():
+        return input_role(int(memory_operand[1:]))
+    raise ValueError(f"memory operand {memory_operand!r} has no operand role.")
 
 
 class ZigZagCoreBackend(_ZigZagAccelerator):
@@ -40,6 +69,33 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         first_port = next((port for port in ports if port.type in (wanted_type, MemoryPortType.READ_WRITE)), None)
         assert first_port is not None, f"{self} does not have a top level memory {type} port."
         return first_port.bw_max
+
+    def port_specs(self) -> tuple[PortSpec, ...]:
+        """Ports of each operand's top memory level, with the (role, direction) pairs they serve at that level."""
+        hierarchy = self.memory_hierarchy
+        tops = {op: len(hierarchy.get_memory_levels(op)) - 1 for op in hierarchy.get_operands()}
+        found: dict[PortKey, tuple[MemoryLevel, MemoryPort]] = {}
+        serves: dict[PortKey, set[Service]] = {}
+        for op in tops:
+            level = hierarchy.get_memory_levels(op)[-1]
+            for port in level.ports:
+                key = PortKey(level.memory_instance.shared_memory_group_id, level.name, port.name)
+                found.setdefault(key, (level, port))
+                serves.setdefault(key, set()).update(
+                    (operand_role(str(served)), ZIGZAG_DIRECTION_NAMES[direction])
+                    for served, lv, direction in port.served_op_lv_dir
+                    if tops.get(served) == lv
+                )
+        return tuple(
+            PortSpec(
+                share_group=key[0],
+                memory=level.name,
+                name=port.name,
+                bits_per_cycle=float(port.bw_max),
+                serves=frozenset(serves[key]),
+            )
+            for key, (level, port) in found.items()
+        )
 
     def get_ir(self) -> dict:
         """Serialize ZigZag backend-specific fields (operational array,

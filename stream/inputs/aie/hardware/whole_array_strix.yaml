@@ -100,8 +100,8 @@ bandwidth:
     strided:
       read: {32: 19.0, 64: 35.2, 128: 53.5, 256: 57.2, 512: 93.5}
       write: {32: 17.1, 64: 28.3, 128: 53.2, 256: 54.2, 512: 93.5}
-reconfiguration:
-  cycles_per_column: 69000
+reconfiguration:  # a dispatch of SwiGLU's five designs from IRON costs 1.0-1.3 ms over its groups
+  cycles_per_column: 40000
   reset_cycles: 63000
 core_connectivity:
   # ───── Connect shim_dma to mem_tile (Column 0) ─────

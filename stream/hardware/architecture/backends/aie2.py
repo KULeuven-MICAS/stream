@@ -13,8 +13,10 @@ concepts that do not apply to the AIE2 architecture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+
+from stream.hardware.ports import ANY_OPERAND, READ, WRITE, PortSpec
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,12 @@ class AIE2CoreBackend:
     memory_capacity_bits: int
     bandwidth_min: int = 0
     bandwidth_max: int = 0
+    dma_mm2s: int = 0
+    dma_s2mm: int = 0
+    dma_channel_bits: int = 0
+    dma_buffer_descriptors: int = 0
+    dma_iterations: int = 0
+    share_group: int = field(default=-1, compare=False)
 
     # ------------------------------------------------------------------
     # Backend protocol — same interface as ZigZagCoreBackend
@@ -47,6 +55,21 @@ class AIE2CoreBackend:
         """Memory bandwidth in bits/cycle."""
         return self.bandwidth_max
 
+    def port_specs(self) -> tuple[PortSpec, ...]:
+        """The tile DMA: MM2S channels read the tile memory onto streams, S2MM channels write into it."""
+        if not self.dma_channel_bits:
+            return ()
+        return tuple(
+            PortSpec(
+                self.share_group,
+                "dma",
+                name,
+                channels * self.dma_channel_bits,
+                frozenset({(ANY_OPERAND, direction)}),
+            )
+            for name, channels, direction in (("mm2s", self.dma_mm2s, READ), ("s2mm", self.dma_s2mm, WRITE))
+        )
+
     def get_ir(self) -> dict:
         """Serialize backend-specific fields for the IR dict."""
         return {
@@ -54,5 +77,12 @@ class AIE2CoreBackend:
                 "capacity_bits": self.memory_capacity_bits,
                 "bandwidth_min": self.bandwidth_min,
                 "bandwidth_max": self.bandwidth_max,
+            },
+            "dma": {
+                "mm2s": self.dma_mm2s,
+                "s2mm": self.dma_s2mm,
+                "channel_bits": self.dma_channel_bits,
+                "buffer_descriptors": self.dma_buffer_descriptors,
+                "iterations": self.dma_iterations,
             },
         }

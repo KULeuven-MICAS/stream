@@ -1,7 +1,7 @@
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
-from itertools import product
+from itertools import pairwise, product
 from math import isqrt, prod
 from typing import Self, cast
 
@@ -36,6 +36,7 @@ from xdsl_aie.dialects.aie import (
     DeviceOp,
     DMABDOp,
     EndOp,
+    NextBDOp,
     ObjectFIFO,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
@@ -294,6 +295,8 @@ class StrideSet:
 
 
 NB_COLUMNS = 8
+# The buffer descriptors a fifo's runtime transfers ping pong between.
+PING_PONG = 2
 
 
 def column_of(tile: str) -> int:
@@ -916,15 +919,11 @@ class ChannelToObjectFifoPass(RewritePattern):
 
     @staticmethod
     def held_count(strensor: StrensorType) -> int:
-        """How many buffers of one fifo element a tile needs to keep its consumer fed.
-
-        Two overlaps the next transfer with the current compute. One is enough when nothing
-        varies outside the tensor's reuse window: the fifo then hands over the same data
-        every iteration, which is also the single copy the allocator costed it at.
-        """
+        """Buffers of one fifo element a tile holds: one when nothing varies outside the tensor's reuse window, so
+        the fifo hands over the same data every iteration, otherwise the buffers the allocator chose."""
         variables = strensor.ssis.data.vars
         outer = variables[: len(variables) - strensor.reuse_index.data]
-        return 2 if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
+        return strensor.buffers.data if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
 
     @classmethod
     def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:
@@ -1558,7 +1557,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 add_val := ConstantOp.from_int_and_width(0, IndexType()),
             ]
         for_op = op.parent_op()
-        assert isinstance(for_op, ForOp)
         innermost = None
         # innermost to outermost:
         for iter_var in reversed(relevant_reuse_vars):
@@ -1692,6 +1690,99 @@ class StrensorToMemref(RewritePattern):
 
 
 @dataclass
+class ChainRereads(RewritePattern):
+    """Turn a loop of re-reading shim tasks that differ by one constant offset step into one task: a chain of a
+    descriptor per re-read, each stepping the loop on its iteration dimension. A fifo keeps its tasks where the
+    chain needs more descriptors than its shim tile has, or the loop more steps than a descriptor iterates."""
+
+    descriptors: int
+    iterations: int
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter) -> None:
+        device = op.parent_op()
+        assert isinstance(device, DeviceOp)
+        tiles = {
+            tile.result: (tile.col.value.data, tile.row.value.data)
+            for tile in device.walk()
+            if isinstance(tile, TileOp)
+        }
+        shim_of = {
+            fifo.sym_name.data: col
+            for fifo in device.walk()
+            if isinstance(fifo, ObjectFifoOp)
+            for col, row in (tiles[t] for t in (fifo.producerTile, *fifo.consumerTiles))
+            if row == 0
+        }
+        tasks: dict[str, list[DmaConfigureTaskForOp]] = {}
+        for task in op.body.block.ops:
+            if isinstance(task, DmaConfigureTaskForOp):
+                tasks.setdefault(task.alloc.root_reference.data, []).append(task)
+        # A fifo holds the descriptors SyncDMAs ping pongs between, or one where it has one task.
+        taken: dict[int, int] = {}
+        for name, fifo_tasks in tasks.items():
+            taken[shim_of[name]] = taken.get(shim_of[name], 0) + min(PING_PONG, len(fifo_tasks))
+        for name, fifo_tasks in tasks.items():
+            loop = _reread_loop(fifo_tasks)
+            if loop is None:
+                continue
+            rereads, step = loop
+            if len(fifo_tasks) > self.iterations:
+                continue
+            column = shim_of[name]
+            after = taken[column] - min(PING_PONG, len(fifo_tasks)) + rereads
+            if after > self.descriptors:
+                continue
+            taken[column] = after
+            first, *rest = fifo_tasks
+            bd = cast(DMABDOp, first.body.block.first_op)
+            sizes = list(cast(DenseArrayBase, bd.static_sizes).get_values())
+            strides = list(cast(DenseArrayBase, bd.static_strides).get_values())
+            sizes[0], strides[0] = len(fifo_tasks), step
+            bd.static_sizes = DenseArrayBase.from_list(IntegerType(64), sizes)
+            bd.static_strides = DenseArrayBase.from_list(IntegerType(64), strides)
+            rewriter.erase_op(cast(Operation, first.body.block.last_op))
+            blocks = [first.body.block]
+            for _ in range(rereads - 1):
+                blocks.append(Block([bd.clone()]))
+                first.body.add_block(blocks[-1])
+            for block, following in pairwise(blocks):
+                block.add_op(NextBDOp(following))
+            blocks[-1].add_op(EndOp())
+            first.repeat_count = IntegerAttr.from_int_and_width(len(fifo_tasks) - 1, 32)
+            for task in rest:
+                rewriter.erase_op(task)
+
+
+def _reread_loop(tasks: list[DmaConfigureTaskForOp]) -> tuple[int, int] | None:
+    """(re-reads a step, offset step) for tasks one loop unrolled around a re-reading transfer, else None."""
+    if len(tasks) <= 1:
+        return None
+    bds = []
+    for task in tasks:
+        bd = task.body.block.first_op
+        if len(task.body.blocks) != 1 or not isinstance(bd, DMABDOp) or not isinstance(bd.next_op, EndOp):
+            return None
+        bds.append(bd)
+    sizes = cast(DenseArrayBase, bds[0].static_sizes).get_values()
+    strides = cast(DenseArrayBase, bds[0].static_strides).get_values()
+    repeat = tasks[0].repeat_count
+    if strides[0] != 0 or sizes[0] <= 1 or repeat is None or repeat.value.data != sizes[0] - 1:
+        return None
+    offsets = [cast(IntegerAttr, bd.static_offset).value.data for bd in bds]
+    same = all(
+        bd.static_sizes == bds[0].static_sizes
+        and bd.static_strides == bds[0].static_strides
+        and bd.buffer == bds[0].buffer
+        for bd in bds
+    )
+    steps = {b - a for a, b in pairwise(offsets)}
+    if not same or len(steps) != 1 or 0 in steps:
+        return None
+    return sizes[0], steps.pop()
+
+
+@dataclass
 class OrderDMAs(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter) -> None:
@@ -1734,7 +1825,7 @@ class SyncDMAs(RewritePattern):
         active_tasks: dict[Attribute, list[DmaConfigureTaskForOp]] = {}
 
         # ping ponging between two bds per object fifo, so we can have at most one active task per object fifo at a time
-        nb_bds_per_of = 2
+        nb_bds_per_of = PING_PONG
 
         for dma in op.walk():
             if not isinstance(dma, DmaConfigureTaskForOp):
@@ -1790,6 +1881,9 @@ class AIEConvertOfs(ModulePass):
 
     name = "aie-convert-ofs"
     depths: FifoDepths | None = None
+    # The buffer descriptors a shim tile has and the steps one iterates; without both every loop stays unrolled.
+    shim_descriptors: int = 0
+    shim_iterations: int = 0
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
         # create new shim tile
@@ -1803,6 +1897,10 @@ class AIEConvertOfs(ModulePass):
         )
         PatternRewriteWalker(TransferToRuntimeSequence(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StrensorToMemref()).rewrite_module(op)
+        if self.shim_descriptors and self.shim_iterations:
+            PatternRewriteWalker(
+                ChainRereads(self.shim_descriptors, self.shim_iterations), apply_recursively=False
+            ).rewrite_module(op)
         PatternRewriteWalker(OrderDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)

@@ -664,6 +664,21 @@ SOLVER_EVIDENCE_RAW: dict = {
         "iteration_count": 4200,
     },
     "performance": {
+        "memory_ports": [
+            {
+                "resource": "dram.rw_port_1",
+                "core_ids": [6],
+                "bw_bits_per_cycle": 64.0,
+                "bits_per_iteration": 196864.0,
+                "req_bw_aver": 64.0,
+                "real_cycle": 3076.0,
+                "allowed_cycle": 3076.0,
+                "stall_or_slack": 0.0,
+                "utilization": 1.0,
+                "burst_utilization": 1.0,
+                "burst_slot": 2,
+            }
+        ],
         "per_node": {
             "MatMul": {
                 "kind": "compute",
@@ -737,6 +752,10 @@ class TestAllocationIRSolverEvidence:
         assert ir.solve.mip_gap == 0.04
         assert ir.solve.status == "TIME_LIMIT"
         assert ir.algorithmic_view().solve.mip_gap == 0.04
+
+    def test_port_activity_survives(self):
+        (port,) = self._ir().performance.memory_ports
+        assert (port.resource, port.utilization, port.stall_or_slack) == ("dram.rw_port_1", 1.0, 0.0)
 
     def test_aggregate_extras_survive(self):
         aggregate = self._ir().performance.aggregate

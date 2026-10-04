@@ -1,21 +1,25 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
-from xdsl.dialects.builtin import AnyDenseElement, FunctionType, StringAttr, bf16
+from xdsl.dialects.builtin import AnyDenseElement, FunctionType, MemRefType, StringAttr, bf16
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
 from xdsl.ir import Operation, Region, SSAValue
+from xdsl.ir.affine import AffineDimExpr
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.rewriter import InsertPoint
 from xdsl.traits import SymbolTable
 from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFifoAcquireOp
 
-from stream.compiler.dialects.stream import ComputationNodeOp, StrensorVar, StrensorVarAttr
+from stream.compiler.dialects.stream import ComputationNodeOp, StrensorType, StrensorVar, StrensorVarAttr
 from stream.compiler.kernels.library import CallDim, KernelLibrary, KernelSpec
+
+if TYPE_CHECKING:
+    from stream.workload.node import ComputationNode
 
 MAC_TILED = "default"
 CONTIGUOUS = "contiguous"
@@ -75,19 +79,14 @@ def induction_variable(op: Operation, var: StrensorVar, occurrence: int = 0) -> 
 
 @dataclass(frozen=True)
 class StateOperand:
-    """A buffer a kernel keeps on its core from one step of a loop to the next.
-
-    Read at ``carried_over - 1`` and written at ``carried_over``, which is the recurrence
-    :func:`~stream.workload.iterator_type.is_state_operand` recognises and what makes that
-    dimension SEQUENTIAL. ``rows`` is the extent kept per step; the node supplies the extent
-    of ``indexed_by``, so splitting that dimension divides the state with it. ``handover`` is
-    how deep a copy the next step of the computation reads, zero for a state kept private.
-    """
+    """A buffer a kernel keeps on its core from one step of a loop to the next: read at ``carried_over - 1`` and
+    written at ``carried_over``, ``rows`` per step times the extent of ``indexed_by``. ``handover`` is how deep a
+    copy the next step of the computation reads, zero for a state kept private."""
 
     name: str
     rows: int
-    carried_over: int
-    indexed_by: int
+    carried_over: str
+    indexed_by: str
     handover: int = 0
 
 
@@ -95,7 +94,11 @@ class StateOperand:
 class AIEKernel(ABC):
     element_type: AnyDenseElement = bf16
     library: KernelLibrary | None = field(default=None, compare=False, repr=False)
-    DIMS: ClassVar[Mapping[str, int]] = {}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {}
+    """Each call dimension's operand and axis: the operand indexes the node's operands, inputs
+    then output (so ``-1`` is the output), and the axis counts from that operand's last. A
+    kernel addresses only the trailing axes, so the node's leading ones are batch axes it is
+    called once per index of."""
 
     @property
     def unique_name(self) -> str:
@@ -123,16 +126,41 @@ class AIEKernel(ABC):
     def call_shape(self) -> dict[str, int]:
         return {d.name: int(getattr(self, d.name)) for d in self.spec.dims}
 
-    def call_tile(self) -> list[tuple[int, int, CallDim]]:
+    def dim_positions(self, node: "ComputationNode") -> dict[str, int]:
+        """Where each of the kernel's dimensions sits in ``node``'s iteration space."""
+        positions = {}
+        for name, (operand, axis) in self.OPERAND_AXES.items():
+            expr = node.operand_mapping[operand].results[axis]
+            if not isinstance(expr, AffineDimExpr):
+                raise ValueError(f"{node.name}'s {name} axis is not one iteration dimension")
+            positions[name] = expr.position
+        return positions
+
+    def output_axes(self, op: ComputationNodeOp) -> list:
+        """The output dimensions a call's rows and columns run along, where ``OPERAND_AXES`` places ``m`` and ``n``."""
+        kernel = [var.dim for var in cast(StrensorType, op.output.type).ssis.data.get_kernel_variables()]
+        return [kernel[self.OPERAND_AXES[name][1]] for name in ("m", "n")]
+
+    def call_tile(self, node: "ComputationNode") -> list[tuple[int, int, CallDim]]:
         """Each call dimension the library declares, as (node dimension position, size, declaration)."""
-        return [(self.DIMS[d.name], int(getattr(self, d.name)), d) for d in self.spec.dims]
+        positions = self.dim_positions(node)
+        return [(positions[d.name], int(getattr(self, d.name)), d) for d in self.spec.dims]
 
     def validate(self) -> None:
         self.spec.validate(self.call_shape())
 
     @property
     def linkwith_name(self) -> str:
+        """The object of the declared call block."""
         return self.spec.object.format(**self.call_shape())
+
+    def call_object(self, op: ComputationNodeOp) -> str:
+        """The object one call links, at the extents its operands have, inputs then output as ``OPERAND_AXES``
+        counts them. A runtime dimension's call takes the tile it is handed rather than the declared
+        block, and an object compiled for its element count must be compiled for that tile."""
+        shapes = [cast(MemRefType[AnyDenseElement], operand.type).get_shape() for operand in op.inputs]
+        extents = {name: shapes[operand][axis] for name, (operand, axis) in self.OPERAND_AXES.items()}
+        return self.spec.object.format(**(self.call_shape() | extents))
 
     @property
     @abstractmethod
@@ -173,7 +201,7 @@ class AIEKernel(ABC):
         while not isinstance(core_op, CoreOp):
             assert core_op.parent
             core_op = core_op.parent
-        core_op.link_with = StringAttr(self.linkwith_name)
+        core_op.link_with = StringAttr(self.call_object(op))
 
         # replace computation node with func call op
         rewriter.insert_op(self.function_call(op), InsertPoint.after(op))

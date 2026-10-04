@@ -6,7 +6,7 @@ import datetime
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -108,6 +108,8 @@ class ConstraintSelection:
     offchip_contention: bool = True
     offchip_traffic_cost: bool = True
     pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
+    families: tuple[str | Mapping[str, Any], ...] = ()
+    """Constraint families to build, by entry-point name, or ``{name: options}``; none by default."""
 
     def __post_init__(self) -> None:
         if not self.memory_capacity and self.object_fifo_depth:
@@ -376,6 +378,10 @@ class SolverModel(ABC):
         """Return the number of solutions found."""
 
     @abstractmethod
+    def value(self, expr: Any) -> float:
+        """Solved value of a variable, a linear expression or a constant."""
+
+    @abstractmethod
     def solve_stats(self) -> SolveStats:
         """Return structured solve statistics.
 
@@ -460,10 +466,6 @@ class SolverModel(ABC):
             ValueError: If *objectives* is empty.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support lexicographic objectives")
-
-    def infinity(self) -> float:
-        """Convenience accessor for INFINITY class constant."""
-        return self.INFINITY
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +702,12 @@ class GurobiBackend(SolverModel):
 
     def get_sol_count(self) -> int:
         return self._model.SolCount
+
+    def value(self, expr: Any) -> float:
+        raw = _unwrap(expr)
+        if isinstance(raw, int | float):
+            return float(raw)
+        return float(raw.getValue() if hasattr(raw, "getValue") else raw.X)
 
     def _mip_gap(self) -> float | None:
         """Relative optimality gap; falls back to the primal/dual bounds when ``MIPGap`` is absent."""
@@ -1101,6 +1109,14 @@ class ORToolsBackend(SolverModel):
         if self._result is None:
             return 0
         return 1 if self._result.has_primal_feasible_solution() else 0
+
+    def value(self, expr: Any) -> float:
+        raw = _unwrap_ort(expr)
+        if isinstance(raw, int | float):
+            return float(raw)
+        if self._result is None or not self._result.has_primal_feasible_solution():
+            raise ValueError("No solution available")
+        return float(mathopt.evaluate_expression(raw, self._result.variable_values()))
 
     def _mip_gap(self) -> float | None:
         """Relative optimality gap, derived from MathOpt's primal/dual bounds."""

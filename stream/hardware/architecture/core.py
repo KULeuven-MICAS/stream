@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
 
+if TYPE_CHECKING:
+    from stream.hardware.ports import PortSpec
+
 
 class Core:
-    """A single hardware core in the Stream accelerator model.
-
-    ``Core`` is a **thin identity object** with pluggable backend.  All
-    hardware-specific details live inside a *backend* object that implements
-    the backend protocol (``get_memory_capacity``, ``get_max_memory_bandwidth``,
-    ``get_ir``).
-
-    Access to backend attributes is transparent: ``core.operational_array``
-    or ``core.mem_hierarchy_dict`` are resolved through ``__getattr__``
-    delegation to the backend.
-    """
+    """A single hardware core: identity and scheduling attributes, with hardware details in a pluggable backend
+    implementing the protocol of :mod:`stream.hardware.architecture.backends`. Backend attributes such as
+    ``core.operational_array`` resolve through ``__getattr__`` delegation."""
 
     def __init__(
         self,
@@ -156,6 +151,11 @@ class Core:
         """Top-level memory read/write bandwidth in bits/cycle."""
         assert self._backend is not None, f"{self} has no backend"
         return self._backend.get_max_memory_bandwidth(type)  # type: ignore[arg-type]
+
+    def port_specs(self) -> tuple[PortSpec, ...]:
+        """The ports of the core's top-level memories its backend models; empty when it models none."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.port_specs()
 
     # ------------------------------------------------------------------ #
     # Serialization                                                      #

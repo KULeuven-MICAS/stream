@@ -337,7 +337,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
             if chosen_path is None:
                 continue
 
-            one_transfer_lat = float(tta._transfer_latency_for_path(node, chosen_path))
+            one_transfer_lat = float(tta.transfer_latency_for_path(node, chosen_path))
             reuse_factor = tta.reuse_factors[node].X
             ssis = tta.ssis[node]
             active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, tta.ssis)
@@ -476,7 +476,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
             if chosen_path is None:
                 continue
 
-            one_transfer_lat = float(tta._transfer_latency_for_path(node, chosen_path))
+            one_transfer_lat = float(tta.transfer_latency_for_path(node, chosen_path))
             ssis = tta.ssis[node]
             reuse_factor = tta.reuse_factors[node].X
             active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, tta.ssis)

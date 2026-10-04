@@ -121,29 +121,31 @@ class PlacementGenerationStage(Stage):
 
     def _place_alone(self, node: ComputationNode, grid, columns, rows) -> None:
         kernel = self.mapping.get(node).kernel
-        granule = call_sizes(kernel)
+        granule = call_sizes(kernel, node)
+        at = kernel.dim_positions(node)
         if bandwidth_bound(kernel):
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
             return
         if not is_matmul(kernel):
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
-            depth = self._fitting_split(node, 0, len(rows), granule.get(0, 1))
+            depth = self._fitting_split(node, at["m"], len(rows), granule.get(at["m"], 1))
             narrow = tuple(grid[(columns[0], row)] for row in rows[:depth])
-            self._pending_reserves.append(lambda m, n=node, c=narrow, sp=depth: self._assign(n, c, ((0, sp),), m))
+            self._pending_reserves.append(lambda m, n=node, c=narrow, sp=((at["m"], depth),): self._assign(n, c, sp, m))
             return
-        split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
+        split = [(at["m"], self._fitting_split(node, at["m"], len(rows), granule.get(at["m"], 1)))]
         cols_used = 1
-        if is_matmul(kernel) and self._fitting_split(node, 2, len(columns), granule.get(2, 1)) == len(columns):
+        if self._fitting_split(node, at["n"], len(columns), granule.get(at["n"], 1)) == len(columns):
             cols_used = len(columns)
-            split.append((2, cols_used))
+            split.append((at["n"], cols_used))
         cores = tuple(grid[(col, row)] for col in columns[:cols_used] for row in rows[: split[0][1]])
         self._assign(node, cores, tuple(split))
 
     def _place_one_row(self, node, kernel, grid, columns, rows, mapping) -> None:
         row = rows[0]
-        width = self._fitting_split(node, 0, len(columns))
+        at = kernel.dim_positions(node)
+        width = self._fitting_split(node, at["m"], len(columns))
         cores = tuple(grid[(col, row)] for col in columns[:width])
-        self._assign(node, cores, ((0, width),), mapping)
+        self._assign(node, cores, ((at["m"], width),), mapping)
         width = self._row_width(node, kernel, next(iter(grid.values())))
         self._retile(node, kernel, mapping, m=1, n=width, layout="contiguous")
 
@@ -155,15 +157,18 @@ class PlacementGenerationStage(Stage):
             if kernel is not None and any(s.handover for s in kernel.state_operands())
         )
         counts = row_counts([layer_cost(k) for k in kernels], len(rows), state_consumers=state_consumers)
-        granule = max(call_sizes(kernel).get(0, 1) for kernel in kernels)
-        extent = self.workload.get_dimension_size(self.workload.get_dims(nodes[0])[0])
+        rows_at = [kernel.dim_positions(node)["m"] for node, kernel in zip(nodes, kernels, strict=True)]
+        granule = max(
+            call_sizes(kernel, node).get(at, 1) for node, kernel, at in zip(nodes, kernels, rows_at, strict=True)
+        )
+        extent = self.workload.get_dimension_size(self.workload.get_dims(nodes[0])[rows_at[0]])
         width = widest_columns(extent, granule, max(counts), len(columns))
         offset = 0
-        for node, r in zip(nodes, counts, strict=True):
+        for node, r, at in zip(nodes, counts, rows_at, strict=True):
             layer_rows = rows[offset : offset + r]
             offset += r
             cores = tuple(grid[(col, row)] for row in layer_rows for col in columns[:width])
-            self._assign(node, cores, ((0, width * r),))
+            self._assign(node, cores, ((at, width * r),))
         for node, kernel, r, r_next in zip(nodes, kernels, counts, (*counts[1:], counts[-1]), strict=True):
             if r > r_next:
                 self._retile(node, kernel, tiled_out=True)
@@ -183,13 +188,14 @@ class PlacementGenerationStage(Stage):
         for node, kernel, budget in zip(nodes, kernels, budgets, strict=True):
             tenant = columns[first : first + budget]
             first += budget
-            granule = call_sizes(kernel)
+            granule = call_sizes(kernel, node)
+            at = kernel.dim_positions(node)
             width = 1
-            split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
+            split = [(at["m"], self._fitting_split(node, at["m"], len(rows), granule.get(at["m"], 1)))]
             if is_matmul(kernel) and budget > 1:
-                width = self._fitting_split(node, 2, budget, granule.get(2, 1))
+                width = self._fitting_split(node, at["n"], budget, granule.get(at["n"], 1))
                 if width > 1:
-                    split.append((2, width))
+                    split.append((at["n"], width))
             cores = tuple(grid[(col, row)] for col in tenant[:width] for row in rows[: split[0][1]])
             self._assign(node, cores, tuple(split), mapping)
 
@@ -202,7 +208,7 @@ class PlacementGenerationStage(Stage):
         return 1
 
     def _row_width(self, node: ComputationNode, kernel, core: Core) -> int:
-        extent = self.workload.get_dimension_size(self.workload.get_dims(node)[1])
+        extent = self.workload.get_dimension_size(self.workload.get_dims(node)[kernel.dim_positions(node)["n"]])
         operands = max(MIN_CALL_OPERANDS, len(kernel.operand_layouts() or ()))
         budget = (core.get_memory_capacity() // 8) // (operands * BUFFERS * ELEMENT_BYTES)
         return max(w for w in range(1, min(extent, budget) + 1) if extent % w == 0)

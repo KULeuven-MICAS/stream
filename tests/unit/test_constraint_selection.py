@@ -106,25 +106,21 @@ from unittest.mock import MagicMock  # noqa: E402
 
 
 def _make_tta_stub(constraint_selection, *, bind_objective=False):
-    """Create a minimal TTA-like object with constraint_selection set.
-
-    We cannot instantiate a real TTA without a Workload, so we create
-    a mock that has the constraint_selection attribute and delegates
-    to the real _create_constraints / _overlap_and_objective methods.
-
-    bind_objective: if True, also bind the real _set_total_latency_and_objective
-    so its DMA conditional logic executes. Only needed for the objective test.
-    """
+    """A mock allocator that runs the real _create_constraints and _dma_channels_and_objective; bind_objective
+    also binds the real _set_total_latency_and_objective so its DMA branch runs."""
+    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
         TransferAndTensorAllocator,
     )
 
     tta = MagicMock(spec=TransferAndTensorAllocator)
     tta.constraint_selection = constraint_selection
+    tta.quantities = QuantityRegistry()
     tta.shared_bandwidth = {}
+    tta.fill = 0
     # Bind the real dispatch methods so if-guards execute
     tta._create_constraints = TransferAndTensorAllocator._create_constraints.__get__(tta)
-    tta._overlap_and_objective = TransferAndTensorAllocator._overlap_and_objective.__get__(tta)
+    tta._dma_channels_and_objective = TransferAndTensorAllocator._dma_channels_and_objective.__get__(tta)
     if bind_objective:
         tta._set_total_latency_and_objective = TransferAndTensorAllocator._set_total_latency_and_objective.__get__(tta)
     return tta
@@ -168,9 +164,7 @@ def test_dma_guard():
     """TTA with dma_channels=False does not call _add_dma_usage_constraints."""
     cs = ConstraintSelection(dma_channels=False)
     tta = _make_tta_stub(cs)
-    tta.max_slot = 0
-    tta.big_m = 10
-    tta._overlap_and_objective()
+    tta._dma_channels_and_objective()
     tta._add_dma_usage_constraints.assert_not_called()
 
 
@@ -178,14 +172,12 @@ def test_dma_enabled():
     """TTA with dma_channels=True calls _add_dma_usage_constraints."""
     cs = ConstraintSelection(dma_channels=True)
     tta = _make_tta_stub(cs)
-    tta.max_slot = 0
-    tta.big_m = 10
-    tta._overlap_and_objective()
+    tta._dma_channels_and_objective()
     tta._add_dma_usage_constraints.assert_called_once()
 
 
 def test_dma_objective_no_dma_terms():
-    """When dma_channels=False, primary objective = total_lat only (no DMA vars)."""
+    """When dma_channels=False, primary objective = total_latency only (no DMA vars)."""
     cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=False)
     tta = _make_tta_stub(cs, bind_objective=True)
     # Set up minimal mocks for _set_total_latency_and_objective
@@ -202,7 +194,7 @@ def test_dma_objective_no_dma_terms():
     tta.transfer_nodes = []
     tta.possible_transfer_allocations = {}
     tta._set_total_latency_and_objective()
-    # Verify lexicographic objectives were set with primary = total_lat only
+    # Verify lexicographic objectives were set with primary = total_latency only
     mock_model.set_lexicographic_objectives.assert_called_once()
     objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
     primary = next(o for o in objectives if o.name == "latency")
@@ -303,9 +295,7 @@ def test_skip_warnings(caplog):
     tta = _make_tta_stub(cs)
     with caplog.at_level(logging.WARNING):
         tta._create_constraints()
-        tta.max_slot = 0
-        tta.big_m = 10
-        tta._overlap_and_objective()
+        tta._dma_channels_and_objective()
     assert "memory_capacity" in caplog.text.lower()
     assert "object_fifo_depth" in caplog.text.lower()
     assert "buffer_descriptors" in caplog.text.lower()
@@ -320,9 +310,7 @@ def test_all_enabled_calls_all():
     tta._memory_capacity_constraints.assert_called_once()
     tta._object_fifo_depth_constraints.assert_called_once()
     tta._buffer_descriptor_constraints.assert_called_once()
-    tta.max_slot = 0
-    tta.big_m = 10
-    tta._overlap_and_objective()
+    tta._dma_channels_and_objective()
     tta._add_dma_usage_constraints.assert_called_once()
 
 
