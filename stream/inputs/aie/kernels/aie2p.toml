@@ -26,12 +26,12 @@ dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime
 
 [kernel.softmax_rows_bf16]
 family = "vector"
-object = "softmax.o"
+binding = "stream.compiler.kernels.mlir_aie:softmax_rows"
 dims = [{ name = "n", divisor = 32 }, { name = "m", runtime = true }]
 
 [kernel.softmax_rows_causal_bf16]
 family = "vector"
-object = "softmax.o"
+binding = "stream.compiler.kernels.mlir_aie:softmax_rows_causal"
 dims = [{ name = "n", divisor = 32 }, { name = "m", runtime = true }]
 
 [kernel.partial_softmax]

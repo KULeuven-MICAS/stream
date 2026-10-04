@@ -179,10 +179,8 @@ class AIEKernel(ABC):
         """What a call to ``call`` resolves to: the provider's binding, or stream's own declaration."""
         spec = self.spec
         if spec.binding is not None:
-            companion = None if call == self.function_name else call
-            return bindings.resolve(
-                {"binding": spec.binding, "args": {**dims, "npu": bindings.npu}, "companion": companion}
-            )
+            entry = {"binding": spec.binding, "args": {**dims, "npu": bindings.npu}}
+            return bindings.resolve(entry if call == self.function_name else entry | {"companion": call})
         symbol, object_file = self.FALLBACK.get(call, (call, None))
         if (object_file := object_file or spec.object) is None:
             raise ValueError(f"the kernel library names neither a binding nor an object for {self.function_name}")

@@ -45,7 +45,7 @@ def resolve(entry: dict[str, Any]) -> Binding:
         return Declared(entry["symbol"], entry["object"])
     module, function = entry["binding"].split(":")
     binding = getattr(import_module(module), function)(**entry["args"])
-    return getattr(binding, entry["companion"]) if entry["companion"] else binding
+    return getattr(binding, entry["companion"]) if "companion" in entry else binding
 
 
 @dataclass
