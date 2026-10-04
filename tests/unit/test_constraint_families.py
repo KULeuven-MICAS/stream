@@ -176,3 +176,11 @@ def test_family_adds_its_constraint_quantity_and_slot_bound(
     assert "capped_iteration" not in base.quantities
     assert with_family._slot_pressure_bound() == PRESSURE_BOUND
     assert base._slot_pressure_bound() < PRESSURE_BOUND
+
+
+def test_a_default_family_takes_options_by_name():
+    families = default_families(ACCELERATOR, options={"overlap": {"model": "span"}})
+    assert {"overlap": {"model": "span"}} in families
+    assert "overlap" not in families
+    with pytest.raises(KeyError, match="memory_ports"):
+        default_families(ACCELERATOR, options={"memory_ports": {}})

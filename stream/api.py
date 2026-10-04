@@ -22,7 +22,7 @@ from stream.frontends import load_workload
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
 from stream.opt.allocation.constraint_optimization.context import build_transfer_context
-from stream.opt.allocation.constraint_optimization.families import FamilySpec, drop_families, load_families
+from stream.opt.allocation.constraint_optimization.families import FamilySpec, drop_families, load_families, parse_spec
 from stream.opt.solver import GurobiBackend, SolverBackend
 from stream.profiling import span
 from stream.stages.allocation.steady_state_allocation import DEFAULT_TIME_LIMIT_S, AllocationStage
@@ -84,11 +84,21 @@ class SolveOptions:
     families: Sequence[FamilySpec] | None = None
 
 
-def default_families(hardware: str | Accelerator, without: Iterable[str] = ()) -> tuple[FamilySpec, ...]:
+def default_families(
+    hardware: str | Accelerator, without: Iterable[str] = (), options: Mapping[str, Mapping[str, Any]] | None = None
+) -> tuple[FamilySpec, ...]:
     """The constraint families a solve on ``hardware`` builds by default: Stream's own and those of each namespace
-    it has cores of. ``without`` leaves out the families it names and those that need what only they provide."""
+    it has cores of. ``without`` leaves out the families it names and those that need what only they provide, and
+    ``options`` gives a family its options by name, such as ``{"overlap": {"model": "span"}}``."""
     accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
-    return drop_families(build_transfer_context(accelerator).default_families, without)
+    specs = drop_families(build_transfer_context(accelerator).default_families, without)
+    if unknown := set(options or ()) - {parse_spec(spec)[0] for spec in specs}:
+        raise KeyError(f"Options for families the default set does not build: {sorted(unknown)}")
+    return tuple(
+        {name: {**base, **options[name]}} if options and name in options else spec
+        for spec in specs
+        for name, base in [parse_spec(spec)]
+    )
 
 
 @dataclass(frozen=True)
