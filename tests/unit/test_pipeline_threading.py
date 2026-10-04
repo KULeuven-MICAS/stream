@@ -1,16 +1,16 @@
-"""Unit tests for pipeline threading of the constraint_selection parameter.
+"""Unit tests for pipeline threading of the solve options into the allocation stage.
 
 Covers:
   - SolveOptions carries constraint_selection, None by default
-  - ConstraintOptimizationAllocationStage reads constraint_selection from context
-  - ConstraintOptimizationAllocationStage defaults to ConstraintSelection() when absent
-  - SteadyStateScheduler stores constraint_selection from constructor kwarg
-  - SteadyStateScheduler defaults constraint_selection to None when omitted
+  - AllocationStage reads constraint_selection, the time limit and the solver log from context
+  - AllocationStage defaults to ConstraintSelection(), 300 s and no solver log when absent
 """
 
 from unittest.mock import MagicMock
 
 from stream.opt.solver import ConstraintSelection
+from stream.stages.allocation.steady_state_allocation import AllocationStage
+from stream.stages.context import StageContext
 
 
 def test_solve_options_carry_constraint_selection():
@@ -21,97 +21,33 @@ def test_solve_options_carry_constraint_selection():
     assert SolveOptions(constraint_selection=selection).constraint_selection is selection
 
 
-# ---------------------------------------------------------------------------
-# Stage reads constraint_selection from context when present
-# ---------------------------------------------------------------------------
-
-
-def test_stage_reads_constraint_selection_from_context():
-    """ConstraintOptimizationAllocationStage reads constraint_selection from context."""
-    from stream.stages.allocation.constraint_optimization_allocation import (
-        ConstraintOptimizationAllocationStage,
-    )
-    from stream.stages.context import StageContext
-
+def test_stage_reads_solve_options_from_context():
+    """AllocationStage reads constraint_selection, time_limit_s and solver_log from context."""
     cs = ConstraintSelection(dma_channels=False)
     ctx = StageContext.from_kwargs(
-        workload=MagicMock(),
-        accelerator=MagicMock(),
-        mapping=MagicMock(),
-        cost_lut=MagicMock(),
-        fusion_splits={},
+        steady_state_problem=MagicMock(),
         output_path="/tmp/test",
         backend="ORTOOLS_GSCIP",
         constraint_selection=cs,
+        time_limit_s=12.5,
+        solver_log=True,
     )
-    stage = ConstraintOptimizationAllocationStage([MagicMock()], ctx)
+    stage = AllocationStage([MagicMock()], ctx)
     assert stage.constraint_selection.dma_channels is False, "Stage must read constraint_selection from context"
+    assert stage.time_limit_s == 12.5
+    assert stage.solver_log is True
 
 
-# ---------------------------------------------------------------------------
-# Stage defaults to ConstraintSelection() when absent from context
-# ---------------------------------------------------------------------------
-
-
-def test_stage_defaults_constraint_selection_when_absent():
-    """ConstraintOptimizationAllocationStage defaults to ConstraintSelection() when key is absent."""
-    from stream.stages.allocation.constraint_optimization_allocation import (
-        ConstraintOptimizationAllocationStage,
-    )
-    from stream.stages.context import StageContext
-
+def test_stage_defaults_when_absent():
+    """AllocationStage defaults to ConstraintSelection(), a 300 s limit and a silent solver."""
     ctx = StageContext.from_kwargs(
-        workload=MagicMock(),
-        accelerator=MagicMock(),
-        mapping=MagicMock(),
-        cost_lut=MagicMock(),
-        fusion_splits={},
+        steady_state_problem=MagicMock(),
         output_path="/tmp/test",
         backend="ORTOOLS_GSCIP",
-        # No constraint_selection key
     )
-    stage = ConstraintOptimizationAllocationStage([MagicMock()], ctx)
+    stage = AllocationStage([MagicMock()], ctx)
     assert stage.constraint_selection == ConstraintSelection(), (
         "Stage must default constraint_selection to ConstraintSelection() (all True)"
     )
-
-
-# ---------------------------------------------------------------------------
-# SteadyStateScheduler stores constraint_selection when provided
-# ---------------------------------------------------------------------------
-
-
-def test_scheduler_stores_constraint_selection():
-    """SteadyStateScheduler stores constraint_selection when passed as kwarg."""
-    from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
-
-    cs = ConstraintSelection(buffer_descriptors=False)
-    scheduler = SteadyStateScheduler(
-        MagicMock(),  # workload
-        MagicMock(),  # accelerator
-        MagicMock(),  # mapping
-        {},  # fusion_splits
-        MagicMock(),  # cost_lut
-        constraint_selection=cs,
-    )
-    assert scheduler.constraint_selection is cs, "SteadyStateScheduler must store constraint_selection"
-    assert scheduler.constraint_selection.buffer_descriptors is False
-
-
-# ---------------------------------------------------------------------------
-# SteadyStateScheduler defaults constraint_selection to None when omitted
-# ---------------------------------------------------------------------------
-
-
-def test_scheduler_defaults_constraint_selection_when_none():
-    """SteadyStateScheduler defaults constraint_selection to None when not passed."""
-    from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
-
-    scheduler = SteadyStateScheduler(
-        MagicMock(),  # workload
-        MagicMock(),  # accelerator
-        MagicMock(),  # mapping
-        {},  # fusion_splits
-        MagicMock(),  # cost_lut
-    )
-    assert scheduler.constraint_selection is None, "SteadyStateScheduler constraint_selection must default to None"
+    assert stage.time_limit_s == 300
+    assert stage.solver_log is False

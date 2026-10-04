@@ -122,7 +122,6 @@ class TransferAndTensorAllocator:
     """
 
     VAR_THRESHOLD = 0.5
-    SOLVE_TIME_LIMIT_S = 300
     DMA_COUNT_SAME_TENSOR_ON_CORE_ONCE_GLOBALLY = False
     # False: count tensor-core occupancy separately for each transfer that uses it
     # True:  count tensor-core occupancy only once across all transfers
@@ -2366,18 +2365,18 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
-    def solve(self, *, tee: bool = True, total_mac_ops: int | None = None) -> AllocationSolution:
-        """Solve the model and read the allocation back; ``total_mac_ops`` of the untiled group, when known,
-        adds its end-to-end MAC utilization to the performance report."""
+    def solve(self, *, time_limit_s: float, tee: bool = False, total_mac_ops: int | None = None) -> AllocationSolution:
+        """Solve the model within ``time_limit_s`` and read the allocation back; ``tee`` prints the solver log, and
+        ``total_mac_ops`` of the untiled group adds its end-to-end MAC utilization to the performance report."""
         self.model.set_param(SolverParams.VERBOSITY, 1 if tee else 0)
-        self.model.set_param(SolverParams.TIME_LIMIT, self.SOLVE_TIME_LIMIT_S)
+        self.model.set_param(SolverParams.TIME_LIMIT, time_limit_s)
         with span("milp_optimize"):
             self.model.optimize(self._mip_progress_callback)
         status = self.model.get_status()
         if status == "TIME_LIMIT" and self.model.get_sol_count() > 0:
             _logger.warning(
                 "Allocation solve hit the %ss limit; taking the best incumbent (gap unknown)",
-                self.SOLVE_TIME_LIMIT_S,
+                time_limit_s,
             )
         elif status != "OPTIMAL":
             # Produce a structured, per-resource diagnosis (this computes the IIS on backends that
@@ -2385,6 +2384,7 @@ class TransferAndTensorAllocator:
             # an inspectable result. The .ilp (Gurobi's IIS) is still written for offline debugging.
             report = self._build_infeasibility_report(self.model.get_status())
             try:
+                os.makedirs(self.output_path, exist_ok=True)
                 self.model.write(os.path.join(self.output_path, "model.ilp"))
             except Exception:  # noqa: BLE001 -- .ilp export is best-effort (Gurobi-only)
                 pass
@@ -2396,14 +2396,6 @@ class TransferAndTensorAllocator:
             chosen_memory_cores = self.get_chosen_memory_cores()
             tensor_reuse_levels = self.get_tensor_reuse_levels()
             tensor_depths = self.get_tensor_depths()
-
-        with span("milp_files"):
-            self.plot_optimization_progress(
-                show=False, save_path=os.path.join(self.output_path, "optimization_progress.png")
-            )
-            self.save_optimization_trace(os.path.join(self.output_path, "optimization_trace.yaml"))
-            self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
-            self.save_slot_latency_breakdown(save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml"))
 
         with span("milp_report"):
             assert self.total_latency is not None, "Total latency variable was not created."

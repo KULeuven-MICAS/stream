@@ -25,9 +25,9 @@ print(schedule.solution.latency.total)
 
 - **Visualizations (PNG)** - the tiling and the schedule of each fused group, written into its `group_<index>/` folder.
 
-## Schedule trace (Perfetto)
+## Allocation artifacts
 
-The schedule can be exported as a Perfetto JSON trace and opened at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers. See `stream/visualization/` for the trace and plotting helpers.
+With `SolveOptions(instrumentation={"allocation_artifacts": {}})`, each allocation solve also writes into `group_<index>/tetra/`: the schedule as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`, open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers), a picture of the solved steady-state workload (`steady_state_workload_final.svg`), the solver's progress and metrics (`optimization_progress.png`, `optimization_trace.yaml`, `optimization_metrics.yaml`) and where each slot's latency goes (`slot_latency_breakdown.yaml`). They are off by default, so a sweep pays nothing for them.
 
 ## Typed IR (for tools and agents)
 

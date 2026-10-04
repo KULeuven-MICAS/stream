@@ -36,7 +36,7 @@ def _memory_tile_cores(allocation) -> list[Core]:
 class MemoryAccessesEstimationStage(Stage):
     """
     Stage that computes the number of memory accesses (reads/writes) for each core and tensor in the workload.
-        This stage should be run after the ConstraintOptimizationAllocationStage.
+        This stage should be run after the AllocationStage.
         The memory accesses are estimated based on the mapping and the workload.
         The results can be used for further analysis or visualization of memory access patterns.
         The estimated memory accesses are stored in the context for use by subsequent stages or for output.

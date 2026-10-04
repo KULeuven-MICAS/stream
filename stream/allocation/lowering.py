@@ -1,5 +1,7 @@
+"""Lowering of a fused group to its steady state: the transfers made explicit, each with the placements and
+routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
+
 import logging
-import os
 from dataclasses import replace
 from itertools import combinations
 from math import ceil, prod
@@ -7,8 +9,7 @@ from typing import cast
 
 from xdsl.ir.affine import AffineMap
 
-# if TYPE_CHECKING:
-from stream.allocation.schedule import SteadyStateSchedule, solved_iteration_spaces, solved_mapping
+from stream.allocation.problem import SteadyStateProblem
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.datatypes import InterCoreTiling, LayerDim
@@ -16,10 +17,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.context import build_transfer_context
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
-from stream.opt.solver import ConstraintSelection
 from stream.profiling import span
-from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.iterator_type import is_state_operand, streamed_operands
 from stream.workload.node import (
     ComputationNode,
@@ -33,9 +31,7 @@ from stream.workload.node import (
     TransferNode,
     TransferType,
 )
-from stream.workload.steady_state.iteration_space import (
-    SteadyStateIterationSpace,
-)
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.utils import (
     generate_steady_state_iteration_spaces,
     generate_tensor_ssis,
@@ -58,110 +54,54 @@ def largest_divisor_leq(n: int, cap: int) -> int:
     return 1
 
 
-class SteadyStateScheduler:
-    def __init__(  # noqa: PLR0913
-        self,
-        workload: Workload,
-        accelerator: "Accelerator",
-        mapping: Mapping,
-        fusion_splits: dict[LayerDim, int],
-        cost_lut: CoreCostLUT,
-        nb_cols_to_use: int = 4,
-        output_path: str = "",
-        backend: str = "ORTOOLS_GSCIP",
-        constraint_selection: ConstraintSelection | None = None,
-        total_mac_ops: int | None = None,
-    ):
-        """
-        Initialize the SteadyStateScheduler with the allocation and accelerator.
+def lower_steady_state(  # noqa: PLR0913
+    workload: Workload,
+    accelerator: Accelerator,
+    mapping: Mapping,
+    fusion_splits: dict[LayerDim, int],
+    cost_lut: CoreCostLUT,
+    nb_cols_to_use: int = 4,
+) -> SteadyStateProblem:
+    """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``."""
+    return _Lowering(workload, accelerator, mapping, nb_cols_to_use).lower(fusion_splits, cost_lut)
 
-        Args:
-            workload (ComputationNodeWorkload): The workload to be scheduled.
-            total_mac_ops: Total multiply-accumulate ops of the untiled fusion group, used to report
-                end-to-end MAC utilization. None disables that stat.
-        """
-        self.workload = workload  # Only contains nodes that are part of the current fusion stack
+
+class _Lowering:
+    """The state the lowering threads through its steps: a mapping it rewrites as the transfer graph grows."""
+
+    def __init__(self, workload: Workload, accelerator: Accelerator, mapping: Mapping, nb_cols_to_use: int):
+        self.workload = workload
         self.accelerator = accelerator
         self.mapping = mapping.copy()
-        self.fusion_splits = fusion_splits
-        self.cost_lut = cost_lut
-
         self.nb_cols_to_use = nb_cols_to_use
         self.transfer_context = build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
-        self.backend = backend
-        self.constraint_selection = constraint_selection
-        self.total_mac_ops = total_mac_ops
 
-        self.output_path = output_path
-        if self.output_path:
-            os.makedirs(self.output_path, exist_ok=True)
-
-    def run(self) -> SteadyStateSchedule:
-        """Lower the workload to its transfer graph, solve its allocation and return the solved schedule."""
+    def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> SteadyStateProblem:
         with span("transfer_graph"):
             self.ssw = self.build_transfer_graph()
-            self.fusion_splits = self.update_fusion_splits()
+            self.fusion_splits = self.update_fusion_splits(fusion_splits)
             self.mapping = self.update_mapping()
-            self.cost_lut = self.cost_lut.with_nodes(self.ssw.get_computation_nodes())
+            cost_lut = cost_lut.with_nodes(self.ssw.get_computation_nodes())
         with span("iteration_spaces"):
             self.ssis = self.generate_ssis()
             self.iterations = self.calculate_iterations()
             multiplicities = self.calculate_multiplicities()
         with span("timeslots"):
             timeslots = self.ssw.get_timeslots(self.mapping)
-        with span("milp_build"):
-            tta = TransferAndTensorAllocator(
-                self.ssw,
-                timeslots,
-                accelerator=self.accelerator,
-                iterations=self.iterations,
-                ssis=self.ssis,
-                multiplicities=multiplicities,
-                mapping=self.mapping,
-                cost_lut=self.cost_lut,
-                nb_cols_to_use=self.nb_cols_to_use,
-                context=self.transfer_context,
-                output_path=self.output_path,
-                backend=self.backend,
-                constraint_selection=self.constraint_selection,
-            )
-        solution = tta.solve(total_mac_ops=self.total_mac_ops)
-        with span("trace_export"):
-            fname = ""
-            trace_path = ""
-            try:
-                for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
-                    trace_path = export_steady_state_trace(
-                        tta=tta,
-                        iterations=self.iterations,
-                        overlap=solution.latency.overlap,
-                        latency_per_iteration=solution.latency.per_iteration,
-                        output_path=self.output_path,
-                        compact=compact,
-                        filename=fname,
-                    )
-                logger.info("Steady-state schedule trace: %s", trace_path)
-            except Exception as exc:  # never let a visualisation failure abort the run
-                logger.warning("Failed to export steady-state trace (%s): %s", fname, exc)
-        with span("apply_solution"):
-            schedule = SteadyStateSchedule(
-                source_workload=self.workload,
-                workload=self.ssw,
-                mapping=solved_mapping(self.ssw, self.mapping, solution),
-                ssis=solved_iteration_spaces(self.ssw, self.ssis, solution.reuse_levels),
-                iterations=self.iterations,
-                fusion_splits=self.fusion_splits,
-                accelerator=self.accelerator,
-                cost_lut=self.cost_lut,
-                backend=self.backend,
-                constraint_selection=self.constraint_selection,
-                solution=solution,
-            )
-        with span("visualize"):
-            self.ssw.visualize(
-                os.path.join(self.output_path, "steady_state_workload_final.png"), schedule.mapping, schedule.ssis
-            )
-        return schedule
+        return SteadyStateProblem(
+            source_workload=self.workload,
+            workload=self.ssw,
+            mapping=self.mapping,
+            fusion_splits=self.fusion_splits,
+            cost_lut=cost_lut,
+            ssis=self.ssis,
+            iterations=self.iterations,
+            multiplicities=multiplicities,
+            timeslots=timeslots,
+            accelerator=self.accelerator,
+            transfer_context=self.transfer_context,
+            nb_cols_to_use=self.nb_cols_to_use,
+        )
 
     def build_transfer_graph(self) -> Workload:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
@@ -341,10 +281,10 @@ class SteadyStateScheduler:
         self.mapping.remove(src)
         return new_src
 
-    def update_fusion_splits(self) -> dict[LayerDim, int]:
+    def update_fusion_splits(self, fusion_splits: dict[LayerDim, int]) -> dict[LayerDim, int]:
         # Update the fusion_splits based on the new workload with transfer nodes
         updated_fusion_splits = {}
-        for dim, size in self.fusion_splits.items():
+        for dim, size in fusion_splits.items():
             new_dim = get_equivalent_dimension(self.workload, self.ssw, dim)
             updated_fusion_splits[new_dim] = size
         return updated_fusion_splits

@@ -85,9 +85,10 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 
 # Pipeline observers, enabled per run by SolveOptions.instrumentation. `timing` profiles every stage and
-# the spans inside them.
+# the spans inside them; `allocation_artifacts` writes the traces, plots and reports of each allocation solve.
 [project.entry-points."stream.instrumentation"]
 timing = "stream.profiling:TimingInstrumentation"
+allocation_artifacts = "stream.allocation.artifacts:AllocationArtifacts"
 
 # Optional allocation-model constraint families, selected per solve by SolveOptions.families. The
 # entry-point name is the family's `name`, its object a ConstraintFamily factory.

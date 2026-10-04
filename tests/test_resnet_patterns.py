@@ -22,7 +22,8 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
     make_resnet_subgraph,
 )
 from stream.opt.solver import SolverBackend
-from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
+from stream.stages.allocation.steady_state_allocation import AllocationStage
+from stream.stages.allocation.steady_state_lowering import SteadyStateLoweringStage
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
@@ -298,7 +299,8 @@ def test_resnet18_full_e2e(request, tmp_path):
         FusionGroupIterationStage,
         TilingGenerationStage,
         CoreCostEstimationStage,
-        ConstraintOptimizationAllocationStage,
+        SteadyStateLoweringStage,
+        AllocationStage,
         MemoryAccessesEstimationStage,
     ]
     ctx = StageContext.from_kwargs(

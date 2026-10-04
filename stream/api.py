@@ -25,7 +25,8 @@ from stream.opt.allocation.constraint_optimization.context import build_transfer
 from stream.opt.allocation.constraint_optimization.families import load_families
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.profiling import span
-from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
+from stream.stages.allocation.steady_state_allocation import DEFAULT_TIME_LIMIT_S, AllocationStage
+from stream.stages.allocation.steady_state_lowering import SteadyStateLoweringStage
 from stream.stages.codegen.backends import codegen_backend_for
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
@@ -52,7 +53,8 @@ _ALLOCATION_STAGES: list[StageCallable] = [
     TileSearchStage,
     TilingGenerationStage,
     CoreCostEstimationStage,
-    ConstraintOptimizationAllocationStage,
+    SteadyStateLoweringStage,
+    AllocationStage,
     MemoryAccessesEstimationStage,
 ]
 
@@ -63,7 +65,9 @@ class SolveOptions:
 
     ``stage_options`` carries what a plugin's stages read from the context, such as the generic mapping
     generator's ``fusion_cut_points`` and ``intra_core_tiling``, or the AIE code generator's ``npu``,
-    ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers to wrap the stages with.
+    ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers to wrap the stages with, such as
+    ``timing`` or ``allocation_artifacts`` (the traces, plots and reports of each solve). ``solver_log`` prints the
+    solver's log, and ``time_limit_s`` bounds each allocation solve, after which its best incumbent is taken.
     """
 
     backend: str = "ortools_gscip"
@@ -72,6 +76,8 @@ class SolveOptions:
     constraint_selection: ConstraintSelection | None = None
     kernel_library: KernelLibrary | str | Mapping[str, Any] | None = None
     tile_search: bool = False
+    time_limit_s: float = DEFAULT_TIME_LIMIT_S
+    solver_log: bool = False
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
     families: Sequence[str | Mapping[str, Any]] | None = None
@@ -192,6 +198,8 @@ def _solve(
             constraint_selection=options.resolved_constraint_selection(),
             kernel_library=options.kernel_library,
             tile_search=options.tile_search,
+            time_limit_s=options.time_limit_s,
+            solver_log=options.solver_log,
             **options.stage_options,
         )
         (ctx,) = MainStage(instrument(stages, observers), ctx).run()

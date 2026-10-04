@@ -30,8 +30,9 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed and keep the fastest.
 8. **`TilingGenerationStage`** - generate the intra-/inter-core tilings for each node.
 9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core.
-10. **`ConstraintOptimizationAllocationStage`** - build and solve the MILP (`TransferAndTensorAllocator`, TETRA): decide tensor placement and transfer paths, producing the schedule.
-11. **`MemoryAccessesEstimationStage`** - estimate memory traffic for the chosen allocation.
+10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as a `SteadyStateProblem`.
+11. **`AllocationStage`** - build and solve the MILP (`TransferAndTensorAllocator`, TETRA) for that problem: decide tensor placement and transfer paths, producing the `SteadyStateSchedule` the context carries as `allocation`.
+12. **`MemoryAccessesEstimationStage`** - estimate memory traffic for the chosen allocation.
 
 The mapping generators (`stream.mapping_generators`) and code generation backends (`stream.codegen_backends`) are entry-point groups: an object with a `name`, a `priority`, a `claims(accelerator)` predicate and `stages()` or `stage()` extends the pipeline for a new kind of hardware, the highest priority among those that claim it winning.
 
