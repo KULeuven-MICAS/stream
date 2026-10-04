@@ -39,7 +39,6 @@ A kernel is keyed by the name Stream calls it by.
 | `dims` | The call's dimensions, innermost first. |
 | `cycles` | Measured calls, each giving every dimension's size and the cycles one call took. An unmeasured shape is priced from the measured call nearest in size. |
 | `per_op` | Cycles and operations of one reference call, for a kernel with no shape-keyed measurement. |
-| `source` | The kernel source, for the library's own build. |
 
 ## Bindings
 

@@ -13,7 +13,7 @@ import yaml
 
 FAMILIES = ("matmul", "vector")
 _FAMILY_KEYS = {"ops_per_cycle", "mac"}
-_KERNEL_KEYS = {"family", "binding", "source", "object", "dims", "cycles", "per_op"}
+_KERNEL_KEYS = {"family", "binding", "object", "dims", "cycles", "per_op"}
 _DIM_KEYS = {"name", "runtime", "fixed", "blocks", "divisor", "keep_whole"}
 
 
@@ -47,7 +47,6 @@ class KernelSpec:
     dims: tuple[CallDim, ...]
     binding: str | None = None
     object: str | None = None
-    source: str | None = None
     cycles: tuple[tuple[Mapping[str, int], float], ...] = ()
     per_op: tuple[float, int] | None = None
 
@@ -137,7 +136,6 @@ def _kernel(symbol: str, entry: Mapping[str, Any], families: Mapping[str, Family
         dims=tuple(dims),
         binding=entry.get("binding"),
         object=entry.get("object"),
-        source=entry.get("source"),
         cycles=tuple(cycles),
         per_op=(float(per_op["cycles"]), int(per_op["ops"])) if per_op else None,
     )
