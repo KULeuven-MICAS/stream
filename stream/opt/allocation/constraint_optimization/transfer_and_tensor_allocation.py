@@ -200,6 +200,8 @@ class TransferAndTensorAllocator:
         self.choice_dst_cores: dict[tuple[TransferNode, MulticastPathPlan], set[Core]] = {}
         self.choice_mem_cores: dict[tuple[TransferNode, MulticastPathPlan], set[Core]] = {}
         self.choice_has_empty_path: dict[tuple[TransferNode, MulticastPathPlan], bool] = {}
+        self._broadcast: dict[TransferNode, bool] = {}
+        self._one_memory: dict[TransferNode, bool] = {}
 
         # latency vars
         self._transfer_latency_cache: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
@@ -535,8 +537,10 @@ class TransferAndTensorAllocator:
         ``requiresDMAs`` bails out before it ever looks at the tiles unless the fifo has a
         single consumer, so a broadcast is on the DMA however the cores are placed.
         """
-        tensors = self._transfer_incoming_tensors(tr)
-        return self._distinct_slice_width(tensors) < self._placement_width(tensors)
+        if (broadcast := self._broadcast.get(tr)) is None:
+            tensors = self._transfer_incoming_tensors(tr)
+            broadcast = self._broadcast[tr] = self._distinct_slice_width(tensors) < self._placement_width(tensors)
+        return broadcast
 
     def _transfer_shares_memory(self, tr: TransferNode, core: Core, incoming: bool) -> bool:
         """Whether this core is served this transfer out of memory it already shares.
@@ -581,8 +585,10 @@ class TransferAndTensorAllocator:
 
     def _within_one_memory(self, tr: TransferNode) -> bool:
         """Whether every placement of this transfer stays in one memory."""
-        choices = self.possible_transfer_allocations.get(tr)
-        return bool(choices) and all(self._in_one_memory(choice) for choice in choices)
+        if (within := self._one_memory.get(tr)) is None:
+            choices = self.possible_transfer_allocations.get(tr)
+            within = self._one_memory[tr] = bool(choices) and all(self._in_one_memory(choice) for choice in choices)
+        return within
 
     def _in_place_copies(self) -> dict[Tensor, Tensor]:
         """Each tensor a transfer copies within one memory, to the tensor it copies: one buffer holds both."""
@@ -1495,15 +1501,14 @@ class TransferAndTensorAllocator:
         out: list[tuple[Resource, dict[int, Any], SolverVar]] = []
 
         self.link_used: dict[CommunicationLink, SolverVar] = {}
+        carried: dict[CommunicationLink, dict[int, list[Any]]] = defaultdict(lambda: defaultdict(list))
+        for key, y in self.y_path_choice.items():
+            s = self.slot_of[key[0]]
+            for link in self.links_in_choice[key]:
+                carried[link][s].append(y._raw)
         for link in self.link_set:
-            active_s: dict[int, Any] = {
-                s: self.model.quicksum(
-                    self.y_path_choice[(tr, choice)]._raw
-                    for (tr, choice) in self.y_path_choice
-                    if link in self.links_in_choice[(tr, choice)] and self.slot_of[tr] == s
-                )
-                for s in range(max_s + 1)
-            }
+            per_slot = carried[link]
+            active_s: dict[int, Any] = {s: self.model.quicksum(per_slot.get(s, ())) for s in range(max_s + 1)}
             lu = self.model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{_resource_key(link)}")
             self.link_used[link] = lu
             sum_active = self.model.quicksum(active_s.values())
@@ -1612,14 +1617,18 @@ class TransferAndTensorAllocator:
         iteration = self.model.quicksum(v._raw for v in self.slot_latency.values())
         self.quantities.add("overlap", overlap._raw)
         self.quantities.add("iteration", iteration)
+        busy_terms: dict[CommunicationLink, list[Any]] = defaultdict(list)
+        for key, y in self.y_path_choice.items():
+            for link in self.links_in_choice[key]:
+                busy_terms[link].append(self._active_transfer_latency(*key, y)._raw)
         for res, v in self.idle_lat.items():
             if not self._bounds_overlap(res, transfer_contention, offchip_contention):
                 continue
-            busy = self._link_busy_expr(res) if isinstance(res, CommunicationLink) else None
-            if busy is None:
-                self.model.add_constr(overlap <= v)
+            terms = busy_terms.get(res) if isinstance(res, CommunicationLink) else None
+            if terms:
+                self.model.add_constr(overlap <= iteration - self.model.quicksum(terms))
             else:
-                self.model.add_constr(overlap <= iteration - busy)
+                self.model.add_constr(overlap <= v)
         self._skipped_step_floor(overlap, iteration)
         self._shared_bandwidth_bounds(overlap, iteration)
         # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
@@ -1647,15 +1656,6 @@ class TransferAndTensorAllocator:
                         overlap <= iteration - busy - (1.0 - fraction) * latency._raw,
                         name=f"skip_floor_{n.name}_{_resource_key(core)}_{tr.name}_{hash(choice)}",
                     )
-
-    def _link_busy_expr(self, link: CommunicationLink):
-        """Cycles this link actually carries data in one iteration, or None if it carries none."""
-        terms = [
-            self._active_transfer_latency(tr, choice, y)
-            for (tr, choice), y in self.y_path_choice.items()
-            if link in self.links_in_choice[(tr, choice)]
-        ]
-        return self.model.quicksum(t._raw for t in terms) if terms else None
 
     def _offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""

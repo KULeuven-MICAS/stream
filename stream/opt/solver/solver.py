@@ -128,12 +128,14 @@ class ObjectiveLevel:
 
 
 def _unwrap(other: Any) -> Any:
-    """Unwrap SolverVar or LinExpr to underlying backend object.
-
-    Passes through int, float, gp.Var, gp.LinExpr, and other raw types.
-    """
-    if isinstance(other, (_GurobiVar, _GurobiLinExpr)):
-        return other._raw
+    """Unwrap SolverVar or LinExpr to the underlying backend object; int, float, gp.Var, gp.LinExpr and other raw
+    types pass through. Exact types, as the wrappers have no subclasses: an isinstance test against their abstract
+    bases is a large part of building an expression."""
+    kind = type(other)
+    if kind is _GurobiVar:
+        return other._v
+    if kind is _GurobiLinExpr:
+        return other._e
     return other
 
 
@@ -786,9 +788,10 @@ def _unwrap_ort(other: Any) -> Any:
 
     Passes through mathopt.Variable, LinearSum, LinearExpression, int, float unchanged.
     """
-    if isinstance(other, _ORToolsVar):
+    kind = type(other)
+    if kind is _ORToolsVar:
         return other._v
-    if isinstance(other, _ORToolsLinExpr):
+    if kind is _ORToolsLinExpr:
         return other._e
     return other
 
