@@ -15,7 +15,7 @@ from stream.workload.steady_state.iteration_space import (
 )
 
 if TYPE_CHECKING:
-    from stream.allocation.problem import SteadyStateProblem
+    from stream.allocation.problem import AllocationProblem
     from stream.allocation.solution import AllocationSolution
     from stream.cost_model.core_cost_lut import CoreCostLUT
     from stream.datatypes import LayerDim
@@ -39,12 +39,12 @@ _LOOP_NEST_DEPTH: dict[str, int] = {
 
 
 @dataclass(frozen=True)
-class SteadyStateSchedule:
+class Allocation:
     """A solved steady state as downstream reads it: the problem it solves, the mapping and iteration
     spaces the solution decided, the constraint families it was built from with their options, and the
     solution itself."""
 
-    problem: SteadyStateProblem
+    problem: AllocationProblem
     mapping: Mapping
     ssis: IterationSpaces
     backend: str

@@ -12,7 +12,7 @@ hidden) has a **tile size** that determines how much data each core processes
 per invocation. This note describes tile sizes as decision variables *inside*
 the MILP.
 
-The current allocator (`TransferAndTensorAllocator`) solves with fixed tile
+The current allocator (`AllocationModel`) solves with fixed tile
 sizes; `TileSearchStage` compares candidate tilings by solving each. Sections
 1, 2, 6a, 6b and 7 have no counterpart in the code; the `**Code:**` pointers
 name the methods that implement the fixed-tile form of the other sections.

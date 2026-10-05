@@ -10,8 +10,8 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import _r
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
-    from stream.opt.allocation.constraint_optimization.context import MemoryReuseEntry
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
+    from stream.opt.allocation.constraint_optimization.hardware import MemoryReuseEntry
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 NAMESPACE = "aie2"

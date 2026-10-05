@@ -30,8 +30,8 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed and keep the fastest.
 8. **`TilingGenerationStage`** - generate the intra-/inter-core tilings for each node.
 9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core.
-10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as a `SteadyStateProblem`.
-11. **`AllocationStage`** - build the MILP (`TransferAndTensorAllocator`, TETRA) for that problem from its [constraint families](#constraint-families) and solve it: decide tensor placement and transfer paths, producing the `SteadyStateSchedule` the context carries as `allocation`.
+10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as a `AllocationProblem`.
+11. **`AllocationStage`** - build the MILP (`AllocationModel`, TETRA) for that problem from its [constraint families](#constraint-families) and solve it: decide tensor placement and transfer paths, producing the `Allocation` the context carries as `allocation`.
 12. **`MemoryAccessesEstimationStage`** - estimate memory traffic for the chosen allocation.
 
 The mapping generators (`stream.mapping_generators`) and code generation backends (`stream.codegen_backends`) are entry-point groups: an object with a `name`, a `priority`, a `claims(accelerator)` predicate and `stages()` or `stage()` extends the pipeline for a new kind of hardware, the highest priority among those that claim it winning.
@@ -76,7 +76,7 @@ ports = SolveOptions(families=[*default_families(hardware), "memory_ports"])
 
 A family's `build(ctx, q)` (and `declare`) receives a `FormulationContext`: `ctx.space`, the read-only problem and the choices derived from it (each tensor's placements, each transfer's routes and the links they use, each tensor's reuse stops and the tiles they hold); `ctx.vars`, the core decision variables (`x` places a tensor, `y` routes a transfer, `z_stop` stops a tensor's reuse, `z_single` holds its window in one buffer, `slot_latency`); `ctx.model`, the `SolverModel`; `ctx.quantities`, the `QuantityRegistry` passed as `q`; and the modelling helpers families share, such as `binary_product` and `tensor_uses_core_var`. A family that creates a constraint with `ctx.add_constr(expr, name=..., resource=..., kind=..., subject=..., rule=..., bound=...)` states what it stands for: the core or link it binds, the hardware limit (`ResourceKind`) it is part of and that limit's `bound`, the tensor whose demand it carries, or the `StructuralRule` it enforces. When a model has no solution, the diagnosis maps the solver's IIS back to cores, links and causes through these tags alone. A family can also contribute to the objective: `objective(ctx, q)` runs once every family has built and returns `ObjectiveLevel`s; the levels of one name are summed and the solve minimizes them lexicographically, highest priority first. Stream's levels are `latency` (priority 4: the run's latency from `overlap`, the DMA peaks from `dma_channels` and the weighted off-chip traffic from `offchip_traffic`), `offchip_traffic` (3), `buffering` (2, from `object_fifo_depth`) and `route_hops` (1, from `path_choice`). And `screen(ctx)`, run before any family builds, fails a solve its constraints cannot satisfy by raising an `InfeasibleAllocationError`, as `memory_capacity` does.
 
-A core namespace (a `NamespaceConstraints` in the `stream.constraints` group) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs.
+A core namespace (a `HardwareNamespace` in the `stream.constraints` group) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs.
 
 ---
 
@@ -95,7 +95,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 |-------|---------|------------------|----------|----------------|-----------------|
 | `AIECodeGenerationStage` |  | `trace_size`, `trace_max_tiles`, `trace_tiles`, `trace_group`, `npu`, `group_index` |  | `allocation`, `workload`, `accelerator`, `output_path` | `module` |
 | `AcceleratorParserStage` | `accelerator` | `kernel_library` | `accelerator` |  |  |
-| `AllocationStage` | `steady_state_problem`, `output_path` | `backend`, `families`, `time_limit_s`, `solver_log`, `total_mac_ops`, `artifacts` | `allocation`, `workload`, `mapping` |  |  |
+| `AllocationStage` | `allocation_problem`, `output_path` | `backend`, `families`, `time_limit_s`, `solver_log`, `total_mac_ops`, `artifacts` | `allocation`, `workload`, `mapping` |  |  |
 | `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |
@@ -108,7 +108,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |
 | `ONNXModelParserStage` | `workload_path`, `output_path` |  | `onnx_model`, `workload` |  |  |
 | `PlacementGenerationStage` | `workload`, `mapping`, `accelerator` |  | `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
-| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits` | `nb_cols_to_use` | `steady_state_problem` |  |  |
+| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits` | `nb_cols_to_use` | `allocation_problem` |  |  |
 | `StructuralDedupStage` | `workload` |  | `block_classes` |  |  |
 | `TileSearchStage` | `workload`, `mapping`, `output_path` | `tile_search` | `mapping`, `output_path`, `placement_alternatives`, `placement_reserves` | `allocation` | `output_path` |
 | `TilingGenerationStage` | `workload`, `mapping`, `output_path` |  | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |

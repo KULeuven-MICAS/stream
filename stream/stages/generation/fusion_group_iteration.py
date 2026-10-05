@@ -9,12 +9,12 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
 if TYPE_CHECKING:
-    from stream.allocation.schedule import SteadyStateSchedule
+    from stream.allocation.allocation import Allocation
 
 logger = logging.getLogger(__name__)
 
 
-def _compute_columns(schedule: "SteadyStateSchedule") -> tuple[int, ...]:
+def _compute_columns(schedule: "Allocation") -> tuple[int, ...]:
     """The distinct compute-tile columns the solved allocation occupies."""
     columns: set[int] = set()
     for node_mapping in schedule.mapping.values():

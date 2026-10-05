@@ -20,7 +20,7 @@ from stream.workload.steady_state.iteration_space import IterationVariableType, 
 from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode
 
 if TYPE_CHECKING:
-    from stream.allocation.problem import SteadyStateProblem
+    from stream.allocation.problem import AllocationProblem
     from stream.workload.steady_state.node import Node
 
 Placement: TypeAlias = tuple[Core, ...]
@@ -31,13 +31,13 @@ class DecisionSpace:
     """What the allocation decides between: the placements each tensor may take, the routes each transfer may
     take and the reuse stops of each tensor, with the facts every family reads off them. Read-only once built."""
 
-    def __init__(self, problem: SteadyStateProblem) -> None:
+    def __init__(self, problem: AllocationProblem) -> None:
         self.problem = problem
         self.workload = problem.workload
         self.slot_of = problem.timeslots
         self.accelerator = problem.accelerator
-        self.context = problem.transfer_context
-        self.offchip_core_id = self.context.offchip_core_id
+        self.hardware = problem.hardware
+        self.offchip_core_id = self.hardware.offchip_core_id
         self.shared_bandwidth: dict[int, BandwidthModel] = dict(self.accelerator.bandwidth)
         self.iterations = problem.iterations
         self.ssis = problem.ssis
@@ -45,8 +45,8 @@ class DecisionSpace:
         self.cost_lut = problem.cost_lut
         self.max_slot = max(self.slot_of.values()) if self.slot_of else 0
         self.big_m = len(self.workload.nodes()) + 5
-        self.force_double_buffering = self.context.force_double_buffering
-        self.mem_cores = list(self.context.mem_cores)
+        self.force_double_buffering = self.hardware.force_double_buffering
+        self.mem_cores = list(self.hardware.mem_cores)
         self.ssc_nodes: tuple[ComputationNode, ...] = tuple(self.workload.get_computation_nodes())
         self.transfer_nodes: tuple[TransferNode, ...] = tuple(self.workload.get_transfer_nodes())
 
@@ -210,7 +210,7 @@ class DecisionSpace:
     def memory_capacity_bits(self, memory: Core) -> int:
         """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims on each core using it."""
         users = [c for c in self.accelerator.core_list if self.accelerator.memory_of(c) == memory]
-        return memory.get_memory_capacity() - sum(self.context.reserved_memory_bits(c) for c in users)
+        return memory.get_memory_capacity() - sum(self.hardware.reserved_memory_bits(c) for c in users)
 
     # ------------------------------------------------------------ #
     # transfers                                                    #
@@ -319,7 +319,7 @@ class DecisionSpace:
             touching = [(a, b) for a, b in communicating_pairs(choice) if (b if incoming else a) == core]
             if not touching:
                 return False
-            if any(not self.context.shares_memory(one, other) for one, other in touching):
+            if any(not self.hardware.shares_memory(one, other) for one, other in touching):
                 return False
         return True
 
@@ -332,7 +332,7 @@ class DecisionSpace:
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self.transfer_is_broadcast(tr):
             return False
         pairs = communicating_pairs(choice)
-        return bool(pairs) and all(self.context.shares_memory(one, other) for one, other in pairs)
+        return bool(pairs) and all(self.hardware.shares_memory(one, other) for one, other in pairs)
 
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
         """Whether every core of this choice uses one memory, so the data it hands over never moves."""

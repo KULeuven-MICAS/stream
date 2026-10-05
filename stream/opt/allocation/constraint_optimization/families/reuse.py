@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from stream.opt.allocation.constraint_optimization.context import MemoryReuseEntry
 from stream.opt.allocation.constraint_optimization.diagnosis import StructuralRule
+from stream.opt.allocation.constraint_optimization.hardware import MemoryReuseEntry
 from stream.opt.solver import SolverVarType
 from stream.workload.node import TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType

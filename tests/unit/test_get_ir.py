@@ -1,4 +1,4 @@
-"""Tests for get_ir() methods on Mapping and SteadyStateSchedule."""
+"""Tests for get_ir() methods on Mapping and Allocation."""
 
 from __future__ import annotations
 
@@ -179,14 +179,14 @@ class TestMappingGetIr:
 
 
 # ---------------------------------------------------------------------------
-# SteadyStateSchedule.get_ir() tests
+# Allocation.get_ir() tests
 # ---------------------------------------------------------------------------
 
 
 class TestSteadyStateScheduleGetIr:
     def _make_schedule(self, latency=(1000, 250, 50, 120), **overrides):
-        """Create a SteadyStateSchedule with minimal mock dependencies."""
-        from stream.allocation.schedule import SteadyStateSchedule
+        """Create a Allocation with minimal mock dependencies."""
+        from stream.allocation.allocation import Allocation
         from stream.allocation.solution import AllocationSolution, Latency
         from stream.opt.solver import SolveStats
 
@@ -213,7 +213,7 @@ class TestSteadyStateScheduleGetIr:
             "families": (),
             "solution": solution,
         } | overrides
-        return SteadyStateSchedule(**fields)
+        return Allocation(**fields)
 
     def test_latency_values(self):
         """get_ir() returns the solved latencies."""

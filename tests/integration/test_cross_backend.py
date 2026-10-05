@@ -7,7 +7,7 @@ Tests cover both performance (resulting objective value) and time.
 Tests cover both main_gemm.py and main_swiglu.py configurations.
 
 Backend injection strategy:
-  TransferAndTensorAllocator creates its solver via
+  AllocationModel creates its solver via
   ``create_solver(SolverBackend.GUROBI, ...)``.  We use ``unittest.mock.patch``
   to intercept that call and return an ORToolsBackend instead.  The patch must
   target the allocator module, which imports ``create_solver`` into its own
@@ -47,7 +47,7 @@ SWIGLU_GUROBI_OBJ = 3_215_616.0
 REL_TOL = 0.01
 
 # Patch target: the allocator module imports create_solver into its own namespace
-_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
+_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation_model.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 
 

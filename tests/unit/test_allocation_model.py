@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     LATENCY,
@@ -16,7 +17,6 @@ from stream.opt.allocation.constraint_optimization.families import (
 )
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.opt.solver import ObjectiveLevel, PipeliningModel
 from stream.workload.steady_state.iteration_space import Reuse
 
@@ -38,7 +38,7 @@ def _objectives(specs=DEFAULT_FAMILIES, **quantities) -> dict[str, ObjectiveLeve
         context=SimpleNamespace(model=model, space=space, vars=SimpleNamespace(y={}, z_stop={})),
         quantities=q,
     )
-    return TransferAndTensorAllocator._objective_levels(tta)  # type: ignore[arg-type]
+    return AllocationModel._objective_levels(tta)  # type: ignore[arg-type]
 
 
 def test_a_family_left_out_builds_nothing():
@@ -120,7 +120,7 @@ def test_levels_of_one_name_must_share_a_priority():
     tta.quantities.add("dma_peak_in", 1)
     tta.quantities.add("dma_peak_out", 1)
     with pytest.raises(ValueError, match="'latency' has priority 5 in 'rogue'"):
-        TransferAndTensorAllocator._objective_levels(tta)  # type: ignore[arg-type]
+        AllocationModel._objective_levels(tta)  # type: ignore[arg-type]
 
 
 def _overlap(spec) -> PipeliningModel:

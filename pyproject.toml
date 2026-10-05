@@ -78,11 +78,11 @@ onnx = "stream.frontends.onnx:OnnxFrontend"
 torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 
 # Namespace facts for the allocation model: the entry-point name is the core namespace, its object a
-# NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a core
+# HardwareNamespace subclass. Instantiated via from_config whenever the accelerator contains a core
 # of that namespace, whose constraint families it adds to the default set (its `families`). The
 # built-in aie2 namespace registers here too -- the public path is the plugin path.
 [project.entry-points."stream.constraints"]
-aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
+aie2 = "stream.opt.allocation.constraint_optimization.hardware:AIE2Namespace"
 
 # Pipeline observers, enabled per run by SolveOptions.instrumentation. `timing` profiles every stage and
 # the spans inside them.

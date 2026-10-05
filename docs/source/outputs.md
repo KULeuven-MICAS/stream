@@ -9,7 +9,7 @@ A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfi
 | Key | What it is |
 |-----|-----------|
 | `group_latencies` | Per-fusion-group latency breakdown. |
-| `allocation` | The `SteadyStateSchedule` - the solved workload, mapping and iteration spaces, and its `solution` (placements, routes, latencies, solve statistics, performance report). |
+| `allocation` | The `Allocation` - the solved workload, mapping and iteration spaces, and its `solution` (placements, routes, latencies, solve statistics, performance report). |
 | `workload` | The parsed computation graph. |
 | `accelerator` | The parsed hardware model. |
 

@@ -12,7 +12,7 @@ class SteadyStateLoweringStage(Stage):
 
     reads = ("workload", "accelerator", "mapping", "cost_lut", "fusion_splits")
     optional_reads = ("nb_cols_to_use",)
-    writes = ("steady_state_problem",)
+    writes = ("allocation_problem",)
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
@@ -27,7 +27,7 @@ class SteadyStateLoweringStage(Stage):
             self.ctx.get("cost_lut"),
             self.nb_cols_to_use,
         )
-        self.ctx.set(steady_state_problem=problem)
+        self.ctx.set(allocation_problem=problem)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 

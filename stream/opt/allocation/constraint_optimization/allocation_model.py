@@ -5,7 +5,7 @@ from dataclasses import replace
 from math import ceil
 from typing import Any, TypeAlias
 
-from stream.allocation.problem import SteadyStateProblem
+from stream.allocation.problem import AllocationProblem
 from stream.allocation.solution import AllocationSolution, Latency
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.ir.infeasibility import InfeasibleAllocationError
@@ -57,7 +57,7 @@ TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
 MemoryAlloc: TypeAlias = dict[TransferNode, Placement]
 
 
-class TransferAndTensorAllocator:
+class AllocationModel:
     """The allocation model of a steady-state problem: the core decision variables -- where every movable tensor
     lives, which route each transfer takes, where each tensor's reuse stops -- the constraints and objective levels
     its families build on them, and the allocation its solve reads back."""
@@ -66,7 +66,7 @@ class TransferAndTensorAllocator:
 
     def __init__(
         self,
-        problem: SteadyStateProblem,
+        problem: AllocationProblem,
         *,
         families: FamilySelection,
         backend: str = "ORTOOLS_GSCIP",

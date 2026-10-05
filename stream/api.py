@@ -21,8 +21,8 @@ from stream.compiler.kernels.library import KernelLibrary
 from stream.frontends import load_workload
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
-from stream.opt.allocation.constraint_optimization.context import build_transfer_context
 from stream.opt.allocation.constraint_optimization.families import FamilySpec, drop_families, load_families, parse_spec
+from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.opt.solver import GurobiBackend, SolverBackend
 from stream.profiling import span
 from stream.stages.allocation.steady_state_allocation import DEFAULT_TIME_LIMIT_S, AllocationStage
@@ -92,7 +92,7 @@ def default_families(
     it has cores of. ``without`` leaves out the families it names and those that need what only they provide, and
     ``options`` gives a family its options by name, such as ``{"overlap": {"model": "span"}}``."""
     accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
-    specs = drop_families(build_transfer_context(accelerator).default_families, without)
+    specs = drop_families(build_hardware_facts(accelerator).default_families, without)
     if unknown := set(options or ()) - {parse_spec(spec)[0] for spec in specs}:
         raise KeyError(f"Options for families the default set does not build: {sorted(unknown)}")
     return tuple(
@@ -189,9 +189,9 @@ def _solve(
             with span("solver_license"):
                 GurobiBackend.check_license()
         with span("load_families"):
-            transfer_context = build_transfer_context(accelerator)
+            hardware_facts = build_hardware_facts(accelerator)
             families = load_families(
-                options.families if options.families is not None else transfer_context.default_families
+                options.families if options.families is not None else hardware_facts.default_families
             )
         proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
         emission = [codegen_backend_for(accelerator).stage()] if codegen else []
@@ -225,6 +225,6 @@ def _solve(
     return MappingEstimate(
         mapping=mapping,
         group_cycles=tuple(ctx.get("group_cycles")[i] for i in groups),
-        dispatch_cycles=transfer_context.dispatch_overhead_cycles(columns),
+        dispatch_cycles=hardware_facts.dispatch_overhead_cycles(columns),
         context=ctx,
     )

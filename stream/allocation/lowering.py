@@ -9,14 +9,14 @@ from typing import cast
 
 from xdsl.ir.affine import AffineMap
 
-from stream.allocation.problem import SteadyStateProblem
+from stream.allocation.problem import AllocationProblem
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
-from stream.opt.allocation.constraint_optimization.context import build_transfer_context
+from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand, streamed_operands
 from stream.workload.node import (
@@ -61,7 +61,7 @@ def lower_steady_state(  # noqa: PLR0913
     fusion_splits: dict[LayerDim, int],
     cost_lut: CoreCostLUT,
     nb_cols_to_use: int = 4,
-) -> SteadyStateProblem:
+) -> AllocationProblem:
     """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``."""
     return _Lowering(workload, accelerator, mapping, nb_cols_to_use).lower(fusion_splits, cost_lut)
 
@@ -74,9 +74,9 @@ class _Lowering:
         self.accelerator = accelerator
         self.mapping = mapping.copy()
         self.nb_cols_to_use = nb_cols_to_use
-        self.transfer_context = build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
+        self.hardware = build_hardware_facts(accelerator, nb_cols_to_use=nb_cols_to_use)
 
-    def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> SteadyStateProblem:
+    def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> AllocationProblem:
         with span("transfer_graph"):
             self.ssw = self.build_transfer_graph()
             self.fusion_splits = self.update_fusion_splits(fusion_splits)
@@ -87,7 +87,7 @@ class _Lowering:
             self.iterations = self.calculate_iterations()
         with span("timeslots"):
             timeslots = self.ssw.get_timeslots(self.mapping)
-        return SteadyStateProblem(
+        return AllocationProblem(
             source_workload=self.workload,
             workload=self.ssw,
             mapping=self.mapping,
@@ -97,7 +97,7 @@ class _Lowering:
             iterations=self.iterations,
             timeslots=timeslots,
             accelerator=self.accelerator,
-            transfer_context=self.transfer_context,
+            hardware=self.hardware,
         )
 
     def build_transfer_graph(self) -> Workload:
@@ -166,7 +166,7 @@ class _Lowering:
         if not self._get_accelerator_memory_cores():
             return False
         if isinstance(src, InEdge):
-            if self.transfer_context.force_io_transfers_on_mem_tile:
+            if self.hardware.force_io_transfers_on_mem_tile:
                 return True
             return is_reused_on_chip(self.workload, tensor, dsts)
         produced = self._declared_layout(src, tensor)

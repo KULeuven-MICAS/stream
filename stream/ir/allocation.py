@@ -1,6 +1,6 @@
 """AllocationIR Pydantic model with per-persona view methods.
 
-Wraps the output of SteadyStateSchedule.get_ir() in a typed, versioned Pydantic model.
+Wraps the output of Allocation.get_ir() in a typed, versioned Pydantic model.
 Construction is always via the from_internal() classmethod.
 """
 
@@ -13,11 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from stream.plugins import loaded_overlays
 
 if TYPE_CHECKING:
-    from stream.allocation.schedule import SteadyStateSchedule
+    from stream.allocation.allocation import Allocation
 
 
 class LatencyInfo(BaseModel):
-    """Latency metrics from a solved SteadyStateSchedule."""
+    """Latency metrics from a solved Allocation."""
 
     total: int = Field(description="Total schedule latency in cycles across all iterations")
     per_iteration: int = Field(description="Latency of a single steady-state iteration in cycles")
@@ -411,7 +411,7 @@ class AllocationPerformanceView(BaseModel):
 
 
 class AllocationIR(BaseModel):
-    """Typed Pydantic model wrapping SteadyStateSchedule.get_ir() output.
+    """Typed Pydantic model wrapping Allocation.get_ir() output.
 
     schema_version '2.0': minor bumps for additive fields, major bumps (2.0) for
     removed/renamed fields. Construction is always via from_internal().
@@ -469,8 +469,8 @@ class AllocationIR(BaseModel):
     )
 
     @classmethod
-    def from_internal(cls, schedule: SteadyStateSchedule) -> AllocationIR:
-        """Construct AllocationIR from a solved SteadyStateSchedule.
+    def from_internal(cls, schedule: Allocation) -> AllocationIR:
+        """Construct AllocationIR from a solved Allocation.
 
         Calls schedule.get_ir() once, maps the resulting dict fields to Pydantic types,
         and validates on construction.

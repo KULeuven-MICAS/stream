@@ -17,7 +17,7 @@
 
 ✔ **Layer-fused scheduling** across the whole system of cores.
 
-✔ **TETRA constraint optimization**: a MILP (`TransferAndTensorAllocator`) decides tensor placement and transfer-path routing.
+✔ **TETRA constraint optimization**: a MILP (`AllocationModel`) decides tensor placement and transfer-path routing.
 
 ✔ **Pluggable solver backends**: OR-Tools GSCIP (default, license-free), OR-Tools HiGHS, and Gurobi behind one unified `SolverModel` API.
 

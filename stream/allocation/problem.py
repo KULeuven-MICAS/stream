@@ -4,18 +4,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from stream.allocation.schedule import IterationSpaces
+    from stream.allocation.allocation import IterationSpaces
     from stream.cost_model.core_cost_lut import CoreCostLUT
     from stream.datatypes import LayerDim
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.mapping.mapping import Mapping
-    from stream.opt.allocation.constraint_optimization.context import TransferAndTensorContext
+    from stream.opt.allocation.constraint_optimization.hardware import HardwareFacts
     from stream.workload.node import Node
     from stream.workload.workload import Workload
 
 
 @dataclass(frozen=True)
-class SteadyStateProblem:
+class AllocationProblem:
     """A fused group lowered to its steady state, ready to allocate: ``workload`` holds its transfers, whose
     mapping lists the placements and routes each may take; ``source_workload`` is the group before lowering."""
 
@@ -28,4 +28,4 @@ class SteadyStateProblem:
     iterations: int
     timeslots: dict[Node, int]
     accelerator: Accelerator
-    transfer_context: TransferAndTensorContext
+    hardware: HardwareFacts

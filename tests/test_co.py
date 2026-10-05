@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from stream.allocation.schedule import SteadyStateSchedule
+from stream.allocation.allocation import Allocation
 from stream.api import evaluate_mapping
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import (
@@ -76,7 +76,7 @@ def test_co_tpu_two_conv(output_dir: Path):
 
     ctx = evaluate_mapping(_ACCELERATOR, workload_path, str(output_dir), mapping_path).context
 
-    schedule: SteadyStateSchedule = ctx.get("allocation")
+    schedule: Allocation = ctx.get("allocation")
     latency = schedule.solution.latency
 
     print(f"latency_total: {latency.total}")

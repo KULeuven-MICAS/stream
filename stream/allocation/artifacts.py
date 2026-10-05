@@ -25,9 +25,9 @@ from stream.profiling import span
 from stream.visualization.steady_state_trace import export_steady_state_trace
 
 if TYPE_CHECKING:
-    from stream.allocation.schedule import SteadyStateSchedule
-    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-        TransferAndTensorAllocator,
+    from stream.allocation.allocation import Allocation
+    from stream.opt.allocation.constraint_optimization.allocation_model import (
+        AllocationModel,
     )
     from stream.opt.solver import SolverModel
 
@@ -112,9 +112,7 @@ class SolveProgress:
         self.trace.append(point)
 
 
-def write_artifacts(
-    directory: str, allocator: TransferAndTensorAllocator, schedule: SteadyStateSchedule, progress: SolveProgress
-) -> None:
+def write_artifacts(directory: str, allocator: AllocationModel, schedule: Allocation, progress: SolveProgress) -> None:
     """Write the artifacts of a solved allocation under ``directory``; an artifact that cannot be written is logged
     and left out, never failing the solve."""
     reports, traces, figures = (os.path.join(directory, kind) for kind in ("reports", "traces", "figures"))
@@ -186,9 +184,7 @@ def _observe(what: str, write: Callable[..., Any], *args: Any, **kwargs: Any) ->
         logger.warning("Failed to write the %s: %s", what, exc)
 
 
-def _save_slot_latency_breakdown(
-    allocator: TransferAndTensorAllocator, schedule: SteadyStateSchedule, save_path: str
-) -> None:
+def _save_slot_latency_breakdown(allocator: AllocationModel, schedule: Allocation, save_path: str) -> None:
     """The slot latency breakdown of the solved model as YAML, next to the metrics."""
     breakdown = slot_latency_breakdown(allocator.context, dict(schedule.solution.reuse_levels))
     with open(save_path, "w") as fh:

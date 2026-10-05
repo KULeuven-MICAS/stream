@@ -14,8 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.context import AIE2Constraints
 from stream.opt.allocation.constraint_optimization.families.aie2 import DmaChannels
+from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
 from stream.workload.node import TransferType
 
@@ -32,7 +32,7 @@ def _core(core_id: int, kind: str, col: int | None, row: int | None, namespace: 
 
 @pytest.fixture
 def aie2():
-    return AIE2Constraints()
+    return AIE2Namespace()
 
 
 def test_a_compute_tile_has_the_two_dma_channels_the_hardware_gives_it():
@@ -124,7 +124,7 @@ def _space(context, broadcast: bool = False) -> DecisionSpace:
     """A bare decision space carrying only what the shared-memory latency check reads. ``transfer_is_broadcast``
     inspects real tensors, so it is stubbed -- the plan and the transfer type drive everything else."""
     space = DecisionSpace.__new__(DecisionSpace)
-    space.context = context
+    space.hardware = context
     space.accelerator = SimpleNamespace(memory_of=lambda core: core)  # each tile owns its memory
     space.transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
     return space

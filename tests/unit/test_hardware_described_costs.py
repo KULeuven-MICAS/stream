@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 
 from stream.cost_model.bandwidth import BandwidthModel
-from stream.opt.allocation.constraint_optimization.context import AIE2Constraints
+from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.stage import LeafStage, MainStage
@@ -30,7 +30,7 @@ def test_hardware_without_either_declares_neither():
 
 
 def test_aie2_charges_the_declared_reconfiguration_once_a_dispatch_holds_several_designs():
-    constraints = AIE2Constraints(reconfiguration={"cycles_per_column": 69000, "reset_cycles": 63000})
+    constraints = AIE2Namespace(reconfiguration={"cycles_per_column": 69000, "reset_cycles": 63000})
     assert constraints.dispatch_overhead_cycles([8]) == 0.0
     assert constraints.dispatch_overhead_cycles([2, 3]) == 5 * 69000 + 63000
-    assert AIE2Constraints().dispatch_overhead_cycles([2, 3]) == 0.0
+    assert AIE2Namespace().dispatch_overhead_cycles([2, 3]) == 0.0

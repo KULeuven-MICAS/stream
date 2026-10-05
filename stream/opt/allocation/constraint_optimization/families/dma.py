@@ -40,7 +40,7 @@ class DmaChannels:
         handover_out: dict[Core, int] = defaultdict(int)
         handover_in: dict[Core, int] = defaultdict(int)
         for one, other, _ in space.handovers:
-            if not space.context.shares_memory(one, other):
+            if not space.hardware.shares_memory(one, other):
                 handover_out[one] += 1
                 handover_in[other] += 1
 

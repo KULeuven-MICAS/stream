@@ -7,7 +7,6 @@ from stream.api import SolveOptions, default_families
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization import families
-from stream.opt.allocation.constraint_optimization.context import AIE2Constraints
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     SLOT_PRESSURE,
@@ -17,6 +16,7 @@ from stream.opt.allocation.constraint_optimization.families import (
     parse_spec,
 )
 from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
+from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -112,7 +112,7 @@ def test_an_unknown_option_names_its_family() -> None:
 def test_the_defaults_are_streams_families_and_the_namespaces() -> None:
     assert SolveOptions().families is None
     assert default_families(ACCELERATOR) == DEFAULT_FAMILIES
-    assert default_families(AIE) == (*DEFAULT_FAMILIES, *AIE2Constraints.families)
+    assert default_families(AIE) == (*DEFAULT_FAMILIES, *AIE2Namespace.families)
 
 
 def test_streams_families_build_in_their_declared_order() -> None:

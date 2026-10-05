@@ -7,7 +7,7 @@ from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.ir.infeasibility import InfeasibleAllocationError
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 
@@ -38,16 +38,16 @@ def solve_swiglu(accelerator: Accelerator):
         return evaluate_mapping(accelerator, workload, tmpdir, options=options).context
 
 
-def solved_allocator(accelerator: Accelerator) -> TransferAndTensorAllocator:
-    solved: list[TransferAndTensorAllocator] = []
-    original = TransferAndTensorAllocator.solve
+def solved_allocator(accelerator: Accelerator) -> AllocationModel:
+    solved: list[AllocationModel] = []
+    original = AllocationModel.solve
 
-    def solve(self: TransferAndTensorAllocator, *args, **kwargs):
+    def solve(self: AllocationModel, *args, **kwargs):
         solved.append(self)
         return original(self, *args, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(TransferAndTensorAllocator, "solve", solve)
+        patch.setattr(AllocationModel, "solve", solve)
         solve_swiglu(accelerator)
     return solved[0]
 

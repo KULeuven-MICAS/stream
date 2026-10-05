@@ -22,7 +22,7 @@ import tempfile
 import pytest
 from zigzag.utils import open_yaml
 
-from stream.allocation.schedule import SteadyStateSchedule
+from stream.allocation.allocation import Allocation
 from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
@@ -152,7 +152,7 @@ def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -
     - Each node has non-empty resource_allocation
     - No ComputationNode allocated to the offchip core
     """
-    schedule: SteadyStateSchedule = ctx.get("allocation")
+    schedule: Allocation = ctx.get("allocation")
     assert schedule.solution.latency.total > 0, "Expected positive latency_total"
     assert schedule.solution.latency.per_iteration > 0, "Expected positive latency_per_iteration"
     assert schedule.iterations > 0, "Expected positive iterations"

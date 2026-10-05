@@ -173,7 +173,7 @@ class MemoryCapacity:
         # The core that writes a handover holds it. A core reading one out of memory it
         # already shares reads it in place; one further away is given a copy of its own.
         for one, other, bits in space.handovers:
-            readers = (one,) if space.context.shares_memory(one, other) else (one, other)
+            readers = (one,) if space.hardware.shares_memory(one, other) else (one, other)
             for memory in dict.fromkeys(space.accelerator.memory_of(c) for c in readers):
                 load[memory] = load[memory] + bits
                 ledger.handover_bits[memory.id] = ledger.handover_bits.get(memory.id, 0) + bits

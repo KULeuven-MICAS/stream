@@ -1,12 +1,12 @@
 import logging
 import os
 
+from stream.allocation.allocation import Allocation, solved_iteration_spaces, solved_mapping
 from stream.allocation.artifacts import SolveProgress, write_artifacts, write_infeasible_model
-from stream.allocation.problem import SteadyStateProblem
-from stream.allocation.schedule import SteadyStateSchedule, solved_iteration_spaces, solved_mapping
+from stream.allocation.problem import AllocationProblem
 from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families import FamilySelection, load_families
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.profiling import span
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -20,17 +20,17 @@ class AllocationStage(Stage):
     """Solve the allocation of the steady-state problem -- where each tensor lives and which route each
     transfer takes -- and hand downstream the schedule it yields."""
 
-    reads = ("steady_state_problem", "output_path")
+    reads = ("allocation_problem", "output_path")
     optional_reads = ("backend", "families", "time_limit_s", "solver_log", "total_mac_ops", "artifacts")
     writes = ("allocation", "workload", "mapping")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
-        self.problem: SteadyStateProblem = self.ctx.get("steady_state_problem")
+        self.problem: AllocationProblem = self.ctx.get("allocation_problem")
         self.output_path = os.path.join(self.ctx.get("output_path"), "allocation")
         self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")
         self.families: FamilySelection = self.ctx.get("families") or load_families(
-            self.problem.transfer_context.default_families
+            self.problem.hardware.default_families
         )
         self.time_limit_s: float = self.ctx.get("time_limit_s", DEFAULT_TIME_LIMIT_S)
         self.solver_log: bool = self.ctx.get("solver_log", False)
@@ -39,7 +39,7 @@ class AllocationStage(Stage):
     def run(self):
         problem = self.problem
         with span("milp_build"):
-            allocator = TransferAndTensorAllocator(problem, families=self.families, backend=self.backend)
+            allocator = AllocationModel(problem, families=self.families, backend=self.backend)
         progress = SolveProgress() if self.artifacts else None
         try:
             solution = allocator.solve(
@@ -52,7 +52,7 @@ class AllocationStage(Stage):
             write_infeasible_model(allocator.model, self.output_path)
             raise
         with span("apply_solution"):
-            schedule = SteadyStateSchedule(
+            schedule = Allocation(
                 problem=problem,
                 mapping=solved_mapping(problem.workload, problem.mapping, solution),
                 ssis=solved_iteration_spaces(problem.workload, problem.ssis, solution.reuse_levels),

@@ -24,7 +24,7 @@ def test_stage_reads_solve_options_from_context():
     """AllocationStage reads families, time_limit_s and solver_log from context."""
     families = load_families(drop_families(DEFAULT_FAMILIES, ["dma_channels"]))
     ctx = StageContext.from_kwargs(
-        steady_state_problem=MagicMock(),
+        allocation_problem=MagicMock(),
         output_path="/tmp/test",
         backend="ORTOOLS_GSCIP",
         families=families,
@@ -40,8 +40,8 @@ def test_stage_reads_solve_options_from_context():
 def test_stage_defaults_when_absent():
     """AllocationStage defaults to the problem's default families, a 300 s limit and a silent solver."""
     problem = MagicMock()
-    problem.transfer_context.default_families = DEFAULT_FAMILIES
-    ctx = StageContext.from_kwargs(steady_state_problem=problem, output_path="/tmp/test", backend="ORTOOLS_GSCIP")
+    problem.hardware.default_families = DEFAULT_FAMILIES
+    ctx = StageContext.from_kwargs(allocation_problem=problem, output_path="/tmp/test", backend="ORTOOLS_GSCIP")
     stage = AllocationStage([MagicMock()], ctx)
     assert [name for name, _ in stage.families.specs()] == list(DEFAULT_FAMILIES)
     assert stage.time_limit_s == 300

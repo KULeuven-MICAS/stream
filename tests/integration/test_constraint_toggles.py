@@ -29,7 +29,7 @@ ACCELERATOR = os.path.join(
 )
 REL_TOL = 0.01
 
-_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
+_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation_model.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 _GROUPS = ("memory_capacity", "object_fifo_depth", "buffer_descriptors", "dma_channels")
 _TIGHT_DMA = {

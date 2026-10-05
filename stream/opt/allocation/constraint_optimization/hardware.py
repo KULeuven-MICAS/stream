@@ -36,7 +36,7 @@ class MemoryReuseEntry:
 #
 # HOW TO ADD A NEW NAMESPACE
 # --------------------------
-#   1. Subclass NamespaceConstraints, set NAMESPACE, override the facts that
+#   1. Subclass HardwareNamespace, set NAMESPACE, override the facts that
 #      differ, list the namespace's constraint families in ``families``, and
 #      override from_config if the subclass takes constructor arguments.
 #   2. Register it in the "stream.constraints" entry-point group under the
@@ -47,7 +47,7 @@ class MemoryReuseEntry:
 
 
 @dataclass(frozen=True)
-class NamespaceConstraintConfig:
+class NamespaceConfig:
     """What a namespace's constraints may be built from."""
 
     accelerator: Accelerator
@@ -56,7 +56,7 @@ class NamespaceConstraintConfig:
     nb_cols_to_use: int
 
 
-class NamespaceConstraints:
+class HardwareNamespace:
     """What a namespace tells the allocation model about its cores, and the constraint families it adds to
     the default set. Subclasses set :attr:`NAMESPACE` and override the facts that differ from the defaults."""
 
@@ -64,7 +64,7 @@ class NamespaceConstraints:
     families: tuple[str, ...] = ()
 
     @classmethod
-    def from_config(cls, config: NamespaceConstraintConfig) -> NamespaceConstraints:
+    def from_config(cls, config: NamespaceConfig) -> HardwareNamespace:
         """Build this strategy for one solve. Override when the subclass needs constructor arguments."""
         return cls()
 
@@ -89,7 +89,7 @@ class NamespaceConstraints:
         return 0.0
 
 
-class AIE2Constraints(NamespaceConstraints):
+class AIE2Namespace(HardwareNamespace):
     """The AIE2 tile array: neighbouring tiles share memory, a core's stack is reserved, a dispatch of several
     designs reconfigures their columns, and the object-fifo, buffer-descriptor, memory-tile replay and DMA
     channel limits are its families."""
@@ -103,7 +103,7 @@ class AIE2Constraints(NamespaceConstraints):
         self.reset_cycles = float(reconfiguration.get("reset_cycles", 0.0))
 
     @classmethod
-    def from_config(cls, config: NamespaceConstraintConfig) -> AIE2Constraints:
+    def from_config(cls, config: NamespaceConfig) -> AIE2Namespace:
         return cls(reconfiguration=config.accelerator.reconfiguration)
 
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
@@ -140,53 +140,51 @@ class AIE2Constraints(NamespaceConstraints):
 
 
 # ============================================================================
-# TransferAndTensorContext – used by the *transfer / tensor* allocation stage
+# HardwareFacts – used by the *transfer / tensor* allocation stage
 # ============================================================================
 
 
 @dataclass(frozen=True)
-class TransferAndTensorContext:
+class HardwareFacts:
     """Shared context for the transfer and tensor allocation MILP: the topology, and the
-    :class:`NamespaceConstraints` of the namespaces the accelerator has cores of."""
+    :class:`HardwareNamespace` of the namespaces the accelerator has cores of."""
 
     accelerator: Accelerator
     offchip_core_id: int | None
     mem_cores: list[Core]
     force_double_buffering: bool
     force_io_transfers_on_mem_tile: bool
-    namespace_constraints: tuple[NamespaceConstraints, ...] = ()
+    namespaces: tuple[HardwareNamespace, ...] = ()
 
     @property
     def default_families(self) -> tuple[str, ...]:
         """Stream's own constraint families and those each namespace contributes."""
-        return (*DEFAULT_FAMILIES, *(family for ns in self.namespace_constraints for family in ns.families))
+        return (*DEFAULT_FAMILIES, *(family for ns in self.namespaces for family in ns.families))
 
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether the two cores use one memory, or a namespace lets one reach the other's."""
         if self.accelerator.memory_of(one) == self.accelerator.memory_of(other):
             return True
-        return any(ns.shares_memory(one, other) for ns in self.namespace_constraints)
+        return any(ns.shares_memory(one, other) for ns in self.namespaces)
 
     def reserved_memory_bits(self, core: Core) -> int:
         """Bits the toolchain claims on this core, summed over the namespaces that own it."""
-        return sum(ns.reserved_memory_bits(core) for ns in self.namespace_constraints if ns.applies_to(core))
+        return sum(ns.reserved_memory_bits(core) for ns in self.namespaces if ns.applies_to(core))
 
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
         """Configuration cycles one dispatch pays, summed over the namespaces."""
-        return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespace_constraints)
+        return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespaces)
 
 
-CONSTRAINTS_GROUP = "stream.constraints"
+NAMESPACES_GROUP = "stream.constraints"
 
 
-def namespace_constraints_for(
-    accelerator: Accelerator, config: NamespaceConstraintConfig
-) -> list[NamespaceConstraints]:
+def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[HardwareNamespace]:
     """The constraint strategies for the namespaces this accelerator contains (from the
     ``stream.constraints`` entry-point group, keyed by namespace name)."""
     present = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
-    strategies: dict[str, NamespaceConstraints] = {}
-    for plugin in load_group(CONSTRAINTS_GROUP):
+    strategies: dict[str, HardwareNamespace] = {}
+    for plugin in load_group(NAMESPACES_GROUP):
         if plugin.name not in present:
             continue
         try:
@@ -198,13 +196,13 @@ def namespace_constraints_for(
     return [strategies[name] for name in sorted(strategies)]
 
 
-def build_transfer_context(
+def build_hardware_facts(
     accelerator: Accelerator,
     *,
     nb_cols_to_use: int = 4,
     force_double_buffering: bool = True,
     force_io_transfers_on_mem_tile: bool = True,
-) -> TransferAndTensorContext:
+) -> HardwareFacts:
     offchip_core_id = accelerator.offchip_core_id
 
     # Memory cores eligible for on-chip caching (not off-chip, memory kind,
@@ -219,19 +217,19 @@ def build_transfer_context(
         and c.col_id < nb_cols_to_use
     ]
 
-    config = NamespaceConstraintConfig(
+    config = NamespaceConfig(
         accelerator=accelerator,
         offchip_core_id=offchip_core_id,
         mem_cores=tuple(mem_cores),
         nb_cols_to_use=nb_cols_to_use,
     )
-    ns_constraints = tuple(namespace_constraints_for(accelerator, config))
+    ns_constraints = tuple(namespaces_for(accelerator, config))
 
-    return TransferAndTensorContext(
+    return HardwareFacts(
         accelerator=accelerator,
         offchip_core_id=offchip_core_id,
         mem_cores=mem_cores,
         force_double_buffering=force_double_buffering,
         force_io_transfers_on_mem_tile=force_io_transfers_on_mem_tile,
-        namespace_constraints=ns_constraints,
+        namespaces=ns_constraints,
     )
