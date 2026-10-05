@@ -22,7 +22,8 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
     make_resnet_subgraph,
 )
 from stream.opt.solver import SolverBackend
-from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
+from stream.stages.allocation.steady_state_allocation import AllocationStage
+from stream.stages.allocation.steady_state_lowering import SteadyStateLoweringStage
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
@@ -280,7 +281,8 @@ def test_resnet18_full_e2e(request, tmp_path):
     """
     from pathlib import Path  # noqa: PLC0415
 
-    from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
+    from stream.api import default_families  # noqa: PLC0415
+    from stream.opt.allocation.constraint_optimization.families import load_families  # noqa: PLC0415
 
     keep = request.config.getoption("--keep-output")
     if keep:
@@ -298,7 +300,8 @@ def test_resnet18_full_e2e(request, tmp_path):
         FusionGroupIterationStage,
         TilingGenerationStage,
         CoreCostEstimationStage,
-        ConstraintOptimizationAllocationStage,
+        SteadyStateLoweringStage,
+        AllocationStage,
         MemoryAccessesEstimationStage,
     ]
     ctx = StageContext.from_kwargs(
@@ -310,7 +313,7 @@ def test_resnet18_full_e2e(request, tmp_path):
         temporal_mapping_type=TemporalMappingType.UNEVEN,
         nb_cols_to_use=4,
         backend=SolverBackend.ORTOOLS_GSCIP.value,
-        constraint_selection=ConstraintSelection(memory_capacity=False),
+        families=load_families(default_families(_ACCELERATOR, without=["memory_capacity"])),
     )
 
     mainstage = MainStage(stages, ctx)

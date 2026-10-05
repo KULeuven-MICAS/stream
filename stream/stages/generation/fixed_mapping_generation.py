@@ -18,18 +18,16 @@ class FixedMappingGenerationStage(Stage):
     Reads the mapping YAML once, splits the workload into fusion groups,
     then builds a scoped Mapping per group via MappingFactory — no intermediate
     YAML files are written or read.
-
-    Reads: accelerator, workload, mapping_path
-    Writes: sub_workloads (list[Workload]), sub_mappings (list[Mapping])
     """
 
-    REQUIRED_FIELDS = ("accelerator", "workload", "mapping_path")
+    reads = ("accelerator", "workload", "mapping_path")
+    writes = ("sub_workloads", "sub_mappings")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
-        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
-        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
-        self.mapping_path: str = self.ctx.require_value("mapping_path", self.__class__.__name__)
+        self.accelerator = self.ctx.get("accelerator")
+        self.workload = self.ctx.get("workload")
+        self.mapping_path: str = self.ctx.get("mapping_path")
 
     def run(self):
         mapping_data = self._parse_and_validate_yaml()

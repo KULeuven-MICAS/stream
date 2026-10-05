@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from stream.allocation.schedule import SteadyStateSchedule
+from stream.allocation.allocation import Allocation
 from stream.api import evaluate_mapping
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import (
@@ -64,7 +64,7 @@ def test_co_tpu_two_conv(output_dir: Path):
     """Run the two-conv TPU CO pipeline and verify structural properties.
 
     Asserts:
-    - positive schedule metrics
+    - positive allocation metrics
     - exactly two computation nodes
     - each computation node has a resource allocation
     """
@@ -76,24 +76,23 @@ def test_co_tpu_two_conv(output_dir: Path):
 
     ctx = evaluate_mapping(_ACCELERATOR, workload_path, str(output_dir), mapping_path).context
 
-    schedule: SteadyStateSchedule = ctx.get("allocation")
-    latency = schedule.solution.latency
+    allocation: Allocation = ctx.get("allocation")
+    latency = allocation.solution.latency
 
     print(f"latency_total: {latency.total}")
     print(f"latency_per_iteration: {latency.per_iteration}")
-    print(f"iterations: {schedule.iterations}")
+    print(f"iterations: {allocation.problem.iterations}")
 
     assert latency.total > 0, "Expected positive latency_total"
     assert latency.per_iteration > 0, "Expected positive latency_per_iteration"
-    assert schedule.iterations > 0, "Expected positive iterations"
+    assert allocation.problem.iterations > 0, "Expected positive iterations"
     # OR-Tools solves the objective levels in turn and ends on a tiebreaker; the rank is the first level.
-    assert schedule.cost_to_rank >= latency.total
+    assert allocation.solution.primary_cost >= latency.total
 
-    # The solved schedule must yield a JSON-serializable AllocationIR (runtime_args carry AffineMaps).
-    allocation = AllocationIR.from_internal(schedule)
-    allocation.model_dump_json()
-    assert allocation.latency.total == latency.total
-    assert allocation.mapping_nodes
+    ir = AllocationIR.from_internal(allocation)
+    ir.model_dump_json()
+    assert ir.latency.total == latency.total
+    assert ir.mapping_nodes
 
     mapping = ctx.get("mapping")
     workload = ctx.get("workload")

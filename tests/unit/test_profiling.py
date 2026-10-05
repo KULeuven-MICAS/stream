@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from stream.profiling import profile, span, timed
+from stream.profiling import profile, span
 from stream.stages.stage import LeafStage, Stage
 
 
@@ -26,7 +26,7 @@ def test_a_span_counts_its_own_time_apart_from_the_spans_inside_it():
     outer, inner = recorded.spans[("outer",)], recorded.spans[("outer", "inner")]
     assert inner.calls == 2
     assert outer.inclusive_ns >= outer.exclusive_ns + inner.inclusive_ns
-    assert 0.005e9 < outer.exclusive_ns < 0.03e9
+    assert 0 < outer.exclusive_ns < inner.inclusive_ns
 
 
 def test_profiles_do_not_nest():
@@ -47,9 +47,9 @@ class _Leaf(LeafStage):
         yield self.ctx
 
 
-def test_a_timed_stage_excludes_the_stages_it_runs():
+def test_a_stage_is_a_span_that_excludes_the_stages_it_runs():
     with profile() as recorded:
-        (result,) = list(timed(_Outer)([timed(_Leaf)], "ctx").run())
+        (result,) = list(_Outer([_Leaf], "ctx").run())
     assert result == "ctx"
     outer, leaf = recorded.spans[("_Outer",)], recorded.spans[("_Outer", "_Leaf")]
     assert outer.exclusive_ns < leaf.exclusive_ns

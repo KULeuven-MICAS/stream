@@ -55,6 +55,16 @@ def _get_state(mcp_ctx: Context) -> ServerState:
 # ---------------------------------------------------------------------------
 
 
+def _families(hardware: str, constraint_dict: dict[str, bool]) -> tuple[Any, ...]:
+    """The default families with each constraint group switched off left out, as 1.x's toggles did: the object-FIFO
+    depth's family then keeps only its buffering objective level."""
+    from stream.api import default_families  # noqa: PLC0415
+
+    off = {name for name, on in constraint_dict.items() if not on}
+    depth = {"object_fifo_depth": {"depth": False}} if "object_fifo_depth" in off else None
+    return default_families(hardware, sorted(off - {"object_fifo_depth"}), depth)
+
+
 async def _run_solve_background(
     job_id: str,
     state: ServerState,
@@ -68,14 +78,14 @@ async def _run_solve_background(
     """Run evaluate_mapping in a background thread and update job state.
 
     Uses asyncio.to_thread to avoid blocking the event loop during the MILP solve.
-    Heavy imports (stream.api, ConstraintSelection) are lazy.
+    Heavy imports (stream.api) are lazy.
     """
     state.jobs[job_id]["status"] = "running"
     try:
         from stream.api import SolveOptions, evaluate_mapping  # noqa: PLC0415
-        from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
 
-        options = SolveOptions(backend=backend, constraint_selection=ConstraintSelection(**constraint_dict))
+        families = await asyncio.to_thread(_families, hardware, constraint_dict)
+        options = SolveOptions(backend=backend, families=families)
         estimate = await asyncio.to_thread(
             evaluate_mapping, hardware, workload, f"{output_path}/{job_id}", mapping, options
         )
@@ -104,7 +114,7 @@ async def run_optimization(  # noqa: PLR0913
     dma_channels: bool = True,
     mcp_ctx: Context = None,
 ) -> dict[str, Any]:
-    """Submit a TETRA constraint-optimization job. Returns a job_id immediately.
+    """Submit a constraint-optimization job. Returns a job_id immediately.
 
     The solve runs in the background (via asyncio.to_thread()).
     Poll with poll_optimization(job_id) to retrieve status and results.
@@ -371,7 +381,7 @@ async def get_allocation_ir(
     job_id: str,
     mcp_ctx: Context = None,
 ) -> dict[str, Any]:
-    """Return the TETRA allocation result as structured JSON matching the AllocationIR schema.
+    """Return the allocation result as structured JSON matching the AllocationIR schema.
 
     Returns an AllocationIR Pydantic model with three persona views:
     - algorithmic_view: tensor placement per operator
@@ -449,7 +459,7 @@ async def get_solve_stats(
     import dataclasses  # noqa: PLC0415
 
     ctx = job["result"]["ctx"]
-    schedule = ctx.get("allocation")
-    if schedule is None:
+    allocation = ctx.get("allocation")
+    if allocation is None:
         return {"status": "error", "error_type": "solve_failed", "message": "No solve statistics available"}
-    return dataclasses.asdict(schedule.solution.solve_stats)
+    return dataclasses.asdict(allocation.solution.solve_stats)

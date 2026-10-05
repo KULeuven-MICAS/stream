@@ -12,10 +12,12 @@ from stream.workload.workload import Workload
 
 
 class FusionProposalStage(Stage):
-    REQUIRED_FIELDS = ("workload",)
+    reads = ("workload",)
+    optional_reads = ("fusion_capacity_elements",)
+    writes = ("proposed_fusion_regions",)
 
     def run(self) -> Generator[StageContext]:
-        workload: Workload = self.ctx.require_value("workload", self.__class__.__name__)
+        workload: Workload = self.ctx.get("workload")
         capacity = self.ctx.get("fusion_capacity_elements")
         if capacity is None:
             capacity = 2**63  # unbounded: propose every legal fusion as a single region

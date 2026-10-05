@@ -68,7 +68,9 @@ from stream.workload.workload import (
 
 
 class AIECodeGenerationStage(Stage):
-    REQUIRED_FIELDS = tuple()
+    optional_reads = ("trace_size", "trace_max_tiles", "trace_tiles", "trace_group", "npu", "group_index")
+    result_reads = ("allocation", "workload", "accelerator", "output_path")
+    result_writes = ("module",)
 
     def __init__(
         self,
@@ -97,7 +99,6 @@ class AIECodeGenerationStage(Stage):
         # group traced without one leaves its runtime sequence expecting an argument nobody passes.
         self.trace_group = self.ctx.get("trace_group")
         self.npu = self.ctx.get("npu", "npu2")
-        self.runtime_args = self.ctx.get("runtime_args", [])
         self.module = None
 
     def run(self):
@@ -420,12 +421,12 @@ class AIECodeGenerationStage(Stage):
 
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused."""
-        schedule = self.ctx.get("allocation")
-        slack = schedule.solution.capacity_slack
+        allocation = self.ctx.get("allocation")
+        slack = allocation.solution.capacity_slack
         if not slack:
             return None
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in schedule.accelerator.core_list:
+        for core in allocation.problem.accelerator.core_list:
             per_core = slack.get(core.id)
             if per_core is None or core.col_id is None or core.row_id is None:
                 continue
@@ -458,7 +459,7 @@ class AIECodeGenerationStage(Stage):
         # with open("test1.mlir", "w") as f:
         #     f.write(str(module))
 
-        output_path = self.ctx.data["output_path"]
+        output_path = self.ctx.get("output_path")
         output_path += "/codegen/"
         os.makedirs(output_path, exist_ok=True)
 

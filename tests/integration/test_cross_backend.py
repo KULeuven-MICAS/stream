@@ -1,13 +1,13 @@
-"""Cross-backend integration tests for TETRA.
+"""Cross-backend integration tests for the allocation model.
 
-Compares ORToolsBackend (GSCIP, HiGHS) against GurobiBackend on real TETRA
+Compares ORToolsBackend (GSCIP, HiGHS) against GurobiBackend on real allocation
 instances to verify objective quality and measure solve time.
 
 Tests cover both performance (resulting objective value) and time.
 Tests cover both main_gemm.py and main_swiglu.py configurations.
 
 Backend injection strategy:
-  TransferAndTensorAllocator creates its solver via
+  AllocationModel creates its solver via
   ``create_solver(SolverBackend.GUROBI, ...)``.  We use ``unittest.mock.patch``
   to intercept that call and return an ORToolsBackend instead.  The patch must
   target the allocator module, which imports ``create_solver`` into its own
@@ -47,7 +47,7 @@ SWIGLU_GUROBI_OBJ = 3_215_616.0
 REL_TOL = 0.01
 
 # Patch target: the allocator module imports create_solver into its own namespace
-_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
+_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation_model.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 
 
@@ -67,7 +67,7 @@ def _make_ortools_factory(solver_type: mathopt.SolverType):
 
 
 def _run_gemm_pipeline(output_path: str):
-    """Run the TETRA gemm optimisation pipeline.
+    """Run the gemm optimisation pipeline.
 
     Args:
         output_path: Directory where pipeline outputs are written.
@@ -90,7 +90,7 @@ def _run_gemm_pipeline(output_path: str):
 
 
 def _run_swiglu_pipeline(output_path: str):
-    """Run the TETRA swiglu optimisation pipeline.
+    """Run the swiglu optimisation pipeline.
 
     Args:
         output_path: Directory where pipeline outputs are written.
@@ -164,7 +164,7 @@ def _append_result(results: list, backend: str, solver: str, lat_total: float, s
 
 @pytest.mark.slow
 def test_gemm_gurobi_baseline():
-    """GurobiBackend produces OPTIMAL on TETRA gemm instance.
+    """GurobiBackend produces OPTIMAL on gemm instance.
 
     This test establishes the baseline. It uses the full unpatched pipeline
     and verifies the known objective value.
@@ -188,7 +188,7 @@ def test_gemm_gurobi_baseline():
 
 @pytest.mark.slow
 def test_gemm_cross_backend():
-    """ORToolsBackend (GSCIP) solves the TETRA gemm instance to OPTIMAL, within 1% of Gurobi; the allocator
+    """ORToolsBackend (GSCIP) solves the gemm instance to OPTIMAL, within 1% of Gurobi; the allocator
     module's ``create_solver`` is patched to return an ORToolsBackend."""
     results = []
     ort_factory = _make_ortools_factory(mathopt.SolverType.GSCIP)
@@ -215,9 +215,9 @@ def test_gemm_cross_backend():
 
 @pytest.mark.slow
 def test_gemm_highs():
-    """HiGHS solver via ORToolsBackend produces a feasible solution on TETRA gemm instance.
+    """HiGHS solver via ORToolsBackend produces a feasible solution on gemm instance.
 
-    HiGHS is a pure LP/MIP solver (bundled in OR-Tools).  For TETRA's MILP it
+    HiGHS is a pure LP/MIP solver (bundled in OR-Tools).  For the allocation MILP it
     should find OPTIMAL.
     """
     results = []
@@ -251,7 +251,7 @@ def test_gemm_highs():
 
 @pytest.mark.slow
 def test_swiglu_gurobi_baseline():
-    """GurobiBackend produces OPTIMAL on TETRA swiglu instance.
+    """GurobiBackend produces OPTIMAL on swiglu instance.
 
     Establishes the swiglu baseline (seq_len=256, embedding_dim=512, hidden_dim=2048, cols=8).
     """
@@ -274,7 +274,7 @@ def test_swiglu_gurobi_baseline():
 
 @pytest.mark.slow
 def test_swiglu_cross_backend():
-    """ORToolsBackend (GSCIP) produces OPTIMAL on TETRA swiglu instance, matching Gurobi within 1%.
+    """ORToolsBackend (GSCIP) produces OPTIMAL on swiglu instance, matching Gurobi within 1%.
 
     Covers objective quality on the swiglu workload.
     """
@@ -303,7 +303,7 @@ def test_swiglu_cross_backend():
 
 @pytest.mark.slow
 def test_swiglu_highs():
-    """HiGHS solver via ORToolsBackend produces a feasible solution on TETRA swiglu instance."""
+    """HiGHS solver via ORToolsBackend produces a feasible solution on swiglu instance."""
     results = []
     highs_factory = _make_ortools_factory(mathopt.SolverType.HIGHS)
 

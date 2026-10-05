@@ -1,15 +1,13 @@
-"""Solver abstraction package for TETRA constraint optimization.
+"""Solver abstraction package for the allocation model.
 
 Public API re-exported from stream.opt.solver.solver.
 """
 
 from stream.opt.solver.solver import (
-    ConstraintSelection,
     GurobiBackend,
     LinExpr,
     ObjectiveLevel,
     ORToolsBackend,
-    PipeliningModel,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -20,12 +18,10 @@ from stream.opt.solver.solver import (
 )
 
 __all__ = [
-    "ConstraintSelection",
     "GurobiBackend",
     "LinExpr",
     "ObjectiveLevel",
     "ORToolsBackend",
-    "PipeliningModel",
     "SolveStats",
     "SolverBackend",
     "SolverModel",

@@ -7,6 +7,8 @@ import pickle
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.workload.node_key import node_key
@@ -121,50 +123,29 @@ class CoreCostLUT:
         self._save_yaml_summary()
 
     def _save_yaml_summary(self) -> None:
-        """Write a human-readable yaml sibling next to the pickle.
-
-        Best-effort: any failure is logged at debug level and swallowed so
-        a missing optional dep or odd attribute never blocks the pipeline.
-        """
-        try:
-            import yaml  # noqa: PLC0415  -- optional, deferred so failure is local
-        except Exception as e:
-            logger.debug("yaml not available, skipping CoreCostLUT yaml summary: %s", e)
-            return
-        try:
-            yaml_path = os.path.splitext(self.cache_path)[0] + ".yaml"
-            summary: dict[str, Any] = {"nodes": []}
-            for node, core_dict in self.lut.items():
-                node_entry: dict[str, Any] = {"name": getattr(node, "name", str(node))}
-                try:
-                    lds = getattr(node, "layer_dim_sizes", None)
-                    if lds is not None:
-                        node_entry["layer_dim_sizes"] = {str(k): _to_yaml_scalar(v) for k, v in dict(lds).items()}
-                except Exception:
-                    pass
-                cores_list: list[dict[str, Any]] = []
-                for core, entry in core_dict.items():
-                    core_summary: dict[str, Any] = {
-                        "core_id": _to_yaml_scalar(getattr(core, "id", None)),
-                        "core_type": str(getattr(core, "core_type", "")),
-                        "latency_total": _to_yaml_scalar(getattr(entry, "latency_total", None)),
-                        "ideal_cycle": _to_yaml_scalar(getattr(entry, "ideal_cycle", None)),
-                        "ideal_temporal_cycle": _to_yaml_scalar(getattr(entry, "ideal_temporal_cycle", None)),
-                        "energy_total": _to_yaml_scalar(getattr(entry, "energy_total", None)),
-                    }
-                    metadata = getattr(entry, "metadata", None) or {}
-                    if metadata:
-                        try:
-                            core_summary["metadata"] = {str(k): _to_yaml_scalar(v) for k, v in dict(metadata).items()}
-                        except Exception:
-                            pass
-                    cores_list.append(core_summary)
-                node_entry["cores"] = cores_list
-                summary["nodes"].append(node_entry)
-            with open(yaml_path, "w") as fp:
-                yaml.safe_dump(summary, fp, sort_keys=False)
-        except Exception as e:
-            logger.debug("Failed to write CoreCostLUT yaml summary: %s", e)
+        """Write a human-readable yaml sibling next to the pickle (keys in docs/source/outputs.md)."""
+        summary = {
+            "nodes": [
+                {
+                    "node": node.name,
+                    "cores": [
+                        {
+                            "core_id": core.id,
+                            "core_type": core.core_type,
+                            "latency_cycles": _to_yaml_scalar(entry.latency_total),
+                            "ideal_cycles": _to_yaml_scalar(entry.ideal_cycle),
+                            "ideal_temporal_cycles": _to_yaml_scalar(entry.ideal_temporal_cycle),
+                            "energy_pj": _to_yaml_scalar(entry.energy_total),
+                            "metadata": {str(k): _to_yaml_scalar(v) for k, v in entry.metadata.items()},
+                        }
+                        for core, entry in core_dict.items()
+                    ],
+                }
+                for node, core_dict in self.lut.items()
+            ]
+        }
+        with open(os.path.splitext(self.cache_path)[0] + ".yaml", "w") as fp:
+            yaml.safe_dump(summary, fp, sort_keys=False)
 
     def _maybe_load(self):
         if not self.cache_path or not os.path.exists(self.cache_path):

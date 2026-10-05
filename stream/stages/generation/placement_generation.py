@@ -28,7 +28,8 @@ BUFFERS = 2
 class PlacementGenerationStage(Stage):
     """Place the layers a mapping leaves unplaced, from the workload and the kernels."""
 
-    REQUIRED_FIELDS = ("workload", "mapping", "accelerator")
+    reads = ("workload", "mapping", "accelerator")
+    writes = ("mapping", "placement_alternatives", "placement_reserves")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)

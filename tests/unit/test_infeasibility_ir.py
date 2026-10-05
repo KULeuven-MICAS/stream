@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from stream.hardware.architecture.core import Core
 from stream.ir.infeasibility import (
     ImplicatedResourceIR,
     InfeasibilityReportIR,
     InfeasibleAllocationError,
     ResourceRefIR,
 )
+from stream.opt.allocation.constraint_optimization.diagnosis import (
+    ConstraintTag,
+    ResourceKind,
+    StructuralRule,
+    infeasibility_report,
+    structural_infeasibility,
+)
+from stream.opt.allocation.constraint_optimization.families.dma import DMA_CHANNELS
+from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY, OBJECT_FIFO_DEPTH
+from stream.opt.allocation.constraint_optimization.formulation import ResourceLedger
+from stream.opt.solver import SolverBackend, create_solver
 
 
 def _report() -> InfeasibilityReportIR:
@@ -56,29 +70,41 @@ def test_resource_kind_is_open_for_new_hardware():
     assert ref.kind == "dma_engine" and ref.detail == {}
 
 
-def _bare_allocator():
-    """A TransferAndTensorAllocator with only the quantitative-diagnosis state populated -- enough to
-    exercise the family-agnostic _build_unmet without constructing a full MILP."""
-    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-        TransferAndTensorAllocator,
-    )
+def _core(core_id: int) -> Core:
+    return Core(core_id=core_id, name=f"core_{core_id}", core_type="aie2.compute")
 
-    alloc = object.__new__(TransferAndTensorAllocator)
-    alloc._resource_bounds = {}
-    alloc._resource_terms = {}
-    return alloc
+
+def _diagnose(ledger: ResourceLedger, iis: list[str]) -> InfeasibilityReportIR:
+    """The diagnosis of a model whose IIS is the constraints ``iis``, from what ``ledger`` says they stand for."""
+    stats = SimpleNamespace(backend="GUROBI", solver="gurobi")
+    model = SimpleNamespace(
+        solve_stats=lambda: stats, supports_iis=True, compute_iis=lambda: None, iis_constraints=lambda: iis
+    )
+    return infeasibility_report(model, ledger, "INFEASIBLE")  # type: ignore[arg-type]
+
+
+def _bound(ledger: ResourceLedger, name: str, core: Core, kind: ResourceKind, bound: float) -> None:
+    ledger.tags[name] = ConstraintTag(core, kind)
+    ledger.bounds[(kind, core.id)] = bound
+
+
+def _held(ledger: ResourceLedger, name: str, core: Core, kind: ResourceKind, tensor: str) -> None:
+    ledger.tags[name] = ConstraintTag(core, kind, tensor)
 
 
 def test_unmet_generalizes_beyond_memory():
     """The same builder quantifies a non-memory capacity family (object-FIFO depth) from the IIS
     witness -- proving the diagnosis is not memory-specific."""
-    alloc = _bare_allocator()
-    alloc._resource_bounds[("object_fifo_depth", 2)] = 4.0
-    alloc._resource_terms[("object_fifo_depth", 2)] = {"tA": 3, "tB": 3}
-    iis = ["aie2_obj_fifo_depth_Core_2", "objfifo_tA_Core_2_L-1__lb", "objfifo_tB_Core_2_L0__lb"]
+    ledger, core = ResourceLedger(), _core(2)
+    _bound(ledger, "fifo_bound", core, OBJECT_FIFO_DEPTH, 4.0)
+    ledger.terms[(OBJECT_FIFO_DEPTH, 2)] = {"tA": 3, "tB": 3}
+    _held(ledger, "a", core, OBJECT_FIFO_DEPTH, "tA")
+    _held(ledger, "b", core, None, "tB")
 
-    unmet = alloc._build_unmet("object_fifo_depth", 2, iis)
+    (resource,) = _diagnose(ledger, ["fifo_bound", "a", "b"]).resources
+    unmet = resource.unmet
     assert unmet is not None
+    assert resource.constraint_kinds == ["object_fifo_depth"]
     assert unmet.family == "object_fifo_depth"
     assert unmet.unit == "FIFO slots"
     assert unmet.bound_value == 4 and unmet.demand_value == 6 and unmet.gap == 2
@@ -88,31 +114,60 @@ def test_unmet_generalizes_beyond_memory():
 
 
 def test_unmet_forced_terms_avoid_partition_double_count():
-    """A base tensor name is a prefix of its partitions; only the exact IIS subjects count."""
-    alloc = _bare_allocator()
-    alloc._resource_bounds[("memory_capacity", 3)] = 2_000_000.0
-    alloc._resource_terms[("memory_capacity", 3)] = {"conv_out": 1_600_000, "conv_out_1": 1_600_000}
-    # Only the "_1" partition is in the IIS -> the base must NOT be double-counted.
-    iis = ["mem_cap_Core 3", "memload_conv_out_1_Core_3_L-1__lb"]
-    unmet = alloc._build_unmet("memory_capacity", 3, iis)
-    assert unmet is not None
-    assert {t.label for t in unmet.terms} == {"conv_out_1"}
-    assert unmet.demand_value == 1_600_000
+    """Only the tensors the IIS constraints carry count, not every tensor whose name starts the same."""
+    ledger, core = ResourceLedger(), _core(3)
+    _bound(ledger, "mem_cap_Core 3", core, MEMORY_CAPACITY, 1_000_000.0)
+    ledger.terms[(MEMORY_CAPACITY, 3)] = {"conv_out": 1_600_000, "conv_out_1": 1_600_000}
+    _held(ledger, "memload_conv_out_1_Core_3_L-1__lb", core, MEMORY_CAPACITY, "conv_out_1")
+    (resource,) = _diagnose(ledger, ["mem_cap_Core 3", "memload_conv_out_1_Core_3_L-1__lb"]).resources
+    assert resource.unmet is not None
+    assert {t.label for t in resource.unmet.terms} == {"conv_out_1"}
+    assert resource.unmet.demand_value == 1_600_000
 
 
 def test_unmet_memory_term_carries_tile_shape():
     """A memory term recorded as a {value, dims, dtype} record surfaces the per-dimension tile sizes and
     dtype, and the value still drives the demand -- so the designer sees which tile (and why) fills the
     core, not just the total."""
-    alloc = _bare_allocator()
-    alloc._resource_bounds[("memory_capacity", 3)] = 2_000_000.0
-    alloc._resource_terms[("memory_capacity", 3)] = {
+    ledger, core = ResourceLedger(), _core(3)
+    _bound(ledger, "cap", core, MEMORY_CAPACITY, 1_000_000.0)
+    ledger.terms[(MEMORY_CAPACITY, 3)] = {
         "conv_out": {"value": 1_600_000, "dims": [("z32", 64), ("z3", 112), ("z4", 112)], "dtype": "f32"}
     }
-    iis = ["mem_cap_Core 3", "memload_conv_out_Core_3_L-1__lb"]
-    unmet = alloc._build_unmet("memory_capacity", 3, iis)
-    assert unmet is not None
-    (term,) = unmet.terms
-    assert term.value == 1_600_000 and unmet.demand_value == 1_600_000
+    _held(ledger, "load", core, MEMORY_CAPACITY, "conv_out")
+    report = _diagnose(ledger, ["cap", "load"])
+    assert report.nature == "capacity"
+    (term,) = report.resources[0].unmet.terms  # type: ignore[union-attr]
+    assert term.value == 1_600_000 and report.resources[0].unmet.demand_value == 1_600_000  # type: ignore[union-attr]
     assert term.dtype == "f32"
     assert [(d.label, d.size) for d in term.dims] == [("z32", 64), ("z3", 112), ("z4", 112)]
+
+
+def test_a_constraint_is_diagnosed_by_its_tag_not_its_name():
+    """A constraint whose name looks like a core's limit but carries no tag binds nothing, and a tagged one is
+    attributed to its resource and limit whatever its name."""
+    ledger, core = ResourceLedger(), _core(5)
+    ledger.tags["anything"] = ConstraintTag(core, DMA_CHANNELS)
+    report = _diagnose(ledger, ["mem_cap_Core 3", "dma_in_cap_Core 3", "anything"])
+    assert report.unbound_constraints == ["mem_cap_Core 3", "dma_in_cap_Core 3"]
+    (resource,) = report.resources
+    assert (resource.resource.id, resource.constraint_kinds, resource.reason) == (
+        "5",
+        ["dma_channels"],
+        "DMA channel limit exceeded",
+    )
+
+
+def test_a_structural_rule_in_the_iis_explains_the_conflict():
+    ledger = ResourceLedger()
+    rule = StructuralRule("Fused intermediate must stay resident", "It is re-read rather than spilled.")
+    ledger.tags["held_long"] = ConstraintTag(rule=rule)
+    report = _diagnose(ledger, ["held_long", "force_output_reuse_x"])
+    assert report.nature == "structural"
+    assert [(c.title, c.constraints) for c in report.conflicts] == [(rule.title, ["held_long"])]
+
+
+def test_a_structural_failure_before_any_solve_names_the_backend():
+    model = create_solver(SolverBackend.ORTOOLS_GSCIP)
+    assert structural_infeasibility("no core", model).backend == "ORTOOLS_GSCIP"
+    assert structural_infeasibility("no core").backend == "n/a"

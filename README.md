@@ -4,7 +4,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![Docs](https://img.shields.io/badge/docs-stream-blue)](https://kuleuven-micas.github.io/stream/)
 
-**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **TETRA constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
+**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
 ### 📖 [**Explore the Documentation**](https://kuleuven-micas.github.io/stream/)
 ### 🚀 [**Getting Started Guide**](https://kuleuven-micas.github.io/stream/getting-started/)
@@ -17,7 +17,7 @@
 
 ✔ **Layer-fused scheduling** across the whole system of cores.
 
-✔ **TETRA constraint optimization**: a MILP (`TransferAndTensorAllocator`) decides tensor placement and transfer-path routing.
+✔ **Constraint optimization**: a MILP (`AllocationModel`) decides tensor placement and transfer-path routing.
 
 ✔ **Pluggable solver backends**: OR-Tools GSCIP (default, license-free), OR-Tools HiGHS, and Gurobi behind one unified `SolverModel` API.
 
@@ -151,15 +151,15 @@ with tempfile.TemporaryDirectory() as tmp:
     print("cycles:", estimate.cycles)
 ```
 
-A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`, whose useful keys are `allocation`, `workload`, `accelerator` and `group_latencies`. `SolveOptions` sets the solver backend, the number of columns, the constraint selection, the kernel library, the tile search and instrumentation, and its `stage_options` carries what a plugin's stages read, such as `fusion_cut_points` and `intra_core_tiling` for the generic mapping generator or `npu` and `trace_size` for the AIE code generator.
+A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`, whose useful keys are `allocation`, `workload`, `accelerator` and `group_latencies`. `SolveOptions` sets the solver backend, the number of columns, the constraint families of the allocation model, the kernel library, the tile search, the solve's time limit and solver log, whether each solve writes its reports, traces and figures (`artifacts`), and instrumentation (such as `timing`), and its `stage_options` carries what a plugin's stages read, such as `fusion_cut_points` and `intra_core_tiling` for the generic mapping generator or `npu` and `trace_size` for the AIE code generator.
 
-Whatever depends on the hardware is found through entry-point groups, so a separate package extends Stream without a fork: `stream.frontends` (workload formats), `stream.mapping_generators` (a mapping when none is given), `stream.constraints` (namespace MILP constraints), `stream.core_cost_backends` (per-core cost) and `stream.codegen_backends` (code generation).
+Whatever depends on the hardware is found through entry-point groups, so a separate package extends Stream without a fork: `stream.frontends` (workload formats), `stream.mapping_generators` (a mapping when none is given), `stream.namespaces` (namespace facts and the constraint families a namespace adds), `stream.constraint_families` (the constraint families the allocation model is built from), `stream.core_cost_backends` (per-core cost) and `stream.codegen_backends` (code generation).
 
 ---
 
 ## 🤖 MCP Server (for AI agents)
 
-Stream ships an MCP server (`stream/mcp/server.py`, server name `stream`) that lets an AI agent submit and inspect TETRA CO jobs. Requires the `[mcp]` extra (`pip install -e ".[mcp]"`).
+Stream ships an MCP server (`stream/mcp/server.py`, server name `stream`) that lets an AI agent submit and inspect constraint-optimization jobs. Requires the `[mcp]` extra (`pip install -e ".[mcp]"`).
 
 > ⚠️ **Install caveat:** `[mcp]` does not currently resolve against the pinned PyPI `xdsl 0.29.1` - fastmcp's dependency tree needs newer `typing-extensions`/`pydantic` than xdsl 0.29.1 permits. For now it installs only in the dev environment that uses the git build of xdsl; a clean fix awaits the xdsl upgrade.
 
@@ -175,11 +175,11 @@ The 6 tools:
 
 | Tool | Purpose |
 |------|---------|
-| `run_optimization(hardware, workload, mapping, output_path, backend, ...)` | Submit a TETRA CO job; returns a `job_id` immediately; solve runs in the background. |
+| `run_optimization(hardware, workload, mapping, output_path, backend, ...)` | Submit a constraint-optimization job; returns a `job_id` immediately; solve runs in the background. |
 | `poll_optimization(job_id)` | Check job status (`pending` / `running` / `complete` / `failed` / `not_found`). |
 | `get_workload_ir(workload=None, experiment_id=None)` | Return the workload DAG as `WorkloadIR` JSON. |
 | `get_accelerator_ir(hardware=None, experiment_id=None)` | Return the hardware model as `AcceleratorIR` JSON. |
-| `get_allocation_ir(job_id)` | Return the TETRA allocation result as `AllocationIR` JSON (3 persona views). |
+| `get_allocation_ir(job_id)` | Return the allocation result as `AllocationIR` JSON (3 persona views). |
 | `get_solve_stats(job_id)` | Return MILP solve statistics (objective, time, gap, node count, backend). |
 
 **Run / poll / inspect flow:**

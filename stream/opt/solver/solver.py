@@ -6,7 +6,7 @@ import datetime
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -89,37 +89,6 @@ class SolveStats:
     """Number of simplex iterations, or None if not available for this backend."""
 
 
-class PipeliningModel(Enum):
-    """Inter-iteration overlap model: SPAN (idle only before first / after last use) or OCCUPANCY (any unused slot)."""
-
-    SPAN = "span"
-    OCCUPANCY = "occupancy"
-
-
-@dataclass(frozen=True)
-class ConstraintSelection:
-    """Which constraint groups TransferAndTensorAllocator builds, and its overlap formulation."""
-
-    memory_capacity: bool = True
-    object_fifo_depth: bool = True
-    buffer_descriptors: bool = True
-    dma_channels: bool = True
-    transfer_contention: bool = True
-    offchip_contention: bool = True
-    offchip_traffic_cost: bool = True
-    pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
-    families: tuple[str | Mapping[str, Any], ...] = ()
-    """Constraint families to build, by entry-point name, or ``{name: options}``; none by default."""
-
-    def __post_init__(self) -> None:
-        if not self.memory_capacity and self.object_fifo_depth:
-            _logger.warning(
-                "ConstraintSelection: memory_capacity=False with object_fifo_depth=True "
-                "is nonsensical -- object-FIFO depth constraints assume memory capacity "
-                "is enforced. Continuing with this configuration."
-            )
-
-
 @dataclass(frozen=True)
 class ObjectiveLevel:
     """A single level in a lexicographic objective hierarchy.
@@ -152,12 +121,14 @@ class ObjectiveLevel:
 
 
 def _unwrap(other: Any) -> Any:
-    """Unwrap SolverVar or LinExpr to underlying backend object.
-
-    Passes through int, float, gp.Var, gp.LinExpr, and other raw types.
-    """
-    if isinstance(other, (_GurobiVar, _GurobiLinExpr)):
-        return other._raw
+    """Unwrap SolverVar or LinExpr to the underlying backend object; int, float, gp.Var, gp.LinExpr and other raw
+    types pass through. Exact types, as the wrappers have no subclasses: an isinstance test against their abstract
+    bases is a large part of building an expression."""
+    kind = type(other)
+    if kind is _GurobiVar:
+        return other._v
+    if kind is _GurobiLinExpr:
+        return other._e
     return other
 
 
@@ -388,6 +359,10 @@ class SolverModel(ABC):
         Must be called after optimize(). Returns a SolveStats instance
         with fields populated for this backend; unavailable fields are None.
         """
+
+    def model_size(self) -> dict[str, int] | None:
+        """The model's variable, constraint and nonzero counts where the backend reports them, else None."""
+        return None
 
     @abstractmethod
     def compute_iis(self) -> None:
@@ -739,6 +714,17 @@ class GurobiBackend(SolverModel):
             iteration_count=int(self._model.IterCount),
         )
 
+    def model_size(self) -> dict[str, int]:
+        m = self._model
+        return {
+            "variables": m.NumVars,
+            "integer_variables": m.NumIntVars,
+            "binary_variables": m.NumBinVars,
+            "linear_constraints": m.NumConstrs,
+            "general_constraints": m.NumGenConstrs,
+            "nonzeros": m.NumNZs,
+        }
+
     def compute_iis(self) -> None:
         self._model.computeIIS()
 
@@ -810,9 +796,10 @@ def _unwrap_ort(other: Any) -> Any:
 
     Passes through mathopt.Variable, LinearSum, LinearExpression, int, float unchanged.
     """
-    if isinstance(other, _ORToolsVar):
+    kind = type(other)
+    if kind is _ORToolsVar:
         return other._v
-    if isinstance(other, _ORToolsLinExpr):
+    if kind is _ORToolsLinExpr:
         return other._e
     return other
 

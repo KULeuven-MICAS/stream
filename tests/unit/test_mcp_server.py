@@ -504,3 +504,16 @@ def test_run_optimization_no_stub_message(tmp_path: pathlib.Path) -> None:
     assert data.get("message") != "not implemented yet", (
         f"run_optimization should no longer return stub message, got {data}"
     )
+
+
+def test_a_switched_off_constraint_group_maps_to_its_family() -> None:
+    """The 1.x toggles build the models they built: a group switched off leaves out its family, and the object-FIFO
+    depth keeps its buffering objective level."""
+    from stream.api import default_families
+    from stream.mcp.server import _families
+
+    aie = "stream/inputs/aie/hardware/whole_array_strix.yaml"
+    toggles = {"buffer_descriptors": True, "dma_channels": False, "memory_capacity": False, "object_fifo_depth": False}
+    expected = default_families(aie, ["dma_channels", "memory_capacity"], {"object_fifo_depth": {"depth": False}})
+    assert _families(aie, toggles) == expected
+    assert _families(aie, dict.fromkeys(toggles, True)) == default_families(aie)

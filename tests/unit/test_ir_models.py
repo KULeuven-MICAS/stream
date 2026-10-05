@@ -4,7 +4,7 @@ Covers:
   - Pydantic BaseModel IR classes exist with schema_version field and produce valid JSON Schema
   - Per-persona IR views available (algorithmic, hardware, compiler)
 
-Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator/Scheduler objects required.
+Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator/Allocation objects required.
 Mock objects provide .get_ir() -> dict for from_internal() tests.
 """
 
@@ -23,7 +23,7 @@ from stream.ir.allocation import (
     AllocationAlgorithmicView,
     AllocationCompilerView,
     AllocationHardwareView,
-    ConstraintSelectionIR,
+    ConstraintFamilyIR,
     FusedGroupIR,
     LatencyInfo,
     NodeAllocationIR,
@@ -414,7 +414,6 @@ class TestAcceleratorIR:
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: synthetic dict matching SteadyStateSchedule.get_ir() shape
 # ---------------------------------------------------------------------------
 
 ALLOCATION_RAW: dict = {
@@ -424,12 +423,7 @@ ALLOCATION_RAW: dict = {
         "overlap_between_iterations": 100,
     },
     "backend": "ORTOOLS_GSCIP",
-    "constraint_selection": {
-        "memory_capacity": True,
-        "object_fifo_depth": False,
-        "buffer_descriptors": True,
-        "dma_channels": False,
-    },
+    "families": [{"name": "placement", "options": {}}, {"name": "overlap", "options": {"model": "span"}}],
     "fusion_splits": {"K": 4, "M": 2},
     "mapping": {
         "nodes": {
@@ -463,14 +457,14 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '1.5'."""
+        """AllocationIR.model_json_schema() must include schema_version const '2.0'."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "1.5", f"Expected const='1.5', got: {sv}"
+        assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
 
     def test_from_dict(self):
-        """AllocationIR constructed from a dict matching scheduler.get_ir() shape validates without error."""
+        """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
         raw = ALLOCATION_RAW
         nodes = {
             name: NodeAllocationIR(
@@ -488,11 +482,10 @@ class TestAllocationIR:
             )
             for fg in raw["mapping"]["fused_groups"]
         ]
-        cs = ConstraintSelectionIR(**raw["constraint_selection"])
         ir = AllocationIR(
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
-            constraint_selection=cs,
+            families=[ConstraintFamilyIR(**family) for family in raw["families"]],
             fusion_splits=raw["fusion_splits"],
             mapping_nodes=nodes,
             fused_groups=fused_groups,
@@ -500,33 +493,31 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.5"
+        assert ir.schema_version == "2.0"
 
     def test_from_internal_post_solve(self):
-        """AllocationIR.from_internal(mock_scheduler) constructs correctly when latency_total > 0."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        """AllocationIR.from_internal(mock_allocation) constructs correctly."""
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
 
-        ir = AllocationIR.from_internal(mock_scheduler)
+        ir = AllocationIR.from_internal(mock_allocation)
 
-        mock_scheduler.get_ir.assert_called_once()
+        mock_allocation.get_ir.assert_called_once()
         assert ir.latency.total == 2000
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.5"
+        assert ir.schema_version == "2.0"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
 
     def test_tiling_distinguishes_split_counts_from_block_extents(self):
         """fusion_splits/inter_core carry a split count; intra_core carries a block extent in elements."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
 
-        tiling = AllocationIR.from_internal(mock_scheduler).tiling
+        tiling = AllocationIR.from_internal(mock_allocation).tiling
         assert tiling is not None
         assert {(s.dim, s.factor) for s in tiling.fusion_splits} == {("K", 4), ("M", 2)}
         assert [(s.dim, s.factor) for s in tiling.inter_core["MatMul"]] == [("K", 2), ("M", 1)]
@@ -542,41 +533,37 @@ class TestAllocationIR:
                 return "(d0, d1) -> (d0, d1)"
 
         raw = {**ALLOCATION_RAW, "mapping": {**ALLOCATION_RAW["mapping"], "runtime_args": {"input": _FakeAffineMap()}}}
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = raw
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = raw
 
-        ir = AllocationIR.from_internal(mock_scheduler)
+        ir = AllocationIR.from_internal(mock_allocation)
         assert ir.runtime_args == {"input": "(d0, d1) -> (d0, d1)"}
         ir.model_dump_json()  # must stay JSON-serializable
 
     def test_algorithmic_view(self):
         """AllocationIR.algorithmic_view() returns AllocationAlgorithmicView with latency,
-        backend, constraint_selection."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        backend, families."""
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         view = ir.algorithmic_view()
 
         assert isinstance(view, AllocationAlgorithmicView)
-        assert view.schema_version == "1.1"
+        assert view.schema_version == "2.0"
         assert view.latency.total == 2000
         assert view.latency.per_iteration == 500
         assert view.latency.overlap_between_iterations == 100
         assert view.backend == "ORTOOLS_GSCIP"
-        assert view.constraint_selection is not None
-        assert view.constraint_selection.memory_capacity is True
-        assert view.constraint_selection.object_fifo_depth is False
+        assert [family.name for family in view.families] == ["placement", "overlap"]
+        assert view.families[1].options == {"model": "span"}
         assert view.fusion_splits == {"K": 4, "M": 2}
 
     def test_hardware_view(self):
         """AllocationIR.hardware_view() returns AllocationHardwareView with per-node resource and memory allocation."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         view = ir.hardware_view()
 
@@ -593,10 +580,9 @@ class TestAllocationIR:
 
     def test_compiler_view(self):
         """AllocationIR.compiler_view() returns AllocationCompilerView with node-to-core mapping, fused_groups."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         view = ir.compiler_view()
 
@@ -612,30 +598,27 @@ class TestAllocationIR:
         assert view.fused_groups[0].layers == ["MatMul", "ReLU"]
         assert view.runtime_args == {"buffer_depth": "4"}
 
-    def test_constraint_selection_none(self):
-        """AllocationIR with constraint_selection=None validates correctly."""
-        raw = {**ALLOCATION_RAW, "constraint_selection": None}
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = raw
+    def test_no_families(self):
+        """AllocationIR of a solve that names no family validates correctly."""
+        raw = {**ALLOCATION_RAW, "families": []}
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = raw
 
-        ir = AllocationIR.from_internal(mock_scheduler)
+        ir = AllocationIR.from_internal(mock_allocation)
 
-        assert ir.constraint_selection is None
-        view = ir.algorithmic_view()
-        assert view.constraint_selection is None
+        assert ir.families == []
+        assert ir.algorithmic_view().families == []
 
     def test_json_round_trip(self):
         """model_dump_json() on AllocationIR produces valid JSON that round-trips through json.loads."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "1.5"
+        assert parsed["schema_version"] == "2.0"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
@@ -724,10 +707,9 @@ class TestAllocationIRSolverEvidence:
     """The overlap breakdown, recurrence bound and optimality gap must survive the IR boundary."""
 
     def _ir(self):
-        scheduler = MagicMock()
-        scheduler.latency_total = 2000
-        scheduler.get_ir.return_value = SOLVER_EVIDENCE_RAW
-        return AllocationIR.from_internal(scheduler)
+        allocation = MagicMock()
+        allocation.get_ir.return_value = SOLVER_EVIDENCE_RAW
+        return AllocationIR.from_internal(allocation)
 
     def test_binding_resources_and_slack_survive(self):
         overlap = self._ir().performance.overlap
@@ -763,11 +745,10 @@ class TestAllocationIRSolverEvidence:
 
     def test_absent_solve_stats_are_none_not_defaulted(self):
         """A run whose backend reports no stats must not claim a status it does not have."""
-        scheduler = MagicMock()
-        scheduler.latency_total = 2000
-        scheduler.get_ir.return_value = ALLOCATION_RAW
+        allocation = MagicMock()
+        allocation.get_ir.return_value = ALLOCATION_RAW
 
-        assert AllocationIR.from_internal(scheduler).solve is None
+        assert AllocationIR.from_internal(allocation).solve is None
 
     def test_json_round_trip(self):
         parsed = json.loads(self._ir().model_dump_json())
@@ -783,10 +764,9 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
     from stream.ir import allocation as allocation_module
 
     monkeypatch.setattr(allocation_module, "loaded_overlays", lambda: ("vendor-overlay", "vendor-overlay-acme"))
-    scheduler = MagicMock()
-    scheduler.latency_total = 2000
-    scheduler.get_ir.return_value = ALLOCATION_RAW
+    allocation = MagicMock()
+    allocation.get_ir.return_value = ALLOCATION_RAW
 
-    ir = AllocationIR.from_internal(scheduler)
+    ir = AllocationIR.from_internal(allocation)
     assert ir.overlays == ["vendor-overlay", "vendor-overlay-acme"]
     assert ir.model_dump()["overlays"] == ["vendor-overlay", "vendor-overlay-acme"]

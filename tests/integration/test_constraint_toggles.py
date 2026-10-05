@@ -1,9 +1,9 @@
-"""Integration tests for constraint toggle feature.
+"""Integration tests for switching constraint families off.
 
-Infeasibility-flip tests — each constraint group's guard is structurally
-effective (tight limit + enabled = RuntimeError, tight limit + disabled = success).
+Infeasibility-flip tests — each constraint family is structurally effective
+(tight limit + selected = RuntimeError, tight limit + left out = success).
 Cross-backend parity — Gurobi and OR-Tools agree within tolerance with
-selective constraints active.
+selective families left out.
 """
 
 import os
@@ -13,11 +13,12 @@ from unittest.mock import patch
 import pytest
 from ortools.math_opt.python import mathopt
 
-from stream.api import SolveOptions, evaluate_mapping
+from stream.api import SolveOptions, default_families, evaluate_mapping
 from stream.hardware.architecture.core import Core
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
-from stream.opt.solver import ConstraintSelection, ORToolsBackend
+from stream.opt.allocation.constraint_optimization.families import FamilySpec
+from stream.opt.solver import ORToolsBackend
 
 # ---------------------------------------------------------------------------
 # Constants (same as test_cross_backend.py)
@@ -28,23 +29,36 @@ ACCELERATOR = os.path.join(
 )
 REL_TOL = 0.01
 
-_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
+_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation_model.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
-_BUILD_TRANSFER_CONTEXT = (
-    "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.build_transfer_context"
-)
+_GROUPS = ("memory_capacity", "object_fifo_depth", "buffer_descriptors", "dma_channels")
+_TIGHT_DMA = {
+    "aie2_dma_channels": {
+        "max_compute_tile_dma_channels": 1,
+        "max_mem_tile_dma_channels": 1,
+        "max_shim_tile_dma_channels": 1,
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-from stream.opt.allocation.constraint_optimization.context import (  # noqa: E402
-    build_transfer_context as _real_build_transfer_context,
-)
+
+def _without(*off: str) -> tuple[FamilySpec, ...]:
+    """The default families with the constraint groups ``off`` switched off as 1.x's toggles did: the object-FIFO
+    depth's family keeps its buffering level, every other group's family is left out."""
+    depth = {"object_fifo_depth": {"depth": False}} if "object_fifo_depth" in off else None
+    return default_families(ACCELERATOR, [g for g in off if g != "object_fifo_depth"], depth)
 
 
-def _run_gemm(output_path: str, constraint_selection: ConstraintSelection | None = None):
-    """Run the TETRA GEMM pipeline with optional constraint selection."""
+def _only(*kept: str) -> tuple[FamilySpec, ...]:
+    """The default families with, of the four toggled constraint groups, only those ``kept`` on."""
+    return _without(*(g for g in _GROUPS if g not in kept))
+
+
+def _run_gemm(output_path: str, families: tuple[FamilySpec, ...] | None = None):
+    """Run the GEMM pipeline with the given constraint families."""
     M, K, N = 256, 8192, 2048
     m, k, n = 32, 32, 32
     in_dtype, out_dtype = "bf16", "bf16"
@@ -58,7 +72,7 @@ def _run_gemm(output_path: str, constraint_selection: ConstraintSelection | None
         workload_path,
         output_path,
         mapping_path,
-        options=SolveOptions(nb_cols_to_use=nb_cols, constraint_selection=constraint_selection),
+        options=SolveOptions(nb_cols_to_use=nb_cols, families=families),
     ).context
 
 
@@ -76,14 +90,6 @@ def _extract_latency_total(ctx) -> float:
     return float(ctx.get("allocation").solution.latency.total)
 
 
-def _build_transfer_context_tight_dma(*args, **kwargs):
-    """Wrap build_transfer_context with DMA channels set to 1 (infeasibly tight)."""
-    kwargs["max_compute_tile_dma_channels"] = 1
-    kwargs["max_mem_tile_dma_channels"] = 1
-    kwargs["max_shim_tile_dma_channels"] = 1
-    return _real_build_transfer_context(*args, **kwargs)
-
-
 # ---------------------------------------------------------------------------
 # Infeasibility-flip tests — one per constraint group
 # ---------------------------------------------------------------------------
@@ -91,47 +97,30 @@ def _build_transfer_context_tight_dma(*args, **kwargs):
 
 @pytest.mark.slow
 def test_memory_capacity_flip():
-    """memory_capacity guard: tight limit (1 bit) causes infeasibility; disabling restores feasibility.
+    """memory_capacity family: tight limit (1 bit) causes infeasibility; leaving it out restores feasibility.
 
-    The guard in _create_constraints() is structurally wired. Proof:
-    - tight limit + memory_capacity=True  -> RuntimeError (solver infeasible)
-    - tight limit + memory_capacity=False -> success (constraint skipped)
+    - tight limit + memory_capacity selected  -> RuntimeError (solver infeasible)
+    - tight limit + memory_capacity left out -> success (constraint not built)
     """
-    cs_all_off = ConstraintSelection(
-        memory_capacity=False,
-        object_fifo_depth=False,
-        buffer_descriptors=False,
-        dma_channels=False,
-    )
 
     # Enabled + tight limit -> infeasible
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "get_memory_capacity", return_value=1):
             with pytest.raises(RuntimeError):
-                _run_gemm(
-                    tmpdir,
-                    constraint_selection=ConstraintSelection(
-                        memory_capacity=True,
-                        object_fifo_depth=False,
-                        buffer_descriptors=False,
-                        dma_channels=False,
-                    ),
-                )
+                _run_gemm(tmpdir, families=_only("memory_capacity"))
 
-    # Disabled + tight limit -> feasible (constraint skipped entirely)
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "get_memory_capacity", return_value=1):
-            ctx = _run_gemm(tmpdir, constraint_selection=cs_all_off)
+            ctx = _run_gemm(tmpdir, families=_only())
     assert _extract_latency_total(ctx) > 0
 
 
 @pytest.mark.slow
 def test_object_fifo_depth_flip():
-    """object_fifo_depth guard: tight FIFO limit causes infeasibility; disabling restores feasibility.
+    """object_fifo_depth family: tight FIFO limit causes infeasibility; leaving it out restores feasibility.
 
-    The guard in _create_constraints() is structurally wired. Proof:
-    - tight max_object_fifo_depth=1 + object_fifo_depth=True  -> RuntimeError
-    - tight max_object_fifo_depth=1 + object_fifo_depth=False -> success
+    - tight max_object_fifo_depth=1 + object_fifo_depth selected  -> RuntimeError
+    - tight max_object_fifo_depth=1 + object_fifo_depth left out -> success
 
     Since Core.__init__ explicitly sets self.max_object_fifo_depth from constructor
     args, a class-level attribute patch is shadowed by instance attributes. We wrap
@@ -147,42 +136,24 @@ def test_object_fifo_depth_flip():
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "__init__", _tight_fifo_init):
             with pytest.raises(RuntimeError):
-                _run_gemm(
-                    tmpdir,
-                    constraint_selection=ConstraintSelection(
-                        memory_capacity=False,
-                        object_fifo_depth=True,
-                        buffer_descriptors=False,
-                        dma_channels=False,
-                    ),
-                )
+                _run_gemm(tmpdir, families=_only("object_fifo_depth"))
 
     # Disabled + tight limit -> feasible (constraint skipped entirely)
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "__init__", _tight_fifo_init):
-            ctx = _run_gemm(
-                tmpdir,
-                constraint_selection=ConstraintSelection(
-                    memory_capacity=False,
-                    object_fifo_depth=False,
-                    buffer_descriptors=False,
-                    dma_channels=False,
-                ),
-            )
+            ctx = _run_gemm(tmpdir, families=_only())
     assert _extract_latency_total(ctx) > 0
 
 
 @pytest.mark.slow
 def test_buffer_descriptor_flip():
-    """buffer_descriptors guard: tight BD limit causes infeasibility; disabling restores feasibility.
+    """buffer_descriptors family: tight BD limit causes infeasibility; leaving it out restores feasibility.
 
-    The guard in _create_constraints() is structurally wired. Proof:
-    - tight max_object_fifo_depth=1 + buffer_descriptors=True  -> RuntimeError
-    - tight max_object_fifo_depth=1 + buffer_descriptors=False -> success
+    - tight max_object_fifo_depth=1 + buffer_descriptors selected  -> RuntimeError
+    - tight max_object_fifo_depth=1 + buffer_descriptors left out -> success
 
-    Note: BD constraints share max_object_fifo_depth as the RHS.
-    The toggle is still isolated by the ConstraintSelection.buffer_descriptors field.
-    We disable object_fifo_depth in both arms to isolate the BD constraint.
+    Note: BD constraints share max_object_fifo_depth as the RHS, so object_fifo_depth
+    is left out in both arms to isolate the BD constraint.
     """
     _original_init = Core.__init__
 
@@ -194,61 +165,26 @@ def test_buffer_descriptor_flip():
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "__init__", _tight_fifo_init):
             with pytest.raises(RuntimeError):
-                _run_gemm(
-                    tmpdir,
-                    constraint_selection=ConstraintSelection(
-                        memory_capacity=False,
-                        object_fifo_depth=False,
-                        buffer_descriptors=True,
-                        dma_channels=False,
-                    ),
-                )
+                _run_gemm(tmpdir, families=_only("buffer_descriptors"))
 
     # Disabled + tight limit -> feasible (constraint skipped entirely)
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "__init__", _tight_fifo_init):
-            ctx = _run_gemm(
-                tmpdir,
-                constraint_selection=ConstraintSelection(
-                    memory_capacity=False,
-                    object_fifo_depth=False,
-                    buffer_descriptors=False,
-                    dma_channels=False,
-                ),
-            )
+            ctx = _run_gemm(tmpdir, families=_only())
     assert _extract_latency_total(ctx) > 0
 
 
 @pytest.mark.slow
 def test_dma_channels_flip():
-    """A tight DMA limit is infeasible with dma_channels on and feasible with it off; build_transfer_context is
-    patched in the allocator's own namespace."""
-    # Enabled + tight limit -> infeasible
+    """A tight DMA limit (one channel per tile, the aie2_dma_channels options) is infeasible with dma_channels
+    selected and feasible with it left out, which leaves out the limit too."""
+    tight = tuple(_TIGHT_DMA if family == "aie2_dma_channels" else family for family in _only("dma_channels"))
     with tempfile.TemporaryDirectory() as tmpdir:
-        with patch(_BUILD_TRANSFER_CONTEXT, side_effect=_build_transfer_context_tight_dma):
-            with pytest.raises(RuntimeError):
-                _run_gemm(
-                    tmpdir,
-                    constraint_selection=ConstraintSelection(
-                        memory_capacity=False,
-                        object_fifo_depth=False,
-                        buffer_descriptors=False,
-                        dma_channels=True,
-                    ),
-                )
+        with pytest.raises(RuntimeError):
+            _run_gemm(tmpdir, families=tight)
 
-    # Disabled + tight limit -> feasible (DMA constraint and objective terms skipped)
     with tempfile.TemporaryDirectory() as tmpdir:
-        with patch(_BUILD_TRANSFER_CONTEXT, side_effect=_build_transfer_context_tight_dma):
-            ctx = _run_gemm(
-                tmpdir,
-                constraint_selection=ConstraintSelection(
-                    memory_capacity=False,
-                    object_fifo_depth=False,
-                    buffer_descriptors=False,
-                    dma_channels=False,
-                ),
-            )
+        ctx = _run_gemm(tmpdir, families=_only())
     assert _extract_latency_total(ctx) > 0
 
 
@@ -258,47 +194,22 @@ def test_dma_channels_flip():
 
 _PARITY_CASES = [
     pytest.param(
-        ConstraintSelection(memory_capacity=False, object_fifo_depth=False),
+        ("memory_capacity", "object_fifo_depth"),
         id="memory_off",
-        # NOTE: Disables both memory_capacity AND object_fifo_depth per the
-        # nonsensical-combination rule. Memory capacity constraints use FIFO depth
-        # as RHS, so disabling memory alone (with FIFO still active) would leave
-        # a misleading constraint configuration. This is intentional -- "memory off"
-        # means both fields are disabled as a semantic unit.
     ),
-    pytest.param(
-        ConstraintSelection(object_fifo_depth=False),
-        id="fifo_off",
-    ),
-    pytest.param(
-        ConstraintSelection(buffer_descriptors=False),
-        id="bd_off",
-    ),
-    pytest.param(
-        ConstraintSelection(dma_channels=False),
-        id="dma_off",
-    ),
-    pytest.param(
-        ConstraintSelection(memory_capacity=False, object_fifo_depth=False, dma_channels=False),
-        id="memory_and_dma_off",
-    ),
-    pytest.param(
-        ConstraintSelection(object_fifo_depth=False, buffer_descriptors=False),
-        id="fifo_and_bd_off",
-    ),
-    pytest.param(
-        ConstraintSelection(
-            memory_capacity=False, object_fifo_depth=False, buffer_descriptors=False, dma_channels=False
-        ),
-        id="all_off",
-    ),
+    pytest.param(("object_fifo_depth",), id="fifo_off"),
+    pytest.param(("buffer_descriptors",), id="bd_off"),
+    pytest.param(("dma_channels",), id="dma_off"),
+    pytest.param(("memory_capacity", "object_fifo_depth", "dma_channels"), id="memory_and_dma_off"),
+    pytest.param(("object_fifo_depth", "buffer_descriptors"), id="fifo_and_bd_off"),
+    pytest.param(_GROUPS, id="all_off"),
 ]
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("cs", _PARITY_CASES)
-def test_cross_backend_parity(cs: ConstraintSelection):
-    """Gurobi and OR-Tools agree within REL_TOL for constraint selection *cs*.
+@pytest.mark.parametrize("dropped", _PARITY_CASES)
+def test_cross_backend_parity(dropped: tuple[str, ...]):
+    """Gurobi and OR-Tools agree within REL_TOL with the families *dropped* left out.
 
     7 combinations tested (4 individual toggles + 3 multi-toggle combos).
     Dynamic Gurobi reference (not hardcoded baseline) because
@@ -306,22 +217,21 @@ def test_cross_backend_parity(cs: ConstraintSelection):
     """
     # 1. Run Gurobi (unpatched) as dynamic reference
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx_gurobi = _run_gemm(tmpdir, constraint_selection=cs)
+        ctx_gurobi = _run_gemm(tmpdir, families=_without(*dropped))
     gurobi_obj = _extract_latency_total(ctx_gurobi)
 
-    # 2. Run OR-Tools (patched) with same constraint selection
     ort_factory = _make_ortools_factory()
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
             patch(_TTA_CREATE_SOLVER, side_effect=ort_factory),
             patch(_LICENSE_CHECK),
         ):
-            ctx_ort = _run_gemm(tmpdir, constraint_selection=cs)
+            ctx_ort = _run_gemm(tmpdir, families=_without(*dropped))
     ort_obj = _extract_latency_total(ctx_ort)
 
     # 3. Assert parity within tolerance
     rel_err = abs(ort_obj - gurobi_obj) / max(abs(gurobi_obj), 1e-10)
     assert rel_err < REL_TOL, (
         f"OR-Tools objective {ort_obj:.0f} deviates {rel_err:.2%} from "
-        f"Gurobi {gurobi_obj:.0f} (tolerance {REL_TOL:.0%}, cs={cs})"
+        f"Gurobi {gurobi_obj:.0f} (tolerance {REL_TOL:.0%}, without {dropped})"
     )

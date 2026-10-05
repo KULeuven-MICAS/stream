@@ -1,4 +1,4 @@
-"""Tests for get_ir() methods on Mapping and SteadyStateSchedule."""
+"""Tests for get_ir() methods on Mapping and Allocation."""
 
 from __future__ import annotations
 
@@ -178,15 +178,10 @@ class TestMappingGetIr:
         assert result["runtime_args"] == {"key1": "val1", "key2": "val2"}
 
 
-# ---------------------------------------------------------------------------
-# SteadyStateSchedule.get_ir() tests
-# ---------------------------------------------------------------------------
-
-
-class TestSteadyStateScheduleGetIr:
-    def _make_schedule(self, latency=(1000, 250, 50, 120), **overrides):
-        """Create a SteadyStateSchedule with minimal mock dependencies."""
-        from stream.allocation.schedule import SteadyStateSchedule
+class TestAllocationGetIr:
+    def _make_allocation(self, latency=(1000, 250, 50, 120), **overrides):
+        """An Allocation with minimal mock dependencies."""
+        from stream.allocation.allocation import Allocation
         from stream.allocation.solution import AllocationSolution, Latency
         from stream.opt.solver import SolveStats
 
@@ -198,54 +193,46 @@ class TestSteadyStateScheduleGetIr:
             depths={},
             single_buffered=frozenset(),
             latency=Latency(*latency),
+            slot_latencies={},
+            reuse_factors={},
+            route_cycles={},
             primary_cost=float(latency[0]),
             throughput_bound=float(latency[0]),
             solve_stats=SolveStats("ORTOOLS", "gscip", "OPTIMAL", 1.0, 0.1, 0.0, 1, 1),
+            metrics={},
             performance=None,
             capacity_slack={},
+            slot_latency_breakdown=None,
         )
+        problem = MagicMock(fusion_splits=overrides.pop("fusion_splits", {}), iterations=1)
         fields = {
-            "source_workload": MagicMock(),
-            "workload": MagicMock(),
+            "problem": problem,
             "mapping": Mapping(),
             "ssis": {},
-            "iterations": 1,
-            "fusion_splits": {},
-            "accelerator": MagicMock(),
-            "cost_lut": MagicMock(),
             "backend": "ORTOOLS_GSCIP",
-            "constraint_selection": None,
+            "families": (),
             "solution": solution,
         } | overrides
-        return SteadyStateSchedule(**fields)
+        return Allocation(**fields)
 
     def test_latency_values(self):
         """get_ir() returns the solved latencies."""
-        result = self._make_schedule().get_ir()
+        result = self._make_allocation().get_ir()
         assert result["latency"]["total"] == 1000
         assert result["latency"]["per_iteration"] == 250
         assert result["latency"]["overlap_between_iterations"] == 50
         assert result["latency"]["fill"] == 120
 
-    def test_backend_and_constraint_selection_in_ir(self):
-        """get_ir() includes backend (str) and constraint_selection (dict or None)."""
-        from stream.opt.solver import ConstraintSelection
-
-        cs = ConstraintSelection(
-            memory_capacity=True, object_fifo_depth=False, buffer_descriptors=True, dma_channels=False
-        )
-        result = self._make_schedule(backend="ORTOOLS_HIGHS", constraint_selection=cs).get_ir()
+    def test_backend_and_families_in_ir(self):
+        """get_ir() includes the backend and each constraint family with its options, in selection order."""
+        families = (("placement", {}), ("overlap", {"model": "span"}))
+        result = self._make_allocation(backend="ORTOOLS_HIGHS", families=families).get_ir()
 
         assert result["backend"] == "ORTOOLS_HIGHS"
-        assert result["constraint_selection"] is not None
-        assert result["constraint_selection"]["memory_capacity"] is True
-        assert result["constraint_selection"]["object_fifo_depth"] is False
-        assert result["constraint_selection"]["buffer_descriptors"] is True
-        assert result["constraint_selection"]["dma_channels"] is False
-
-    def test_constraint_selection_none(self):
-        """When constraint_selection is None, get_ir() returns null for that field."""
-        assert self._make_schedule().get_ir()["constraint_selection"] is None
+        assert result["families"] == [
+            {"name": "placement", "options": {}},
+            {"name": "overlap", "options": {"model": "span"}},
+        ]
 
     def test_mapping_included_in_ir(self):
         """get_ir() includes 'mapping' key containing Mapping.get_ir() output."""
@@ -258,31 +245,29 @@ class TestSteadyStateScheduleGetIr:
         )
         mapping = Mapping(initial={node: node_mapping})
 
-        result = self._make_schedule(mapping=mapping).get_ir()
+        result = self._make_allocation(mapping=mapping).get_ir()
         assert "mapping" in result
         assert "op_0" in result["mapping"]["nodes"]
 
-    def test_schedule_get_ir_json_round_trip(self):
-        """json.dumps(schedule.get_ir()) succeeds without TypeError."""
-        from stream.opt.solver import ConstraintSelection
-
-        schedule = self._make_schedule(
-            latency=(500, 125, 25, 0), constraint_selection=ConstraintSelection(), fusion_splits={"M": 4, "K": 2}
+    def test_allocation_get_ir_json_round_trip(self):
+        """json.dumps(allocation.get_ir()) succeeds without TypeError."""
+        allocation = self._make_allocation(
+            latency=(500, 125, 25, 0), families=(("placement", {}),), fusion_splits={"M": 4, "K": 2}
         )
-        deserialized = json.loads(json.dumps(schedule.get_ir()))
+        deserialized = json.loads(json.dumps(allocation.get_ir()))
 
         assert deserialized["latency"]["total"] == 500
         assert deserialized["backend"] == "ORTOOLS_GSCIP"
         assert deserialized["solve"]["status"] == "OPTIMAL"
 
-    def test_schedule_ir_has_required_keys(self):
+    def test_allocation_ir_has_required_keys(self):
         """The get_ir() dict contains all required top-level keys."""
-        required_keys = {"latency", "backend", "constraint_selection", "fusion_splits", "mapping"}
-        assert required_keys.issubset(self._make_schedule().get_ir().keys())
+        required_keys = {"latency", "backend", "families", "fusion_splits", "mapping"}
+        assert required_keys.issubset(self._make_allocation().get_ir().keys())
 
     def test_fusion_splits_serialized_as_string_keys(self):
         """fusion_splits LayerDim keys are serialized as strings."""
-        result = self._make_schedule(fusion_splits={"M": 4, "K": 2}).get_ir()
+        result = self._make_allocation(fusion_splits={"M": 4, "K": 2}).get_ir()
         assert result["fusion_splits"] == {"M": 4, "K": 2}
         # All keys must be strings (JSON-serializable)
         for k in result["fusion_splits"].keys():

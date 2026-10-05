@@ -7,7 +7,7 @@ import os
 import pytest
 from zigzag.utils import open_yaml
 
-from stream.allocation.solution import end_to_end_mac_utilization, mac_roofline_peak
+from stream.opt.allocation.constraint_optimization.report import end_to_end_mac_utilization, mac_roofline_peak
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.workload.utils import is_mac_operator_type

@@ -16,7 +16,11 @@ GROWTH_FACTORS = (2, 4)
 class TileSearchStage(Stage):
     """Let the optimizer choose each fused group's intra-core tile size."""
 
-    REQUIRED_FIELDS = ("workload", "mapping", "output_path")
+    reads = ("workload", "mapping", "output_path")
+    optional_reads = ("tile_search",)
+    writes = ("mapping", "output_path", "placement_alternatives", "placement_reserves")
+    result_reads = ("allocation",)
+    result_writes = ("output_path",)
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
@@ -46,12 +50,12 @@ class TileSearchStage(Stage):
 
     def run(self):
         if not self.enabled:
-            self.ctx.data.pop("placement_alternatives", None)
+            self.ctx.pop("placement_alternatives")
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             yield from sub_stage.run()
             return
-        attempts = [self.mapping, *(self.ctx.data.pop("placement_alternatives", None) or [])]
-        reserves = self.ctx.data.pop("placement_reserves", None) or []
+        attempts = [self.mapping, *(self.ctx.pop("placement_alternatives") or [])]
+        reserves = self.ctx.pop("placement_reserves") or []
         entry = dict(self.ctx.data)
         best = None
         error: Exception | None = None
@@ -146,4 +150,4 @@ class TileSearchStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
-        return ctxs, ctxs[0].get("allocation").cost_to_rank
+        return ctxs, ctxs[0].get("allocation").solution.primary_cost

@@ -25,11 +25,13 @@ def parse_accelerator(yaml_path: str) -> Accelerator:
 class AcceleratorParserStage(Stage):
     """Parse to parse an accelerator from a user-defined yaml file."""
 
-    REQUIRED_FIELDS = ("accelerator",)
+    reads = ("accelerator",)
+    optional_reads = ("kernel_library",)
+    writes = ("accelerator",)
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
-        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.accelerator = self.ctx.get("accelerator")
 
     def run(self):
         accelerator = (

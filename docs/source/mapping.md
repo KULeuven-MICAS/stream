@@ -93,7 +93,7 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 
 ## How the mapping feeds the optimizer
 
-`core_allocation` defines the **candidate set**, not a fixed assignment (unless a role has only one core). The MILP allocator (`TransferAndTensorAllocator`) then chooses, within those candidates, where each tensor lives and which links carry each transfer - minimizing latency subject to memory and bandwidth constraints. `inter_core_tiling` determines how many parallel pieces exist to place; `fused_groups` / `intra_core_tiling` determine what is co-scheduled and how it is temporally tiled on a core.
+`core_allocation` defines the **candidate set**, not a fixed assignment (unless a role has only one core). The MILP allocator (`AllocationModel`) then chooses, within those candidates, where each tensor lives and which links carry each transfer - minimizing latency subject to memory and bandwidth constraints. `inter_core_tiling` determines how many parallel pieces exist to place; `fused_groups` / `intra_core_tiling` determine what is co-scheduled and how it is temporally tiled on a core.
 
 For a workload with multiple fusion groups, the pipeline runs the CO once per group (see [Stages](stages.md)).
 

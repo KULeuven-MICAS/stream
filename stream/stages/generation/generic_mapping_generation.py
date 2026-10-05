@@ -13,20 +13,17 @@ PER_LAYER = "per-layer"
 
 
 class GenericMappingGenerationStage(Stage):
-    """Generate each fusion group's mapping from workload+accelerator, written as YAML beside the run.
+    """Generate each fusion group's mapping from workload+accelerator, written as YAML beside the run."""
 
-    Reads: accelerator, workload, output_path
-    Writes: sub_workloads (list[Workload]), sub_mappings (list[Mapping]), one per fused group
-    Delegates to: FusionGroupIterationStage (next in list_of_callables)
-    """
-
-    REQUIRED_FIELDS = ("accelerator", "workload", "output_path")
+    reads = ("accelerator", "workload", "output_path")
+    optional_reads = ("fusion_cut_points", "intra_core_tiling")
+    writes = ("sub_workloads", "sub_mappings")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
-        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
-        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
-        self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
+        self.accelerator = self.ctx.get("accelerator")
+        self.workload = self.ctx.get("workload")
+        self.output_path = self.ctx.get("output_path")
 
     def run(self):
         from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415

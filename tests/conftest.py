@@ -8,7 +8,7 @@ import pytest
 from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig
 from stream.opt.allocation.constraint_optimization import families
-from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 
 TWO_CONV = TwoConvWorkloadConfig(
     batch_size=1,
@@ -76,7 +76,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG0
     out.write_text(json.dumps(dict(sorted(_metrics_store.items())), indent=2, sort_keys=True))
 
 
-def _solve_allocator(
+def _solve_model(
     hardware: str,
     workload: Any,
     output_path: str,
@@ -85,33 +85,34 @@ def _solve_allocator(
     *,
     families_available: Mapping[str, Callable[..., Any]] | None = None,
     hook: str = "solve",
-) -> tta.TransferAndTensorAllocator:
-    """Run ``evaluate_mapping`` and return the first allocator that reached its ``hook`` method (``solve`` or
+) -> AllocationModel:
+    """Run ``evaluate_mapping`` and return the first allocation model that reached its ``hook`` method (``solve`` or
     ``_build_model``); ``families_available`` replaces the entry-point families."""
-    captured: list[tta.TransferAndTensorAllocator] = []
-    original = getattr(tta.TransferAndTensorAllocator, hook)
+    captured: list[AllocationModel] = []
+    original = getattr(AllocationModel, hook)
 
-    def capture(self: tta.TransferAndTensorAllocator, *args: Any, **kwargs: Any) -> Any:
+    def capture(self: AllocationModel, *args: Any, **kwargs: Any) -> Any:
         captured.append(self)
         return original(self, *args, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
         if families_available is not None:
             patch.setattr(families, "available_families", lambda: dict(families_available))
-        patch.setattr(tta.TransferAndTensorAllocator, hook, capture)
+        patch.setattr(AllocationModel, hook, capture)
         evaluate_mapping(hardware, workload, output_path, mapping, options)
     return captured[0]
 
 
-def _model_size(alloc: tta.TransferAndTensorAllocator) -> tuple[int, int]:
-    """(variables, linear constraints) of the allocator's built model."""
+def _model_size(alloc: AllocationModel) -> tuple[int, int]:
+    """(variables, linear constraints) of the allocation model, as built."""
     raw = alloc.model._model  # type: ignore[attr-defined]
     return sum(1 for _ in raw.variables()), sum(1 for _ in raw.linear_constraints())
 
 
-def _interval(alloc: tta.TransferAndTensorAllocator) -> float:
+def _interval(alloc: AllocationModel) -> float:
     """The solved initiation interval: the iteration minus the overlap with the next one."""
-    return alloc.model.value(alloc.quantities.get("iteration").expr) - alloc.overlap.X
+    value, q = alloc.model.value, alloc.quantities
+    return value(q.get("iteration").expr) - value(q.get("overlap").expr)
 
 
 @pytest.fixture(scope="session")
@@ -120,16 +121,16 @@ def two_conv() -> TwoConvWorkloadConfig:
 
 
 @pytest.fixture(scope="session")
-def solved_allocator() -> Callable[..., tta.TransferAndTensorAllocator]:
-    """:func:`_solve_allocator`; session scoped so module-scoped fixtures can solve once."""
-    return _solve_allocator
+def solved_model() -> Callable[..., AllocationModel]:
+    """:func:`_solve_model`; session scoped so module-scoped fixtures can solve once."""
+    return _solve_model
 
 
 @pytest.fixture(scope="session")
-def model_size() -> Callable[[tta.TransferAndTensorAllocator], tuple[int, int]]:
+def model_size() -> Callable[[AllocationModel], tuple[int, int]]:
     return _model_size
 
 
 @pytest.fixture(scope="session")
-def interval() -> Callable[[tta.TransferAndTensorAllocator], float]:
+def interval() -> Callable[[AllocationModel], float]:
     return _interval

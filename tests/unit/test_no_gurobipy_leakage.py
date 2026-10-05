@@ -1,5 +1,5 @@
 """No gurobipy import outside the solver backend (stream/opt/solver/solver.py), except
-`from gurobipy import GRB` in transfer_and_tensor_allocation.py for callback codes and status names."""
+`from gurobipy import GRB` in stream/allocation/artifacts.py for callback codes and status names."""
 
 import ast
 from pathlib import Path
@@ -9,13 +9,19 @@ CO_DIR = REPO_ROOT / "stream" / "opt" / "allocation" / "constraint_optimization"
 
 # Files that MUST NOT have any gurobipy imports
 CLEAN_FILES = [
-    CO_DIR / "context.py",
+    CO_DIR / "hardware.py",
     CO_DIR / "utils.py",
+    CO_DIR / "space.py",
+    CO_DIR / "formulation.py",
+    CO_DIR / "diagnosis.py",
+    CO_DIR / "report.py",
+    CO_DIR / "allocation_model.py",
+    *sorted((CO_DIR / "families").glob("*.py")),
     REPO_ROOT / "stream" / "api.py",
 ]
 
 # File with ONE permitted import: `from gurobipy import GRB`
-PERMITTED_EXCEPTION = CO_DIR / "transfer_and_tensor_allocation.py"
+PERMITTED_EXCEPTION = REPO_ROOT / "stream" / "allocation" / "artifacts.py"
 
 
 def _get_gurobipy_imports(filepath: Path) -> list[str]:
@@ -49,13 +55,13 @@ def test_no_gurobipy_in_co_files():
     )
 
 
-def test_tta_only_imports_grb_constants():
-    """TTA may import GRB (for callback) but NOT gp.Model or gp.Var."""
+def test_artifacts_only_import_grb_constants():
+    """The artifacts may import GRB (for the progress callback) but NOT gp.Model or gp.Var."""
     assert PERMITTED_EXCEPTION.exists()
     imports = _get_gurobipy_imports(PERMITTED_EXCEPTION)
     # Only "from gurobipy import GRB" is allowed
     for imp in imports:
         assert imp == "from gurobipy import GRB", (
-            f"Unexpected gurobipy import in TTA: {imp!r}. "
+            f"Unexpected gurobipy import in the artifacts: {imp!r}. "
             f"Only 'from gurobipy import GRB' is permitted (for callback constants)."
         )

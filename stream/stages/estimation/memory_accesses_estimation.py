@@ -1,5 +1,4 @@
 import logging
-import os
 from math import ceil, prod
 
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
@@ -36,20 +35,15 @@ def _memory_tile_cores(allocation) -> list[Core]:
 class MemoryAccessesEstimationStage(Stage):
     """
     Stage that computes the number of memory accesses (reads/writes) for each core and tensor in the workload.
-        This stage should be run after the ConstraintOptimizationAllocationStage.
+        This stage should be run after the AllocationStage.
         The memory accesses are estimated based on the mapping and the workload.
         The results can be used for further analysis or visualization of memory access patterns.
         The estimated memory accesses are stored in the context for use by subsequent stages or for output.
         NOTE: For now, this stage does not currently distinguish between different memories inside the core.
     """
 
-    REQUIRED_FIELDS = (
-        "workload",
-        "accelerator",
-        "mapping",
-        "allocation",
-        "output_path",
-    )
+    reads = ("workload", "accelerator", "mapping", "allocation")
+    writes = ("memory_accesses",)
 
     def __init__(
         self,
@@ -66,8 +60,6 @@ class MemoryAccessesEstimationStage(Stage):
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
         self.ssis = self.ctx.get("allocation").ssis
-        self.output_path = self.ctx.get("output_path")
-        self.yaml_path: str = os.path.join(self.output_path, "memory_accesses.yaml")
 
         self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses()
 
@@ -81,7 +73,7 @@ class MemoryAccessesEstimationStage(Stage):
             accesses = None  # None means "estimation failed", distinct from "nothing to count"
         logger.info("Finished MemoryAccessesEstimationStage.")
 
-        self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=accesses)
+        self.ctx.set(memory_accesses=accesses)
         yield from (self.ctx,)
 
     def calculate_memory_accesses(self) -> None:

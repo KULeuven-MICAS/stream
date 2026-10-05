@@ -1,9 +1,6 @@
-"""Wall-clock spans of a run, recorded only while a :class:`Profile` is active.
-
-A span costs one context-variable read when no profile is active, so stages and the allocation model can
-mark their phases unconditionally. Spans nest: each records its inclusive time and its own
-(exclusive) time, keyed by the path of the spans enclosing it.
-"""
+"""Wall-clock spans of a run, recorded only while a :class:`Profile` is active: a span costs one context-variable
+read otherwise, so every stage and phase is marked unconditionally. Spans nest, each recording its inclusive and
+exclusive time by the path of the spans enclosing it."""
 
 from __future__ import annotations
 
@@ -17,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from stream.stages.context import StageContext
     from stream.stages.stage import StageCallable
 
 
@@ -101,39 +97,9 @@ def span(name: str) -> Iterator[None]:
         stats.exclusive_ns += elapsed - frame[1]
 
 
-class _TimedStage:
-    """A stage whose every resume is a span named after it, so a stage's own time excludes its sub-stages."""
-
-    def __init__(self, stage_callable: StageCallable, list_of_callables: list[StageCallable], ctx: StageContext):
-        self.name = getattr(stage_callable, "__name__", type(stage_callable).__name__)
-        with span(self.name):
-            self.stage = stage_callable(list_of_callables, ctx)
-
-    def is_leaf(self) -> bool:
-        return self.stage.is_leaf()
-
-    def run(self) -> Iterator[StageContext]:
-        results = self.stage.run()
-        while True:
-            with span(self.name):
-                try:
-                    ctx = next(results)
-                except StopIteration:
-                    return
-            yield ctx
-
-
-def timed(stage_callable: StageCallable) -> StageCallable:
-    def build(list_of_callables: list[StageCallable], ctx: StageContext) -> _TimedStage:
-        return _TimedStage(stage_callable, list_of_callables, ctx)
-
-    build.__name__ = getattr(stage_callable, "__name__", "stage")
-    return build  # type: ignore[return-value]
-
-
 class TimingInstrumentation:
-    """The ``timing`` observer: profiles a run's stages and the spans inside them, and writes the profile
-    as JSON to ``path`` when the run ends."""
+    """The ``timing`` observer: profiles a run, whose every stage is a span, and writes the profile as JSON to
+    ``path`` when the run ends."""
 
     def __init__(self, *, run_name: str, path: str | None = None) -> None:
         self.run_name = run_name
@@ -142,7 +108,7 @@ class TimingInstrumentation:
         self.profile = self._context.__enter__()
 
     def instrument(self, stages: list[StageCallable]) -> list[StageCallable]:
-        return [timed(stage) for stage in stages]
+        return stages
 
     def finish(self) -> None:
         self._close(None)

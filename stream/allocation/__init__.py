@@ -1,1 +1,1 @@
-"""The steady-state allocation of a fused group: its solution and the schedule it yields."""
+"""The steady-state allocation of a fused group: its problem, its solution and the allocation it yields."""

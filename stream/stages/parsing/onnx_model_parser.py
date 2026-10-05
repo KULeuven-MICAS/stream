@@ -11,7 +11,8 @@ _VIZ_NODE_LIMIT = 30
 
 
 class ONNXModelParserStage(Stage):
-    REQUIRED_FIELDS = ("workload_path", "output_path")
+    reads = ("workload_path", "output_path")
+    writes = ("onnx_model", "workload")
 
     def __init__(
         self,

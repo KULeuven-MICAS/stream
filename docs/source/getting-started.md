@@ -30,28 +30,34 @@ print("cycles:", estimate.cycles)
 print("per group:", estimate.group_cycles)
 ```
 
-Stream parses the hardware and workload, proposes a mapping, and runs the allocation of each fused group - **generate tilings** → **estimate per-core cost** → **MILP allocation** (the `TransferAndTensorAllocator`) → **memory estimation**. It finishes in a few seconds. `cycles` is the steady-state estimate summed over the fused groups, plus whatever reconfiguring the array between them costs on hardware that declares it. The solved `estimate.context` holds the `allocation`, `workload`, `accelerator` and `group_latencies`.
+Stream parses the hardware and workload, proposes a mapping, and runs the allocation of each fused group - **generate tilings** → **estimate per-core cost** → **MILP allocation** (the `AllocationModel`) → **memory estimation**. It finishes in a few seconds. `cycles` is the steady-state estimate summed over the fused groups, plus whatever reconfiguring the array between them costs on hardware that declares it. The solved `estimate.context` holds the `allocation`, `workload`, `accelerator` and `group_latencies`.
 
-`evaluate_mapping` takes the mapping YAML as its fourth argument, `select_mapping` picks the cheapest of several candidate mappings, and `SolveOptions` sets the solver backend (default `"ortools_gscip"`; also `"ortools_highs"` and `"gurobi"`), the columns and the constraint selection.
+`evaluate_mapping` takes the mapping YAML as its fourth argument, `select_mapping` picks the cheapest of several candidate mappings, and `SolveOptions` sets the solver backend (default `"ortools_gscip"`; also `"ortools_highs"` and `"gurobi"`), the columns, the [constraint families](stages.md#constraint-families) of the allocation model, the solve's time limit (`time_limit_s`, 300 s) and whether the solver prints its log (`solver_log`).
 
 ### What you get
 
-Everything lands under the output directory, one folder per fused group:
+Everything lands under the output directory, one folder per fused group. The `allocation/` folder describes the allocation solve; `SolveOptions(artifacts=False)` writes none of its reports, traces and figures, as a sweep that only needs the estimates does, and a solve without a solution writes its model there for diagnosis (see [Outputs](outputs.md#allocation-artifacts)):
 
 ```
 outputs/first-run/
-└── group_0/                             # one fused group of layers
-    ├── mapping.yaml                     # the generated mapping that was used
-    ├── tiled_workload.png               # the workload after inter-core tiling
-    ├── core_cost_lut.yaml               # per-node, per-core cost estimates
-    └── tetra/                           # the MILP allocation result
-        ├── optimization_metrics.yaml    # objective, solve time, gap, ...
-        ├── slot_latency_breakdown.yaml  # where the latency is spent
-        ├── steady_state_trace.json      # schedule trace (open in Perfetto)
-        └── steady_state_workload_final.png
+└── group_0/                                 # one fused group of layers
+    ├── mapping.yaml                         # the generated mapping that was used
+    ├── tiled_workload.svg                   # the workload after inter-core tiling
+    ├── core_cost_lut.yaml                   # per-node, per-core cost estimates
+    └── allocation/                          # the MILP allocation result
+        ├── reports/
+        │   ├── optimization_metrics.yaml    # objective, solve time, gap, model size
+        │   ├── optimization_trace.yaml      # the solver's progress (Gurobi)
+        │   └── slot_latency_breakdown.yaml  # where the latency is spent
+        ├── traces/
+        │   ├── steady_state_trace.json      # schedule trace (open in Perfetto)
+        │   └── steady_state_trace_compact.json
+        └── figures/
+            ├── optimization_progress.png    # the solver's progress (Gurobi)
+            └── steady_state_workload_final.svg
 ```
 
-The PNGs are the quickest way to see what happened: `group_0/tiled_workload.png` (how the layers were split across cores) and `group_0/tetra/steady_state_workload_final.png` (the resulting steady-state schedule). `steady_state_trace.json` opens in [Perfetto](https://ui.perfetto.dev) for a timeline view. See [Outputs](outputs.md) for the full reference.
+The pictures are the quickest way to see what happened: `group_0/tiled_workload.svg` (how the layers were split across cores) and `group_0/allocation/figures/steady_state_workload_final.svg` (the resulting steady-state schedule). `steady_state_trace.json` opens in [Perfetto](https://ui.perfetto.dev) for a timeline view. See [Outputs](outputs.md) for the full reference.
 
 You can run the same call against any of the bundled example architectures or the swiglu workload - see the [User Guide](user-guide.md) for the input formats.
 
