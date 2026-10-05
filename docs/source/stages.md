@@ -27,7 +27,7 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 4. The stage of the **code generation backend** that claims the accelerator, for `generate_code` only - for AIE2 arrays, `AIECodeGenerationStage`.
 5. **`PlacementGenerationStage`** - place a group whose kernels are known but whose cores are not, and offer one variant per other compiled block.
 6. **`KernelStateStage`** - the state a kernel carries between iterations.
-7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed and keep the fastest.
+7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed, each in its own `[p<placement>_]tile_<index>/` folder, and keep the fastest, whose files it copies into the group's folder.
 8. **`TilingGenerationStage`** - generate the intra-/inter-core tilings for each node.
 9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core.
 10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as an `AllocationProblem`.

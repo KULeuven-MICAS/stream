@@ -23,7 +23,7 @@ print(allocation.solution.latency.total)
 
 ## Files written to disk
 
-- **Per fused group**, in its `group_<index>/` folder: a picture of its tiled workload (`tiled_workload.svg`), the cost of each node on each core (`core_cost_lut.yaml`, with its `core_cost_lut.pickle` cache) and its allocation artifacts.
+- **Per fused group**, in its `group_<index>/` folder: a picture of its tiled workload (`tiled_workload.svg`), the cost of each node on each core (`core_cost_lut.yaml`, with its `core_cost_lut.pickle` cache) and its allocation artifacts; under a tile search, those of the candidate it chose.
 
 ## Allocation artifacts
 
