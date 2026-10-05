@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cache
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
@@ -13,6 +14,7 @@ from stream.plugins import load_group
 logger = logging.getLogger(__name__)
 
 NAMESPACES_GROUP = "stream.namespaces"
+REMOVED_GROUP = "stream.constraints"
 
 REMOVED_HOOKS = {
     "add_object_fifo_constraints": "aie2_object_fifo_depth, which bounds the object_fifo_depth quantity",
@@ -28,9 +30,6 @@ class NamespaceConfig:
     """What a namespace's facts may be built from."""
 
     accelerator: Accelerator
-    offchip_core_id: int | None
-    mem_cores: tuple[Core, ...]
-    nb_cols_to_use: int
 
 
 class HardwareNamespace:
@@ -117,8 +116,6 @@ class HardwareFacts:
     accelerator: Accelerator
     offchip_core_id: int | None
     mem_cores: list[Core]
-    force_double_buffering: bool
-    force_io_transfers_on_mem_tile: bool
     namespaces: tuple[HardwareNamespace, ...] = ()
 
     def shares_memory(self, one: Core, other: Core) -> bool:
@@ -139,6 +136,7 @@ class HardwareFacts:
 def namespace_classes(accelerator: Accelerator) -> dict[str, type[HardwareNamespace]]:
     """By name, the namespace of each core namespace ``accelerator`` has: Stream's own, overridden by those the
     ``stream.namespaces`` entry points register; one that defines a hook removed in 2.0 raises."""
+    _warn_removed_group()
     present = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
     classes = {name: cls for name, cls in BUILTIN_NAMESPACES.items() if name in present}
     classes |= {plugin.name: plugin.obj for plugin in load_group(NAMESPACES_GROUP) if plugin.name in present}
@@ -154,6 +152,18 @@ def namespace_classes(accelerator: Accelerator) -> dict[str, type[HardwareNamesp
     return dict(sorted(classes.items()))
 
 
+@cache
+def _warn_removed_group() -> None:
+    for plugin in load_group(REMOVED_GROUP):
+        logger.warning(
+            "%r registers namespace %r in the %r entry-point group, which Stream 2.0 ignores; register it in %r",
+            plugin.distribution,
+            plugin.name,
+            REMOVED_GROUP,
+            NAMESPACES_GROUP,
+        )
+
+
 def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[HardwareNamespace]:
     """The namespaces of :func:`namespace_classes`, built for one solve; one that cannot be built is skipped."""
     built: list[HardwareNamespace] = []
@@ -165,13 +175,7 @@ def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[Ha
     return built
 
 
-def build_hardware_facts(
-    accelerator: Accelerator,
-    nb_cols_to_use: int,
-    *,
-    force_double_buffering: bool = True,
-    force_io_transfers_on_mem_tile: bool = True,
-) -> HardwareFacts:
+def build_hardware_facts(accelerator: Accelerator, nb_cols_to_use: int) -> HardwareFacts:
     """The facts of ``accelerator`` for a solve on its first ``nb_cols_to_use`` columns; the memory cores it may
     cache on are its on-chip memory cores inside that budget."""
     offchip_core_id = accelerator.offchip_core_id
@@ -184,17 +188,9 @@ def build_hardware_facts(
         and c.col_id is not None
         and c.col_id < nb_cols_to_use
     ]
-    config = NamespaceConfig(
-        accelerator=accelerator,
-        offchip_core_id=offchip_core_id,
-        mem_cores=tuple(mem_cores),
-        nb_cols_to_use=nb_cols_to_use,
-    )
     return HardwareFacts(
         accelerator=accelerator,
         offchip_core_id=offchip_core_id,
         mem_cores=mem_cores,
-        force_double_buffering=force_double_buffering,
-        force_io_transfers_on_mem_tile=force_io_transfers_on_mem_tile,
-        namespaces=tuple(namespaces_for(accelerator, config)),
+        namespaces=tuple(namespaces_for(accelerator, NamespaceConfig(accelerator))),
     )

@@ -31,12 +31,7 @@ def _accelerator(path: str):
 
 
 def _config(accelerator) -> NamespaceConfig:
-    return NamespaceConfig(
-        accelerator=accelerator,
-        offchip_core_id=accelerator.offchip_core_id,
-        mem_cores=(),
-        nb_cols_to_use=4,
-    )
+    return NamespaceConfig(accelerator)
 
 
 def test_the_builtin_aie2_namespace_attaches_without_an_entry_point(monkeypatch):
@@ -142,3 +137,16 @@ def test_compute_tiles_reserve_the_toolchain_stack():
     memory = next(c for c in accelerator.core_list if c.type == "memory")
     assert context.reserved_memory_bits(compute) == AIE2Namespace.DEFAULT_CORE_STACK_BYTES * 8
     assert context.reserved_memory_bits(memory) == 0
+
+
+def test_an_entry_point_in_the_removed_group_is_ignored_with_a_warning(monkeypatch, caplog):
+    """A 1.x install that registers its namespace in ``stream.constraints`` is told where it belongs now."""
+    plugins = {"stream.constraints": [LoadedPlugin("zigzag", HardwareNamespace, "old-overlay", 0)]}
+    monkeypatch.setattr(hardware_module, "load_group", lambda group: plugins.get(group, []))
+    hardware_module._warn_removed_group.cache_clear()
+    try:
+        with caplog.at_level("WARNING"):
+            assert hardware_module.namespace_classes(_accelerator(_ZIGZAG)) == {}
+    finally:
+        hardware_module._warn_removed_group.cache_clear()
+    assert "'old-overlay' registers namespace 'zigzag' in the 'stream.constraints'" in caplog.text

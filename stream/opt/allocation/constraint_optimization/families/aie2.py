@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from stream.opt.allocation.constraint_optimization.families.dma import DMA_CHANNELS
 from stream.opt.allocation.constraint_optimization.families.memory import BUFFER_DESCRIPTORS, OBJECT_FIFO_DEPTH
+from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 
 if TYPE_CHECKING:
@@ -13,8 +14,6 @@ if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
     from stream.opt.allocation.constraint_optimization.families.reuse import MemoryReuseEntry
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-
-NAMESPACE = "aie2"
 
 
 class _DepthLimit:
@@ -30,7 +29,7 @@ class _DepthLimit:
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
         for core, depth in (q.indexed(self.quantity) if self.quantity in q else {}).items():
-            if core.namespace == NAMESPACE:
+            if core.namespace == AIE2Namespace.NAMESPACE:
                 ctx.add_constr(
                     depth.expr <= core.max_object_fifo_depth,
                     name=f"{self.prefix}_Core_{core.id}",
@@ -40,7 +39,7 @@ class _DepthLimit:
                 )
 
 
-class ObjectFifoDepth(_DepthLimit):
+class AIE2ObjectFifoDepth(_DepthLimit):
     """An AIE2 tile's object fifos are at most its ``max_object_fifo_depth`` deep."""
 
     name = "aie2_object_fifo_depth"
@@ -50,7 +49,7 @@ class ObjectFifoDepth(_DepthLimit):
     prefix = "aie2_obj_fifo_depth"
 
 
-class BufferDescriptors(_DepthLimit):
+class AIE2BufferDescriptors(_DepthLimit):
     """An AIE2 tile's transfers use at most ``max_object_fifo_depth`` buffer descriptors."""
 
     name = "aie2_buffer_descriptors"
@@ -60,7 +59,7 @@ class BufferDescriptors(_DepthLimit):
     prefix = "aie2_bd_depth"
 
 
-class MemoryReuse:
+class AIE2MemoryReuse:
     """A memory tile outlives its reader only where one whole-object replay expresses the re-read."""
 
     name: ClassVar[str] = "aie2_memory_reuse"
@@ -70,7 +69,7 @@ class MemoryReuse:
     def build(self, ctx: FormulationContext) -> None:
         entries: tuple[MemoryReuseEntry, ...] = ctx.quantities.get("memory_reuse").expr
         for entry in entries:
-            if entry.core.namespace != NAMESPACE:
+            if entry.core.namespace != AIE2Namespace.NAMESPACE:
                 continue
             for i, (mem_stop, compute_stop) in enumerate(entry.unexpressible):
                 ctx.add_constr(
@@ -80,7 +79,7 @@ class MemoryReuse:
                 )
 
 
-class DmaChannels:
+class AIE2DmaChannels:
     """A tile drives at most its DMA channels in each direction: a compute tile's, a memory tile's, or the shim's
     for the off-chip core."""
 

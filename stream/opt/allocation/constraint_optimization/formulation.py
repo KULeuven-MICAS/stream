@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -103,11 +104,18 @@ class FormulationContext:
 
     def tensor_on_core_expr(self, t: Tensor, core: Core) -> Any:
         """Whether ``t`` sits on ``core``: a constant for a fixed tensor, else the sum of its placements there."""
+        return self.tensor_on_cores_expr(t, (core,))
+
+    def tensor_on_cores_expr(self, t: Tensor, cores: Sequence[Core]) -> Any:
+        """Whether ``t`` sits on any of ``cores``: a constant for a fixed tensor, else the sum of its placements on
+        them."""
         space = self.space
         if space.is_fixed(t):
-            return int(core in space.fixed_choice(t))
+            return int(any(c in space.fixed_choice(t) for c in cores))
         x = self.vars.x
-        return self.model.quicksum(x[(t, choice)]._raw for choice in space.tensor_choices[t] if core in choice)
+        return self.model.quicksum(
+            x[(t, choice)]._raw for choice in space.tensor_choices[t] if any(c in choice for c in cores)
+        )
 
     def tensor_uses_core_var(self, t: Tensor, core: Core) -> SolverVar:
         """A binary equal to whether ``t`` sits on ``core``, one per (tensor, core) for the whole model."""
@@ -128,16 +136,11 @@ class FormulationContext:
         """Whether ``t`` sits on any of ``cores``, the cores sharing one memory."""
         if len(cores) == 1:
             return self.tensor_uses_core_var(t, cores[0])
-        space = self.space
         key = "__".join(resource_key(c) for c in cores)
         v = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{key}")
-        if space.is_fixed(t):
-            occ = int(any(c in space.fixed_choice(t) for c in cores))
-        else:
-            occ = self.model.quicksum(
-                self.vars.x[(t, choice)]._raw for choice in space.tensor_choices[t] if any(c in choice for c in cores)
-            )
-        self.add_constr(v == occ, name=f"u_eq_{t.name}_{key}", resource=cores[0], subject=t.name)
+        self.add_constr(
+            v == self.tensor_on_cores_expr(t, cores), name=f"u_eq_{t.name}_{key}", resource=cores[0], subject=t.name
+        )
         return v
 
     def binary_product(

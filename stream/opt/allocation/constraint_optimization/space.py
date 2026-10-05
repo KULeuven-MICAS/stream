@@ -13,7 +13,7 @@ from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
-from stream.opt.allocation.constraint_optimization.utils import get_transfer_latency_for_path
+from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType, Reuse
@@ -46,7 +46,6 @@ class DecisionSpace:
         self.cost_lut = problem.cost_lut
         self.max_slot = max(self.slot_of.values()) if self.slot_of else 0
         self.big_m = len(self.workload.nodes()) + 5
-        self.force_double_buffering = self.hardware.force_double_buffering
         self.mem_cores = list(self.hardware.mem_cores)
         self.ssc_nodes: tuple[ComputationNode, ...] = tuple(self.workload.get_computation_nodes())
         self.transfer_nodes: tuple[TransferNode, ...] = tuple(self.workload.get_transfer_nodes())
@@ -133,7 +132,7 @@ class DecisionSpace:
                 self.tiles_needed_levels[(t, i)] = tiles_factor
                 self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
                 self.bds_needed_levels[(t, i)] = 4 if i == len(sizes) - 1 else tiles_factor
-            if self.force_double_buffering and tiles_factor > 1:
+            if tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
 
     def _index_choice_metadata(self) -> None:
@@ -159,6 +158,15 @@ class DecisionSpace:
         if (cores := self._candidates.get(t)) is None:
             cores = self._candidates[t] = {core for choice in self.tensor_choices[t] for core in choice}
         return cores
+
+    def runtime(self, n: ComputationNode) -> int:
+        """Cycles ``n`` takes on the slowest core it may run on, before its active fraction."""
+        latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+        return ceil(max(latencies)) if latencies else 0
+
+    def active_runtime(self, n: ComputationNode) -> int:
+        """Cycles ``n`` takes per iteration: its runtime over the iterations it is not idle on an absent loop."""
+        return get_active_latency(n, self.runtime(n), self.ssis)
 
     def stops(self, t: Tensor) -> range:
         """The reuse stops ``t`` may take: -1 (none) up to its outermost applicable temporal loop."""

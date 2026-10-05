@@ -360,6 +360,10 @@ class SolverModel(ABC):
         with fields populated for this backend; unavailable fields are None.
         """
 
+    def model_size(self) -> dict[str, int] | None:
+        """The model's variable, constraint and nonzero counts where the backend reports them, else None."""
+        return None
+
     @abstractmethod
     def compute_iis(self) -> None:
         """Compute an Irreducible Infeasible Subsystem (IIS)."""
@@ -709,6 +713,17 @@ class GurobiBackend(SolverModel):
             node_count=int(self._model.NodeCount),
             iteration_count=int(self._model.IterCount),
         )
+
+    def model_size(self) -> dict[str, int]:
+        m = self._model
+        return {
+            "variables": m.NumVars,
+            "integer_variables": m.NumIntVars,
+            "binary_variables": m.NumBinVars,
+            "linear_constraints": m.NumConstrs,
+            "general_constraints": m.NumGenConstrs,
+            "nonzeros": m.NumNZs,
+        }
 
     def compute_iis(self) -> None:
         self._model.computeIIS()

@@ -13,13 +13,7 @@ if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.opt.solver import SolverVar
-    from stream.workload.workload import ComputationNode, TransferNode
-
-
-def node_runtime(space: DecisionSpace, n: ComputationNode) -> int:
-    """Cycles ``n`` takes on the slowest core it may run on, before its active fraction."""
-    latencies = [space.cost_lut.get_cost(n, c).latency_total for c in space.cost_lut.get_cores(n)]
-    return ceil(max(latencies)) if latencies else 0
+    from stream.workload.workload import TransferNode
 
 
 def reuse_selectors(ctx: FormulationContext, t: object) -> list[tuple[SolverVar, float]]:
@@ -39,8 +33,7 @@ class SlotLatency:
         q = ctx.quantities
         space, model, slot_latency = ctx.space, ctx.model, ctx.vars.slot_latency
         for n in space.ssc_nodes:
-            active_latency = get_active_latency(n, node_runtime(space, n), space.ssis)
-            model.add_constr(slot_latency[space.slot_of[n]] >= active_latency, name=f"ssc_lat_{n.name}")
+            model.add_constr(slot_latency[space.slot_of[n]] >= space.active_runtime(n), name=f"ssc_lat_{n.name}")
         for (tr, choice), y in ctx.vars.y.items():
             latency = _active_transfer_latency(ctx, tr, choice, y)
             q.add("transfer_latency", latency._raw, index=(tr, choice))
@@ -68,7 +61,7 @@ def _longest_step(space: DecisionSpace) -> int:
     """The most cycles any node or transfer takes in a slot, on any core or path."""
     longest = 0
     for n in space.ssc_nodes:
-        longest = max(longest, node_runtime(space, n))
+        longest = max(longest, space.runtime(n))
     for tr in space.transfer_nodes:
         for choice in space.path_choices[tr]:
             longest = max(longest, ceil(space.transfer_latency_for_path(tr, choice)))

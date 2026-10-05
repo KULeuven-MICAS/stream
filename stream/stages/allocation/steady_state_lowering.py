@@ -1,10 +1,5 @@
-import logging
-
 from stream.allocation.lowering import lower_steady_state
-from stream.stages.context import StageContext
-from stream.stages.stage import Stage, StageCallable
-
-logger = logging.getLogger(__name__)
+from stream.stages.stage import Stage
 
 
 class SteadyStateLoweringStage(Stage):
@@ -13,10 +8,6 @@ class SteadyStateLoweringStage(Stage):
     reads = ("workload", "accelerator", "mapping", "cost_lut", "fusion_splits", "nb_cols_to_use")
     writes = ("allocation_problem",)
 
-    def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
-        super().__init__(list_of_callables, ctx)
-        self.nb_cols_to_use: int = self.ctx.get("nb_cols_to_use")
-
     def run(self):
         problem = lower_steady_state(
             self.ctx.get("workload"),
@@ -24,7 +15,7 @@ class SteadyStateLoweringStage(Stage):
             self.ctx.get("mapping"),
             self.ctx.get("fusion_splits"),
             self.ctx.get("cost_lut"),
-            self.nb_cols_to_use,
+            self.ctx.get("nb_cols_to_use"),
         )
         self.ctx.set(allocation_problem=problem)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)

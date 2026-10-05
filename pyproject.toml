@@ -77,20 +77,10 @@ stream-setup-aie = "stream.aie_setup:main"
 onnx = "stream.frontends.onnx:OnnxFrontend"
 torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 
-# Namespace facts for the allocation model: the entry-point name is the core namespace, its object a
-# HardwareNamespace subclass, instantiated via from_config whenever the accelerator has a core of that namespace
-# and adding its `families` to the default set. Stream's own (aie2) register in-tree, so a stale install keeps them.
-[project.entry-points."stream.namespaces"]
-
 # Pipeline observers, enabled per run by SolveOptions.instrumentation. `timing` profiles every stage and
 # the spans inside them.
 [project.entry-points."stream.instrumentation"]
 timing = "stream.profiling:TimingInstrumentation"
-
-# The constraint families an allocation model is built from, selected per solve by SolveOptions.families: the
-# entry-point name is the family's `name`, its object a ConstraintFamily factory whose keyword arguments are the
-# family's options. Stream's own register in-tree (BUILTIN_FAMILIES); overlays add theirs here.
-[project.entry-points."stream.constraint_families"]
 
 # Core-cost estimator backends: the entry-point name is the backend's `name` (= metadata["backend"]),
 # its object a CoreCostBackend that `claims` the cores it models and `make`s the estimator. The engine's

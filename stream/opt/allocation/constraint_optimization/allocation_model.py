@@ -14,7 +14,6 @@ from stream.opt.allocation.constraint_optimization.diagnosis import (
     infeasibility_report,
 )
 from stream.opt.allocation.constraint_optimization.families import FamilySelection, ObjectiveFamily
-from stream.opt.allocation.constraint_optimization.families.latency import node_runtime
 from stream.opt.allocation.constraint_optimization.families.memory import capacity_screen
 from stream.opt.allocation.constraint_optimization.formulation import (
     DecisionVariables,
@@ -24,7 +23,7 @@ from stream.opt.allocation.constraint_optimization.formulation import (
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.report import VAR_THRESHOLD, solved_reports, solver_metrics
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, Placement
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
+from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import (
     ObjectiveLevel,
     SolverBackend,
@@ -60,7 +59,7 @@ class AllocationModel:
     def __init__(self, problem: AllocationProblem, *, families: FamilySelection, backend: str):
         self.families = families
         self.space = DecisionSpace(problem)
-        self.model: SolverModel = create_solver(SolverBackend[backend], "transfer_tensor_alloc")
+        self.model: SolverModel = create_solver(SolverBackend[backend], "allocation")
         self.model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
         self.quantities = QuantityRegistry()
         self.ledger = ResourceLedger()
@@ -144,8 +143,6 @@ class AllocationModel:
                     )
                 else:
                     levels[level.name] = replace(merged, expr=merged.expr + level.expr)
-        if "total_latency" not in self.quantities:
-            raise ValueError("The allocation needs the overlap family, which defines the latency objective")
         return dict(sorted(levels.items(), key=lambda item: -item[1].priority))
 
     def solve(
@@ -206,7 +203,7 @@ class AllocationModel:
                 primary_cost=value(self.objective["latency"].expr),
                 throughput_bound=self.throughput_bound(slot_latencies),
                 solve_stats=stats,
-                metrics=solver_metrics(self.model, stats.status),
+                metrics=solver_metrics(stats, self.model.model_size()),
                 performance=performance,
                 capacity_slack=capacity_slack,
                 slot_latency_breakdown=breakdown,
@@ -262,7 +259,7 @@ class AllocationModel:
         space, q, value = self.space, self.quantities, self.model.value
         busy: dict[Any, float] = defaultdict(float)
         for n in space.ssc_nodes:
-            active = float(get_active_latency(n, float(node_runtime(space, n)), space.ssis))
+            active = float(space.active_runtime(n))
             for group in space.mapping.get(n).resource_allocation:
                 for core in group:
                     busy[core] += active

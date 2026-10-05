@@ -207,7 +207,7 @@ class SteadyStateIterationSpace:
         return hash(tuple(self.variables))
 
     # ..................................................................... #
-    # ── CLASS FACTORY  (replaces the old helper in SteadyStateScheduler) ── #
+    # ── CLASS FACTORY ── #
     # ..................................................................... #
     @classmethod
     def from_loop_info(
@@ -220,9 +220,6 @@ class SteadyStateIterationSpace:
     ) -> SteadyStateIterationSpace:
         """
         Build the SSIS for **one operand** of a computation node.
-
-        *The logic is identical to the former* `extract_steady_state_iteration_space`
-        *in* `SteadyStateScheduler`, but self-contained and reusable.*
 
         Parameters
         ----------

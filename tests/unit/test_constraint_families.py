@@ -108,13 +108,13 @@ def test_default_families_reject_leaving_out_an_unknown_family() -> None:
 def test_object_fifo_depth_without_depth_keeps_the_buffering_level() -> None:
     """``depth`` False builds no per-core depth for a namespace to bound and keeps the buffering objective level, as
     ConstraintSelection(object_fifo_depth=False) did."""
-    (family,) = load_families([{"object_fifo_depth": {"depth": False}}]).families
+    known = families.available_families()
+    family = known["object_fifo_depth"](depth=False)
     ctx = MagicMock(quantities=QuantityRegistry())
     family.build(ctx)
     assert "object_fifo_depth" not in ctx.quantities
     assert [level.name for level in family.objective(ctx)] == ["buffering"]
-    (limit,) = load_families(["object_fifo_depth", "aie2_object_fifo_depth"]).families[1:]
-    limit.build(ctx)
+    known["aie2_object_fifo_depth"]().build(ctx)
     ctx.add_constr.assert_not_called()
 
 
@@ -136,8 +136,9 @@ def test_family_selected_twice_is_rejected() -> None:
         load_families([*DEFAULT_FAMILIES, {"overlap": {"model": "span"}}])
 
 
-def test_no_families_loads_nothing() -> None:
-    assert load_families([]).families == ()
+def test_a_selection_without_a_total_latency_is_rejected() -> None:
+    with pytest.raises(ValueError, match="define no total_latency; add overlap"):
+        load_families([])
 
 
 def test_a_bare_family_name_is_rejected() -> None:
@@ -200,12 +201,12 @@ def test_dropping_a_family_drops_those_that_need_it() -> None:
 
 @pytest.mark.slow
 def test_family_adds_its_constraint_quantity_and_slot_bound(
-    solved_allocator: Callable, two_conv: TwoConvWorkloadConfig, model_size: Callable, tmp_path: Any, with_cap: None
+    solved_model: Callable, two_conv: TwoConvWorkloadConfig, model_size: Callable, tmp_path: Any, with_cap: None
 ) -> None:
     workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
 
     def solve(path: str, options: SolveOptions) -> Any:
-        return solved_allocator(ACCELERATOR, workload, path, mapping, options, hook="_build_model")
+        return solved_model(ACCELERATOR, workload, path, mapping, options, hook="_build_model")
 
     base = solve(str(tmp_path / "base"), SolveOptions())
     options = SolveOptions(families=[*DEFAULT_FAMILIES, {"cap_iteration": {"cap": 1e9}}])

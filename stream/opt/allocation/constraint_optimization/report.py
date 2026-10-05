@@ -8,21 +8,23 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from stream.allocation.solution import end_to_end_mac_utilization
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
-from stream.opt.allocation.constraint_optimization.families.latency import node_runtime
 from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.workload.utils import is_mac_operator_type
 from stream.workload.workload import Tensor
 
 if TYPE_CHECKING:
+    from stream.hardware.architecture.accelerator import Accelerator
     from stream.opt.allocation.constraint_optimization.families import FamilySelection
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.solver import SolverModel
+    from stream.opt.solver import SolveStats
 
 logger = logging.getLogger(__name__)
+
+_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
+"""Core kinds that model a memory or DMA endpoint, never in a compute roofline."""
 
 VAR_THRESHOLD = 0.5
 """A MILP binary comes back as 0.9999...; anything above the midpoint is a 1."""
@@ -92,7 +94,7 @@ def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_laten
     compute_by_slot: dict[int, float] = {}
     for n in space.ssc_nodes:
         cores = lut.get_cores(n)
-        active = get_active_latency(n, float(node_runtime(space, n)), space.ssis)
+        active = space.active_runtime(n)
         s = space.slot_of[n]
         compute_by_slot[s] = max(compute_by_slot.get(s, 0.0), float(active))
         if not cores:
@@ -162,6 +164,38 @@ def _json_scalar(v: Any) -> Any:
     if not math.isfinite(f):
         return str(v)
     return int(f) if f.is_integer() else f
+
+
+def mac_roofline_peak(accelerator: Accelerator) -> tuple[int, int]:
+    """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
+    offchip_id = accelerator.offchip_core_id
+    peak = 0
+    n_cores = 0
+    for core in accelerator.core_list:
+        if core.id == offchip_id or core.type in _NON_COMPUTE_CORE_TYPES:
+            continue
+        op_types = getattr(core, "operator_types", None)
+        if op_types is not None and not any(is_mac_operator_type(t) for t in op_types):
+            continue
+        units = getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
+        if not units:
+            continue
+        peak += units
+        n_cores += 1
+    return peak, n_cores
+
+
+def end_to_end_mac_utilization(accelerator: Accelerator, total_mac_ops: int | None, latency: int) -> dict[str, Any]:
+    """The aggregate stats of ``total_mac_ops / (peak_macs_per_cycle * latency)``, both restricted to the
+    matmul/conv family; the utilization is None without MAC work."""
+    peak, mac_cores = mac_roofline_peak(accelerator)
+    util = (total_mac_ops / (peak * latency)) if (total_mac_ops and peak and latency and latency > 0) else None
+    return {
+        "total_mac_ops": total_mac_ops,
+        "peak_macs_per_cycle": peak,
+        "mac_capable_cores": mac_cores,
+        "end_to_end_mac_utilization": util,
+    }
 
 
 def overlap_section(ctx: FormulationContext, slack: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -279,14 +313,14 @@ def slot_latency_breakdown(
         for s, latency in ctx.vars.slot_latency.items()
     }
     for n in space.ssc_nodes:
-        runtime = node_runtime(space, n)
+        runtime = space.runtime(n)
         breakdown[space.slot_of[n]]["compute_contributors"].append(
             {
                 "node": n.name,
                 "cost_lut_core_count": len(space.cost_lut.get_cores(n)),
                 "lut_latency_cycles": runtime,
                 "active_fraction": _json_scalar(active_fraction(n, space.ssis)),
-                "active_latency_cycles": get_active_latency(n, float(runtime), space.ssis),
+                "active_latency_cycles": space.active_runtime(n),
             }
         )
     for (tr, choice), y in ctx.vars.y.items():
@@ -323,46 +357,35 @@ def slot_latency_breakdown(
     }
 
 
-def solver_metrics(model: SolverModel, status: str) -> dict[str, Any]:
-    """The solve's ``status`` and, for Gurobi, how much it searched, what it found, what that cost and how large the
-    model was; each Gurobi value is None for another backend."""
-    from stream.opt.solver import GurobiBackend  # noqa: PLC0415
-
-    raw_model = model._model if isinstance(model, GurobiBackend) else None
-
-    def _attr(name: str) -> Any | None:
-        try:
-            value = getattr(raw_model, name)
-        except Exception:  # noqa: BLE001  # catches AttributeError and gp.GurobiError
-            return None
-        return None if isinstance(value, float) and not math.isfinite(value) else value
-
+def solver_metrics(stats: SolveStats, size: dict[str, int] | None) -> dict[str, Any]:
+    """How the solve ended, how much it searched, what it found and what that cost, from its ``stats``, and how
+    large the model was where the backend reports its ``size``; an unreported value is None."""
+    size = size or {}
     return {
-        "status": status,
+        "status": stats.status,
+        "backend": stats.backend,
+        "solver": stats.solver,
         "search": {
-            "nodes_explored": _attr("NodeCount"),
-            "simplex_iterations": _attr("IterCount"),
-            "barrier_iterations": _attr("BarIterCount"),
+            "nodes_explored": stats.node_count,
+            "simplex_iterations": stats.iteration_count,
         },
         "solution": {
-            "objective_value": _attr("ObjVal"),
-            "objective_bound": _attr("ObjBound"),
-            "mip_gap": _attr("MIPGap"),
+            "objective_value": stats.objective,
+            "mip_gap": stats.mip_gap,
         },
         "effort": {
-            "runtime_s": _attr("Runtime"),
-            "work_units": _attr("Work"),
+            "runtime_s": stats.solve_time_s,
         },
         "model": {
             "variables": {
-                "total": _attr("NumVars"),
-                "integer": _attr("NumIntVars"),
-                "binary": _attr("NumBinVars"),
+                "total": size.get("variables"),
+                "integer": size.get("integer_variables"),
+                "binary": size.get("binary_variables"),
             },
             "constraints": {
-                "linear": _attr("NumConstrs"),
-                "general": _attr("NumGenConstrs"),
+                "linear": size.get("linear_constraints"),
+                "general": size.get("general_constraints"),
             },
-            "nonzeros": _attr("NumNZs"),
+            "nonzeros": size.get("nonzeros"),
         },
     }

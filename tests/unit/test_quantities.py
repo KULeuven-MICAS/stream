@@ -5,7 +5,7 @@ import pytest
 
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
-from stream.opt.allocation.constraint_optimization import allocation_model as tta
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -13,10 +13,10 @@ ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 
 @pytest.fixture(scope="module")
 def alloc(
-    tmp_path_factory: pytest.TempPathFactory, solved_allocator: Callable[..., Any], two_conv: TwoConvWorkloadConfig
-) -> tta.AllocationModel:
+    tmp_path_factory: pytest.TempPathFactory, solved_model: Callable[..., Any], two_conv: TwoConvWorkloadConfig
+) -> AllocationModel:
     out = str(tmp_path_factory.mktemp("two_conv"))
-    return solved_allocator(ACCELERATOR, make_2_conv_workload(two_conv), out, make_2_conv_mapping(two_conv))
+    return solved_model(ACCELERATOR, make_2_conv_workload(two_conv), out, make_2_conv_mapping(two_conv))
 
 
 def test_registry_returns_scalar_and_indexed_quantities() -> None:
@@ -40,7 +40,7 @@ def test_registry_rejects_duplicates_and_names_the_available_quantities() -> Non
 
 
 @pytest.mark.slow
-def test_allocator_registers_what_it_builds(alloc: tta.AllocationModel) -> None:
+def test_the_model_registers_what_it_builds(alloc: AllocationModel) -> None:
     expected = {"slot_latency", "overlap", "iteration", "transfer_latency", "total_latency"}
     assert expected <= set(alloc.quantities.names())
     slots = alloc.quantities.indexed("slot_latency")

@@ -38,7 +38,7 @@ def solve_swiglu(accelerator: Accelerator):
         return evaluate_mapping(accelerator, workload, tmpdir, options=options).context
 
 
-def solved_allocator(accelerator: Accelerator) -> AllocationModel:
+def solved_model(accelerator: Accelerator) -> AllocationModel:
     solved: list[AllocationModel] = []
     original = AllocationModel.solve
 
@@ -72,7 +72,7 @@ def test_a_shared_memory_too_small_for_both_cores_is_infeasible():
 
 
 def test_a_handover_between_cores_sharing_a_memory_stays_in_it():
-    alloc = solved_allocator(fusemax())
+    alloc = solved_model(fusemax())
     handovers = [
         tr
         for tr in alloc.space.transfer_nodes

@@ -12,7 +12,7 @@ from zigzag.hardware.architecture.memory_port import DataDirection
 from stream.api import SolveOptions
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
-from stream.opt.allocation.constraint_optimization import allocation_model as tta
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES, traffic
 from stream.opt.allocation.constraint_optimization.families.memory_ports import MemoryPorts
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
@@ -20,15 +20,15 @@ from stream.workload.steady_state.iteration_space import LoopEffect
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 DRAM = (6, "dram", "rw_port_1")
-Solve = Callable[[list[Any]], tta.AllocationModel]
+Solve = Callable[[list[Any]], AllocationModel]
 
 
 @pytest.fixture(scope="module")
 def solve(
-    tmp_path_factory: pytest.TempPathFactory, solved_allocator: Callable[..., Any], two_conv: TwoConvWorkloadConfig
+    tmp_path_factory: pytest.TempPathFactory, solved_model: Callable[..., Any], two_conv: TwoConvWorkloadConfig
 ) -> Solve:
-    def run(family_specs: list[Any]) -> tta.AllocationModel:
-        return solved_allocator(
+    def run(family_specs: list[Any]) -> AllocationModel:
+        return solved_model(
             ACCELERATOR,
             make_2_conv_workload(two_conv),
             str(tmp_path_factory.mktemp("two_conv")),
@@ -40,20 +40,20 @@ def solve(
 
 
 @pytest.fixture(scope="module")
-def base(solve: Solve) -> tta.AllocationModel:
+def base(solve: Solve) -> AllocationModel:
     return solve([])
 
 
 @pytest.fixture(scope="module")
-def ports(solve: Solve) -> tta.AllocationModel:
+def ports(solve: Solve) -> AllocationModel:
     return solve(["memory_ports"])
 
 
-def rate(alloc: tta.AllocationModel, key: Any) -> float:
+def rate(alloc: AllocationModel, key: Any) -> float:
     return alloc.quantities.get("port_rate", key).expr
 
 
-def total(alloc: tta.AllocationModel) -> float:
+def total(alloc: AllocationModel) -> float:
     return alloc.model.value(alloc.quantities.get("total_latency").expr)
 
 

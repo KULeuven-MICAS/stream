@@ -35,14 +35,14 @@ class CostModelsIR(BaseModel):
     modelled, not just the final number."""
 
     intra_core: str = Field(description="Per-core compute/energy cost model (the intra-core estimator)")
-    scheduler: str = Field(description="Inter-core latency/schedule model")
+    scheduler: str = Field(description="Inter-core latency model: the allocation model that solves the steady state")
     solver: str = Field(description="MILP solver backend used for tensor/transfer allocation")
 
     @classmethod
     def for_backend(cls, backend: str) -> CostModelsIR:
         return cls(
             intra_core="ZigZag analytical (per-node latency & energy, MAC-array spatial utilization)",
-            scheduler="SteadyStateScheduler (steady-state pipeline latency, compute vs transfer bottleneck)",
+            scheduler="AllocationModel (steady-state pipeline latency, compute vs transfer bottleneck)",
             solver=backend,
         )
 
@@ -425,7 +425,7 @@ class AllocationIR(BaseModel):
     )
 
     schema_version: Literal["2.0"] = "2.0"
-    latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
+    latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
         default=None,
@@ -469,13 +469,13 @@ class AllocationIR(BaseModel):
     )
 
     @classmethod
-    def from_internal(cls, schedule: Allocation) -> AllocationIR:
+    def from_internal(cls, allocation: Allocation) -> AllocationIR:
         """Construct AllocationIR from a solved Allocation.
 
-        Calls schedule.get_ir() once, maps the resulting dict fields to Pydantic types,
+        Calls allocation.get_ir() once, maps the resulting dict fields to Pydantic types,
         and validates on construction.
         """
-        raw = schedule.get_ir()
+        raw = allocation.get_ir()
 
         mapping = raw["mapping"]
         mapping_nodes = {

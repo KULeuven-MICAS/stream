@@ -64,7 +64,7 @@ class TilingGenerationStage(Stage):
         """Total multiply-accumulate ops in this (untiled) fusion group.
 
         Product of the full loop-dimension sizes over the ``is_mac_operator_type`` nodes -- a
-        hardware-independent workload property. Consumed by the scheduler to report end-to-end MAC
+        hardware-independent workload property. Consumed by the allocation model to report end-to-end MAC
         utilization against the peak of the cores that admit exactly these operators, which is why
         the same predicate must decide both. Must be read from ``self.workload`` BEFORE tiling
         shrinks the dimension sizes.

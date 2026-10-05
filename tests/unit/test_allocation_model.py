@@ -1,16 +1,23 @@
-"""The allocator's own part of the model: the families a selection builds, the objective levels they contribute,
-the overlap formulation and the buffering helpers."""
+"""The allocation model's own part: the families a selection builds, the objective levels they contribute, the
+overlap formulation and the buffering helpers."""
 
+from collections.abc import Callable
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from stream.opt.allocation.constraint_optimization import allocation_model
+from stream.api import SolveOptions, default_families
+from stream.hardware.architecture.core import Core
+from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
+from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     LATENCY,
+    available_families,
     drop_families,
     load_families,
     overlap,
@@ -21,25 +28,56 @@ from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.opt.solver import ObjectiveLevel
 from stream.workload.steady_state.iteration_space import Reuse
 
-TOTAL_LATENCY = 100
+ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+Solve = Callable[..., AllocationModel]
 
 
-def _objectives(specs=DEFAULT_FAMILIES, **quantities) -> dict[str, ObjectiveLevel]:
-    """The objective levels the families ``specs`` contribute to a model with no tensors or transfers, whose
-    quantities are ``quantities`` and the overlap's."""
-    q = QuantityRegistry()
-    for name, expr in {"iteration": 0, "overlap": 0, "fill": 0, **quantities}.items():
-        q.add(name, expr)
-    model = MagicMock()
-    model.add_var.return_value = MagicMock(_raw=TOTAL_LATENCY)
-    model.quicksum.return_value = SimpleNamespace(_raw=0)
-    space = SimpleNamespace(iterations=1, transfer_nodes=[], links_in_choice={}, tensors_to_optimize_reuse_for=[])
-    tta = SimpleNamespace(
-        families=load_families(specs),
-        context=SimpleNamespace(model=model, space=space, vars=SimpleNamespace(y={}, z_stop={}), quantities=q),
-        quantities=q,
-    )
-    return AllocationModel._objective_levels(tta)  # type: ignore[arg-type]
+@pytest.fixture(scope="module")
+def solve(tmp_path_factory: pytest.TempPathFactory, solved_model: Solve, two_conv: TwoConvWorkloadConfig) -> Solve:
+    """A solve of the two-convolution workload on the TPU-like array with ``families``."""
+    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+
+    def run(families: Any, **kwargs: Any) -> AllocationModel:
+        out = str(tmp_path_factory.mktemp("objective"))
+        options = SolveOptions(families=families, artifacts=False)
+        return solved_model(ACCELERATOR, workload, out, mapping, options, **kwargs)
+
+    return run
+
+
+@pytest.fixture(scope="module")
+def models(solve: Solve) -> dict[str, AllocationModel]:
+    return {"default": solve(None), "no_dma": solve(default_families(ACCELERATOR, ["dma_channels"]))}
+
+
+def _value(model: AllocationModel, name: str) -> float:
+    return model.model.value(model.quantities.get(name).expr) if name in model.quantities else 0.0
+
+
+def _latency_level(model: AllocationModel) -> tuple[float, float]:
+    """The solved latency level, and what it is made of: the latency, the DMA peaks and the off-chip charge."""
+    value, objective = model.model.value, model.objective
+    charge = _value(model, "offchip_traffic_weight") * value(objective["offchip_traffic"].expr)
+    parts = _value(model, "total_latency") + _value(model, "dma_peak_in") + _value(model, "dma_peak_out") + charge
+    return value(objective["latency"].expr), parts
+
+
+@pytest.mark.parametrize("case", ["default", "no_dma"])
+def test_the_objective_levels_come_in_priority_order(models: dict[str, AllocationModel], case: str):
+    """Latency decides first; offchip traffic breaks its ties, buffering breaks traffic's, and the route length
+    breaks buffering's."""
+    objective = models[case].objective
+    assert list(objective) == ["latency", "offchip_traffic", "buffering", "route_hops"]
+    assert [level.priority for level in objective.values()] == [4, 3, 2, 1]
+
+
+def test_the_latency_level_sums_its_families_contributions(models: dict[str, AllocationModel]):
+    """The run's latency, the DMA peaks where dma_channels is selected, and the weighted off-chip traffic."""
+    for model in models.values():
+        solved, parts = _latency_level(model)
+        assert solved == pytest.approx(parts)
+    assert "dma_peak_in" in models["default"].quantities
+    assert "dma_peak_in" not in models["no_dma"].quantities
 
 
 def test_a_family_left_out_builds_nothing():
@@ -49,33 +87,18 @@ def test_a_family_left_out_builds_nothing():
     assert {"memory_capacity", "dma_channels"}.isdisjoint(family.name for family in selection.families)
 
 
-def test_the_capacity_screen_runs_first_whatever_the_families(monkeypatch: pytest.MonkeyPatch):
+def test_the_capacity_screen_runs_whatever_the_families(solve: Solve):
     """A memory too small for its pinned tensors fails the solve before the model is built, with memory_capacity
-    in the selection or not."""
-    screened = []
-
-    def screen(space, model):
-        screened.append((space, model))
-        raise RuntimeError("screened")
-
-    monkeypatch.setattr(allocation_model, "capacity_screen", screen)
-    model = SimpleNamespace(space="space", model="model", families=load_families([]))
-    with pytest.raises(RuntimeError, match="screened"):
-        AllocationModel._build_model(model)  # type: ignore[arg-type]
-    assert screened == [("space", "model")]
+    left out too, as on 1.x."""
+    with (
+        patch.object(Core, "get_memory_capacity", return_value=1),
+        pytest.raises(InfeasibleAllocationError, match="pinned to it"),
+    ):
+        solve(default_families(ACCELERATOR, ["memory_capacity"]), hook="_build_model")
 
 
-def test_without_dma_channels_the_primary_objective_is_the_latency():
-    """Latency decides first; offchip traffic breaks its ties, buffering breaks traffic's, and the route length
-    breaks buffering's."""
-    objectives = _objectives(drop_families(DEFAULT_FAMILIES, ["dma_channels"]))
-    assert objectives["latency"].expr == TOTAL_LATENCY
-    assert list(objectives) == ["latency", "offchip_traffic", "buffering", "route_hops"]
-    assert [o.priority for o in objectives.values()] == [4, 3, 2, 1]
-
-
-def test_dma_channels_charge_their_peaks_in_the_primary_objective():
-    assert _objectives(dma_peak_in=3, dma_peak_out=4)["latency"].expr == TOTAL_LATENCY + 7
+def _offchip_traffic(**options: Any) -> Any:
+    return available_families()["offchip_traffic"](**options)
 
 
 def test_offchip_traffic_is_charged_in_the_primary_objective():
@@ -86,7 +109,7 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
         vars=SimpleNamespace(z_stop={}),
         quantities=QuantityRegistry(),
     )
-    (family,) = load_families(["offchip_traffic"]).families
+    family = _offchip_traffic()
     assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
     ctx.quantities.add("offchip_traffic_weight", 1 / 512)
     traffic, latency = family.objective(ctx)
@@ -100,10 +123,9 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
 )
 def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
     """No off-chip core charges nothing, and with a shared-bandwidth model the bytes are in the latency already."""
-    (family,) = load_families(["offchip_traffic"]).families
     space = SimpleNamespace(shared_bandwidth=shared_bandwidth, iterations=4, offchip_bandwidth=lambda: bandwidth)
     q = QuantityRegistry()
-    family.build(SimpleNamespace(space=space, quantities=q))
+    _offchip_traffic().build(SimpleNamespace(space=space, quantities=q))
     assert ("offchip_traffic_weight" in q) is charged
     if charged:
         assert q.get("offchip_traffic_weight").expr == 4 / bandwidth
@@ -111,35 +133,32 @@ def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
 
 def test_offchip_traffic_without_its_charge_keeps_its_level():
     """``charge`` False drops only the latency charge, as ConstraintSelection(offchip_traffic_cost=False) did."""
-    (family,) = load_families([{"offchip_traffic": {"charge": False}}]).families
     space = SimpleNamespace(shared_bandwidth={}, iterations=4, offchip_bandwidth=lambda: 512.0)
     q = QuantityRegistry()
-    family.build(SimpleNamespace(space=space, quantities=q))
+    _offchip_traffic(charge=False).build(SimpleNamespace(space=space, quantities=q))
     assert "offchip_traffic_weight" not in q
 
 
-def test_the_objective_needs_the_overlap():
-    with pytest.raises(ValueError, match="overlap family"):
-        _objectives(drop_families(DEFAULT_FAMILIES, ["overlap", "dma_channels"]))
+def test_a_selection_without_the_overlap_is_rejected_before_any_stage_runs():
+    with pytest.raises(ValueError, match="define no total_latency; add overlap"):
+        load_families(drop_families(DEFAULT_FAMILIES, ["overlap", "dma_channels"]))
 
 
-def test_levels_of_one_name_must_share_a_priority():
-    class Rogue:
-        name = "rogue"
+class _Rogue:
+    name = "rogue"
+    requires: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
 
-        def objective(self, ctx):
-            return [ObjectiveLevel(expr=1, priority=LATENCY + 1, name="latency")]
+    def build(self, ctx: Any) -> None: ...
 
-    q = QuantityRegistry()
-    tta = SimpleNamespace(
-        families=SimpleNamespace(families=[*load_families(["dma_channels"]).families, Rogue()]),
-        context=SimpleNamespace(quantities=q),
-        quantities=q,
-    )
-    tta.quantities.add("dma_peak_in", 1)
-    tta.quantities.add("dma_peak_out", 1)
+    def objective(self, ctx: Any) -> list[ObjectiveLevel]:
+        return [ObjectiveLevel(expr=1, priority=LATENCY + 1, name="latency")]
+
+
+def test_levels_of_one_name_must_share_a_priority(solve: Solve):
+    families = {**available_families(), "rogue": _Rogue}
     with pytest.raises(ValueError, match="'latency' has priority 5 in 'rogue'"):
-        AllocationModel._objective_levels(tta)  # type: ignore[arg-type]
+        solve([*DEFAULT_FAMILIES, "rogue"], families_available=families, hook="_build_model")
 
 
 def _overlap(spec) -> PipeliningModel:
@@ -151,20 +170,6 @@ def test_pipelining_defaults_to_occupancy():
     """The modulo-scheduling model is the default; span is the opt-in legacy one."""
     assert _overlap("overlap") is PipeliningModel.OCCUPANCY
     assert _overlap({"overlap": {"model": "span"}}) is PipeliningModel.SPAN
-
-
-@pytest.mark.parametrize(
-    ("selected", "double_buffered", "expected"),
-    [
-        (PipeliningModel.OCCUPANCY, True, PipeliningModel.OCCUPANCY),
-        (PipeliningModel.OCCUPANCY, False, PipeliningModel.SPAN),
-        (PipeliningModel.SPAN, True, PipeliningModel.SPAN),
-        (PipeliningModel.SPAN, False, PipeliningModel.SPAN),
-    ],
-)
-def test_pipelining_requires_double_buffering(selected, double_buffered, expected):
-    """Overlapping prefetches the next tile while this one computes, which a single buffer has nowhere to put."""
-    assert overlap.effective_pipelining(selected, double_buffered) is expected
 
 
 @pytest.mark.parametrize(
@@ -191,7 +196,7 @@ class _FakeTensor:
     name = "t"
 
 
-def _fire_helper_stub(*, relevant_sizes, force_double_buffering=True):
+def _fire_helper_stub(*, relevant_sizes):
     """A decision space carrying one tensor whose steady-state loops have the given relevancies."""
     tensor = _FakeTensor()
     variables = [SimpleNamespace(size=size, relevant=rel, reuse=Reuse.NOT_SET) for size, rel in relevant_sizes]
@@ -201,23 +206,17 @@ def _fire_helper_stub(*, relevant_sizes, force_double_buffering=True):
     space.tensors_to_optimize_reuse_for = []
     space.reuse_levels, space.tiles_needed_levels, space.bds_needed_levels = {}, {}, {}
     space.rotation_levels = {}
-    space.force_double_buffering = force_double_buffering
     space._init_transfer_fire_helpers()
     return tensor, space
 
 
 def test_double_buffering_skips_loop_invariant_tensors():
     """A loop-invariant tensor (same tile every iteration) reserves one tile, not a double buffer."""
-    tensor, tta = _fire_helper_stub(relevant_sizes=[(8, False)])
-    assert tta.tiles_needed_levels[(tensor, -1)] == 1
+    tensor, space = _fire_helper_stub(relevant_sizes=[(8, False)])
+    assert space.tiles_needed_levels[(tensor, -1)] == 1
 
 
 def test_double_buffering_applies_to_streamed_tensors():
     """An activation tile changes every iteration, so it does need somewhere to prefetch into."""
-    tensor, tta = _fire_helper_stub(relevant_sizes=[(8, True)])
-    assert tta.tiles_needed_levels[(tensor, -1)] == 2
-
-
-def test_double_buffering_off_reserves_one_tile():
-    tensor, tta = _fire_helper_stub(relevant_sizes=[(8, True)], force_double_buffering=False)
-    assert tta.tiles_needed_levels[(tensor, -1)] == 1
+    tensor, space = _fire_helper_stub(relevant_sizes=[(8, True)])
+    assert space.tiles_needed_levels[(tensor, -1)] == 2

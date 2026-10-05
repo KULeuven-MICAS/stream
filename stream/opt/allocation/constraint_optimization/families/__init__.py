@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 FAMILY_GROUP = "stream.constraint_families"
 SLOT_PRESSURE = "slot_pressure"
+TOTAL_LATENCY = "total_latency"
 FamilySpec = str | Mapping[str, Any]
 Build = Callable[["FormulationContext"], None]
 
@@ -58,10 +59,10 @@ BUILTIN_FAMILIES: dict[str, str] = {
     "overlap": "overlap:Overlap",
     "dma_channels": "dma:DmaChannels",
     "offchip_traffic": "offchip:OffchipTraffic",
-    "aie2_object_fifo_depth": "aie2:ObjectFifoDepth",
-    "aie2_buffer_descriptors": "aie2:BufferDescriptors",
-    "aie2_memory_reuse": "aie2:MemoryReuse",
-    "aie2_dma_channels": "aie2:DmaChannels",
+    "aie2_object_fifo_depth": "aie2:AIE2ObjectFifoDepth",
+    "aie2_buffer_descriptors": "aie2:AIE2BufferDescriptors",
+    "aie2_memory_reuse": "aie2:AIE2MemoryReuse",
+    "aie2_dma_channels": "aie2:AIE2DmaChannels",
     "memory_ports": "memory_ports:MemoryPorts",
 }
 """Stream's own families by name, as ``module:factory`` within this package."""
@@ -149,8 +150,9 @@ def parse_spec(spec: FamilySpec) -> tuple[str, dict[str, Any]]:
 
 
 def load_families(specs: Sequence[FamilySpec]) -> FamilySelection:
-    """Instantiate the families ``specs`` name and order their steps; an unknown name raises with the known
-    ones, and a requirement no selected family provides raises with the family that needs it."""
+    """Instantiate the families ``specs`` name and order their steps; an unknown name raises with the known ones, a
+    requirement no selected family provides with the family that needs it, and a selection that defines no total
+    latency, the first objective level, with the family that does."""
     if isinstance(specs, str):
         raise TypeError(f"Constraint families are a list of names, got the string {specs!r}")
     known = available_families() if specs else {}
@@ -166,7 +168,10 @@ def load_families(specs: Sequence[FamilySpec]) -> FamilySelection:
         except TypeError as exc:
             raise TypeError(f"Constraint family {name!r}: {exc}") from None
         options.append(family_options)
-    return FamilySelection(tuple(families), tuple(options), _build_order(families))
+    steps = _build_order(families)
+    if not any(TOTAL_LATENCY in _provided(family) for family in families):
+        raise ValueError(f"The constraint families {[f.name for f in families]} define no {TOTAL_LATENCY}; add overlap")
+    return FamilySelection(tuple(families), tuple(options), steps)
 
 
 def drop_families[Spec: FamilySpec](specs: Iterable[Spec], names: Iterable[str]) -> tuple[Spec, ...]:

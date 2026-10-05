@@ -4,7 +4,7 @@ Covers:
   - Pydantic BaseModel IR classes exist with schema_version field and produce valid JSON Schema
   - Per-persona IR views available (algorithmic, hardware, compiler)
 
-Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator/Scheduler objects required.
+Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator/Allocation objects required.
 Mock objects provide .get_ir() -> dict for from_internal() tests.
 """
 
@@ -464,7 +464,7 @@ class TestAllocationIR:
         assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
 
     def test_from_dict(self):
-        """AllocationIR constructed from a dict matching scheduler.get_ir() shape validates without error."""
+        """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
         raw = ALLOCATION_RAW
         nodes = {
             name: NodeAllocationIR(
@@ -496,14 +496,13 @@ class TestAllocationIR:
         assert ir.schema_version == "2.0"
 
     def test_from_internal_post_solve(self):
-        """AllocationIR.from_internal(mock_scheduler) constructs correctly when latency_total > 0."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        """AllocationIR.from_internal(mock_allocation) constructs correctly."""
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
 
-        ir = AllocationIR.from_internal(mock_scheduler)
+        ir = AllocationIR.from_internal(mock_allocation)
 
-        mock_scheduler.get_ir.assert_called_once()
+        mock_allocation.get_ir.assert_called_once()
         assert ir.latency.total == 2000
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
@@ -515,11 +514,10 @@ class TestAllocationIR:
 
     def test_tiling_distinguishes_split_counts_from_block_extents(self):
         """fusion_splits/inter_core carry a split count; intra_core carries a block extent in elements."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
 
-        tiling = AllocationIR.from_internal(mock_scheduler).tiling
+        tiling = AllocationIR.from_internal(mock_allocation).tiling
         assert tiling is not None
         assert {(s.dim, s.factor) for s in tiling.fusion_splits} == {("K", 4), ("M", 2)}
         assert [(s.dim, s.factor) for s in tiling.inter_core["MatMul"]] == [("K", 2), ("M", 1)]
@@ -535,21 +533,19 @@ class TestAllocationIR:
                 return "(d0, d1) -> (d0, d1)"
 
         raw = {**ALLOCATION_RAW, "mapping": {**ALLOCATION_RAW["mapping"], "runtime_args": {"input": _FakeAffineMap()}}}
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = raw
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = raw
 
-        ir = AllocationIR.from_internal(mock_scheduler)
+        ir = AllocationIR.from_internal(mock_allocation)
         assert ir.runtime_args == {"input": "(d0, d1) -> (d0, d1)"}
         ir.model_dump_json()  # must stay JSON-serializable
 
     def test_algorithmic_view(self):
         """AllocationIR.algorithmic_view() returns AllocationAlgorithmicView with latency,
         backend, families."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         view = ir.algorithmic_view()
 
@@ -565,10 +561,9 @@ class TestAllocationIR:
 
     def test_hardware_view(self):
         """AllocationIR.hardware_view() returns AllocationHardwareView with per-node resource and memory allocation."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         view = ir.hardware_view()
 
@@ -585,10 +580,9 @@ class TestAllocationIR:
 
     def test_compiler_view(self):
         """AllocationIR.compiler_view() returns AllocationCompilerView with node-to-core mapping, fused_groups."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         view = ir.compiler_view()
 
@@ -607,21 +601,19 @@ class TestAllocationIR:
     def test_no_families(self):
         """AllocationIR of a solve that names no family validates correctly."""
         raw = {**ALLOCATION_RAW, "families": []}
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = raw
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = raw
 
-        ir = AllocationIR.from_internal(mock_scheduler)
+        ir = AllocationIR.from_internal(mock_allocation)
 
         assert ir.families == []
         assert ir.algorithmic_view().families == []
 
     def test_json_round_trip(self):
         """model_dump_json() on AllocationIR produces valid JSON that round-trips through json.loads."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = 2000
-        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
-        ir = AllocationIR.from_internal(mock_scheduler)
+        mock_allocation = MagicMock()
+        mock_allocation.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_allocation)
 
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
@@ -715,10 +707,9 @@ class TestAllocationIRSolverEvidence:
     """The overlap breakdown, recurrence bound and optimality gap must survive the IR boundary."""
 
     def _ir(self):
-        scheduler = MagicMock()
-        scheduler.latency_total = 2000
-        scheduler.get_ir.return_value = SOLVER_EVIDENCE_RAW
-        return AllocationIR.from_internal(scheduler)
+        allocation = MagicMock()
+        allocation.get_ir.return_value = SOLVER_EVIDENCE_RAW
+        return AllocationIR.from_internal(allocation)
 
     def test_binding_resources_and_slack_survive(self):
         overlap = self._ir().performance.overlap
@@ -754,11 +745,10 @@ class TestAllocationIRSolverEvidence:
 
     def test_absent_solve_stats_are_none_not_defaulted(self):
         """A run whose backend reports no stats must not claim a status it does not have."""
-        scheduler = MagicMock()
-        scheduler.latency_total = 2000
-        scheduler.get_ir.return_value = ALLOCATION_RAW
+        allocation = MagicMock()
+        allocation.get_ir.return_value = ALLOCATION_RAW
 
-        assert AllocationIR.from_internal(scheduler).solve is None
+        assert AllocationIR.from_internal(allocation).solve is None
 
     def test_json_round_trip(self):
         parsed = json.loads(self._ir().model_dump_json())
@@ -774,10 +764,9 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
     from stream.ir import allocation as allocation_module
 
     monkeypatch.setattr(allocation_module, "loaded_overlays", lambda: ("vendor-overlay", "vendor-overlay-acme"))
-    scheduler = MagicMock()
-    scheduler.latency_total = 2000
-    scheduler.get_ir.return_value = ALLOCATION_RAW
+    allocation = MagicMock()
+    allocation.get_ir.return_value = ALLOCATION_RAW
 
-    ir = AllocationIR.from_internal(scheduler)
+    ir = AllocationIR.from_internal(allocation)
     assert ir.overlays == ["vendor-overlay", "vendor-overlay-acme"]
     assert ir.model_dump()["overlays"] == ["vendor-overlay", "vendor-overlay-acme"]

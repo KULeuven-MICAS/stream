@@ -1,7 +1,6 @@
 """Lowering of a fused group to its steady state: the transfers made explicit, each with the placements and
 routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
 
-import logging
 from dataclasses import replace
 from itertools import combinations
 from math import ceil, prod
@@ -38,11 +37,8 @@ from stream.workload.utils import (
     get_compute_predecessors_successors,
     get_equivalent_dimension,
     get_node_with_largest_resource_allocation,
-    is_reused_on_chip,
 )
 from stream.workload.workload import Workload
-
-logger = logging.getLogger(__name__)
 
 
 def largest_divisor_leq(n: int, cap: int) -> int:
@@ -158,7 +154,7 @@ class _Lowering:
     def _stages_on_mem_tile(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs]) -> bool:
         """Whether a transfer is staged in a memory tile instead of landing straight on the cores.
 
-        Two things ask for a staging buffer. An offchip input read more than once is held in the tile,
+        Two things ask for a staging buffer. An offchip input is held in the tile,
         which keeps the fan-out off the shim's two DMA channels: one channel feeds the tile, which then
         serves every core from its own. And a producer and consumer that disagree on layout need the
         tensor re-laid out between them, which is the tile's other job.
@@ -166,9 +162,7 @@ class _Lowering:
         if not self._get_accelerator_memory_cores():
             return False
         if isinstance(src, InEdge):
-            if self.hardware.force_io_transfers_on_mem_tile:
-                return True
-            return is_reused_on_chip(self.workload, tensor, dsts)
+            return True
         produced = self._declared_layout(src, tensor)
         if produced is None:
             return False

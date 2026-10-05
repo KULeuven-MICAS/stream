@@ -60,22 +60,21 @@ The cost of each computation node on each core it may run on, next to the `core_
 
 ### `allocation/reports/optimization_metrics.yaml`
 
-The outcome of the allocation solve and, for Gurobi, its effort and model size; the Gurobi-only values are null for other backends.
+The outcome of the allocation solve, on every backend, and the size of its model, which only Gurobi reports; a value the backend does not report is null.
 
 | Key | Meaning | Unit |
 |-----|---------|------|
 | `status` | how the solve ended, such as `OPTIMAL` or `TIME_LIMIT` | |
+| `backend` | the solver backend, such as `GUROBI` or `ORTOOLS_GSCIP` | |
+| `solver` | the solver behind it, such as `gurobi` or `gscip` | |
 | `search` | how much the solver searched | |
 | `search.nodes_explored` | branch-and-bound nodes explored | count |
 | `search.simplex_iterations` | simplex iterations | count |
-| `search.barrier_iterations` | barrier iterations | count |
 | `solution` | what the solver found | |
 | `solution.objective_value` | the objective of the best solution; for Stream's lexicographic objective, its highest level, the latency | objective |
-| `solution.objective_bound` | the best bound on that objective | objective |
-| `solution.mip_gap` | the relative gap between the two | ratio |
+| `solution.mip_gap` | the relative gap between that objective and the best bound | ratio |
 | `effort` | what the solve cost | |
 | `effort.runtime_s` | the solver's runtime | s |
-| `effort.work_units` | Gurobi's deterministic work measure | work units |
 | `model` | the size of the model | |
 | `model.variables` | its variables | |
 | `model.variables.total` | all variables | count |

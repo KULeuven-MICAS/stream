@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
-from stream.opt.allocation.constraint_optimization.families import LATENCY, SLOT_PRESSURE
-from stream.opt.allocation.constraint_optimization.families.latency import node_runtime, reuse_selectors
+from stream.opt.allocation.constraint_optimization.families import LATENCY, SLOT_PRESSURE, TOTAL_LATENCY
+from stream.opt.allocation.constraint_optimization.families.latency import reuse_selectors
 from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
 from stream.opt.allocation.constraint_optimization.space import core_id
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
@@ -51,6 +51,7 @@ class Overlap:
         "shared_busy",
         "idle_latency",
         "recurrence_bound",
+        TOTAL_LATENCY,
     )
 
     def __init__(
@@ -66,7 +67,7 @@ class Overlap:
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
         latency = {key: quantity.expr for key, quantity in q.indexed("transfer_latency").items()}
-        idle = _idle_indicators(ctx, effective_pipelining(self.model, ctx.space.force_double_buffering))
+        idle = _idle_indicators(ctx, self.model)
         idle_lat = _idle_latency_vars(ctx, idle, _slot_pressure_bound(q))
         for res, v in idle_lat.items():
             q.add("idle_latency", v._raw, index=res)
@@ -81,7 +82,7 @@ class Overlap:
             total_latency
             == iterations * q.get("iteration").expr - (iterations - 1) * q.get("overlap").expr + q.get("fill").expr
         )
-        q.add("total_latency", total_latency._raw)
+        q.add(TOTAL_LATENCY, total_latency._raw)
         return [ObjectiveLevel(expr=total_latency._raw, priority=LATENCY, name="latency")]
 
     def _define_overlap_var(
@@ -125,14 +126,6 @@ class Overlap:
         if _is_offchip_link(space, res):
             return self.offchip_contention
         return self.transfer_contention
-
-
-def effective_pipelining(selected: PipeliningModel, double_buffered: bool) -> PipeliningModel:
-    """The overlap formulation actually in force (OCCUPANCY needs double buffering; else SPAN)."""
-    if selected is PipeliningModel.OCCUPANCY and not double_buffered:
-        _logger.warning("PipeliningModel.OCCUPANCY needs double buffering; falling back to SPAN.")
-        return PipeliningModel.SPAN
-    return selected
 
 
 def _idle_indicators(ctx: FormulationContext, pipelining: PipeliningModel) -> dict[Resource, list[list[SolverVar]]]:
@@ -289,7 +282,7 @@ def _recurrence_bound(space: DecisionSpace) -> int:
     """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII), 0 when feed-forward: every
     state is a distance-one self-loop on the node that keeps it, so the worst cycle is the slowest carrier alone."""
     carriers = [n for n in space.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)]
-    return max((node_runtime(space, n) for n in carriers), default=0)
+    return max((space.runtime(n) for n in carriers), default=0)
 
 
 def _shared_bandwidth_bounds(ctx: FormulationContext, overlap: SolverVar, iteration: Any) -> None:

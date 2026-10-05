@@ -1,4 +1,4 @@
-"""Named model expressions an allocator exposes to objectives, bounds and constraint families."""
+"""Named model expressions the allocation model exposes to objectives, bounds and constraint families."""
 
 from __future__ import annotations
 
