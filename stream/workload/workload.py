@@ -402,33 +402,40 @@ class Workload(DiGraphWrapper[Node]):
             if isinstance(expr, AffineDimExpr) and expr.position not in dim_to_size:
                 dim_to_size[expr.position] = sz
 
-        # Step 2: infer size for remaining dims (kernel dims in strided ops like MaxPool)
+        # Step 2: infer size for remaining dims (kernel dims in strided ops like MaxPool, a conv's group)
         # These dims only appear in affine expressions like: stride*other_dim + kernel_dim + offset
-        # Their range is derived from: tensor_size, stride, output_size, and offset
+        # Their range is derived from: tensor_size, stride, output_size, and offset, once the others are known
+        def coefficient(expr: AffineExpr, dim: int) -> int:
+            probe = [0] * self.num_dims
+            probe[dim] = 1
+            return int(expr.eval(probe, [])) - int(expr.eval([0] * self.num_dims, []))
+
         missing = sorted(set(range(self.num_dims)) - set(dim_to_size.keys()))
-        for missing_dim in missing:
-            for expr, sz in result_to_shape:
-                probe = [0] * self.num_dims
-                at_0 = int(expr.eval(probe, []))
-                probe[missing_dim] = 1
-                at_1 = int(expr.eval(probe, []))
-                coeff = at_1 - at_0
-                if coeff == 0:
-                    continue  # this dim does not appear in this expression
-                # Compute max contribution from all other known dims
-                other_max = 0
-                for d, dsize in dim_to_size.items():
-                    probe2 = [0] * self.num_dims
-                    probe2[d] = dsize - 1
-                    val_hi = int(expr.eval(probe2, []))
-                    probe2[d] = 0
-                    val_lo = int(expr.eval(probe2, []))
-                    if val_hi > val_lo:
-                        other_max += val_hi - val_lo
-                const_term = int(expr.eval([0] * self.num_dims, []))
-                d_i_max = (sz - 1 - const_term - other_max) // coeff
-                dim_to_size[missing_dim] = int(d_i_max) + 1
-                break
+        while found := next(
+            (
+                (missing_dim, expr, sz)
+                for missing_dim in missing
+                for expr, sz in result_to_shape
+                if coefficient(expr, missing_dim) and not any(coefficient(expr, d) for d in missing if d != missing_dim)
+            ),
+            None,
+        ):
+            missing_dim, expr, sz = found
+            coeff = coefficient(expr, missing_dim)
+            # Compute max contribution from all other known dims
+            other_max = 0
+            for d, dsize in dim_to_size.items():
+                probe2 = [0] * self.num_dims
+                probe2[d] = dsize - 1
+                val_hi = int(expr.eval(probe2, []))
+                probe2[d] = 0
+                val_lo = int(expr.eval(probe2, []))
+                if val_hi > val_lo:
+                    other_max += val_hi - val_lo
+            const_term = int(expr.eval([0] * self.num_dims, []))
+            d_i_max = (sz - 1 - const_term - other_max) // coeff
+            dim_to_size[missing_dim] = int(d_i_max) + 1
+            missing.remove(missing_dim)
 
         assert len(dim_to_size) == self.num_dims, (
             f"Could not determine sizes for all {self.num_dims} dims: "
