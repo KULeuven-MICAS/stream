@@ -60,7 +60,7 @@ def lower_steady_state(  # noqa: PLR0913
     mapping: Mapping,
     fusion_splits: dict[LayerDim, int],
     cost_lut: CoreCostLUT,
-    nb_cols_to_use: int = 4,
+    nb_cols_to_use: int,
 ) -> AllocationProblem:
     """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``."""
     return _Lowering(workload, accelerator, mapping, nb_cols_to_use).lower(fusion_splits, cost_lut)
@@ -74,7 +74,7 @@ class _Lowering:
         self.accelerator = accelerator
         self.mapping = mapping.copy()
         self.nb_cols_to_use = nb_cols_to_use
-        self.hardware = build_hardware_facts(accelerator, nb_cols_to_use=nb_cols_to_use)
+        self.hardware = build_hardware_facts(accelerator, nb_cols_to_use)
 
     def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> AllocationProblem:
         with span("transfer_graph"):

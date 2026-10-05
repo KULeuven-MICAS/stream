@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from enum import Enum
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -14,9 +15,8 @@ from stream.opt.allocation.constraint_optimization.families import LATENCY, SLOT
 from stream.opt.allocation.constraint_optimization.families.latency import node_runtime, reuse_selectors
 from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
 from stream.opt.allocation.constraint_optimization.space import core_id
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency
-from stream.opt.solver import ObjectiveLevel, PipeliningModel, SolverVar, SolverVarType
+from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
+from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.iterator_type import is_state_operand
 
 if TYPE_CHECKING:
@@ -30,11 +30,17 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+class PipeliningModel(Enum):
+    """Inter-iteration overlap model: SPAN (idle only before first / after last use) or OCCUPANCY (any unused slot)."""
+
+    SPAN = "span"
+    OCCUPANCY = "occupancy"
+
+
 class Overlap:
-    """How much of an iteration the next one overlaps, and the fill before the first. ``model`` is ``occupancy``
-    (any slot a resource leaves unused) or ``span`` (only before its first and after its last use); with
-    ``transfer_contention`` and ``offchip_contention`` a busy on-chip or off-chip link bounds the overlap. The
-    latency of the whole run is the first objective level."""
+    """How much of an iteration the next one overlaps, the fill before the first, and the run's latency, the first
+    objective level. ``model`` reclaims any slot a resource leaves unused (``occupancy``) or only those before and
+    after its use (``span``); ``transfer_contention`` and ``offchip_contention`` let busy links bound the overlap."""
 
     name: ClassVar[str] = "overlap"
     requires: ClassVar[tuple[str, ...]] = ("transfer_latency", "reuse_factor", SLOT_PRESSURE)
@@ -57,16 +63,18 @@ class Overlap:
         self.transfer_contention = transfer_contention
         self.offchip_contention = offchip_contention
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         latency = {key: quantity.expr for key, quantity in q.indexed("transfer_latency").items()}
         idle = _idle_indicators(ctx, effective_pipelining(self.model, ctx.space.force_double_buffering))
         idle_lat = _idle_latency_vars(ctx, idle, _slot_pressure_bound(q))
         for res, v in idle_lat.items():
             q.add("idle_latency", v._raw, index=res)
-        self._define_overlap_var(ctx, q, idle_lat, latency)
-        _resident_fill(ctx, q)
+        self._define_overlap_var(ctx, idle_lat, latency)
+        _resident_fill(ctx)
 
-    def objective(self, ctx: FormulationContext, q: QuantityRegistry) -> list[ObjectiveLevel]:
+    def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
+        q = ctx.quantities
         iterations = ctx.space.iterations
         total_latency = ctx.model.add_var(vtype=SolverVarType.INTEGER, name="total_latency")
         ctx.model.add_constr(
@@ -79,10 +87,10 @@ class Overlap:
     def _define_overlap_var(
         self,
         ctx: FormulationContext,
-        q: QuantityRegistry,
         idle_lat: dict[Resource, SolverVar],
         latency: dict[tuple[TransferNode, MulticastPathPlan], Any],
     ) -> None:
+        q = ctx.quantities
         space, model = ctx.space, ctx.model
         overlap = model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
         iteration = model.quicksum(v._raw for v in ctx.vars.slot_latency.values())
@@ -101,8 +109,7 @@ class Overlap:
             else:
                 model.add_constr(overlap <= v)
         _skipped_step_floor(ctx, overlap, iteration, latency)
-        _shared_bandwidth_bounds(ctx, q, overlap, iteration)
-        # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
+        _shared_bandwidth_bounds(ctx, overlap, iteration)
         rec = _recurrence_bound(space)
         q.add("recurrence_bound", rec)
         if rec > 0:
@@ -148,13 +155,13 @@ def _resource_activity(ctx: FormulationContext) -> list[tuple[Resource, list[Any
     for link in space.link_set:
         per_slot = carried[link]
         active_s = [model.quicksum(per_slot.get(s, ())) for s in range(max_s + 1)]
-        lu = model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{_resource_key(link)}")
+        lu = model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{resource_key(link)}")
         sum_active = model.quicksum(active_s)
         ctx.add_constr(
-            sum_active >= lu, name=f"link_used_def_{_resource_key(link)}", resource=link, kind=LINK_CONTENTION
+            sum_active >= lu, name=f"link_used_def_{resource_key(link)}", resource=link, kind=LINK_CONTENTION
         )
         ctx.add_constr(
-            sum_active <= big_m * lu, name=f"link_used_def2_{_resource_key(link)}", resource=link, kind=LINK_CONTENTION
+            sum_active <= big_m * lu, name=f"link_used_def2_{resource_key(link)}", resource=link, kind=LINK_CONTENTION
         )
         out.append((link, active_s, lu))
 
@@ -165,8 +172,8 @@ def _resource_activity(ctx: FormulationContext) -> list[tuple[Resource, list[Any
             for core in group:
                 core_active_slots[core].add(s)
     for core, active_slots in core_active_slots.items():
-        lu = model.add_var(vtype=SolverVarType.BINARY, name=f"coreUsed_{_resource_key(core)}")
-        ctx.add_constr(lu == 1, name=f"core_used_def_{_resource_key(core)}", resource=core)
+        lu = model.add_var(vtype=SolverVarType.BINARY, name=f"coreUsed_{resource_key(core)}")
+        ctx.add_constr(lu == 1, name=f"core_used_def_{resource_key(core)}", resource=core)
         out.append((core, [1 if s in active_slots else 0 for s in range(max_s + 1)], lu))
     return out
 
@@ -174,7 +181,7 @@ def _resource_activity(ctx: FormulationContext) -> list[tuple[Resource, list[Any
 def _span_indicators(ctx: FormulationContext, res: Resource, active_s: list[Any], used: SolverVar) -> list[list[Any]]:
     """SPAN model: only slots before first use and after last use are reclaimable (via prefix/suffix sums)."""
     model, max_s, big_m = ctx.model, ctx.space.max_slot, ctx.space.big_m
-    key = _resource_key(res)
+    key = resource_key(res)
     prefix = [model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{key}_{s}") for s in range(max_s + 1)]
     suffix = [model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{key}_{s}") for s in range(max_s + 1)]
     model.add_constr(prefix[0] == active_s[0])
@@ -201,12 +208,11 @@ def _occupancy_indicators(
 ) -> list[list[Any]]:
     """OCCUPANCY model: every unused slot is reclaimable -- one indicator per slot, the complement of activity."""
     model, big_m = ctx.model, ctx.space.big_m
-    key = _resource_key(res)
+    key = resource_key(res)
     indicators = []
     for s in range(ctx.space.max_slot + 1):
         idle = model.add_var(vtype=SolverVarType.BINARY, name=f"idle_{key}_{s}")
         indicators.append([idle])
-        # Activity is a path-choice expr for a link but a plain int for a core -- pin it to a var first.
         act = model.add_var(vtype=SolverVarType.INTEGER, name=f"act_{key}_{s}")
         ctx.add_constr(act == active_s[s], name=f"act_def_{key}_{s}", resource=res)
         ctx.add_constr(act <= big_m * (1 - idle), name=f"idle_off_{key}_{s}", resource=res)
@@ -221,7 +227,7 @@ def _idle_latency_vars(
     model, slot_latency = ctx.model, ctx.vars.slot_latency
     idle_lat: dict[Resource, SolverVar] = {}
     for res in {res for res in idle}:
-        key = _resource_key(res)
+        key = resource_key(res)
         tag = ConstraintTag(res)
         terms = [
             ctx.binary_scaled_continuous(
@@ -266,7 +272,7 @@ def _skipped_step_floor(
                 tr, choice = key
                 ctx.add_constr(
                     overlap <= iteration - busy - (1.0 - fraction) * latency[key],
-                    name=f"skip_floor_{n.name}_{_resource_key(core)}_{tr.name}_{hash(choice)}",
+                    name=f"skip_floor_{n.name}_{resource_key(core)}_{tr.name}_{hash(choice)}",
                     resource=core,
                 )
 
@@ -280,21 +286,19 @@ def _is_offchip_link(space: DecisionSpace, res: Resource) -> bool:
 
 
 def _recurrence_bound(space: DecisionSpace) -> int:
-    """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII); 0 when feed-forward.
-
-    Every state is a distance-one self-loop on the node that keeps it, so the worst cycle is the
-    slowest carrier alone; a forward edge between two carriers joins no cycle.
-    """
+    """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII), 0 when feed-forward: every
+    state is a distance-one self-loop on the node that keeps it, so the worst cycle is the slowest carrier alone."""
     carriers = [n for n in space.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)]
     return max((node_runtime(space, n) for n in carriers), default=0)
 
 
-def _shared_bandwidth_bounds(ctx: FormulationContext, q: QuantityRegistry, overlap: SolverVar, iteration: Any) -> None:
+def _shared_bandwidth_bounds(ctx: FormulationContext, overlap: SolverVar, iteration: Any) -> None:
     """Bound the step by the time each shared-bandwidth core spends on one iteration's transfers."""
+    q = ctx.quantities
     space, model = ctx.space, ctx.model
     for core in space.shared_bandwidth:
         terms = [
-            _active_shared_latency(ctx, q, core, tr, choice, y)._raw
+            _active_shared_latency(ctx, core, tr, choice, y)._raw
             for (tr, choice), y in ctx.vars.y.items()
             if space.direction(core, choice) is not None and not space.choice_shares_memory(tr, choice)
         ]
@@ -307,9 +311,10 @@ def _shared_bandwidth_bounds(ctx: FormulationContext, q: QuantityRegistry, overl
 
 
 def _active_shared_latency(
-    ctx: FormulationContext, q: QuantityRegistry, core: int, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
+    ctx: FormulationContext, core: int, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
 ) -> SolverVar:
     """Cycles this transfer holds a shared-bandwidth core per iteration, at its read and write ceiling."""
+    q = ctx.quantities
     space = ctx.space
     constant = float(space.shared_cycles(core, tr, choice, space.shared_bandwidth[core].ceiling))
     return ctx.binary_times_const_over_linexpr(
@@ -322,10 +327,11 @@ def _active_shared_latency(
     )
 
 
-def _resident_fill(ctx: FormulationContext, q: QuantityRegistry) -> None:
+def _resident_fill(ctx: FormulationContext) -> None:
     """Cycles each run waits for the off-chip windows it holds in one buffer to fill: such a window fills
     before the iteration that reads it, overlapping none. The fills share each path and shared-bandwidth core
     as one iteration's transfers do."""
+    q = ctx.quantities
     space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
     fill = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
     shared: dict[int, list[Any]] = defaultdict(list)
@@ -338,7 +344,6 @@ def _resident_fill(ctx: FormulationContext, q: QuantityRegistry) -> None:
         if t not in optimized:
             continue
         sizes = space.ssis[t].get_applicable_temporal_sizes()
-        # (tiles a run waits for, the choice that makes it wait, its name)
         whole = (
             [
                 (space.tiles_needed_levels[(t, s)], z_stop[(t, s)], f"L{s}")

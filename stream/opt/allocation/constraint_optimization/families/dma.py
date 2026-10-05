@@ -8,14 +8,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import LATENCY
 from stream.opt.allocation.constraint_optimization.space import unique_tensors
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.workload import Tensor
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import TransferNode
 
@@ -32,11 +31,9 @@ class DmaChannels:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ("dma_in", "dma_out", "dma_peak_in", "dma_peak_out")
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         space, model = ctx.space, ctx.model
-        # A handover read out of memory the two cores share costs neither of them a channel;
-        # one that has to cross the array costs the sender an outgoing and the reader an
-        # incoming, like any other fifo between two cores.
         handover_out: dict[Core, int] = defaultdict(int)
         handover_in: dict[Core, int] = defaultdict(int)
         for one, other, _ in space.handovers:
@@ -48,22 +45,22 @@ class DmaChannels:
         core_dma_in: dict[Core, SolverVar] = {}
         core_dma_out: dict[Core, SolverVar] = {}
         for core in dma_cores:
-            v_in = model.add_var(vtype=SolverVarType.INTEGER, name=f"coreDmaIn_{_resource_key(core)}")
-            v_out = model.add_var(vtype=SolverVarType.INTEGER, name=f"coreDmaOut_{_resource_key(core)}")
+            v_in = model.add_var(vtype=SolverVarType.INTEGER, name=f"coreDmaIn_{resource_key(core)}")
+            v_out = model.add_var(vtype=SolverVarType.INTEGER, name=f"coreDmaOut_{resource_key(core)}")
             in_expr = model.quicksum(_channels(ctx, tr, core, True) for tr in space.transfer_nodes)
             out_expr = model.quicksum(_channels(ctx, tr, core, False) for tr in space.transfer_nodes)
             in_expr = in_expr + handover_in[core]
             out_expr = out_expr + handover_out[core]
-            ctx.add_constr(v_in == in_expr, name=f"coreDmaInConstr_{_resource_key(core)}", resource=core)
-            ctx.add_constr(v_out == out_expr, name=f"coreDmaOutConstr_{_resource_key(core)}", resource=core)
+            ctx.add_constr(v_in == in_expr, name=f"coreDmaInConstr_{resource_key(core)}", resource=core)
+            ctx.add_constr(v_out == out_expr, name=f"coreDmaOutConstr_{resource_key(core)}", resource=core)
             core_dma_in[core] = v_in
             core_dma_out[core] = v_out
 
         max_in = model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaIn")
         max_out = model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaOut")
         for core in dma_cores:
-            ctx.add_constr(max_in >= core_dma_in[core], name=f"maxCoreDmaIn_lb_{_resource_key(core)}", resource=core)
-            ctx.add_constr(max_out >= core_dma_out[core], name=f"maxCoreDmaOut_lb_{_resource_key(core)}", resource=core)
+            ctx.add_constr(max_in >= core_dma_in[core], name=f"maxCoreDmaIn_lb_{resource_key(core)}", resource=core)
+            ctx.add_constr(max_out >= core_dma_out[core], name=f"maxCoreDmaOut_lb_{resource_key(core)}", resource=core)
 
         for core, usage in core_dma_in.items():
             q.add("dma_in", usage, index=core)
@@ -72,7 +69,8 @@ class DmaChannels:
         q.add("dma_peak_in", max_in._raw)
         q.add("dma_peak_out", max_out._raw)
 
-    def objective(self, ctx: FormulationContext, q: QuantityRegistry) -> list[ObjectiveLevel]:
+    def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
+        q = ctx.quantities
         peaks = q.get("dma_peak_in").expr + q.get("dma_peak_out").expr
         return [ObjectiveLevel(expr=peaks, priority=LATENCY, name="latency")]
 
@@ -112,7 +110,7 @@ def _side_uses_core_var(ctx: FormulationContext, tr: TransferNode, core: Core, i
     """Whether any tensor this transfer brings to (or takes from) this core sits on it."""
     model = ctx.model
     side = "in" if incoming else "out"
-    name = f"{tr.name}_{_resource_key(core)}_{side}"
+    name = f"{tr.name}_{resource_key(core)}_{side}"
     u = model.add_var(vtype=SolverVarType.BINARY, name=f"us_{name}")
     tensors = unique_tensors(tr.outputs if incoming else tr.inputs)
     occ_exprs = [ctx.tensor_on_core_expr(t, core) for t in tensors]

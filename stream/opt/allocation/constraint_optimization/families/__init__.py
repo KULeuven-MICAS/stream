@@ -5,19 +5,19 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from stream.plugins import load_group, overlay_allowlist
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.solver import ObjectiveLevel
 
 FAMILY_GROUP = "stream.constraint_families"
 SLOT_PRESSURE = "slot_pressure"
 FamilySpec = str | Mapping[str, Any]
-Build = Callable[["FormulationContext", "QuantityRegistry"], None]
+Build = Callable[["FormulationContext"], None]
 
 LATENCY, OFFCHIP_TRAFFIC, BUFFERING, ROUTE_HOPS = 4, 3, 2, 1
 """The priorities of Stream's objective levels: the latency decides first, then the off-chip traffic, the
@@ -42,6 +42,30 @@ DEFAULT_FAMILIES: tuple[str, ...] = (
 )
 """Stream's own families, in every default set and built in this order where their requirements allow."""
 
+BUILTIN_FAMILIES: dict[str, str] = {
+    "placement": "routing:Placement",
+    "path_choice": "routing:PathChoice",
+    "reuse_rates": "reuse:ReuseRates",
+    "link_contention": "routing:LinkContention",
+    "memory_capacity": "memory:MemoryCapacity",
+    "object_fifo_depth": "memory:ObjectFifoDepth",
+    "buffer_descriptors": "memory:BufferDescriptors",
+    "slot_latency": "latency:SlotLatency",
+    "reuse_levels": "reuse:ReuseLevels",
+    "output_reuse": "reuse:OutputReuse",
+    "reuse_compatibility": "reuse:ReuseCompatibility",
+    "spatial_reuse": "reuse:SpatialReuse",
+    "overlap": "overlap:Overlap",
+    "dma_channels": "dma:DmaChannels",
+    "offchip_traffic": "offchip:OffchipTraffic",
+    "aie2_object_fifo_depth": "aie2:ObjectFifoDepth",
+    "aie2_buffer_descriptors": "aie2:BufferDescriptors",
+    "aie2_memory_reuse": "aie2:MemoryReuse",
+    "aie2_dma_channels": "aie2:DmaChannels",
+    "memory_ports": "memory_ports:MemoryPorts",
+}
+"""Stream's own families by name, as ``module:factory`` within this package."""
+
 
 class ConstraintFamily(Protocol):
     """Constraints and the quantities they define. ``build`` runs after every family that provides a name in
@@ -52,7 +76,7 @@ class ConstraintFamily(Protocol):
     requires: ClassVar[tuple[str, ...]]
     provides: ClassVar[tuple[str, ...]]
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None: ...
+    def build(self, ctx: FormulationContext) -> None: ...
 
 
 @runtime_checkable
@@ -63,15 +87,7 @@ class DeclaringFamily(Protocol):
     declare_requires: ClassVar[tuple[str, ...]]
     declares: ClassVar[tuple[str, ...]]
 
-    def declare(self, ctx: FormulationContext, q: QuantityRegistry) -> None: ...
-
-
-@runtime_checkable
-class ScreeningFamily(Protocol):
-    """A family that can tell from the problem alone that its constraints have no solution: ``screen`` runs before
-    any family builds and raises :class:`~stream.ir.infeasibility.InfeasibleAllocationError`."""
-
-    def screen(self, ctx: FormulationContext) -> None: ...
+    def declare(self, ctx: FormulationContext) -> None: ...
 
 
 @runtime_checkable
@@ -79,14 +95,14 @@ class ObjectiveFamily(Protocol):
     """A family that contributes to the lexicographic objective once every family has built: the levels of one
     name, which share a priority, are summed into one."""
 
-    def objective(self, ctx: FormulationContext, q: QuantityRegistry) -> list[ObjectiveLevel]: ...
+    def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]: ...
 
 
 @runtime_checkable
 class ReportingFamily(Protocol):
-    """A family that adds sections to the solved schedule's performance report."""
+    """A family that adds sections to the solved allocation's performance report."""
 
-    def report(self, ctx: FormulationContext, q: QuantityRegistry) -> dict[str, Any]: ...
+    def report(self, ctx: FormulationContext) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -104,14 +120,17 @@ class FamilySelection:
 
 
 def available_families() -> dict[str, Callable[..., ConstraintFamily]]:
-    """Family factories by name from the ``stream.constraint_families`` entry points, discovered once per overlay
-    allowlist: every solve of a sweep resolves its families, and discovery costs more than many a model build."""
+    """Family factories by name: Stream's own and those of the ``stream.constraint_families`` entry points, discovered
+    once per overlay allowlist, as every solve of a sweep resolves its families."""
     return dict(_discovered(overlay_allowlist()))
 
 
 @cache
 def _discovered(allow: frozenset[str] | None) -> dict[str, Callable[..., ConstraintFamily]]:
     factories: dict[str, Callable[..., ConstraintFamily]] = {}
+    for name, path in BUILTIN_FAMILIES.items():
+        module, factory = path.split(":")
+        factories[name] = getattr(import_module(f"{__name__}.{module}"), factory)
     for plugin in load_group(FAMILY_GROUP, allow):
         if plugin.name in factories and factories[plugin.name] is not plugin.obj:
             raise ValueError(f"Constraint family {plugin.name!r} is registered twice")
@@ -150,7 +169,7 @@ def load_families(specs: Sequence[FamilySpec]) -> FamilySelection:
     return FamilySelection(tuple(families), tuple(options), _build_order(families))
 
 
-def drop_families(specs: Iterable[FamilySpec], names: Iterable[str]) -> tuple[FamilySpec, ...]:
+def drop_families[Spec: FamilySpec](specs: Iterable[Spec], names: Iterable[str]) -> tuple[Spec, ...]:
     """``specs`` less the families ``names`` and every family that then requires what none of the rest provide."""
     kept = list(specs)
     dropped = set(names)

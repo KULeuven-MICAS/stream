@@ -69,7 +69,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
     space.shared_cycles = lambda core, transfer, path, rate: cycles[transfer][1]  # type: ignore[method-assign]
     q = QuantityRegistry()
     ctx = FormulationContext(space, DecisionVariables({}, y, z_stop, z_single, {}), model, q, ResourceLedger())
-    overlap._resident_fill(ctx, q)
+    overlap._resident_fill(ctx)
     fill = q.get("fill").expr
     model.set_objective(fill)
     model.optimize()

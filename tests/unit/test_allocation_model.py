@@ -6,18 +6,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from stream.opt.allocation.constraint_optimization import allocation_model
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     LATENCY,
-    ScreeningFamily,
     drop_families,
     load_families,
     overlap,
 )
+from stream.opt.allocation.constraint_optimization.families.overlap import PipeliningModel
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
-from stream.opt.solver import ObjectiveLevel, PipeliningModel
+from stream.opt.solver import ObjectiveLevel
 from stream.workload.steady_state.iteration_space import Reuse
 
 TOTAL_LATENCY = 100
@@ -35,7 +36,7 @@ def _objectives(specs=DEFAULT_FAMILIES, **quantities) -> dict[str, ObjectiveLeve
     space = SimpleNamespace(iterations=1, transfer_nodes=[], links_in_choice={}, tensors_to_optimize_reuse_for=[])
     tta = SimpleNamespace(
         families=load_families(specs),
-        context=SimpleNamespace(model=model, space=space, vars=SimpleNamespace(y={}, z_stop={})),
+        context=SimpleNamespace(model=model, space=space, vars=SimpleNamespace(y={}, z_stop={}), quantities=q),
         quantities=q,
     )
     return AllocationModel._objective_levels(tta)  # type: ignore[arg-type]
@@ -48,12 +49,20 @@ def test_a_family_left_out_builds_nothing():
     assert {"memory_capacity", "dma_channels"}.isdisjoint(family.name for family in selection.families)
 
 
-def test_the_capacity_screen_goes_with_memory_capacity():
-    """Leaving memory_capacity out leaves out the screen that fails a solve before its model is built."""
-    screens = [f.name for f in load_families(DEFAULT_FAMILIES).families if isinstance(f, ScreeningFamily)]
-    assert screens == ["memory_capacity"]
-    dropped = load_families(drop_families(DEFAULT_FAMILIES, ["memory_capacity"])).families
-    assert not any(isinstance(f, ScreeningFamily) for f in dropped)
+def test_the_capacity_screen_runs_first_whatever_the_families(monkeypatch: pytest.MonkeyPatch):
+    """A memory too small for its pinned tensors fails the solve before the model is built, with memory_capacity
+    in the selection or not."""
+    screened = []
+
+    def screen(space, model):
+        screened.append((space, model))
+        raise RuntimeError("screened")
+
+    monkeypatch.setattr(allocation_model, "capacity_screen", screen)
+    model = SimpleNamespace(space="space", model="model", families=load_families([]))
+    with pytest.raises(RuntimeError, match="screened"):
+        AllocationModel._build_model(model)  # type: ignore[arg-type]
+    assert screened == [("space", "model")]
 
 
 def test_without_dma_channels_the_primary_objective_is_the_latency():
@@ -75,12 +84,12 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
         model=MagicMock(quicksum=MagicMock(return_value=SimpleNamespace(_raw=2048))),
         space=SimpleNamespace(tensors_to_optimize_reuse_for=[]),
         vars=SimpleNamespace(z_stop={}),
+        quantities=QuantityRegistry(),
     )
-    q = QuantityRegistry()
     (family,) = load_families(["offchip_traffic"]).families
-    assert [level.name for level in family.objective(ctx, q)] == ["offchip_traffic"]
-    q.add("offchip_traffic_weight", 1 / 512)
-    traffic, latency = family.objective(ctx, q)
+    assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
+    ctx.quantities.add("offchip_traffic_weight", 1 / 512)
+    traffic, latency = family.objective(ctx)
     assert (traffic.expr, latency.name, latency.priority, latency.expr) == (2048, "latency", LATENCY, 4)
 
 
@@ -94,10 +103,19 @@ def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
     (family,) = load_families(["offchip_traffic"]).families
     space = SimpleNamespace(shared_bandwidth=shared_bandwidth, iterations=4, offchip_bandwidth=lambda: bandwidth)
     q = QuantityRegistry()
-    family.build(SimpleNamespace(space=space), q)
+    family.build(SimpleNamespace(space=space, quantities=q))
     assert ("offchip_traffic_weight" in q) is charged
     if charged:
         assert q.get("offchip_traffic_weight").expr == 4 / bandwidth
+
+
+def test_offchip_traffic_without_its_charge_keeps_its_level():
+    """``charge`` False drops only the latency charge, as ConstraintSelection(offchip_traffic_cost=False) did."""
+    (family,) = load_families([{"offchip_traffic": {"charge": False}}]).families
+    space = SimpleNamespace(shared_bandwidth={}, iterations=4, offchip_bandwidth=lambda: 512.0)
+    q = QuantityRegistry()
+    family.build(SimpleNamespace(space=space, quantities=q))
+    assert "offchip_traffic_weight" not in q
 
 
 def test_the_objective_needs_the_overlap():
@@ -109,13 +127,14 @@ def test_levels_of_one_name_must_share_a_priority():
     class Rogue:
         name = "rogue"
 
-        def objective(self, ctx, q):
+        def objective(self, ctx):
             return [ObjectiveLevel(expr=1, priority=LATENCY + 1, name="latency")]
 
+    q = QuantityRegistry()
     tta = SimpleNamespace(
         families=SimpleNamespace(families=[*load_families(["dma_channels"]).families, Rogue()]),
-        context=None,
-        quantities=QuantityRegistry(),
+        context=SimpleNamespace(quantities=q),
+        quantities=q,
     )
     tta.quantities.add("dma_peak_in", 1)
     tta.quantities.add("dma_peak_out", 1)
@@ -138,14 +157,13 @@ def test_pipelining_defaults_to_occupancy():
     ("selected", "double_buffered", "expected"),
     [
         (PipeliningModel.OCCUPANCY, True, PipeliningModel.OCCUPANCY),
-        # Overlapping means prefetching the next tile while this one computes -- with a single
-        # buffer there is nowhere to prefetch into, so the credit must not be handed out.
         (PipeliningModel.OCCUPANCY, False, PipeliningModel.SPAN),
         (PipeliningModel.SPAN, True, PipeliningModel.SPAN),
         (PipeliningModel.SPAN, False, PipeliningModel.SPAN),
     ],
 )
 def test_pipelining_requires_double_buffering(selected, double_buffered, expected):
+    """Overlapping prefetches the next tile while this one computes, which a single buffer has nowhere to put."""
     assert overlap.effective_pipelining(selected, double_buffered) is expected
 
 

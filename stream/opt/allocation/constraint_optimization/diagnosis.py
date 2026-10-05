@@ -20,7 +20,7 @@ from stream.ir.infeasibility import (
     TileDimIR,
     UnmetConstraintIR,
 )
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.opt.allocation.constraint_optimization.utils import resource_key
 
 if TYPE_CHECKING:
     from stream.mapping.mapping import Resource
@@ -68,7 +68,11 @@ def structural_infeasibility(reason: str, model: SolverModel | None = None) -> I
     """A minimal infeasibility report for a structural problem in the mapping itself (a node with no
     valid core), raised during model construction -- so an unbuildable model fails with an
     inspectable diagnosis rather than a bare exception."""
-    backend, solver = model.identity() if model is not None else ("n/a", "n/a")
+    backend = solver = "n/a"
+    if model is not None:
+        with suppress(AttributeError):
+            stats = model.solve_stats()
+            backend, solver = stats.backend, stats.solver
     return InfeasibilityReportIR(
         status="INFEASIBLE",
         backend=backend,
@@ -116,13 +120,9 @@ def infeasibility_report(
         entry["constraints"].append(name)
 
     resources = [_implicated_resource(ledger, entry) for entry in grouped.values()]
-    # Backend-agnostic fallback: if the IIS pinned nothing to a resource (or is unavailable, e.g. on
-    # OR-Tools), diagnose directly from the recorded per-core demand vs bound so an OR-Tools solve
-    # still yields the same actionable per-resource diagnosis instead of a bare "infeasible".
     if not resources:
         resources = _direct_capacity_overflows(ledger)
 
-    # Group structural constraints (unbound + overflow-less resources) into plain-language causes.
     structural_names = list(unbound) + [c for r in resources if r.unmet is None for c in r.constraints]
     conflicts = _structural_conflicts(ledger, structural_names)
 
@@ -186,10 +186,10 @@ def resource_ref(resource: Resource) -> ResourceRefIR:
     """A physical resource as the IR the architecture view highlights."""
     if isinstance(resource, Core):
         detail = {"core_type": str(resource.core_type)}
-        with suppress(AssertionError):  # a core without a backend models no memory
+        with suppress(AssertionError):
             detail["memory_capacity_bits"] = str(resource.get_memory_capacity())
         return ResourceRefIR(kind="core", id=str(resource.id), label=f"Core {resource.id}", detail=detail)
-    return ResourceRefIR(kind="link", id=_resource_key(resource), label=_resource_key(resource))
+    return ResourceRefIR(kind="link", id=resource_key(resource), label=resource_key(resource))
 
 
 def _implicated_resource(ledger: ResourceLedger, entry: dict[str, Any]) -> ImplicatedResourceIR:
@@ -199,12 +199,10 @@ def _implicated_resource(ledger: ResourceLedger, entry: dict[str, Any]) -> Impli
     ref = entry["ref"]
     unmet: UnmetConstraintIR | None = None
     if ref.kind == "core" and ref.id.isdigit():
-        for kind in kinds:  # quantify the first limit with a recorded bound and demand
+        for kind in kinds:
             unmet = _unmet(ledger, kind, int(ref.id), _forced_terms(ledger, kind, int(ref.id), entry["constraints"]))
             if unmet is not None:
                 break
-    # gap > 0 is a real overflow (report the limit it broke). A non-positive gap means the IIS pulled
-    # this capacity constraint into a structural conflict without the core being over budget ("involved", not over).
     if unmet is not None and unmet.gap > 0:
         reason = "; ".join(kind.reason for kind in kinds)
     else:

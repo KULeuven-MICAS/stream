@@ -1,4 +1,4 @@
-"""Solver abstraction package for TETRA constraint optimization.
+"""Solver abstraction package for the allocation model.
 
 Public API re-exported from stream.opt.solver.solver.
 """
@@ -8,7 +8,6 @@ from stream.opt.solver.solver import (
     LinExpr,
     ObjectiveLevel,
     ORToolsBackend,
-    PipeliningModel,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -23,7 +22,6 @@ __all__ = [
     "LinExpr",
     "ObjectiveLevel",
     "ORToolsBackend",
-    "PipeliningModel",
     "SolveStats",
     "SolverBackend",
     "SolverModel",

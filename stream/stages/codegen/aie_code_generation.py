@@ -421,12 +421,12 @@ class AIECodeGenerationStage(Stage):
 
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused."""
-        schedule = self.ctx.get("allocation")
-        slack = schedule.solution.capacity_slack
+        allocation = self.ctx.get("allocation")
+        slack = allocation.solution.capacity_slack
         if not slack:
             return None
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in schedule.accelerator.core_list:
+        for core in allocation.problem.accelerator.core_list:
             per_core = slack.get(core.id)
             if per_core is None or core.col_id is None or core.row_id is None:
                 continue

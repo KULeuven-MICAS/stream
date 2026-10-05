@@ -3,19 +3,30 @@ target forces."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.opt.allocation.constraint_optimization.diagnosis import StructuralRule
-from stream.opt.allocation.constraint_optimization.hardware import MemoryReuseEntry
 from stream.opt.solver import SolverVarType
 from stream.workload.node import TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType
 
 if TYPE_CHECKING:
+    from stream.hardware.architecture.core import Core
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
-    from stream.opt.solver import SolverVar
+    from stream.opt.solver import LinExpr, SolverVar
     from stream.workload.workload import Tensor
+
+
+@dataclass(frozen=True)
+class MemoryReuseEntry:
+    """One staged tensor's residency on a memory tile, held against its reader's."""
+
+    name: str
+    core: Core
+    mem_level: LinExpr
+    compute_level: LinExpr
+    unexpressible: tuple[tuple[SolverVar, SolverVar], ...]
 
 
 def replay_unexpressible_levels(relevancies: list[bool], read_levels: int) -> list[tuple[int, int]]:
@@ -37,7 +48,8 @@ class ReuseRates:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ("reuse_factor",)
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
         for tr in space.transfer_nodes:
             assert len(tr.inputs) == 1, (
@@ -84,7 +96,7 @@ class ReuseLevels:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
         for tr in ctx.space.transfer_nodes:
             if tr.transfer_type not in (TransferType.COMPUTE_TO_COMPUTE):
                 continue
@@ -106,7 +118,7 @@ class OutputReuse:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
         for tr in ctx.space.transfer_nodes:
             if tr.transfer_type not in (TransferType.COMPUTE_TO_MEM,):
                 continue
@@ -122,20 +134,16 @@ class OutputReuse:
 
 
 class ReuseCompatibility:
-    """The reuse levels on either side of a transfer between a memory and a compute tile agree; the residency a
-    memory tile keeps beyond its reader is what a namespace family checks it can replay.
-
-    On the way in the memory tile only has to hold the tensor for at least as long as the compute tile reads it, so
-    its level bounds the compute level from above: equating them would let the compute tile's capacity decide how
-    long the memory tile keeps a tensor, sending the shim offchip for data already on chip. On the way out the
-    levels are equal: a partial output cannot be sent to a memory tile and brought back, so the compute tile owns
-    it until it is complete and the memory tile inherits exactly that residency."""
+    """The reuse levels on either side of a transfer between a memory and a compute tile agree: on the way in the
+    memory tile holds the tensor at least as long as its reader, which a namespace family checks it can replay; on
+    the way out they are equal, as a partial output cannot go to a memory tile and come back."""
 
     name: ClassVar[str] = "reuse_compatibility"
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ("memory_reuse",)
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
         memory_reuse: list[MemoryReuseEntry] = []
         namespace_cores = list({c.namespace: c for c in space.mem_cores}.values())
@@ -163,14 +171,10 @@ class ReuseCompatibility:
                 assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
                 input_tensor = inputs[0]
                 for output_tensor in outputs:
-                    # Way-in reuse: the memory tile need only hold the tensor AT LEAST as long as the compute
-                    # reads it (>=, not ==), so a deeper-loop-invariant operand isn't evicted and re-streamed.
                     model.add_constr(
                         _reuse_level_expr(ctx, input_tensor) >= _reuse_level_expr(ctx, output_tensor),
                         name=f"reuse_ge_output_{tr.name}",
                     )
-                    # Whether that extra residency is realisable is a target property.
-                    # One core per namespace is enough; the rest repeat the constraint.
                     unexpressible = _replay_unexpressible_pairs(ctx, input_tensor, output_tensor)
                     memory_reuse.extend(
                         MemoryReuseEntry(
@@ -210,7 +214,7 @@ class SpatialReuse:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
         for t in ctx.space.tensors_to_optimize_reuse_for:
             variables = ctx.space.ssis[t].variables
             applicable_temporal = ctx.space.ssis[t].get_applicable_temporal_variables()

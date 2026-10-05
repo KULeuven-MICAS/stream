@@ -4,7 +4,7 @@ mappings, and generate the code of one.
 A workload is anything a registered frontend loads, such as an ONNX path, or a
 :class:`~stream.workload.workload.Workload`; an accelerator is a hardware YAML path or an
 :class:`~stream.hardware.architecture.accelerator.Accelerator`. Everything that depends on the
-hardware is found through plugins: the namespace constraints and core-cost backends of the solve, the
+hardware is found through plugins: the hardware namespaces and core-cost backends of the solve, the
 mapping generator that proposes a mapping when none is given, and the code generation backend.
 """
 
@@ -21,11 +21,16 @@ from stream.compiler.kernels.library import KernelLibrary
 from stream.frontends import load_workload
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
-from stream.opt.allocation.constraint_optimization.families import FamilySpec, drop_families, load_families, parse_spec
-from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
+from stream.opt.allocation.constraint_optimization.families import (
+    DEFAULT_FAMILIES,
+    FamilySpec,
+    drop_families,
+    load_families,
+)
+from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.opt.solver import GurobiBackend, SolverBackend
 from stream.profiling import span
-from stream.stages.allocation.steady_state_allocation import DEFAULT_TIME_LIMIT_S, AllocationStage
+from stream.stages.allocation.steady_state_allocation import AllocationStage
 from stream.stages.allocation.steady_state_lowering import SteadyStateLoweringStage
 from stream.stages.codegen.backends import codegen_backend_for
 from stream.stages.context import StageContext
@@ -46,6 +51,8 @@ __all__ = ["MappingEstimate", "SolveOptions", "default_families", "evaluate_mapp
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TIME_LIMIT_S = 300
+
 # What the solve runs on each fused group's workload and mapping.
 _ALLOCATION_STAGES: list[StageCallable] = [
     PlacementGenerationStage,
@@ -65,8 +72,8 @@ class SolveOptions:
 
     ``stage_options`` carries what a plugin's stages read from the context, such as the generic mapping
     generator's ``fusion_cut_points`` and ``intra_core_tiling``, or the AIE code generator's ``npu``,
-    ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers to wrap the stages with, such as
-    ``timing``. ``artifacts`` writes the reports, traces and figures of each allocation solve; a sweep turns them off.
+    ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers of the run, such as ``timing``.
+    ``artifacts`` writes the reports, traces and figures of each allocation solve; a sweep turns them off.
     ``solver_log`` prints the solver's log, and ``time_limit_s`` bounds each allocation solve, after which its best
     incumbent is taken. ``families`` are the constraint families the allocation model is built from, by name or
     ``{name: options}``; None builds :func:`default_families`.
@@ -84,6 +91,10 @@ class SolveOptions:
     stage_options: Mapping[str, Any] = field(default_factory=dict)
     families: Sequence[FamilySpec] | None = None
 
+    def __post_init__(self) -> None:
+        if not self.time_limit_s > 0:
+            raise ValueError(f"SolveOptions.time_limit_s must be positive, got {self.time_limit_s}")
+
 
 def default_families(
     hardware: str | Accelerator, without: Iterable[str] = (), options: Mapping[str, Mapping[str, Any]] | None = None
@@ -92,14 +103,13 @@ def default_families(
     it has cores of. ``without`` leaves out the families it names and those that need what only they provide, and
     ``options`` gives a family its options by name, such as ``{"overlap": {"model": "span"}}``."""
     accelerator = hardware if isinstance(hardware, Accelerator) else parse_accelerator(hardware)
-    specs = drop_families(build_hardware_facts(accelerator).default_families, without)
-    if unknown := set(options or ()) - {parse_spec(spec)[0] for spec in specs}:
+    names = (*DEFAULT_FAMILIES, *(name for ns in namespace_classes(accelerator).values() for name in ns.families))
+    if unknown := (dropped := set(without)) - set(names):
+        raise KeyError(f"Families the default set does not build: {sorted(unknown)}")
+    kept = drop_families(names, dropped)
+    if unknown := set(options or ()) - set(kept):
         raise KeyError(f"Options for families the default set does not build: {sorted(unknown)}")
-    return tuple(
-        {name: {**base, **options[name]}} if options and name in options else spec
-        for spec in specs
-        for name, base in [parse_spec(spec)]
-    )
+    return tuple({name: dict(options[name])} if options and name in options else name for name in kept)
 
 
 @dataclass(frozen=True)
@@ -126,8 +136,8 @@ def evaluate_mapping(
 ) -> MappingEstimate:
     """Solve the allocation of each fused group of ``mapping`` and price it, without generating code.
 
-    Each group costs its scheduler's estimate, and a dispatch of several groups adds the reconfiguration
-    the accelerator's namespace constraints charge. Without a mapping, the mapping generator that claims
+    Each group costs its allocation's estimate, and a dispatch of several groups adds the reconfiguration
+    the accelerator's hardware namespaces charge. Without a mapping, the mapping generator that claims
     the accelerator proposes one.
     """
     return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=False)
@@ -189,9 +199,8 @@ def _solve(
             with span("solver_license"):
                 GurobiBackend.check_license()
         with span("load_families"):
-            hardware_facts = build_hardware_facts(accelerator)
             families = load_families(
-                options.families if options.families is not None else hardware_facts.default_families
+                options.families if options.families is not None else default_families(accelerator)
             )
         proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
         emission = [codegen_backend_for(accelerator).stage()] if codegen else []
@@ -225,6 +234,6 @@ def _solve(
     return MappingEstimate(
         mapping=mapping,
         group_cycles=tuple(ctx.get("group_cycles")[i] for i in groups),
-        dispatch_cycles=hardware_facts.dispatch_overhead_cycles(columns),
+        dispatch_cycles=ctx.get("allocation").problem.hardware.dispatch_overhead_cycles(columns),
         context=ctx,
     )

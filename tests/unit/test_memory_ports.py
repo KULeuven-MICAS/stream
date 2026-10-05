@@ -105,20 +105,18 @@ def test_without_bounds_the_family_only_reports(solve: Solve, base: Any, model_s
     report_only = solve([{"memory_ports": {"interval": False, "burst": False}}])
     assert model_size(report_only) == model_size(base)
     assert total(report_only) == total(base)
-    rows = MemoryPorts().report(report_only.context, report_only.quantities)["memory_ports"]
+    rows = MemoryPorts().report(report_only.context)["memory_ports"]
     assert {row["kind"] for row in rows} == {"memory_port", "link"}
     assert rows[0]["utilization"] == max(row["utilization"] for row in rows)
 
 
 def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
-    ctx = MagicMock()
-    registry = QuantityRegistry()
-    MemoryPorts().build(ctx, registry)
+    ctx = MagicMock(quantities=QuantityRegistry())
+    MemoryPorts().build(ctx)
     ctx.model.add_constr.assert_not_called()
 
 
-def port_registry() -> tuple[MagicMock, QuantityRegistry]:
-    ctx = MagicMock()
+def port_context() -> MagicMock:
     registry = QuantityRegistry()
     for name, value in (("iteration", 10), ("overlap", 2)):
         registry.add(name, value)
@@ -126,7 +124,7 @@ def port_registry() -> tuple[MagicMock, QuantityRegistry]:
     registry.add("port_demand", 256.0, index=DRAM)
     registry.add("port_demand_slot", 256.0, index=(DRAM, 0))
     registry.add("slot_latency", 4, index=0)
-    return ctx, registry
+    return MagicMock(quantities=registry)
 
 
 def constraint_names(ctx: MagicMock) -> list[str]:
@@ -134,14 +132,14 @@ def constraint_names(ctx: MagicMock) -> list[str]:
 
 
 def test_burst_off_keeps_only_the_interval_bound() -> None:
-    ctx, registry = port_registry()
-    MemoryPorts(burst=False).build(ctx, registry)
+    ctx = port_context()
+    MemoryPorts(burst=False).build(ctx)
     assert constraint_names(ctx) == ["port_interval_6_dram_rw_port_1"]
 
 
 def test_interval_off_keeps_only_the_burst_bound() -> None:
-    ctx, registry = port_registry()
-    MemoryPorts(interval=False).build(ctx, registry)
+    ctx = port_context()
+    MemoryPorts(interval=False).build(ctx)
     assert constraint_names(ctx) == ["port_burst_6_dram_rw_port_1_0"]
 
 

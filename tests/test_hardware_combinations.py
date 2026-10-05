@@ -147,15 +147,15 @@ def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -
     """Assert structural CO result properties.
 
     Reused by the swiglu arm. Checks:
-    - Positive schedule metrics (latency_total, latency_per_iteration, iterations)
+    - Positive allocation metrics (latency_total, latency_per_iteration, iterations)
     - Exactly expected_node_count ComputationNodes
     - Each node has non-empty resource_allocation
     - No ComputationNode allocated to the offchip core
     """
-    schedule: Allocation = ctx.get("allocation")
-    assert schedule.solution.latency.total > 0, "Expected positive latency_total"
-    assert schedule.solution.latency.per_iteration > 0, "Expected positive latency_per_iteration"
-    assert schedule.iterations > 0, "Expected positive iterations"
+    allocation: Allocation = ctx.get("allocation")
+    assert allocation.solution.latency.total > 0, "Expected positive latency_total"
+    assert allocation.solution.latency.per_iteration > 0, "Expected positive latency_per_iteration"
+    assert allocation.problem.iterations > 0, "Expected positive iterations"
 
     mapping = ctx.get("mapping")
     workload = ctx.get("workload")
@@ -187,7 +187,7 @@ def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) 
     """Capture advisory CO metrics from the solved context (read-only side-effect).
 
     Beyond the gated total_latency, records observability metrics derived from the solved
-    schedule's performance summary so the CI comment can explain outliers:
+    allocation's performance summary so the CI comment can explain outliers:
       - mac_spatial_utilization: latency-weighted MAC spatial utilization (how full the array is)
       - end_to_end_mac_utilization: useful MACs / (chip peak MACs/cycle x total latency), i.e. the
         true fraction of the chip's compute used (folds in idle cores, temporal stalls, transfers)
@@ -195,9 +195,9 @@ def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) 
         i.e. the spatial array was not modelled and the latency is untrustworthy.
       - workload_hparams: human-readable dims/tiles of this combination (per-workload caption).
     """
-    schedule = ctx.get("allocation")
-    solve_stats = schedule.solution.solve_stats if schedule is not None else None
-    perf = schedule.solution.performance if schedule is not None else None
+    allocation = ctx.get("allocation")
+    solve_stats = allocation.solution.solve_stats if allocation is not None else None
+    perf = allocation.solution.performance if allocation is not None else None
     agg = perf.get("aggregate") if isinstance(perf, dict) else None
     group_latencies = ctx.get("group_latencies")
     record_metric("total_latency", ctx.get("total_latency"))

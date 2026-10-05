@@ -89,13 +89,6 @@ class SolveStats:
     """Number of simplex iterations, or None if not available for this backend."""
 
 
-class PipeliningModel(Enum):
-    """Inter-iteration overlap model: SPAN (idle only before first / after last use) or OCCUPANCY (any unused slot)."""
-
-    SPAN = "span"
-    OCCUPANCY = "occupancy"
-
-
 @dataclass(frozen=True)
 class ObjectiveLevel:
     """A single level in a lexicographic objective hierarchy.
@@ -366,10 +359,6 @@ class SolverModel(ABC):
         Must be called after optimize(). Returns a SolveStats instance
         with fields populated for this backend; unavailable fields are None.
         """
-
-    @abstractmethod
-    def identity(self) -> tuple[str, str]:
-        """The backend and solver names :meth:`solve_stats` reports, available before any solve."""
 
     @abstractmethod
     def compute_iis(self) -> None:
@@ -707,16 +696,12 @@ class GurobiBackend(SolverModel):
             return None
         return abs(primal - dual) / abs(primal)
 
-    def identity(self) -> tuple[str, str]:
-        return "GUROBI", "gurobi"
-
     def solve_stats(self) -> SolveStats:
         has_solution = self._model.SolCount > 0
         objective: float | None = self._model.ObjVal if has_solution else None
-        backend, solver = self.identity()
         return SolveStats(
-            backend=backend,
-            solver=solver,
+            backend="GUROBI",
+            solver="gurobi",
             status=self.get_status(),
             objective=objective,
             solve_time_s=self._model.Runtime,
@@ -1122,10 +1107,9 @@ class ORToolsBackend(SolverModel):
             solve_time_s = self._result.solve_stats.solve_time.total_seconds()
         else:
             solve_time_s = 0.0
-        backend, solver = self.identity()
         return SolveStats(
-            backend=backend,
-            solver=solver,
+            backend=f"ORTOOLS_{self._solver_type.name}",
+            solver=self._solver_type.name.lower(),
             status=self.get_status(),
             objective=objective,
             solve_time_s=solve_time_s,
@@ -1133,9 +1117,6 @@ class ORToolsBackend(SolverModel):
             node_count=None,
             iteration_count=None,
         )
-
-    def identity(self) -> tuple[str, str]:
-        return f"ORTOOLS_{self._solver_type.name}", self._solver_type.name.lower()
 
     def compute_iis(self) -> None:
         _logger.warning(

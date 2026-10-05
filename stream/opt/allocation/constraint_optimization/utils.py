@@ -1,9 +1,25 @@
 from math import ceil, prod
 
 from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.node import Node, TransferNode
 from stream.workload.steady_state.iteration_space import LoopEffect, SteadyStateIterationSpace
 from stream.workload.workload import ComputationNode
+
+MAX_KEY_LENGTH = 255
+
+
+def resource_key(res: Core | CommunicationLink | tuple[CommunicationLink, ...] | None) -> str:
+    """A core's, link's or path's name in the model: ``Core <id>``, the link, or ``Path[...]`` cut to fit."""
+    if isinstance(res, Core):
+        return f"Core {res.id}"
+    if isinstance(res, CommunicationLink):
+        return str(res)
+    if isinstance(res, tuple):
+        path_str = "Path[" + "→".join(resource_key(link) for link in res) + "]"
+        return path_str[: MAX_KEY_LENGTH - 55] + "..." if len(path_str) > MAX_KEY_LENGTH else path_str
+    return str(res)
 
 
 def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:

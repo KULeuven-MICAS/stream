@@ -11,7 +11,6 @@ from stream.opt.allocation.constraint_optimization.utils import get_active_laten
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.opt.solver import SolverVar
     from stream.workload.workload import ComputationNode, TransferNode
@@ -36,22 +35,24 @@ class SlotLatency:
     requires: ClassVar[tuple[str, ...]] = ("reuse_factor",)
     provides: ClassVar[tuple[str, ...]] = ("transfer_latency", SLOT_PRESSURE)
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         space, model, slot_latency = ctx.space, ctx.model, ctx.vars.slot_latency
         for n in space.ssc_nodes:
             active_latency = get_active_latency(n, node_runtime(space, n), space.ssis)
             model.add_constr(slot_latency[space.slot_of[n]] >= active_latency, name=f"ssc_lat_{n.name}")
         for (tr, choice), y in ctx.vars.y.items():
-            latency = _active_transfer_latency(ctx, q, tr, choice, y)
+            latency = _active_transfer_latency(ctx, tr, choice, y)
             q.add("transfer_latency", latency._raw, index=(tr, choice))
             model.add_constr(slot_latency[space.slot_of[tr]] >= latency, name=f"tr_lat_{tr.name}_{hash(choice)}")
         q.add(SLOT_PRESSURE, 0, index="slot_latency", upper_bound=_longest_step(space))
 
 
 def _active_transfer_latency(
-    ctx: FormulationContext, q: QuantityRegistry, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
+    ctx: FormulationContext, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
 ) -> SolverVar:
     """Cycles ``tr`` takes per iteration on ``choice`` while ``y`` chooses it: its active latency over its reuse."""
+    q = ctx.quantities
     latency_constant = float(ctx.space.transfer_latency_for_path(tr, choice))
     return ctx.binary_times_const_over_linexpr(
         binary_var=y,

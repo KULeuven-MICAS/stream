@@ -1,27 +1,28 @@
-"""Unit tests for pipeline threading of the solve options into the allocation stage.
-
-Covers:
-  - SolveOptions carries the constraint families, None (the default set) by default
-  - AllocationStage reads the families, the time limit and the solver log from context
-  - AllocationStage defaults to the problem's default families, 300 s and no solver log when absent
-"""
+"""The solve options reach the allocation stage through the context, with their defaults set by the api alone."""
 
 from unittest.mock import MagicMock
 
+import pytest
+
+from stream.api import DEFAULT_TIME_LIMIT_S, SolveOptions
 from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES, drop_families, load_families
 from stream.stages.allocation.steady_state_allocation import AllocationStage
-from stream.stages.context import StageContext
+from stream.stages.context import StageContext, StageContractError
 
 
 def test_solve_options_carry_families():
-    from stream.api import SolveOptions
-
     assert SolveOptions().families is None
     assert SolveOptions(families=["placement"]).families == ["placement"]
 
 
+def test_solve_options_default_the_time_limit_and_reject_a_non_positive_one():
+    assert SolveOptions().time_limit_s == DEFAULT_TIME_LIMIT_S
+    for limit in (0, -5):
+        with pytest.raises(ValueError, match="time_limit_s must be positive"):
+            SolveOptions(time_limit_s=limit)
+
+
 def test_stage_reads_solve_options_from_context():
-    """AllocationStage reads families, time_limit_s and solver_log from context."""
     families = load_families(drop_families(DEFAULT_FAMILIES, ["dma_channels"]))
     ctx = StageContext.from_kwargs(
         allocation_problem=MagicMock(),
@@ -30,19 +31,19 @@ def test_stage_reads_solve_options_from_context():
         families=families,
         time_limit_s=12.5,
         solver_log=True,
+        artifacts=False,
     )
     stage = AllocationStage([MagicMock()], ctx)
-    assert stage.families is families, "Stage must read the families from context"
-    assert stage.time_limit_s == 12.5
-    assert stage.solver_log is True
+    assert stage.families is families
+    assert (stage.backend, stage.time_limit_s, stage.solver_log, stage.artifacts) == (
+        "ORTOOLS_GSCIP",
+        12.5,
+        True,
+        False,
+    )
 
 
-def test_stage_defaults_when_absent():
-    """AllocationStage defaults to the problem's default families, a 300 s limit and a silent solver."""
-    problem = MagicMock()
-    problem.hardware.default_families = DEFAULT_FAMILIES
-    ctx = StageContext.from_kwargs(allocation_problem=problem, output_path="/tmp/test", backend="ORTOOLS_GSCIP")
-    stage = AllocationStage([MagicMock()], ctx)
-    assert [name for name, _ in stage.families.specs()] == list(DEFAULT_FAMILIES)
-    assert stage.time_limit_s == 300
-    assert stage.solver_log is False
+def test_stage_has_no_defaults_of_its_own():
+    ctx = StageContext.from_kwargs(allocation_problem=MagicMock(), output_path="/tmp/test", backend="ORTOOLS_GSCIP")
+    with pytest.raises(StageContractError, match="families"):
+        AllocationStage([MagicMock()], ctx)

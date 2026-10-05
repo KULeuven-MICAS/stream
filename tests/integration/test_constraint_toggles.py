@@ -45,17 +45,20 @@ _TIGHT_DMA = {
 # ---------------------------------------------------------------------------
 
 
+def _without(*off: str) -> tuple[FamilySpec, ...]:
+    """The default families with the constraint groups ``off`` switched off as 1.x's toggles did: the object-FIFO
+    depth's family keeps its buffering level, every other group's family is left out."""
+    depth = {"object_fifo_depth": {"depth": False}} if "object_fifo_depth" in off else None
+    return default_families(ACCELERATOR, [g for g in off if g != "object_fifo_depth"], depth)
+
+
 def _only(*kept: str) -> tuple[FamilySpec, ...]:
-    """The default families, of the four toggled constraint groups only those ``kept``."""
-    return default_families(ACCELERATOR, without=[g for g in _GROUPS if g not in kept])
-
-
-def _without(*dropped: str) -> tuple[FamilySpec, ...]:
-    return default_families(ACCELERATOR, without=dropped)
+    """The default families with, of the four toggled constraint groups, only those ``kept`` on."""
+    return _without(*(g for g in _GROUPS if g not in kept))
 
 
 def _run_gemm(output_path: str, families: tuple[FamilySpec, ...] | None = None):
-    """Run the TETRA GEMM pipeline with the given constraint families."""
+    """Run the GEMM pipeline with the given constraint families."""
     M, K, N = 256, 8192, 2048
     m, k, n = 32, 32, 32
     in_dtype, out_dtype = "bf16", "bf16"
@@ -106,7 +109,6 @@ def test_memory_capacity_flip():
             with pytest.raises(RuntimeError):
                 _run_gemm(tmpdir, families=_only("memory_capacity"))
 
-    # Left out + tight limit -> feasible (constraint not built)
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch.object(Core, "get_memory_capacity", return_value=1):
             ctx = _run_gemm(tmpdir, families=_only())
@@ -177,12 +179,10 @@ def test_dma_channels_flip():
     """A tight DMA limit (one channel per tile, the aie2_dma_channels options) is infeasible with dma_channels
     selected and feasible with it left out, which leaves out the limit too."""
     tight = tuple(_TIGHT_DMA if family == "aie2_dma_channels" else family for family in _only("dma_channels"))
-    # Selected + tight limit -> infeasible
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(RuntimeError):
             _run_gemm(tmpdir, families=tight)
 
-    # Left out -> feasible (DMA constraint and objective terms not built)
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = _run_gemm(tmpdir, families=_only())
     assert _extract_latency_total(ctx) > 0
@@ -196,8 +196,6 @@ _PARITY_CASES = [
     pytest.param(
         ("memory_capacity", "object_fifo_depth"),
         id="memory_off",
-        # NOTE: Leaves out both memory_capacity AND object_fifo_depth: "memory off"
-        # means both as a semantic unit, as object-FIFO depth assumes memory capacity.
     ),
     pytest.param(("object_fifo_depth",), id="fifo_off"),
     pytest.param(("buffer_descriptors",), id="bd_off"),
@@ -222,7 +220,6 @@ def test_cross_backend_parity(dropped: tuple[str, ...]):
         ctx_gurobi = _run_gemm(tmpdir, families=_without(*dropped))
     gurobi_obj = _extract_latency_total(ctx_gurobi)
 
-    # 2. Run OR-Tools (patched) with the same families
     ort_factory = _make_ortools_factory()
     with tempfile.TemporaryDirectory() as tmpdir:
         with (

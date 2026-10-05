@@ -9,25 +9,27 @@ from stream.opt.solver import ObjectiveLevel
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 
 class OffchipTraffic:
-    """The bits crossing the off-chip boundary, the objective level after the latency, and charged in the latency
-    at the time the off-chip links take to move them; nothing is charged where a shared-bandwidth model already
-    times them. Slot latency only sees a transfer when it is the longest thing in its slot, so a transfer hiding
-    behind compute is free to the latency however often it fires, but every slot shares the off-chip bandwidth."""
+    """The bits crossing the off-chip boundary, the objective level after the latency; with ``charge`` the latency
+    also pays the time the off-chip links take to move them, which a slot hides when compute is longer, unless a
+    shared-bandwidth model already times them."""
 
     name: ClassVar[str] = "offchip_traffic"
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ("offchip_traffic_weight",)
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
-        if not ctx.space.shared_bandwidth and (bandwidth := ctx.space.offchip_bandwidth()):
-            q.add("offchip_traffic_weight", ctx.space.iterations / bandwidth)
+    def __init__(self, charge: bool = True) -> None:
+        self.charge = charge
 
-    def objective(self, ctx: FormulationContext, q: QuantityRegistry) -> list[ObjectiveLevel]:
-        space, z_stop = ctx.space, ctx.vars.z_stop
+    def build(self, ctx: FormulationContext) -> None:
+        space = ctx.space
+        if self.charge and not space.shared_bandwidth and (bandwidth := space.offchip_bandwidth()):
+            ctx.quantities.add("offchip_traffic_weight", space.iterations / bandwidth)
+
+    def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
+        q, space, z_stop = ctx.quantities, ctx.space, ctx.vars.z_stop
         traffic = ctx.model.quicksum(
             t.size_bits() / space.reuse_levels[(t, s)] * z_stop[(t, s)]._raw
             for t in space.tensors_to_optimize_reuse_for

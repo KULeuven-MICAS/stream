@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
-from stream.opt.allocation.constraint_optimization.report import overlap_section
+from stream.opt.allocation.constraint_optimization.report import overlap_section, resource_slack
 
 
 def make_context(slack: dict[object, int], overlap: int | None, recurrence: int = 0) -> SimpleNamespace:
@@ -29,7 +29,7 @@ class TestOverlapSection:
         """The binding set is the argmin of slack even when overlap sits below its cap (not equality)."""
         ctx = make_context({core(0): 14942, core(1): 181228, core(2): 14942}, overlap=14923)
 
-        section = overlap_section(ctx)
+        section = overlap_section(ctx, resource_slack(ctx))
 
         assert section["overlap_cycles"] == 14923
         assert section["binding_resources"] == [str(core(0)), str(core(2))]
@@ -38,7 +38,7 @@ class TestOverlapSection:
         """Where the old rule worked it must keep working: at the cap, argmin and equality agree."""
         ctx = make_context({core(0): 100, core(1): 250}, overlap=100)
 
-        section = overlap_section(ctx)
+        section = overlap_section(ctx, resource_slack(ctx))
 
         assert section["binding_resources"] == [str(core(0))]
 
@@ -46,7 +46,7 @@ class TestOverlapSection:
         """A resource busy from an early to a late slot has no boundary idle and binds at 0."""
         ctx = make_context({core(0): 0, core(1): 5000}, overlap=0)
 
-        section = overlap_section(ctx)
+        section = overlap_section(ctx, resource_slack(ctx))
 
         assert section["overlap_cycles"] == 0
         assert section["binding_resources"] == [str(core(0))]
@@ -55,7 +55,7 @@ class TestOverlapSection:
         """Nothing to be binding is the one case where empty is the honest answer."""
         ctx = make_context({}, overlap=None)
 
-        section = overlap_section(ctx)
+        section = overlap_section(ctx, resource_slack(ctx))
 
         assert section["binding_resources"] == []
         assert section["per_resource_slack"] == []
@@ -63,4 +63,4 @@ class TestOverlapSection:
     def test_recurrence_bound_is_carried_through(self) -> None:
         ctx = make_context({core(0): 100}, overlap=64, recurrence=64)
 
-        assert overlap_section(ctx)["recurrence_bound_cycles"] == 64
+        assert overlap_section(ctx, resource_slack(ctx))["recurrence_bound_cycles"] == 64

@@ -1,10 +1,12 @@
-"""MILP constraints attach by hardware namespace, discovered rather than hardcoded."""
+"""Allocation facts and families attach by hardware namespace, discovered rather than hardcoded."""
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
-from stream.opt.allocation.constraint_optimization import hardware as ctx_module
+from stream.api import default_families
+from stream.opt.allocation.constraint_optimization import hardware as hardware_module
 from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES
 from stream.opt.allocation.constraint_optimization.hardware import (
     AIE2Namespace,
@@ -37,43 +39,56 @@ def _config(accelerator) -> NamespaceConfig:
     )
 
 
-def test_builtin_aie2_constraints_attach_through_the_plugin_path():
-    """The built-in strategy is registered as an entry point, not special-cased in the builder."""
-    accelerator = _accelerator(_AIE)
-    strategies = build_hardware_facts(accelerator).namespaces
-    assert [type(s).__name__ for s in strategies] == ["AIE2Namespace"]
+def test_the_builtin_aie2_namespace_attaches_without_an_entry_point(monkeypatch):
+    """Stream's own namespace is registered in-tree, so an install whose entry points are stale still has it."""
+    monkeypatch.setattr(hardware_module, "load_group", lambda group: [])
+    namespaces = build_hardware_facts(_accelerator(_AIE), 4).namespaces
+    assert [type(s).__name__ for s in namespaces] == ["AIE2Namespace"]
 
 
 def test_a_namespace_adds_its_families_to_the_default_set():
     """The AIE2 limits are families the namespace contributes, after Stream's own."""
-    context = build_hardware_facts(_accelerator(_AIE))
-    assert context.default_families == (*DEFAULT_FAMILIES, *AIE2Namespace.families)
+    assert default_families(_accelerator(_AIE)) == (*DEFAULT_FAMILIES, *AIE2Namespace.families)
     assert "aie2_dma_channels" in AIE2Namespace.families
 
 
 def test_a_namespace_the_accelerator_lacks_contributes_nothing():
-    context = build_hardware_facts(_accelerator(_ZIGZAG))
-    assert context.namespaces == ()
-    assert context.default_families == DEFAULT_FAMILIES
+    accelerator = _accelerator(_ZIGZAG)
+    assert build_hardware_facts(accelerator, 4).namespaces == ()
+    assert default_families(accelerator) == DEFAULT_FAMILIES
+
+
+@pytest.mark.parametrize("hook", ["add_object_fifo_constraints", "add_dma_usage_constraints"])
+def test_a_namespace_with_a_removed_hook_is_rejected(monkeypatch, hook):
+    """A 1.x namespace that still constrains the model through a hook is told which family replaces it."""
+
+    class Legacy(HardwareNamespace):
+        NAMESPACE = "zigzag"
+
+    setattr(Legacy, hook, lambda self, *args: None)
+    monkeypatch.setattr(hardware_module, "load_group", lambda group: [LoadedPlugin("zigzag", Legacy, "old", 0)])
+    accelerator = _accelerator(_ZIGZAG)
+    with pytest.raises(TypeError, match=rf"{hook}.*aie2_"):
+        namespaces_for(accelerator, _config(accelerator))
 
 
 def test_an_overlay_namespace_is_picked_up(monkeypatch):
-    """The point of the seam: proprietary hardware ships constraints without editing this file."""
+    """The point of the seam: proprietary hardware ships its facts and families without editing this file."""
 
-    class AcmeConstraints(HardwareNamespace):
-        NAMESPACE = "zigzag"  # stand in for a proprietary namespace present in the fixture
+    class AcmeNamespace(HardwareNamespace):
+        NAMESPACE = "zigzag"
 
     monkeypatch.setattr(
-        ctx_module,
+        hardware_module,
         "load_group",
-        lambda group: [LoadedPlugin("zigzag", AcmeConstraints, "vendor-overlay-acme", 20)],
+        lambda group: [LoadedPlugin("zigzag", AcmeNamespace, "vendor-overlay-acme", 20)],
     )
     accelerator = _accelerator(_ZIGZAG)
-    strategies = namespaces_for(accelerator, _config(accelerator))
-    assert [type(s).__name__ for s in strategies] == ["AcmeConstraints"]
+    namespaces = namespaces_for(accelerator, _config(accelerator))
+    assert [type(s).__name__ for s in namespaces] == ["AcmeNamespace"]
 
 
-def test_a_broken_strategy_is_skipped_not_raised(monkeypatch):
+def test_a_broken_namespace_is_skipped_not_raised(monkeypatch):
     class Exploding(HardwareNamespace):
         NAMESPACE = "zigzag"
 
@@ -82,7 +97,7 @@ def test_a_broken_strategy_is_skipped_not_raised(monkeypatch):
             raise RuntimeError("bad overlay")
 
     monkeypatch.setattr(
-        ctx_module,
+        hardware_module,
         "load_group",
         lambda group: [LoadedPlugin("zigzag", Exploding, "vendor-overlay-broken", 20)],
     )
@@ -100,7 +115,7 @@ def test_highest_priority_registration_wins(monkeypatch):
         NAMESPACE = "zigzag"
 
     monkeypatch.setattr(
-        ctx_module,
+        hardware_module,
         "load_group",
         lambda group: [
             LoadedPlugin("zigzag", Baseline, "stream-dse", 0),
@@ -108,8 +123,8 @@ def test_highest_priority_registration_wins(monkeypatch):
         ],
     )
     accelerator = _accelerator(_ZIGZAG)
-    strategies = namespaces_for(accelerator, _config(accelerator))
-    assert [type(s).__name__ for s in strategies] == ["Override"]
+    namespaces = namespaces_for(accelerator, _config(accelerator))
+    assert [type(s).__name__ for s in namespaces] == ["Override"]
 
 
 def test_from_config_maps_the_aie2_reconfiguration():
@@ -122,7 +137,7 @@ def test_from_config_maps_the_aie2_reconfiguration():
 
 def test_compute_tiles_reserve_the_toolchain_stack():
     accelerator = _accelerator(_AIE)
-    context = build_hardware_facts(accelerator)
+    context = build_hardware_facts(accelerator, 4)
     compute = next(c for c in accelerator.core_list if c.type == "compute")
     memory = next(c for c in accelerator.core_list if c.type == "memory")
     assert context.reserved_memory_bits(compute) == AIE2Namespace.DEFAULT_CORE_STACK_BYTES * 8

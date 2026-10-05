@@ -1,54 +1,31 @@
+"""What the allocation model knows of the hardware: the topology, and the facts each core namespace states."""
+
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.families import DEFAULT_FAMILIES
 from stream.plugins import load_group
-
-if TYPE_CHECKING:
-    from stream.opt.solver import LinExpr, SolverVar
 
 logger = logging.getLogger(__name__)
 
+NAMESPACES_GROUP = "stream.namespaces"
 
-@dataclass(frozen=True)
-class MemoryReuseEntry:
-    """One staged tensor's residency on a memory tile, held against its reader's."""
-
-    name: str
-    core: Core
-    mem_level: LinExpr
-    compute_level: LinExpr
-    unexpressible: tuple[tuple[SolverVar, SolverVar], ...]
-
-
-# ============================================================================
-# Namespace facts and constraint families
-# ----------------------------------------------------------------------------
-# Every core namespace (e.g. "aie2", "zigzag") may state facts the allocation
-# model reads (which cores share memory, what the toolchain reserves, what a
-# dispatch costs) and contribute constraint families to the default set.
-#
-# HOW TO ADD A NEW NAMESPACE
-# --------------------------
-#   1. Subclass HardwareNamespace, set NAMESPACE, override the facts that
-#      differ, list the namespace's constraint families in ``families``, and
-#      override from_config if the subclass takes constructor arguments.
-#   2. Register it in the "stream.constraints" entry-point group under the
-#      namespace name, and its families in "stream.constraint_families". They
-#      are then picked up whenever the accelerator has a core of that
-#      namespace -- in-tree here, or from an overlay with no fork.
-# ============================================================================
+REMOVED_HOOKS = {
+    "add_object_fifo_constraints": "aie2_object_fifo_depth, which bounds the object_fifo_depth quantity",
+    "add_memory_reuse_constraints": "aie2_memory_reuse, which reads the memory_reuse quantity",
+    "add_buffer_descriptor_constraints": "aie2_buffer_descriptors, which bounds the buffer_descriptor_depth quantity",
+    "add_dma_usage_constraints": "aie2_dma_channels, which bounds the dma_in and dma_out quantities",
+}
+"""The constraint hooks a namespace had before 2.0, each with the family that replaces it in the ``aie2`` namespace."""
 
 
 @dataclass(frozen=True)
 class NamespaceConfig:
-    """What a namespace's constraints may be built from."""
+    """What a namespace's facts may be built from."""
 
     accelerator: Accelerator
     offchip_core_id: int | None
@@ -57,15 +34,16 @@ class NamespaceConfig:
 
 
 class HardwareNamespace:
-    """What a namespace tells the allocation model about its cores, and the constraint families it adds to
-    the default set. Subclasses set :attr:`NAMESPACE` and override the facts that differ from the defaults."""
+    """What a core namespace tells the allocation model about its cores, and the constraint families it adds to the
+    default set. A subclass sets :attr:`NAMESPACE`, overrides the facts that differ and lists its ``families``; it is
+    registered in the ``stream.namespaces`` entry-point group under the namespace name."""
 
     NAMESPACE: str = ""
     families: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, config: NamespaceConfig) -> HardwareNamespace:
-        """Build this strategy for one solve. Override when the subclass needs constructor arguments."""
+        """Build this namespace for one solve. Override when the subclass needs constructor arguments."""
         return cls()
 
     def applies_to(self, core: Core) -> bool:
@@ -73,11 +51,8 @@ class HardwareNamespace:
         return core.namespace == self.NAMESPACE
 
     def shares_memory(self, one: Core, other: Core) -> bool:
-        """Whether one core reaches the other's memory without spending a DMA channel.
-
-        Namespaces that have no such path keep the default, which charges every transfer
-        a channel.
-        """
+        """Whether one core reaches the other's memory without spending a DMA channel; by default no transfer
+        does, so every transfer is charged a channel."""
         return False
 
     def reserved_memory_bits(self, core: Core) -> int:
@@ -120,16 +95,8 @@ class AIE2Namespace(HardwareNamespace):
         return self.DEFAULT_CORE_STACK_BYTES * 8
 
     def shares_memory(self, one: Core, other: Core) -> bool:
-        """Whether two tiles are served by one memory module.
-
-        On AIE2 a core reaches the memory north and south of it, the memory west of it and
-        its own -- ``isMemEast`` is ``isInternal``, so there is no east neighbour. The test
-        is still symmetric because a fifo only needs one of its two ends to reach the
-        other, which is what ``isSharedMemory`` decides by trying both orders.
-
-        ``isLegalMemAffinity`` also excludes a memory tile to the south, which the core
-        type already rules out here.
-        """
+        """Whether two compute tiles are served by one memory module: on AIE2 a core reaches the memory north, south
+        and west of it and its own, and ``isSharedMemory`` tries both ends of a fifo, so the test is symmetric."""
         if not (self.applies_to(one) and self.applies_to(other)):
             return False
         if one.type != "compute" or other.type != "compute":
@@ -139,15 +106,13 @@ class AIE2Namespace(HardwareNamespace):
         return abs(one.col_id - other.col_id) + abs(one.row_id - other.row_id) == 1
 
 
-# ============================================================================
-# HardwareFacts – used by the *transfer / tensor* allocation stage
-# ============================================================================
+BUILTIN_NAMESPACES: dict[str, type[HardwareNamespace]] = {"aie2": AIE2Namespace}
 
 
 @dataclass(frozen=True)
 class HardwareFacts:
-    """Shared context for the transfer and tensor allocation MILP: the topology, and the
-    :class:`HardwareNamespace` of the namespaces the accelerator has cores of."""
+    """The topology the allocation model is built on, and the :class:`HardwareNamespace` of each namespace the
+    accelerator has cores of."""
 
     accelerator: Accelerator
     offchip_core_id: int | None
@@ -155,11 +120,6 @@ class HardwareFacts:
     force_double_buffering: bool
     force_io_transfers_on_mem_tile: bool
     namespaces: tuple[HardwareNamespace, ...] = ()
-
-    @property
-    def default_families(self) -> tuple[str, ...]:
-        """Stream's own constraint families and those each namespace contributes."""
-        return (*DEFAULT_FAMILIES, *(family for ns in self.namespaces for family in ns.families))
 
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether the two cores use one memory, or a namespace lets one reach the other's."""
@@ -176,37 +136,45 @@ class HardwareFacts:
         return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespaces)
 
 
-NAMESPACES_GROUP = "stream.constraints"
+def namespace_classes(accelerator: Accelerator) -> dict[str, type[HardwareNamespace]]:
+    """By name, the namespace of each core namespace ``accelerator`` has: Stream's own, overridden by those the
+    ``stream.namespaces`` entry points register; one that defines a hook removed in 2.0 raises."""
+    present = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
+    classes = {name: cls for name, cls in BUILTIN_NAMESPACES.items() if name in present}
+    classes |= {plugin.name: plugin.obj for plugin in load_group(NAMESPACES_GROUP) if plugin.name in present}
+    for name, cls in classes.items():
+        if hooks := [hook for hook in REMOVED_HOOKS if hasattr(cls, hook)]:
+            raise TypeError(
+                f"Namespace {name!r} defines {', '.join(hooks)}, which Stream 2.0 no longer calls: a namespace "
+                f"adds constraint families instead, named in its `families`, such as "
+                f"{'; '.join(REMOVED_HOOKS[hook] for hook in hooks)}"
+            )
+    for namespace in sorted(present - classes.keys()):
+        logger.debug("no allocation facts registered for core namespace %r", namespace)
+    return dict(sorted(classes.items()))
 
 
 def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[HardwareNamespace]:
-    """The constraint strategies for the namespaces this accelerator contains (from the
-    ``stream.constraints`` entry-point group, keyed by namespace name)."""
-    present = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
-    strategies: dict[str, HardwareNamespace] = {}
-    for plugin in load_group(NAMESPACES_GROUP):
-        if plugin.name not in present:
-            continue
+    """The namespaces of :func:`namespace_classes`, built for one solve; one that cannot be built is skipped."""
+    built: list[HardwareNamespace] = []
+    for name, cls in namespace_classes(accelerator).items():
         try:
-            strategies[plugin.name] = plugin.obj.from_config(config)
-        except Exception as exc:  # noqa: BLE001 -- a broken strategy must not fail the solve
-            logger.warning("skipping %r constraints from %r: %s", plugin.name, plugin.distribution, exc)
-    for namespace in sorted(present - strategies.keys()):
-        logger.debug("no MILP constraints registered for core namespace %r", namespace)
-    return [strategies[name] for name in sorted(strategies)]
+            built.append(cls.from_config(config))
+        except Exception as exc:  # noqa: BLE001 -- a broken namespace must not fail the solve
+            logger.warning("skipping the %r namespace: %s", name, exc)
+    return built
 
 
 def build_hardware_facts(
     accelerator: Accelerator,
+    nb_cols_to_use: int,
     *,
-    nb_cols_to_use: int = 4,
     force_double_buffering: bool = True,
     force_io_transfers_on_mem_tile: bool = True,
 ) -> HardwareFacts:
+    """The facts of ``accelerator`` for a solve on its first ``nb_cols_to_use`` columns; the memory cores it may
+    cache on are its on-chip memory cores inside that budget."""
     offchip_core_id = accelerator.offchip_core_id
-
-    # Memory cores eligible for on-chip caching (not off-chip, memory kind,
-    # with known coordinates inside the column budget).
     mem_cores: list[Core] = [
         c
         for c in accelerator.core_list
@@ -216,20 +184,17 @@ def build_hardware_facts(
         and c.col_id is not None
         and c.col_id < nb_cols_to_use
     ]
-
     config = NamespaceConfig(
         accelerator=accelerator,
         offchip_core_id=offchip_core_id,
         mem_cores=tuple(mem_cores),
         nb_cols_to_use=nb_cols_to_use,
     )
-    ns_constraints = tuple(namespaces_for(accelerator, config))
-
     return HardwareFacts(
         accelerator=accelerator,
         offchip_core_id=offchip_core_id,
         mem_cores=mem_cores,
         force_double_buffering=force_double_buffering,
         force_io_transfers_on_mem_tile=force_io_transfers_on_mem_tile,
-        namespaces=ns_constraints,
+        namespaces=tuple(namespaces_for(accelerator, config)),
     )

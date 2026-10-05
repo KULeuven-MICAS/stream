@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import SolverModel, SolverVar, SolverVarType
 
 if TYPE_CHECKING:
@@ -101,9 +101,6 @@ class FormulationContext:
         self._names[sanitized] = count + 1
         return sanitized if count == 0 else f"{sanitized}_{count}"
 
-    # ------------------------------------------------------------ #
-    # placement indicators                                         #
-    # ------------------------------------------------------------ #
     def tensor_on_core_expr(self, t: Tensor, core: Core) -> Any:
         """Whether ``t`` sits on ``core``: a constant for a fixed tensor, else the sum of its placements there."""
         space = self.space
@@ -117,11 +114,11 @@ class FormulationContext:
         key = (t, core)
         if (u := self._on_core.get(key)) is not None:
             return u
-        u = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{_resource_key(core)}")
+        u = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{resource_key(core)}")
         self._on_core[key] = u
         self.add_constr(
             u == self.tensor_on_core_expr(t, core),
-            name=f"u_eq_{t.name}_{_resource_key(core)}",
+            name=f"u_eq_{t.name}_{resource_key(core)}",
             resource=core,
             subject=t.name,
         )
@@ -132,7 +129,7 @@ class FormulationContext:
         if len(cores) == 1:
             return self.tensor_uses_core_var(t, cores[0])
         space = self.space
-        key = "__".join(_resource_key(c) for c in cores)
+        key = "__".join(resource_key(c) for c in cores)
         v = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{key}")
         if space.is_fixed(t):
             occ = int(any(c in space.fixed_choice(t) for c in cores))
@@ -143,9 +140,6 @@ class FormulationContext:
         self.add_constr(v == occ, name=f"u_eq_{t.name}_{key}", resource=cores[0], subject=t.name)
         return v
 
-    # ------------------------------------------------------------ #
-    # products and ratios                                          #
-    # ------------------------------------------------------------ #
     def binary_product(
         self, *, a: SolverVar, b: SolverVar, base_name: str, tag: ConstraintTag | None = None
     ) -> SolverVar:

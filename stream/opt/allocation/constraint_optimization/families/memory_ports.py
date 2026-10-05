@@ -12,7 +12,6 @@ from stream.opt.allocation.constraint_optimization.families.traffic import DmaSt
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 # (coefficient, expression, upper bound of the expression): one stream's or node's bits on a port
 Terms = list[tuple[float, Any, float]]
@@ -37,7 +36,8 @@ class MemoryPorts:
         self.interval = interval
         self.burst = burst
 
-    def declare(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def declare(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         for port in ctx.space.accelerator.ports:
             q.add("port_rate", port.bits_per_cycle, index=port.key)
         per_iteration: dict[PortKey, Terms] = defaultdict(list)
@@ -65,7 +65,8 @@ class MemoryPorts:
             # One cycle of margin against float rounding between this bound and the solved demand.
             q.add(SLOT_PRESSURE, cycles, index=("memory_ports", key), upper_bound=ceil(bound) + 1)
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         if "port_demand" not in q:
             return
         if self.interval:
@@ -80,22 +81,24 @@ class MemoryPorts:
                     name=f"port_burst_{_port_name(key)}_{slot}",
                 )
 
-    def report(self, ctx: FormulationContext, q: QuantityRegistry) -> dict[str, Any]:
+    def report(self, ctx: FormulationContext) -> dict[str, Any]:
         """Per resource in ZigZag's port-activity terms, busiest first: ``real_cycle`` it needs for one iteration's
         bits, ``allowed_cycle`` the initiation interval, and ``stall_or_slack`` their difference. Resources are
         memory ports, measured shared bandwidth and links; the last two are read from the solved transfers."""
+        q = ctx.quantities
         interval = ctx.model.value(q.get("iteration").expr) - ctx.model.value(q.get("overlap").expr)
         streams = _stream_bits(ctx)
         rows = [
-            *self._port_rows(ctx, q, interval),
-            *_shared_rows(ctx, q, interval, streams),
+            *self._port_rows(ctx, interval),
+            *_shared_rows(ctx, interval, streams),
             *_link_rows(ctx, interval, streams),
         ]
         rows.sort(key=lambda row: -(row["utilization"] or 0.0))
         return {"memory_ports": rows}
 
     @staticmethod
-    def _port_rows(ctx: FormulationContext, q: QuantityRegistry, interval: float) -> list[dict[str, Any]]:
+    def _port_rows(ctx: FormulationContext, interval: float) -> list[dict[str, Any]]:
+        q = ctx.quantities
         if "port_demand" not in q:
             return []
         value = ctx.model.value
@@ -155,9 +158,10 @@ def _stream_bits(ctx: FormulationContext) -> list[tuple[DmaStream, float]]:
 
 
 def _shared_rows(
-    ctx: FormulationContext, q: QuantityRegistry, interval: float, streams: list[tuple[DmaStream, float]]
+    ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, float]]
 ) -> list[dict[str, Any]]:
     """A core with a measured bandwidth: its solved busy time, which counts the access pattern's slow down."""
+    q = ctx.quantities
     rows = []
     for core_id, model in ctx.space.shared_bandwidth.items():
         bits = sum(b for s, b in streams if any(c.id == core_id for c in (*s.choice.sources, *s.choice.targets)))

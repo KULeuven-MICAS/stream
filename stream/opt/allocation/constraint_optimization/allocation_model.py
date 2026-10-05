@@ -2,7 +2,6 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
-from math import ceil
 from typing import Any, TypeAlias
 
 from stream.allocation.problem import AllocationProblem
@@ -14,21 +13,18 @@ from stream.opt.allocation.constraint_optimization.diagnosis import (
     StructuralRule,
     infeasibility_report,
 )
-from stream.opt.allocation.constraint_optimization.families import (
-    FamilySelection,
-    ObjectiveFamily,
-    ScreeningFamily,
-)
+from stream.opt.allocation.constraint_optimization.families import FamilySelection, ObjectiveFamily
+from stream.opt.allocation.constraint_optimization.families.latency import node_runtime
+from stream.opt.allocation.constraint_optimization.families.memory import capacity_screen
 from stream.opt.allocation.constraint_optimization.formulation import (
     DecisionVariables,
     FormulationContext,
     ResourceLedger,
 )
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
-from stream.opt.allocation.constraint_optimization.report import solved_reports
+from stream.opt.allocation.constraint_optimization.report import VAR_THRESHOLD, solved_reports, solver_metrics
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, Placement
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
 from stream.opt.solver import (
     ObjectiveLevel,
     SolverBackend,
@@ -51,46 +47,34 @@ REUSE_CHOICE = StructuralRule(
 )
 
 TensorReuseLevels: TypeAlias = dict[Tensor, int]
-TensorDepths: TypeAlias = dict[Tensor, int]
 TensorAlloc: TypeAlias = dict[Tensor, Placement]
 TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
 MemoryAlloc: TypeAlias = dict[TransferNode, Placement]
 
 
 class AllocationModel:
-    """The allocation model of a steady-state problem: the core decision variables -- where every movable tensor
-    lives, which route each transfer takes, where each tensor's reuse stops -- the constraints and objective levels
-    its families build on them, and the allocation its solve reads back."""
+    """The allocation model of a problem: the core decision variables -- where every movable tensor lives, which route
+    each transfer takes, where each tensor's reuse stops -- the constraints and objective levels its families build on
+    them, and the allocation its solve reads back."""
 
-    VAR_THRESHOLD = 0.5
-
-    def __init__(
-        self,
-        problem: AllocationProblem,
-        *,
-        families: FamilySelection,
-        backend: str = "ORTOOLS_GSCIP",
-    ):
+    def __init__(self, problem: AllocationProblem, *, families: FamilySelection, backend: str):
         self.families = families
         self.space = DecisionSpace(problem)
         self.model: SolverModel = create_solver(SolverBackend[backend], "transfer_tensor_alloc")
-        self.model.set_param(SolverParams.VERBOSITY, 1)
         self.model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
         self.quantities = QuantityRegistry()
         self.ledger = ResourceLedger()
         self._build_model()
 
     def _build_model(self) -> None:
+        with span("capacity_screen"):
+            capacity_screen(self.space, self.model)
         with span("variables"):
             self.vars = self._create_variables()
         self.context = FormulationContext(self.space, self.vars, self.model, self.quantities, self.ledger)
-        with span("capacity_screen"):
-            for family in self.families.families:
-                if isinstance(family, ScreeningFamily):
-                    family.screen(self.context)
         for name, build in self.families.steps:
             with span(f"family_{name}"):
-                build(self.context, self.quantities)
+                build(self.context)
         with span("objective"):
             self.objective = self._objective_levels()
             self.model.set_lexicographic_objectives(list(self.objective.values()), sense="minimize")
@@ -100,7 +84,7 @@ class AllocationModel:
         x: dict[tuple[Tensor, Placement], SolverVar] = {}
         for t in space.tensor_var:
             for choice in space.tensor_choices[t]:
-                choice_name = "__".join(_resource_key(c) for c in choice)
+                choice_name = "__".join(resource_key(c) for c in choice)
                 x[(t, choice)] = model.add_var(vtype=SolverVarType.BINARY, name=f"x_{t.name}_{choice_name}")
         y: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
         for tr in space.transfer_nodes:
@@ -121,7 +105,8 @@ class AllocationModel:
         return DecisionVariables(x=x, y=y, z_stop=z_stop, z_single=z_single, slot_latency=slot_latency)
 
     def _create_reuse_vars(self) -> dict[tuple[Tensor, int], SolverVar]:
-        """One binary per tensor and reuse stop, exactly one of which is set, at or beyond a declared reuse."""
+        """One binary per tensor and reuse stop, exactly one of which is set, at or beyond a declared reuse: the
+        declared reuse is a floor, as holding a tensor longer only removes transfers where it fits."""
         space, model = self.space, self.model
         z_stop: dict[tuple[Tensor, int], SolverVar] = {}
         optimized = set(space.tensors_to_optimize_reuse_for)
@@ -137,9 +122,6 @@ class AllocationModel:
             reuses = space.ssis[t].get_temporal_reuses()
             stop = next((i for i in range(len(reuses) - 1, -1, -1) if reuses[i] == Reuse.REUSE), -2)
             assert stop >= -1, f"Something went wrong for {t.name} REUSE indexing: {reuses}"
-            # The declared reuse is a floor, not a target: holding a tensor across more
-            # levels than asked for only removes transfers, and the capacity, routing and
-            # compute-compatibility constraints already say when that does not fit.
             model.add_constr(
                 model.quicksum(z_stop[(t, s)]._raw for s in range(stop, levels)) == 1,
                 name=f"zStop_AtLeast_{t.name}_L{stop}",
@@ -152,7 +134,7 @@ class AllocationModel:
         for family in self.families.families:
             if not isinstance(family, ObjectiveFamily):
                 continue
-            for level in family.objective(self.context, self.quantities):
+            for level in family.objective(self.context):
                 if (merged := levels.get(level.name)) is None:
                     levels[level.name] = level
                 elif merged.priority != level.priority:
@@ -190,65 +172,62 @@ class AllocationModel:
         elif status != "OPTIMAL":
             raise InfeasibleAllocationError(infeasibility_report(self.model, self.ledger, status))
 
+        space, value, q = self.space, self.model.value, self.quantities
         with span("milp_extract"):
             tensor_alloc = self.get_tensor_allocations()
             routing = self.get_transfer_routing()
-            chosen_memory_cores = self.get_chosen_memory_cores(tensor_alloc)
-            tensor_reuse_levels = self.get_tensor_reuse_levels()
-            tensor_depths = self.get_tensor_depths()
+            memory_cores = self.get_chosen_memory_cores(tensor_alloc)
+            reuse_levels = self.get_tensor_reuse_levels()
+            slot_latencies = {s: float(v.X) for s, v in self.vars.slot_latency.items()}
+            reuse_factors = {tr: value(factor.expr) for tr, factor in q.indexed("reuse_factor").items()}
 
         with span("milp_report"):
-            value, q = self.model.value, self.quantities
             latency = Latency(
                 total=int(value(q.get("total_latency").expr)),
-                per_iteration=int(sum(slot_lat.X for slot_lat in self.vars.slot_latency.values())),
+                per_iteration=int(sum(slot_latencies.values())),
                 overlap=int(value(q.get("overlap").expr)),
                 fill=round(value(q.get("fill").expr)),
             )
-            performance, capacity_slack = solved_reports(
-                self.context, self.families, tensor_reuse_levels, latency.total, total_mac_ops
+            performance, capacity_slack, breakdown = solved_reports(
+                self.context, self.families, reuse_levels, latency.total, total_mac_ops
             )
+            stats = self.model.solve_stats()
             return AllocationSolution(
                 tensor_placements=tensor_alloc,
                 transfer_routes=routing,
-                memory_cores=chosen_memory_cores,
-                reuse_levels=tensor_reuse_levels,
-                depths=tensor_depths,
+                memory_cores=memory_cores,
+                reuse_levels=reuse_levels,
+                depths={t: space.tiles_needed_levels[(t, stop)] for t, stop in reuse_levels.items()},
                 single_buffered=frozenset(self.get_single_buffered()),
                 latency=latency,
-                primary_cost=self.model.value(self.objective["latency"].expr),
-                throughput_bound=self.throughput_bound(),
-                solve_stats=self.model.solve_stats(),
+                slot_latencies=slot_latencies,
+                reuse_factors=reuse_factors,
+                route_cycles={tr: space.transfer_latency_for_path(tr, route) for tr, route in routing.items()},
+                primary_cost=value(self.objective["latency"].expr),
+                throughput_bound=self.throughput_bound(slot_latencies),
+                solve_stats=stats,
+                metrics=solver_metrics(self.model, stats.status),
                 performance=performance,
                 capacity_slack=capacity_slack,
+                slot_latency_breakdown=breakdown,
             )
 
     def get_tensor_reuse_levels(self) -> TensorReuseLevels:
         reuse_levels: TensorReuseLevels = {}
         for t in self.space.workload.tensors:
             for stop in self.space.stops(t):
-                if self.vars.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
+                if self.vars.z_stop[(t, stop)].X > VAR_THRESHOLD:
                     reuse_levels[t] = stop
         return reuse_levels
 
     def get_single_buffered(self) -> set[Tensor]:
         """The tensors whose moving window the solve holds in one buffer."""
-        return {t for (t, _), z in self.vars.z_single.items() if z.X > self.VAR_THRESHOLD}
-
-    def get_tensor_depths(self) -> TensorDepths:
-        tiles_needed: TensorDepths = {}
-        for t in self.space.workload.tensors:
-            for stop in self.space.stops(t):
-                if self.vars.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
-                    tiles_needed[t] = self.space.tiles_needed_levels[(t, stop)]
-        return tiles_needed
+        return {t for (t, _), z in self.vars.z_single.items() if z.X > VAR_THRESHOLD}
 
     def get_transfer_routing(self) -> TransferAlloc:
         routing: TransferAlloc = {}
         for tr in self.space.transfer_nodes:
-            chosen = [
-                choice for choice in self.space.path_choices[tr] if self.vars.y[(tr, choice)].X > self.VAR_THRESHOLD
-            ]
+            chosen = [choice for choice in self.space.path_choices[tr] if self.vars.y[(tr, choice)].X > VAR_THRESHOLD]
             if len(chosen) != 1:
                 raise ValueError(f"{tr.name}: expected exactly one routing choice, got {chosen}")
             routing[tr] = chosen[0]
@@ -272,22 +251,18 @@ class AllocationModel:
         for t in self.space.tensor_fixed:
             tensor_alloc[t] = self.space.fixed_choice(t)
         for t in self.space.tensor_var:
-            chosen = [
-                choice for choice in self.space.tensor_choices[t] if self.vars.x[(t, choice)].X > self.VAR_THRESHOLD
-            ]
+            chosen = [choice for choice in self.space.tensor_choices[t] if self.vars.x[(t, choice)].X > VAR_THRESHOLD]
             if len(chosen) != 1:
                 raise ValueError(f"{t.node_name}: expected exactly one placement choice, got {chosen}")
             tensor_alloc[t] = chosen[0]
         return tensor_alloc
 
-    def throughput_bound(self) -> float:
+    def throughput_bound(self, slot_latencies: dict[int, float]) -> float:
         """The pipelined compute bound of the steady state, from the solved allocation."""
         space, q, value = self.space, self.quantities, self.model.value
         busy: dict[Any, float] = defaultdict(float)
         for n in space.ssc_nodes:
-            latencies = [space.cost_lut.get_cost(n, c).latency_total for c in space.cost_lut.get_cores(n)]
-            runtime = ceil(max(latencies)) if latencies else 0
-            active = float(get_active_latency(n, float(runtime), space.ssis))
+            active = float(get_active_latency(n, float(node_runtime(space, n)), space.ssis))
             for group in space.mapping.get(n).resource_allocation:
                 for core in group:
                     busy[core] += active
@@ -295,5 +270,5 @@ class AllocationModel:
         per_iteration = max(per_iteration, float(q.get("recurrence_bound").expr))
         for shared in q.indexed("shared_busy").values() if "shared_busy" in q else ():
             per_iteration = max(per_iteration, value(shared.expr))
-        chain = sum(float(v.X) for v in self.vars.slot_latency.values())
+        chain = sum(slot_latencies.values())
         return space.iterations * per_iteration + max(0.0, chain - per_iteration) + value(q.get("fill").expr)

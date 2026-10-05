@@ -76,7 +76,7 @@ class _Plan:
 
 
 def _pairs(sources, targets):
-    return communicating_pairs(_Plan(sources, targets))
+    return communicating_pairs(sources, targets)
 
 
 def test_a_join_hands_every_narrow_step_to_the_same_consumer():
@@ -120,12 +120,12 @@ class _Transfer:
         self.transfer_type = transfer_type
 
 
-def _space(context, broadcast: bool = False) -> DecisionSpace:
+def _space(hardware, broadcast: bool = False) -> DecisionSpace:
     """A bare decision space carrying only what the shared-memory latency check reads. ``transfer_is_broadcast``
     inspects real tensors, so it is stubbed -- the plan and the transfer type drive everything else."""
     space = DecisionSpace.__new__(DecisionSpace)
-    space.hardware = context
-    space.accelerator = SimpleNamespace(memory_of=lambda core: core)  # each tile owns its memory
+    space.hardware = hardware
+    space.accelerator = SimpleNamespace(memory_of=lambda core: core)
     space.transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
     return space
 

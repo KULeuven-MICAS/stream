@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import ROUTE_HOPS
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.workload import Tensor
 
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.workload.workload import TransferNode
 
 
@@ -27,7 +26,7 @@ class Placement:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
         model, x = ctx.model, ctx.vars.x
         for t in ctx.space.tensor_var:
             model.add_constr(
@@ -44,7 +43,7 @@ class PathChoice:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
         colocated: dict[tuple[Tensor, Tensor, Core], SolverVar] = {}
         for tr in ctx.space.transfer_nodes:
             choices = ctx.space.path_choices[tr]
@@ -56,7 +55,7 @@ class PathChoice:
             destination_coherence(ctx, tr, choices)
             _empty_path_coherence(ctx, tr, choices, colocated)
 
-    def objective(self, ctx: FormulationContext, q: QuantityRegistry) -> list[ObjectiveLevel]:
+    def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
         y, links = ctx.vars.y, ctx.space.links_in_choice
         hops = ctx.model.quicksum(
             len(links[(tr, choice)]) * y[(tr, choice)]._raw
@@ -75,7 +74,7 @@ def _source_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[
             for src_core in ctx.space.choice_src_cores[(tr, choice)]:
                 ctx.add_constr(
                     y <= ctx.tensor_on_core_expr(src_tensor, src_core),
-                    name=f"path_src_match_{tr.name}_{src_tensor.name}_{_resource_key(src_core)}_choice_{i}",
+                    name=f"path_src_match_{tr.name}_{src_tensor.name}_{resource_key(src_core)}_choice_{i}",
                     resource=src_core,
                 )
 
@@ -91,12 +90,9 @@ def destination_coherence(ctx: FormulationContext, tr: TransferNode, choices: tu
             for dst_core in space.choice_dst_cores[(tr, choice)]:
                 ctx.add_constr(
                     y <= ctx.tensor_on_core_expr(dst_tensor, dst_core),
-                    name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{_resource_key(dst_core)}_choice_{i}",
+                    name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{resource_key(dst_core)}_choice_{i}",
                     resource=dst_core,
                 )
-        # And the tensor sits only where the chosen path delivers it: a core holding a copy
-        # nothing wrote cannot be where a later transfer reads it from. An empty path moves
-        # nothing, so the colocation constraints place its tensor.
         if space.is_fixed(dst_tensor):
             continue
         for core in space.candidate_cores(dst_tensor):
@@ -107,7 +103,7 @@ def destination_coherence(ctx: FormulationContext, tr: TransferNode, choices: tu
             ]
             ctx.add_constr(
                 ctx.tensor_on_core_expr(dst_tensor, core) <= model.quicksum(delivering),
-                name=f"dst_delivered_{tr.name}_{dst_tensor.name}_{_resource_key(core)}",
+                name=f"dst_delivered_{tr.name}_{dst_tensor.name}_{resource_key(core)}",
                 resource=core,
             )
 
@@ -127,8 +123,6 @@ def _empty_path_coherence(
     for i, choice in enumerate(choices):
         if not space.choice_has_empty_path[(tr, choice)]:
             continue
-        # Handle only all-empty choices here. Mixed empty/non-empty choices are still
-        # covered by src/dst coherence on the non-empty paths.
         if len(choice.links_used) != 0:
             raise ValueError("Something went wrong in empty path determination")
         y = ctx.vars.y[(tr, choice)]
@@ -157,7 +151,7 @@ def _same_core_var(
     if key in colocated:
         return colocated[key]
     model = ctx.model
-    suffix = f"{src_tensor.name}_{dst_tensor.name}_{_resource_key(core)}"
+    suffix = f"{src_tensor.name}_{dst_tensor.name}_{resource_key(core)}"
     v = colocated[key] = model.add_var(vtype=SolverVarType.BINARY, name=f"same_{suffix}")
     src_occ = ctx.tensor_on_core_expr(src_tensor, core)
     dst_occ = ctx.tensor_on_core_expr(dst_tensor, core)
@@ -177,7 +171,7 @@ class LinkContention:
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
         usage: dict[tuple[CommunicationLink, int], list[SolverVar]] = defaultdict(list)
         slot_of, links = ctx.space.slot_of, ctx.space.links_in_choice
         for (tr, choice), y in ctx.vars.y.items():
@@ -187,7 +181,7 @@ class LinkContention:
         for (link, s), vars_ in usage.items():
             ctx.add_constr(
                 ctx.model.quicksum(v._raw for v in vars_) <= 1,
-                name=f"link_usage_{_resource_key(link)}_{s}",
+                name=f"link_usage_{resource_key(link)}_{s}",
                 resource=link,
                 kind=LINK_CONTENTION,
             )

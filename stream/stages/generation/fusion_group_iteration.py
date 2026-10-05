@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _compute_columns(schedule: "Allocation") -> tuple[int, ...]:
+def _compute_columns(allocation: "Allocation") -> tuple[int, ...]:
     """The distinct compute-tile columns the solved allocation occupies."""
     columns: set[int] = set()
-    for node_mapping in schedule.mapping.values():
-        for allocation in node_mapping.resource_allocation or ():
-            items = allocation if isinstance(allocation, (list, tuple)) else (allocation,)
+    for node_mapping in allocation.mapping.values():
+        for group in node_mapping.resource_allocation or ():
+            items = group if isinstance(group, (list, tuple)) else (group,)
             for item in items:
                 if isinstance(item, Core) and item.type == "compute" and item.col_id is not None:
                     columns.add(item.col_id)
@@ -80,20 +80,13 @@ class FusionGroupIterationStage(Stage):
             assert len(ctxs) == 1, f"Expected 1 context from inner pipeline, got {len(ctxs)}"
             ctx = ctxs[0]
 
-            schedule = ctx.get("allocation")
-            group_latency = schedule.cost_to_rank
+            allocation = ctx.get("allocation")
+            group_latency = allocation.solution.primary_cost
             total_latency += group_latency
             group_latencies[i] = group_latency
-            group_columns[i] = _compute_columns(schedule)
-            group_cycles[i] = schedule.estimated_cycles
-            # Capture the full allocation IR (latency + solver backend + intra-core performance:
-            # per-node MAC utilization, compute efficiency, compute-vs-transfer bottleneck) per group,
-            # so the exploration result can surface cost-model transparency and intra-core-cost viz.
-            try:
-                group_allocations[i] = AllocationIR.from_internal(schedule).model_dump()
-            except Exception as exc:  # noqa: BLE001 -- a missing perf summary must not fail the solve
-                logger.warning(f"Group {i}: could not build AllocationIR: {exc}")
-                group_allocations[i] = None
+            group_columns[i] = _compute_columns(allocation)
+            group_cycles[i] = allocation.estimated_cycles
+            group_allocations[i] = AllocationIR.from_internal(allocation).model_dump()
             # Capture the memory-access breakdown (per core, per tensor, off-chip vs on-chip) so the
             # exploration result can show where the traffic goes -- the memory-wall view.
             mem_accesses = ctx.get("memory_accesses")

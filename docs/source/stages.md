@@ -30,8 +30,8 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed and keep the fastest.
 8. **`TilingGenerationStage`** - generate the intra-/inter-core tilings for each node.
 9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core.
-10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as a `AllocationProblem`.
-11. **`AllocationStage`** - build the MILP (`AllocationModel`, TETRA) for that problem from its [constraint families](#constraint-families) and solve it: decide tensor placement and transfer paths, producing the `Allocation` the context carries as `allocation`.
+10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as an `AllocationProblem`.
+11. **`AllocationStage`** - build the MILP (`AllocationModel`) for that problem from its [constraint families](#constraint-families) and solve it: decide tensor placement and transfer paths, producing the `Allocation` the context carries as `allocation`.
 12. **`MemoryAccessesEstimationStage`** - estimate memory traffic for the chosen allocation.
 
 The mapping generators (`stream.mapping_generators`) and code generation backends (`stream.codegen_backends`) are entry-point groups: an object with a `name`, a `priority`, a `claims(accelerator)` predicate and `stages()` or `stage()` extends the pipeline for a new kind of hardware, the highest priority among those that claim it winning.
@@ -48,8 +48,8 @@ The allocation model is built from constraint families, each a group of constrai
 | `path_choice` | each transfer takes one route, whose ends hold the tensors it moves; the route length is the last objective level | |
 | `reuse_rates` | how many iterations one firing of a transfer serves | |
 | `link_contention` | a link carries at most one transfer per slot | |
-| `memory_capacity` | what each memory holds fits in its capacity; a memory too small for the tensors pinned to it fails the solve before the model is built | |
-| `object_fifo_depth` | the object-fifo depth each core's tensors need; the buffering depth is an objective level | |
+| `memory_capacity` | what each memory holds fits in its capacity | |
+| `object_fifo_depth` | the object-fifo depth each core's tensors need, and the buffering depth, an objective level | `depth` (without it only the buffering level) |
 | `buffer_descriptors` | the buffer descriptors each core's transfers need | |
 | `slot_latency` | a slot lasts as long as the slowest node or transfer in it | |
 | `reuse_levels`, `output_reuse` | a tensor handed between cores, and a final output, are held up to their outermost irrelevant loop | |
@@ -57,7 +57,7 @@ The allocation model is built from constraint families, each a group of constrai
 | `spatial_reuse` | reuse covers every temporal loop inside a tensor's outermost spatial loop | |
 | `overlap` | how much of an iteration the next one overlaps, the fill before the first, and the latency they add up to | `model` (`occupancy` or `span`), `transfer_contention`, `offchip_contention` |
 | `dma_channels` | the DMA channels each core drives, whose peaks the latency objective charges | |
-| `offchip_traffic` | the bits crossing the off-chip boundary, an objective level and charged in the latency objective | |
+| `offchip_traffic` | the bits crossing the off-chip boundary, an objective level and charged in the latency objective | `charge` (without it only the level) |
 | `aie2_object_fifo_depth`, `aie2_buffer_descriptors` | an AIE2 tile's fifo depth and buffer descriptors stay within `max_object_fifo_depth` | |
 | `aie2_memory_reuse` | a memory tile outlives its reader only where one replay expresses the re-read | |
 | `aie2_dma_channels` | a tile drives at most its DMA channels in each direction | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6), `max_shim_tile_dma_channels` (2) |
@@ -74,9 +74,26 @@ span = SolveOptions(families=[*default_families(hardware, without=["overlap"]), 
 ports = SolveOptions(families=[*default_families(hardware), "memory_ports"])
 ```
 
-A family's `build(ctx, q)` (and `declare`) receives a `FormulationContext`: `ctx.space`, the read-only problem and the choices derived from it (each tensor's placements, each transfer's routes and the links they use, each tensor's reuse stops and the tiles they hold); `ctx.vars`, the core decision variables (`x` places a tensor, `y` routes a transfer, `z_stop` stops a tensor's reuse, `z_single` holds its window in one buffer, `slot_latency`); `ctx.model`, the `SolverModel`; `ctx.quantities`, the `QuantityRegistry` passed as `q`; and the modelling helpers families share, such as `binary_product` and `tensor_uses_core_var`. A family that creates a constraint with `ctx.add_constr(expr, name=..., resource=..., kind=..., subject=..., rule=..., bound=...)` states what it stands for: the core or link it binds, the hardware limit (`ResourceKind`) it is part of and that limit's `bound`, the tensor whose demand it carries, or the `StructuralRule` it enforces. When a model has no solution, the diagnosis maps the solver's IIS back to cores, links and causes through these tags alone. A family can also contribute to the objective: `objective(ctx, q)` runs once every family has built and returns `ObjectiveLevel`s; the levels of one name are summed and the solve minimizes them lexicographically, highest priority first. Stream's levels are `latency` (priority 4: the run's latency from `overlap`, the DMA peaks from `dma_channels` and the weighted off-chip traffic from `offchip_traffic`), `offchip_traffic` (3), `buffering` (2, from `object_fifo_depth`) and `route_hops` (1, from `path_choice`). And `screen(ctx)`, run before any family builds, fails a solve its constraints cannot satisfy by raising an `InfeasibleAllocationError`, as `memory_capacity` does.
+A family's `build(ctx)` (and `declare`) receives a `FormulationContext`: `ctx.space`, the read-only problem and the choices derived from it (each tensor's placements, each transfer's routes and the links they use, each tensor's reuse stops and the tiles they hold); `ctx.vars`, the core decision variables (`x` places a tensor, `y` routes a transfer, `z_stop` stops a tensor's reuse, `z_single` holds its window in one buffer, `slot_latency`); `ctx.model`, the `SolverModel`; `ctx.quantities`, the `QuantityRegistry` of the quantities the families provide; and the modelling helpers families share, such as `binary_product` and `tensor_uses_core_var`. A family that creates a constraint with `ctx.add_constr(expr, name=..., resource=..., kind=..., subject=..., rule=..., bound=...)` states what it stands for: the core or link it binds, the hardware limit (`ResourceKind`) it is part of and that limit's `bound`, the tensor whose demand it carries, or the `StructuralRule` it enforces. When a model has no solution, the diagnosis maps the solver's IIS back to cores, links and causes through these tags alone. A family can also contribute to the objective: `objective(ctx)` runs once every family has built and returns `ObjectiveLevel`s; the levels of one name are summed and the solve minimizes them lexicographically, highest priority first. Stream's levels are `latency` (priority 4: the run's latency from `overlap`, the DMA peaks from `dma_channels` and the weighted off-chip traffic from `offchip_traffic`), `offchip_traffic` (3), `buffering` (2, from `object_fifo_depth`) and `route_hops` (1, from `path_choice`). A family's `report(ctx)` adds sections to the solved allocation's performance report; one that fails is logged and leaves its section None. Before any family builds, the model checks that every memory fits the tensors pinned to it under some reuse choice, whichever families a solve selects, and fails one that cannot with an `InfeasibleAllocationError`.
 
-A core namespace (a `HardwareNamespace` in the `stream.constraints` group) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs.
+A core namespace (a `HardwareNamespace`, registered in the `stream.namespaces` entry-point group under the namespace's name) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs. Stream's own families and its `aie2` namespace are registered in-tree; the entry-point groups are for those of other packages.
+
+### Migrating from Stream 1.x
+
+Stream 2.0 replaces `ConstraintSelection` with the family list; each of its toggles has an exact equivalent, which builds the same model:
+
+| `ConstraintSelection(...)` | `SolveOptions(families=default_families(hardware, without, options))` |
+|----------------------------|-------------------------------------------------------------------------|
+| `memory_capacity=False` | `without=["memory_capacity"]` (the capacity screen still runs, as before) |
+| `object_fifo_depth=False` | `options={"object_fifo_depth": {"depth": False}}` (the buffering level stays, as before) |
+| `buffer_descriptors=False` | `without=["buffer_descriptors"]` |
+| `dma_channels=False` | `without=["dma_channels"]` |
+| `transfer_contention=False`, `offchip_contention=False` | `options={"overlap": {"transfer_contention": False, "offchip_contention": False}}` |
+| `offchip_traffic_cost=False` | `options={"offchip_traffic": {"charge": False}}` (the traffic level stays, as before) |
+| `pipelining=PipeliningModel.SPAN` | `options={"overlap": {"model": "span"}}` |
+| `families=[...]` | the default set plus those families, `[*default_families(hardware), ...]` |
+
+The rest of the 2.0 changes an extension meets: the `stream.constraints` entry-point group is `stream.namespaces`, and `NamespaceConstraints` is `HardwareNamespace` (`AIE2Constraints`, `AIE2Namespace`), whose `add_*_constraints` hooks are families now (a namespace that still defines one is rejected with the family that replaces it); the context carries the solved `allocation` (an `Allocation`, read by `AllocationIR.from_internal`) instead of the `scheduler`; `AllocationIR` lists its `families` instead of a `constraint_selection`; and a stage declares its contract (below) instead of `REQUIRED_FIELDS`.
 
 ---
 
@@ -95,7 +112,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 |-------|---------|------------------|----------|----------------|-----------------|
 | `AIECodeGenerationStage` |  | `trace_size`, `trace_max_tiles`, `trace_tiles`, `trace_group`, `npu`, `group_index` |  | `allocation`, `workload`, `accelerator`, `output_path` | `module` |
 | `AcceleratorParserStage` | `accelerator` | `kernel_library` | `accelerator` |  |  |
-| `AllocationStage` | `allocation_problem`, `output_path` | `backend`, `families`, `time_limit_s`, `solver_log`, `total_mac_ops`, `artifacts` | `allocation`, `workload`, `mapping` |  |  |
+| `AllocationStage` | `allocation_problem`, `output_path`, `backend`, `families`, `time_limit_s`, `solver_log`, `artifacts` | `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
 | `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |
@@ -108,7 +125,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |
 | `ONNXModelParserStage` | `workload_path`, `output_path` |  | `onnx_model`, `workload` |  |  |
 | `PlacementGenerationStage` | `workload`, `mapping`, `accelerator` |  | `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
-| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits` | `nb_cols_to_use` | `allocation_problem` |  |  |
+| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits`, `nb_cols_to_use` |  | `allocation_problem` |  |  |
 | `StructuralDedupStage` | `workload` |  | `block_classes` |  |  |
 | `TileSearchStage` | `workload`, `mapping`, `output_path` | `tile_search` | `mapping`, `output_path`, `placement_alternatives`, `placement_reserves` | `allocation` | `output_path` |
 | `TilingGenerationStage` | `workload`, `mapping`, `output_path` |  | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |
@@ -133,4 +150,4 @@ class LayerCountStage(Stage):
         yield from self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run()
 ```
 
-Insert it at the right position in the list passed to `MainStage`. A stage that reduces (keeps only the best of several results) yields once **after** its loop rather than inside it. Out-of-tree stages, such as those a mapping generator's `stages()` or a code generation backend's `stage()` returns, declare their contracts the same way, and an observer that wraps a stage in another callable names it as the wrapper's `__wrapped__`.
+Insert it at the right position in the list passed to `MainStage`. A stage that reduces (keeps only the best of several results) yields once **after** its loop rather than inside it. Out-of-tree stages, such as those a mapping generator's `stages()` or a code generation backend's `stage()` returns, declare their contracts the same way. A stage that declares none, such as one written against Stream 1.x, and a stage callable that is not a `Stage` class, such as a factory or a `functools.partial`, run unchecked: the pipeline logs once that it cannot check them, and checks the fields of the stages after them only as they run.

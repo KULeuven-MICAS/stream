@@ -414,7 +414,6 @@ class TestAcceleratorIR:
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: synthetic dict matching Allocation.get_ir() shape
 # ---------------------------------------------------------------------------
 
 ALLOCATION_RAW: dict = {

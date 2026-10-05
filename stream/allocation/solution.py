@@ -13,8 +13,8 @@ if TYPE_CHECKING:
     from stream.opt.solver import SolveStats
     from stream.workload.node import Tensor, TransferNode
 
-#: Core kinds that model a memory/DMA endpoint, not a compute engine -- never in a compute roofline.
 _NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
+"""Core kinds that model a memory or DMA endpoint, never in a compute roofline."""
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,9 @@ class Latency:
 
 @dataclass(frozen=True)
 class AllocationSolution:
-    """What the allocation solve decided for a steady state, and what it measured of it."""
+    """What the allocation solve decided for a steady state, and what it measured of it: per slot its latency, per
+    transfer the iterations one firing serves and the cycles its route takes, the solver's metrics, and the reports,
+    each None when it could not be computed."""
 
     tensor_placements: Mapping[Tensor, tuple[Core, ...]]
     transfer_routes: Mapping[TransferNode, MulticastPathPlan]
@@ -38,11 +40,16 @@ class AllocationSolution:
     depths: Mapping[Tensor, int]
     single_buffered: frozenset[Tensor]
     latency: Latency
+    slot_latencies: Mapping[int, float]
+    reuse_factors: Mapping[TransferNode, float]
+    route_cycles: Mapping[TransferNode, int]
     primary_cost: float
     throughput_bound: float
     solve_stats: SolveStats
+    metrics: dict[str, Any]
     performance: dict[str, Any] | None
-    capacity_slack: Mapping[int, dict[str, float]]
+    capacity_slack: Mapping[int, dict[str, float]] | None
+    slot_latency_breakdown: dict[str, Any] | None
 
 
 def mac_roofline_peak(accelerator: Accelerator) -> tuple[int, int]:

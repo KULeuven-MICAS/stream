@@ -9,7 +9,7 @@ A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfi
 | Key | What it is |
 |-----|-----------|
 | `group_latencies` | Per-fusion-group latency breakdown. |
-| `allocation` | The `Allocation` - the solved workload, mapping and iteration spaces, and its `solution` (placements, routes, latencies, solve statistics, performance report). |
+| `allocation` | The `Allocation` - the `problem` it solves (the steady-state workload, the candidate placements and routes, the iteration spaces), the solved mapping and iteration spaces, and its `solution` (placements, routes, latencies, solve statistics and metrics, reports). |
 | `workload` | The parsed computation graph. |
 | `accelerator` | The parsed hardware model. |
 
@@ -17,8 +17,8 @@ A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfi
 estimate = evaluate_mapping(...)
 print(estimate.cycles)
 ctx = estimate.context
-schedule = ctx.get("allocation")
-print(schedule.solution.latency.total)
+allocation = ctx.get("allocation")
+print(allocation.solution.latency.total)
 ```
 
 ## Files written to disk
@@ -30,10 +30,10 @@ print(schedule.solution.latency.total)
 Each allocation solve writes into `group_<index>/allocation/`:
 
 - `reports/` - the solver's metrics (`optimization_metrics.yaml`) and, for Gurobi, its progress (`optimization_trace.yaml`), and where each slot's latency goes (`slot_latency_breakdown.yaml`).
-- `traces/` - the schedule as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`); open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers.
+- `traces/` - the allocation as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`); open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers.
 - `figures/` - the solver's progress for Gurobi (`optimization_progress.png`) and a picture of the solved steady-state workload (`steady_state_workload_final.svg`).
 
-A solve that has no solution writes the model instead, as `allocation/model.ilp`. A sweep that only needs the estimates turns the artifacts off with `SolveOptions(artifacts=False)`.
+A sweep that only needs the estimates turns these off with `SolveOptions(artifacts=False)`. A solve that has no solution writes its model for diagnosis instead, whatever `artifacts` says: Gurobi's irreducible infeasible subsystem as `allocation/model.ilp`, OR-Tools' whole model as `allocation/model.mps`.
 
 ## YAML reference
 
@@ -88,16 +88,25 @@ The outcome of the allocation solve and, for Gurobi, its effort and model size; 
 
 ### `allocation/reports/optimization_trace.yaml`
 
-Each point of a Gurobi solve where the incumbent or the bound moved; other backends write no trace.
+Every point a Gurobi solve's progress callback reported, in time order; other backends write no trace. A key a point's callback does not report is null.
 
 | Key | Meaning | Unit |
 |-----|---------|------|
 | `trace` | the points, in time order | |
 | `trace[].time_s` | the solver's runtime at the point | s |
-| `trace[].event` | the callback that reported it: `MIPSOL` (a new incumbent) or `MIP` (search progress) | |
+| `trace[].event` | the callback that reported it: `PRESOLVE` (presolve progress), `MIP` (search progress) or `MIPSOL` (a new incumbent) | |
 | `trace[].incumbent_objective` | the objective of the best solution so far, null before the first; a lexicographic solve optimizes its levels in turn, so the values restart at each level | objective |
 | `trace[].objective_bound` | the best bound so far, null before the first | objective |
 | `trace[].mip_gap` | the relative gap between the two, null while either is | ratio |
+| `trace[].nodes_explored` | branch-and-bound nodes explored so far | count |
+| `trace[].nodes_left` | branch-and-bound nodes still open (`MIP`) | count |
+| `trace[].simplex_iterations` | simplex iterations so far (`MIP`) | count |
+| `trace[].cuts_applied` | cutting planes applied so far (`MIP`) | count |
+| `trace[].work_units` | Gurobi's deterministic work measure so far | work units |
+| `trace[].rows_removed` | constraints presolve removed so far (`PRESOLVE`) | count |
+| `trace[].columns_removed` | variables presolve removed so far (`PRESOLVE`) | count |
+| `trace[].bound_changes` | variable bounds presolve changed so far (`PRESOLVE`) | count |
+| `trace[].coefficient_changes` | coefficients presolve changed so far (`PRESOLVE`) | count |
 
 ### `allocation/reports/slot_latency_breakdown.yaml`
 

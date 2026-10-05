@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from functools import cached_property
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -22,6 +22,7 @@ from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge,
 if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.workload.steady_state.node import Node
+    from stream.workload.workload import Workload
 
 Placement: TypeAlias = tuple[Core, ...]
 Choice: TypeAlias = tuple[TransferNode, MulticastPathPlan]
@@ -75,15 +76,10 @@ class DecisionSpace:
         self.choice_has_empty_path: dict[Choice, bool] = {}
         self._index_choice_metadata()
 
-    # ------------------------------------------------------------ #
-    # option canonicalization                                      #
-    # ------------------------------------------------------------ #
     def _init_option_sets(self) -> None:
         for node in self.workload.topological_sort():
             if not isinstance(node, HasOutputs):
                 continue
-            # A node's outputs, and the state it keeps: the state is resident on the cores the
-            # node runs on, so it is allocated exactly where its node is and never moved.
             carried = (
                 [x for x in node.inputs if is_state_operand(node, x)] if isinstance(node, HasIterationSpace) else []
             )
@@ -93,9 +89,6 @@ class DecisionSpace:
                 try:
                     normalized = _normalize_tensor_choices(self.core_allocation(node))
                 except ValueError as exc:
-                    # The (auto-generated) mapping left this node with no core it can run on -> the mapping
-                    # is structurally infeasible. Surface a clean, inspectable diagnosis instead of a bare
-                    # error (e.g. auto-mapping onto AIE tiles, which need a hand-written kernel mapping).
                     raise InfeasibleAllocationError(
                         structural_infeasibility(
                             f"node '{getattr(node, 'name', node)}' has no core it can be placed on"
@@ -140,7 +133,6 @@ class DecisionSpace:
                 self.tiles_needed_levels[(t, i)] = tiles_factor
                 self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
                 self.bds_needed_levels[(t, i)] = 4 if i == len(sizes) - 1 else tiles_factor
-            # A second buffer helps only with >1 tile; a loop-invariant tensor (tiles_factor==1) wastes half the memory.
             if self.force_double_buffering and tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
 
@@ -148,16 +140,12 @@ class DecisionSpace:
         for tr in self.transfer_nodes:
             for choice in self.path_choices[tr]:
                 key = (tr, choice)
-                # Data handed over within one memory crosses no link.
                 self.links_in_choice[key] = set() if self.in_one_memory(choice) else set(choice.links_used)
                 self.link_set.update(self.links_in_choice[key])
                 self.choice_src_cores[key] = set(choice.sources)
                 self.choice_dst_cores[key] = set(choice.targets)
                 self.choice_has_empty_path[key] = len(choice.links_used) == 0
 
-    # ------------------------------------------------------------ #
-    # tensors                                                      #
-    # ------------------------------------------------------------ #
     def is_fixed(self, t: Tensor) -> bool:
         return t in self._fixed
 
@@ -212,14 +200,11 @@ class DecisionSpace:
         users = [c for c in self.accelerator.core_list if self.accelerator.memory_of(c) == memory]
         return memory.get_memory_capacity() - sum(self.hardware.reserved_memory_bits(c) for c in users)
 
-    # ------------------------------------------------------------ #
-    # transfers                                                    #
-    # ------------------------------------------------------------ #
     def is_const_i(self, tr: TransferNode) -> bool:
-        return isinstance(next(iter(self.workload.predecessors(tr))), InEdge)
+        return is_const_input(self.workload, tr)
 
     def is_const_o(self, tr: TransferNode) -> bool:
-        return isinstance(next(iter(self.workload.successors(tr))), OutEdge)
+        return is_const_output(self.workload, tr)
 
     def is_const_io(self, tr: TransferNode) -> bool:
         return self.is_const_i(tr) or self.is_const_o(tr)
@@ -233,8 +218,6 @@ class DecisionSpace:
 
     def transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
         """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse."""
-        # A transfer served out of memory the two cores share reads in place: no bytes cross a link,
-        # so it adds no time to the slot, the same reason it spends no DMA channel.
         if self.choice_shares_memory(tr, path):
             return 0
         link = get_transfer_latency_for_path(tr, path)
@@ -272,11 +255,8 @@ class DecisionSpace:
         return max((len(choice) for t in tensors for choice in self.tensor_choices[t]), default=1)
 
     def distinct_slice_width(self, tensors: Iterable[Tensor]) -> int:
-        """How many distinct slices one side of a transfer holds.
-
-        Cores that a spatial loop does not address separately read the same slice, and the
-        object-fifo lowering serves them from one channel, so they do not widen the fan-out.
-        """
+        """How many distinct slices one side of a transfer holds: cores a spatial loop does not address separately
+        read one slice, which the object-fifo lowering serves from one channel."""
         return max(
             (
                 prod(v.size for v in self.ssis[t].variables if v.type is IterationVariableType.SPATIAL and v.relevant)
@@ -287,36 +267,28 @@ class DecisionSpace:
         )
 
     def transfer_is_broadcast(self, tr: TransferNode) -> bool:
-        """Whether several cores are served the same slice, so one fifo carries them all.
-
-        ``requiresDMAs`` bails out before it ever looks at the tiles unless the fifo has a
-        single consumer, so a broadcast is on the DMA however the cores are placed.
-        """
+        """Whether several cores are served the same slice, so one fifo carries them all, on the DMA however the
+        cores are placed (``requiresDMAs`` only looks at the tiles of a fifo with one consumer)."""
         if (broadcast := self._broadcast.get(tr)) is None:
             tensors = unique_tensors(tr.outputs)
             broadcast = self._broadcast[tr] = self.distinct_slice_width(tensors) < self.placement_width(tensors)
         return broadcast
 
     def transfer_shares_memory(self, tr: TransferNode, core: Core, incoming: bool) -> bool:
-        """Whether this core is served this transfer out of memory it already shares.
-
-        The object-fifo lowering keeps a fifo out of the DMA when it has one consumer, no
-        repeat count and no layout transform on the way. Stream only routes a transfer core
-        to core when the two sides already agree on layout -- a disagreement is what puts it
-        on a memory tile -- so the case left to check is whether the cores this one actually
-        hands to, or takes from, are its neighbours.
-        """
+        """Whether this core is served this transfer out of memory it already shares: the object-fifo lowering keeps
+        a single-consumer fifo off the DMA, and Stream routes core to core only where the layouts agree, so what is
+        left to check is whether the cores this one hands to, or takes from, are its neighbours."""
         if self.within_one_memory(tr):
             return True
         choices = self.path_choices.get(tr) or ()
         if not choices or self.transfer_is_broadcast(tr):
             return False
-        # Only a transfer that lands straight on the cores is lowered core to core. One
-        # staged on a memory tile is two transfers, and each leg ends on the tile.
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
             return False
         for choice in choices:
-            touching = [(a, b) for a, b in communicating_pairs(choice) if (b if incoming else a) == core]
+            touching = [
+                (a, b) for a, b in communicating_pairs(choice.sources, choice.targets) if (b if incoming else a) == core
+            ]
             if not touching:
                 return False
             if any(not self.hardware.shares_memory(one, other) for one, other in touching):
@@ -331,7 +303,7 @@ class DecisionSpace:
             return True
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self.transfer_is_broadcast(tr):
             return False
-        pairs = communicating_pairs(choice)
+        pairs = communicating_pairs(choice.sources, choice.targets)
         return bool(pairs) and all(self.hardware.shares_memory(one, other) for one, other in pairs)
 
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
@@ -345,18 +317,11 @@ class DecisionSpace:
             within = self._one_memory[tr] = bool(choices) and all(self.in_one_memory(choice) for choice in choices)
         return within
 
-    # ------------------------------------------------------------ #
-    # kernel state handed between cores                            #
-    # ------------------------------------------------------------ #
     @cached_property
     def handovers(self) -> tuple[tuple[Core, Core, int], ...]:
-        """Cores that pass a kernel's state to the step behind them, and the bits each holds.
-
-        A kernel that keeps a running reduction hands the finished scale to whichever core
-        consumes its output, in a buffer both ends hold. Which core meets which is the same
-        relation the transfer between them uses, so it is read off the allocation the mapping
-        already declares rather than being decided again.
-        """
+        """Cores that pass a kernel's state (such as a running reduction's scale) to the core consuming its output,
+        in a buffer both ends hold, and the bits each holds; which core meets which is the relation the transfer
+        between them uses, read off the mapping's allocation."""
         found: list[tuple[Core, Core, int]] = []
         for node in self.ssc_nodes:
             kernel = self.mapping.get(node).kernel
@@ -369,14 +334,8 @@ class DecisionSpace:
                 bits = self.workload.get_tensor_single_core(held, node, self.mapping).size_bits()
                 sources = self.core_allocation(node)[0]
                 for consumer in self._consumers(node):
-                    targets = self.core_allocation(consumer)[0]
-                    narrow = min(len(sources), len(targets))
-                    found += [
-                        (sources[i], targets[j], state.handover * bits)
-                        for i in range(len(sources))
-                        for j in range(len(targets))
-                        if narrow and i % narrow == j % narrow
-                    ]
+                    pairs = communicating_pairs(sources, self.core_allocation(consumer)[0])
+                    found += [(one, other, state.handover * bits) for one, other in pairs]
         return tuple(found)
 
     def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
@@ -391,6 +350,16 @@ class DecisionSpace:
         return reached
 
 
+def is_const_input(workload: Workload, tr: TransferNode) -> bool:
+    """Whether ``tr`` moves a tensor the workload takes in."""
+    return isinstance(next(iter(workload.predecessors(tr))), InEdge)
+
+
+def is_const_output(workload: Workload, tr: TransferNode) -> bool:
+    """Whether ``tr`` moves a tensor the workload puts out."""
+    return isinstance(next(iter(workload.successors(tr))), OutEdge)
+
+
 def core_id(end: Core | str) -> int | None:
     """A link end's core id, None for an end that is not a core."""
     return end.id if isinstance(end, Core) else None
@@ -401,16 +370,10 @@ def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
     return list(dict.fromkeys(t for t in tensors if isinstance(t, Tensor)))
 
 
-def communicating_pairs(choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
-    """Which source and target of this transfer actually hand to one another.
-
-    Codegen matches a producer to a consumer by spatial index, and the spatial part of
-    a split runs fastest, so the consumer holding spatial point ``j`` is fed by the
-    producers at ``j``, ``j + m``, ``j + 2m`` and so on, ``m`` being the narrower of
-    the two sides. Which is the same relation the flash bindings use to find the core
-    holding the other half of an online-softmax step.
-    """
-    src, dst = choice.sources, choice.targets
+def communicating_pairs(src: Sequence[Core], dst: Sequence[Core]) -> tuple[tuple[Core, Core], ...]:
+    """Which of the ``src`` cores hand to which ``dst`` cores: codegen matches them by spatial index, the spatial part
+    of a split running fastest, so the target at ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being
+    the narrower side."""
     if not src or not dst:
         return ()
     narrow = min(len(src), len(dst))

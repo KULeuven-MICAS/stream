@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from typing import Any, ClassVar
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -36,12 +37,12 @@ class CapIteration:
     def __init__(self, cap: float = 1e12) -> None:
         self.cap = cap
 
-    def declare(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
-        q.add(SLOT_PRESSURE, 0, index="test", upper_bound=PRESSURE_BOUND)
+    def declare(self, ctx: FormulationContext) -> None:
+        ctx.quantities.add(SLOT_PRESSURE, 0, index="test", upper_bound=PRESSURE_BOUND)
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
-        iteration = q.get("iteration").expr
-        q.add("capped_iteration", iteration)
+    def build(self, ctx: FormulationContext) -> None:
+        iteration = ctx.quantities.get("iteration").expr
+        ctx.quantities.add("capped_iteration", iteration)
         ctx.model.add_constr(iteration <= self.cap, name="cap_iteration")
 
 
@@ -51,7 +52,7 @@ class Needs:
     def __init__(self, name: str, requires: tuple[str, ...], provides: tuple[str, ...] = ()) -> None:
         self.name, self.requires, self.provides = name, requires, provides
 
-    def build(self, ctx: Any, q: QuantityRegistry) -> None: ...
+    def build(self, ctx: Any) -> None: ...
 
 
 @pytest.fixture
@@ -75,6 +76,46 @@ def test_families_are_discovered_once_per_allowlist(monkeypatch: pytest.MonkeyPa
         assert len(calls) == 1
     finally:
         families._discovered.cache_clear()
+
+
+def test_streams_own_families_need_no_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stream's own families are registered in-tree, so an install whose entry points are stale still builds them."""
+    monkeypatch.setattr(families, "load_group", lambda group, allow: [])
+    families._discovered.cache_clear()
+    try:
+        assert set(families.BUILTIN_FAMILIES) <= set(families.available_families())
+        assert {*DEFAULT_FAMILIES, "memory_ports"} == set(families.BUILTIN_FAMILIES) - set(AIE2Namespace.families)
+    finally:
+        families._discovered.cache_clear()
+
+
+def test_a_builtin_family_that_cannot_be_imported_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A broken module of Stream's own is an error, not an unknown family."""
+    monkeypatch.setitem(families.BUILTIN_FAMILIES, "placement", "no_such_module:Placement")
+    families._discovered.cache_clear()
+    try:
+        with pytest.raises(ModuleNotFoundError, match="no_such_module"):
+            families.available_families()
+    finally:
+        families._discovered.cache_clear()
+
+
+def test_default_families_reject_leaving_out_an_unknown_family() -> None:
+    with pytest.raises(KeyError, match="nonexistent_family"):
+        default_families(ACCELERATOR, without=["nonexistent_family"])
+
+
+def test_object_fifo_depth_without_depth_keeps_the_buffering_level() -> None:
+    """``depth`` False builds no per-core depth for a namespace to bound and keeps the buffering objective level, as
+    ConstraintSelection(object_fifo_depth=False) did."""
+    (family,) = load_families([{"object_fifo_depth": {"depth": False}}]).families
+    ctx = MagicMock(quantities=QuantityRegistry())
+    family.build(ctx)
+    assert "object_fifo_depth" not in ctx.quantities
+    assert [level.name for level in family.objective(ctx)] == ["buffering"]
+    (limit,) = load_families(["object_fifo_depth", "aie2_object_fifo_depth"]).families[1:]
+    limit.build(ctx)
+    ctx.add_constr.assert_not_called()
 
 
 def test_spec_forms_parse_to_name_and_options() -> None:

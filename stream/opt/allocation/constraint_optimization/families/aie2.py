@@ -6,53 +6,58 @@ from typing import TYPE_CHECKING, ClassVar
 
 from stream.opt.allocation.constraint_optimization.families.dma import DMA_CHANNELS
 from stream.opt.allocation.constraint_optimization.families.memory import BUFFER_DESCRIPTORS, OBJECT_FIFO_DEPTH
-from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.opt.allocation.constraint_optimization.utils import resource_key
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
+    from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
+    from stream.opt.allocation.constraint_optimization.families.reuse import MemoryReuseEntry
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
-    from stream.opt.allocation.constraint_optimization.hardware import MemoryReuseEntry
-    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 NAMESPACE = "aie2"
 
 
-class ObjectFifoDepth:
+class _DepthLimit:
+    """Each AIE2 tile's ``quantity`` stays within its ``max_object_fifo_depth``, a constraint of limit ``kind``."""
+
+    name: ClassVar[str]
+    requires: ClassVar[tuple[str, ...]]
+    provides: ClassVar[tuple[str, ...]] = ()
+    quantity: ClassVar[str]
+    kind: ClassVar[ResourceKind]
+    prefix: ClassVar[str]
+
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
+        for core, depth in (q.indexed(self.quantity) if self.quantity in q else {}).items():
+            if core.namespace == NAMESPACE:
+                ctx.add_constr(
+                    depth.expr <= core.max_object_fifo_depth,
+                    name=f"{self.prefix}_Core_{core.id}",
+                    resource=core,
+                    kind=self.kind,
+                    bound=float(core.max_object_fifo_depth),
+                )
+
+
+class ObjectFifoDepth(_DepthLimit):
     """An AIE2 tile's object fifos are at most its ``max_object_fifo_depth`` deep."""
 
-    name: ClassVar[str] = "aie2_object_fifo_depth"
-    requires: ClassVar[tuple[str, ...]] = ("object_fifo_depth",)
-    provides: ClassVar[tuple[str, ...]] = ()
-
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
-        for core, depth in q.indexed("object_fifo_depth").items():
-            if core.namespace == NAMESPACE:
-                ctx.add_constr(
-                    depth.expr <= core.max_object_fifo_depth,
-                    name=f"aie2_obj_fifo_depth_Core_{core.id}",
-                    resource=core,
-                    kind=OBJECT_FIFO_DEPTH,
-                    bound=float(core.max_object_fifo_depth),
-                )
+    name = "aie2_object_fifo_depth"
+    requires = ("object_fifo_depth",)
+    quantity = "object_fifo_depth"
+    kind = OBJECT_FIFO_DEPTH
+    prefix = "aie2_obj_fifo_depth"
 
 
-class BufferDescriptors:
+class BufferDescriptors(_DepthLimit):
     """An AIE2 tile's transfers use at most ``max_object_fifo_depth`` buffer descriptors."""
 
-    name: ClassVar[str] = "aie2_buffer_descriptors"
-    requires: ClassVar[tuple[str, ...]] = ("buffer_descriptor_depth",)
-    provides: ClassVar[tuple[str, ...]] = ()
-
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
-        for core, depth in q.indexed("buffer_descriptor_depth").items():
-            if core.namespace == NAMESPACE:
-                ctx.add_constr(
-                    depth.expr <= core.max_object_fifo_depth,
-                    name=f"aie2_bd_depth_Core_{core.id}",
-                    resource=core,
-                    kind=BUFFER_DESCRIPTORS,
-                    bound=float(core.max_object_fifo_depth),
-                )
+    name = "aie2_buffer_descriptors"
+    requires = ("buffer_descriptor_depth",)
+    quantity = "buffer_descriptor_depth"
+    kind = BUFFER_DESCRIPTORS
+    prefix = "aie2_bd_depth"
 
 
 class MemoryReuse:
@@ -62,8 +67,8 @@ class MemoryReuse:
     requires: ClassVar[tuple[str, ...]] = ("memory_reuse",)
     provides: ClassVar[tuple[str, ...]] = ()
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
-        entries: tuple[MemoryReuseEntry, ...] = q.get("memory_reuse").expr
+    def build(self, ctx: FormulationContext) -> None:
+        entries: tuple[MemoryReuseEntry, ...] = ctx.quantities.get("memory_reuse").expr
         for entry in entries:
             if entry.core.namespace != NAMESPACE:
                 continue
@@ -93,13 +98,14 @@ class DmaChannels:
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
         self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
 
-    def build(self, ctx: FormulationContext, q: QuantityRegistry) -> None:
+    def build(self, ctx: FormulationContext) -> None:
+        q = ctx.quantities
         for direction in ("in", "out"):
             for core, usage in q.indexed(f"dma_{direction}").items():
                 limit = self.channels(core, ctx.space.offchip_core_id)
                 ctx.add_constr(
                     usage.expr <= limit,
-                    name=f"dma_{direction}_cap_{_resource_key(core)}",
+                    name=f"dma_{direction}_cap_{resource_key(core)}",
                     resource=core,
                     kind=DMA_CHANNELS,
                 )
