@@ -15,7 +15,7 @@ the MILP.
 The current allocator (`AllocationModel`) solves with fixed tile
 sizes; `TileSearchStage` compares candidate tilings by solving each. Sections
 1, 2, 6a, 6b and 7 have no counterpart in the code; the `**Code:**` pointers
-name the methods that implement the fixed-tile form of the other sections.
+name the code that implements the fixed-tile form of the other sections.
 
 ## Variables at a glance
 
@@ -84,7 +84,7 @@ tensor_size_expr = sum_combo(size[combo] * jw[combo])
 Since the `w` variables are one-hot per dimension, exactly one `jw` is 1, so
 the expression evaluates to the correct pre-computed size.
 
-**Code:** none; `_add_binary_product` is the binary AND helper.
+**Code:** none; `FormulationContext.binary_product` is the binary AND helper.
 
 ## 3. Memory capacity constraints
 
@@ -114,7 +114,7 @@ When a tensor depends on multiple tiled dimensions, the (SSIS candidate,
 tensor candidate) pairs are enumerated, producing pre-computed
 `ceil(sf * size)` coefficients for each pair.
 
-**Code:** `_memory_capacity_constraints`.
+**Code:** the `memory_capacity` family (`MemoryCapacity`).
 
 ## 4. SSIS loop sizes, reuse, and fire rates
 
@@ -148,8 +148,8 @@ fires[tr] = sum_s( z_stop[t,s] * sum_k(fires_coeff[k,s] * jw[k]) )
 The inner sum is a linear expression; multiplying by the `z_stop` binary uses
 the same big-M `lc` auxiliary pattern.
 
-**Code:** `_init_transfer_fire_helpers` (per stop level reuse, tiles and
-buffer descriptor coefficients), `_reuse_factor_rate_constraints`.
+**Code:** `DecisionSpace._init_transfer_fire_helpers` (per stop level reuse, tiles and
+buffer descriptor coefficients), the `reuse_rates` family.
 
 ## 5. Slot latency constraints
 
@@ -166,7 +166,7 @@ for each tile combo k:
 slot_latency[s] >= sum_k(raw_lat[k] * jw[k])
 ```
 
-**Code:** `_slot_latency_constraints`.
+**Code:** the `slot_latency` family (`SlotLatency`).
 
 ### 5b. Transfer nodes
 
@@ -194,7 +194,7 @@ lat_sum = sum_s(lc_s)
 active_latency = y * lat_sum                       # gated by path choice
 ```
 
-**Code:** `_active_transfer_latency`.
+**Code:** `_active_transfer_latency` in the `slot_latency` family.
 
 ## 6. Objective - variable iteration count
 
@@ -260,7 +260,7 @@ With 4 dimensions * 4 candidates each, there are 256 global combos.  Each
 adds 1 continuous auxiliary variable and 3 constraints - a negligible ~0.01%
 increase in model size.
 
-**Code:** `_set_total_latency_and_objective` (fixed `iterations`, no `aux_k`).
+**Code:** `Overlap.objective` (fixed `iterations`, no `aux_k`).
 
 ### 6c. Why not scale slot latencies instead?
 
@@ -294,7 +294,7 @@ The `check_total` field in the objective section recomputes
 `true_iterations * per_iter - (true_iterations - 1) * overlap` from the
 extracted variable values, serving as an independent sanity check.
 
-**Code:** none; `save_slot_latency_breakdown` writes the closest report,
+**Code:** none; `slot_latency_breakdown` builds the closest report,
 `slot_latency_breakdown.yaml` (per-slot contributors, totals, slack and reuse), among the
 [allocation artifacts](outputs.md#allocation-artifacts).
 
