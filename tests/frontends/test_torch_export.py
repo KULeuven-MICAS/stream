@@ -117,8 +117,23 @@ def test_a_conv_keeps_its_bias_and_the_window_of_the_onnx_conv():
     assert conv.operand_mapping == conv_maps(*conv.inputs[:2], True, ([2, 1], [1, 1], [1, 1]), 2)
 
 
-def test_torch_export_keeps_a_conv_window_given_positionally():
+@pytest.mark.parametrize(("padding", "pads"), [(1, [1, 1]), ("same", [1, 1]), ("valid", [0, 0])])
+def test_torch_export_keeps_a_conv_window_given_positionally(padding, pads):
     torch = pytest.importorskip("torch")
-    exported = torch.export.export(torch.nn.Conv2d(4, 6, 3, stride=(2, 1), padding=1), (torch.randn(1, 4, 9, 8),))
+    module = torch.nn.Conv2d(4, 6, 3, stride=1 if isinstance(padding, str) else (2, 1), padding=padding)
+    exported = torch.export.export(module, (torch.randn(1, 4, 9, 8),))
     (conv,) = frontend_for(exported).load(exported).get_computation_nodes()
-    assert conv.operand_mapping == conv_maps(*conv.inputs[:2], True, ([2, 1], [1, 1], [1, 1]), 1)
+    strides = [1, 1] if isinstance(padding, str) else [2, 1]
+    assert conv.operand_mapping == conv_maps(*conv.inputs[:2], True, (strides, [1, 1], pads), 1)
+
+
+def test_torch_export_reads_a_softmax_axis_given_positionally():
+    torch = pytest.importorskip("torch")
+
+    class Softmax(torch.nn.Module):
+        def forward(self, x):
+            return torch.softmax(x, 1)
+
+    exported = torch.export.export(Softmax(), (torch.randn(2, 4, 4),))
+    (softmax,) = frontend_for(exported).load(exported).get_computation_nodes()
+    assert isinstance(softmax, NormalizationNode) and softmax.reduction_axes == (1,)

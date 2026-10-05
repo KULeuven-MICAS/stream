@@ -59,7 +59,7 @@ def _zigzag_relevant_positions(node) -> dict[str, tuple[set[int], dict[int, int]
     from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator, ZigZagLayerDimRelation
 
     est = ZigZagCostEstimator(workload=_workload_of(node), accelerator=None, mapping=None)  # type: ignore[arg-type]
-    equation, dim_relations, _, _ = est.create_equation_and_dimension_relations_and_padding_and_pr_sizes(node)
+    equation, dim_relations, _ = est.create_equation_and_dimension_relations_and_pr_sizes(node)
     layer_dim_sizes = est.create_layer_dim_sizes(node)
     pr_loop, pr_loop_list, _ = ZigZagLayerDimRelation.extract_pr_loop_info(dim_relations)
     info = LoopRelevancyInfo.extract_relevancy_info(equation, layer_dim_sizes, pr_loop, pr_loop_list)

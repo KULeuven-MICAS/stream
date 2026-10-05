@@ -117,7 +117,7 @@ def test_zigzag_prices_a_biased_conv_as_its_product():
     parser = _parse_conv({"X": (1, 4, 7, 7), "W": (6, 4, 3, 3), "B": (6,)}, {"pads": [1, 1, 1, 1]})
     (conv,) = parser.workload.get_computation_nodes()
     estimator = ZigZagCostEstimator(workload=parser.workload, accelerator=None, mapping=None)  # type: ignore[arg-type]
-    equation = estimator.create_equation_and_dimension_relations_and_padding_and_pr_sizes(conv)[0]
+    equation = estimator.create_equation_and_dimension_relations_and_pr_sizes(conv)[0]
     assert len(conv.inputs) == 3
     assert [str(op) for op in equation.get_contained_operands()] == ["O", "A", "B"]
 

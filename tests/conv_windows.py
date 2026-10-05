@@ -10,6 +10,7 @@ from functools import cache
 from itertools import accumulate
 from math import prod
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -19,8 +20,9 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.frontends import load_workload
-from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.opt.allocation.constraint_optimization.families import traffic
+from stream.opt.allocation.constraint_optimization.families.dma import _fan
+from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.node import ComputationNode, Tensor, TransferNode
 from stream.workload.workload import Workload
@@ -32,13 +34,16 @@ HARDWARE = "stream/inputs/examples/hardware/{}.yaml"
 @dataclass(frozen=True)
 class Scenario:
     """conv2's ``stride``, its output ``rows`` per iteration of the fused OY loop (None: one iteration), the cores
-    each conv splits its output columns over, and whether a 3x3 max pool takes conv2's place."""
+    each conv splits its output columns over, whether a 3x3 max pool takes conv2's place, the padding of both, and
+    the mapping fixture when it is not the scenario's own."""
 
     stride: int
     rows: int | None
     conv1_cores: tuple[int, ...]
     conv2_cores: tuple[int, ...]
     pool: bool = False
+    pads: int = 1
+    mapping: str = ""
 
     @property
     def second(self) -> str:
@@ -54,28 +59,39 @@ SCENARIOS = {
     "s3_shared": Scenario(1, None, (0, 1), (0, 1)),
     "s4_shared": Scenario(1, 8, (0,), (1,)),
     "pool": Scenario(1, 8, (0, 1), (2, 3), pool=True),
+    "valid": Scenario(1, None, (0,), (0,), pads=0, mapping="s1"),
+    "s5_named": Scenario(2, 4, (0,), (0,)),
+    "s6": Scenario(2, None, (0, 1, 2, 3), (0, 1, 2, 3), mapping="s3"),
 }
 
 
-@cache
-def conv_chain(stride: int = 1, pool: bool = False) -> str:
-    """input (1,8,32,32) -> Conv1 (16, 3x3, pad 1) -> Conv2 (32, 3x3, pad 1, ``stride``), or with ``pool`` a 3x3 max
-    pool of the same window, bf16, as an ONNX path."""
-    side = 32 // stride
-    shapes = {"input": [1, 8, 32, 32], "w1": [16, 8, 3, 3]} | ({} if pool else {"w2": [32, 16, 3, 3]})
+def conv(name: str, x: str, w: str, y: str, k: int = 3, stride: int = 1, pads: int = 1) -> onnx.NodeProto:
+    return helper.make_node("Conv", [x, w], [y], name=name, kernel_shape=[k, k], pads=[pads] * 4, strides=[stride] * 2)
+
+
+def onnx_graph(nodes: list[onnx.NodeProto], shapes: dict[str, list[int]], outputs: list[str]) -> str:
+    """The bf16 ONNX path of ``nodes`` over graph inputs of ``shapes``, shapes inferred."""
     values = [helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape) for name, shape in shapes.items()]
-    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [1, 16 if pool else 32, side, side])
-    attrs = {"kernel_shape": [3, 3], "pads": [1, 1, 1, 1], "strides": [stride, stride]}
-    second = ("MaxPool", ["conv1_out"], "Pool") if pool else ("Conv", ["conv1_out", "w2"], "Conv2")
-    nodes = [
-        helper.make_node("Conv", ["input", "w1"], ["conv1_out"], name="Conv1", **attrs | {"strides": [1, 1]}),
-        helper.make_node(second[0], second[1], ["out"], name=second[2], **attrs),
-    ]
-    graph = helper.make_graph(nodes, "conv_chain", values, [out])
+    results = [helper.make_tensor_value_info(name, TensorProto.BFLOAT16, None) for name in outputs]
+    graph = helper.make_graph(nodes, "windows", values, results)
     model = shape_inference.infer_shapes(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]))
-    path = f"{tempfile.mkdtemp()}/conv_chain_{stride}_{pool}.onnx"
+    path = f"{tempfile.mkdtemp()}/windows.onnx"
     onnx.save(model, path)
     return path
+
+
+@cache
+def conv_chain(stride: int = 1, pool: bool = False, pads: int = 1) -> str:
+    """input (1,8,32,32) -> Conv1 (16, 3x3) -> Conv2 (32, 3x3, ``stride``), or with ``pool`` a 3x3 max pool of the
+    same window, both padded by ``pads``, as an ONNX path."""
+    window = {"kernel_shape": [3, 3], "pads": [pads] * 4, "strides": [stride] * 2}
+    second = (
+        helper.make_node("MaxPool", ["conv1_out"], ["out"], name="Pool", **window)
+        if pool
+        else conv("Conv2", "conv1_out", "w2", "out", stride=stride, pads=pads)
+    )
+    shapes = {"input": [1, 8, 32, 32], "w1": [16, 8, 3, 3]} | ({} if pool else {"w2": [32, 16, 3, 3]})
+    return onnx_graph([conv("Conv1", "input", "w1", "conv1_out", pads=pads), second], shapes, ["out"])
 
 
 def _sizes(node: ComputationNode) -> list[int]:
@@ -129,7 +145,7 @@ def oracle(name: str | Scenario) -> dict[str, Any]:
     """The scenario's tile quantities by enumeration: conv2's tiles fix what conv1 must have computed by each
     iteration, conv1 computes what is new, and each core reads what its tile's elements read."""
     scenario = SCENARIOS[name] if isinstance(name, str) else name
-    conv1, conv2 = load_workload(conv_chain(scenario.stride, scenario.pool)).get_computation_nodes()
+    conv1, conv2 = load_workload(conv_chain(scenario.stride, scenario.pool, scenario.pads)).get_computation_nodes()
     mid, inp = conv2.inputs[0], conv1.inputs[0]
     shape1, shape2 = conv1.outputs[0].shape, conv2.outputs[0].shape
     rows = scenario.rows or shape2[2]
@@ -166,17 +182,19 @@ def oracle(name: str | Scenario) -> dict[str, Any]:
 
 @cache
 def solve(name: str, hardware: str) -> dict[str, Any]:
-    """The quantities of :func:`oracle` that the allocation the scenario's mapping solves to reports."""
+    """The quantities of :func:`oracle` that the allocation the scenario's mapping solves to reports, and the solver's
+    own quantities of conv2's input transfer."""
+    scenario = SCENARIOS[name]
     with tempfile.TemporaryDirectory() as out:
-        mapping_path = str(MAPPINGS / f"{name}.yaml")
-        workload_path = conv_chain(SCENARIOS[name].stride, SCENARIOS[name].pool)
+        mapping_path = str(MAPPINGS / f"{scenario.mapping or name}.yaml")
+        workload_path = conv_chain(scenario.stride, scenario.pool, scenario.pads)
         estimate = evaluate_mapping(
             HARDWARE.format(hardware), workload_path, out, mapping_path, SolveOptions(artifacts=False)
         )
     allocation = estimate.context.get("allocation")
     workload: Workload = allocation.problem.workload
-    mapping = allocation.problem.mapping
-    conv1, conv2 = (cast(ComputationNode, workload.get_node_by_name(n)) for n in ("Conv1", SCENARIOS[name].second))
+    mapping, ssis, space = allocation.problem.mapping, allocation.problem.ssis, DecisionSpace(allocation.problem)
+    conv1, conv2 = (cast(ComputationNode, workload.get_node_by_name(n)) for n in ("Conv1", scenario.second))
     into1, into2 = (
         next(t for t in workload.predecessors(n) if isinstance(t, TransferNode) and n.inputs[0] in t.outputs)
         for n in (conv1, conv2)
@@ -185,25 +203,14 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
     def per_core(node: ComputationNode, tile: Callable[[int], Tensor]) -> tuple[tuple[int, ...], ...]:
         return tuple(tuple(tile(core).shape) for core in range(len(mapping.get(node).resource_allocation[0])))
 
-    ssis = allocation.problem.ssis
     mid, inp = conv2.inputs[0], conv1.inputs[0]
     moved = workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, ssis=ssis[mid])
     route = allocation.solution.transfer_routes[into2]
-    overlaps = workload.get_transfer_overlaps(into2, mapping, ssis[mid])
-    pairs = communicating_pairs(route.sources, route.targets, overlaps)
-    share = {pair: prod(moved.shape) // sum(d == pair[1] for _, d in pairs) for pair in pairs}
-    share |= {(route.sources[i], route.targets[j]): n for (i, j), n in overlaps.items()}
-    space, solution = DecisionSpace(allocation.problem), allocation.solution
-
-    def cycles(node: Any) -> float:
-        if node not in solution.route_cycles:
-            return space.active_runtime(node)
-        return get_active_latency(node, solution.route_cycles[node], ssis) / solution.reuse_factors[node]
-
-    waits = not set(mapping.get(conv1).resource_allocation[0]) >= set(mapping.get(conv2).resource_allocation[0])
-    warmup = {node: extra * cycles(node) for node, extra in space.warmup.items() if node != conv1 or waits}
+    handed = {(route.sources[i], route.targets[j]): n for (i, j), n in space.overlaps(into2).items()}
+    handed = handed or {pair: prod(moved.shape) for pair in space.pairs(into2, route)}
     oy = workload.get_dims(conv2)[2]
     work = workload.get_sliding_work(oy, allocation.problem.fusion_splits.get(oy, 1))
+    context = SimpleNamespace(space=space)
     return {
         "iterations": allocation.problem.iterations,
         "conv1_tile": per_core(conv1, lambda c: workload.get_tensor_single_core(conv1.outputs[0], conv1, mapping, c)),
@@ -216,12 +223,15 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
         "moved": per_core(
             conv2, lambda c: workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, c, ssis[mid])
         ),
-        "sources": {dst.id: {src.id: n for (src, d), n in share.items() if d == dst} for _, dst in pairs},
-        "conv1_rows": work[conv1],
-        "input_moved_rows": work[into1],
+        "sources": {dst.id: {src.id: n for (src, d), n in handed.items() if d == dst} for _, dst in handed},
+        "conv1_rows": work.get(conv1, (conv1.outputs[0].shape[2],)),
+        "input_moved_rows": work.get(into1, (inp.shape[2],)),
         "in_place": allocation.solution.route_cycles[into2] == 0,
         "halos": {loop.type.name: loop.halo for loop in ssis[mid] if loop.halo},
         "linked_bits": space.moved_bits(into2, route),
-        "warmup": (solution.latency.fill, sum(warmup.values())),
+        "fan": (_fan(space, into2, True), _fan(space, into2, False)),
+        "target_shares": [traffic._target_share(context, tr) * len(route.targets) for tr in (into1, into2)],
+        "waits_elsewhere": space.runs_readers_elsewhere(conv1),
         "first_tiles": {node.name: extra for node, extra in space.warmup.items()},
+        "fill": allocation.solution.latency.fill,
     }
