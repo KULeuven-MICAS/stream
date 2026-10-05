@@ -1,8 +1,9 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Generator
+from math import ceil
 from typing import Any
 
-from onnx import ModelProto, NodeProto
+from onnx import ModelProto, NodeProto, helper
 from zigzag.parser.onnx.utils import (
     get_onnx_tensor_type,
 )
@@ -48,3 +49,17 @@ class OnnxOperatorParser(metaclass=ABCMeta):
             if attribute.name == attribute_name:
                 return list(attribute.ints)
         return None
+
+    def get_window(self, sizes: tuple[int, ...], kernel: tuple[int, ...]) -> tuple[list[int], list[int], list[int]]:
+        """A sliding window's strides, dilations and leading padding per spatial axis, in ONNX's axis order: the
+        ``pads`` attribute, or what ``auto_pad`` derives from the input ``sizes`` and the ``kernel``."""
+        strides = self.get_node_attribute_ints("strides") or [1] * len(sizes)
+        dilations = self.get_node_attribute_ints("dilations") or [1] * len(sizes)
+        auto_pad = next((helper.get_attribute_value(a) for a in self.node.attribute if a.name == "auto_pad"), b"")
+        if auto_pad in (b"", b"NOTSET"):
+            return strides, dilations, (self.get_node_attribute_ints("pads") or [0] * len(sizes))[: len(sizes)]
+        totals = [
+            max(0, (ceil(n / s) - 1) * s + (f - 1) * d + 1 - n) if auto_pad != b"VALID" else 0
+            for n, f, s, d in zip(sizes, kernel, strides, dilations, strict=True)
+        ]
+        return strides, dilations, [t // 2 if auto_pad == b"SAME_UPPER" else t - t // 2 for t in totals]

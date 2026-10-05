@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import sympy as sp
@@ -377,6 +378,13 @@ def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
         base = sympy_to_xdsl(rest)
         return base * int(coeff)
     raise ValueError(f"Unsupported sympy expression type: {type(expr)} ({expr})")
+
+
+def window_index(
+    outputs: Sequence[AffineExpr], kernels: Sequence[AffineExpr], strides, dilations, pads
+) -> tuple[AffineExpr, ...]:
+    """The index a sliding window reads along each spatial axis: ``s*o + d*f - p`` of its output and kernel dims."""
+    return tuple(s * o + d * f - p for o, f, s, d, p in zip(outputs, kernels, strides, dilations, pads, strict=True))
 
 
 def affine_coefficients(expr: AffineExpr, n: int) -> tuple[int, list[int]]:

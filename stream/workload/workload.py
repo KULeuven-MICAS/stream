@@ -420,6 +420,10 @@ class Workload(DiGraphWrapper[Node]):
             if isinstance(expr, AffineDimExpr) and expr.position not in dim_to_size:
                 dim_to_size[expr.position] = sz
 
+        for node in self.get_computation_nodes():
+            for d, size in node.window_extents:
+                dim_to_size.setdefault(self.global_idxs[node].start + d, size)
+
         # Step 2: infer size for remaining dims (kernel dims in strided ops like MaxPool, a conv's group)
         # These dims only appear in affine expressions like: stride*other_dim + kernel_dim + offset
         # Their range is derived from: tensor_size, stride, output_size, and offset, once the others are known

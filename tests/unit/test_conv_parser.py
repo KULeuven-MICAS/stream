@@ -7,7 +7,7 @@ import onnx
 import pytest
 import torch
 from onnx import TensorProto, helper
-from torch.nn.functional import conv2d, pad
+from torch.nn.functional import conv2d, max_pool2d, pad
 from xdsl.ir.affine import AffineBinaryOpExpr
 
 from stream.parser.onnx.model import ONNXModelParser
@@ -72,7 +72,11 @@ CONVS = {
 
 
 def _parse_conv(shapes: dict[str, tuple[int, ...]], attrs: dict) -> ONNXModelParser:
-    node = helper.make_node("Conv", list(shapes), ["Y"], name="Conv", kernel_shape=list(shapes["W"][2:]), **attrs)
+    return _parse("Conv", shapes, {"kernel_shape": list(shapes["W"][2:]), **attrs})
+
+
+def _parse(op: str, shapes: dict[str, tuple[int, ...]], attrs: dict) -> ONNXModelParser:
+    node = helper.make_node(op, list(shapes), ["Y"], name=op, **attrs)
     inputs = [_vi(name, shape) for name, shape in shapes.items()]
     graph = helper.make_graph([node], "g", inputs, [helper.make_tensor_value_info("Y", TensorProto.FLOAT, None)])
     model = onnx.shape_inference.infer_shapes(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]))
@@ -116,3 +120,32 @@ def test_zigzag_prices_a_biased_conv_as_its_product():
     equation = estimator.create_equation_and_dimension_relations_and_padding_and_pr_sizes(conv)[0]
     assert len(conv.inputs) == 3
     assert [str(op) for op in equation.get_contained_operands()] == ["O", "A", "B"]
+
+
+POOLS = {
+    "strides_per_axis": ((1, 2, 9, 8), {"kernel_shape": [3, 2], "strides": [2, 1], "pads": [1, 0, 1, 0]}, (1, 0)),
+    "dilations_per_axis": (
+        (1, 2, 9, 9),
+        {"kernel_shape": [2, 3], "strides": [1, 2], "dilations": [2, 1], "pads": [1, 1, 1, 1]},
+        (1, 1),
+    ),
+    "window_past_the_end": ((1, 2, 8, 8), {"kernel_shape": [3, 3], "pads": [1, 1, 1, 1]}, (1, 1)),
+}
+
+
+@pytest.mark.parametrize(("x_shape", "attrs", "padding"), POOLS.values(), ids=POOLS)
+def test_maxpool_access_maps_compute_torch_max_pool2d(x_shape, attrs, padding):
+    """Every output is the largest input its iteration points read, through the same per-axis window as a Conv's:
+    that is torch's max_pool2d."""
+    parser = _parse("MaxPool", {"X": x_shape}, attrs)
+    (pool,) = parser.workload.get_computation_nodes()
+    x = np.random.default_rng(0).standard_normal(x_shape)
+    sizes = [parser.workload.get_dimension_size(d) for d in parser.workload.get_dims(pool)]
+    points = np.indices(sizes).reshape(len(sizes), -1).T
+    index = [points @ t.A.T + t.b for t in map(AffineTransform.from_affine_map, pool.operand_mapping)]
+    inside = ((index[0] >= 0) & (index[0] < x.shape)).all(1)
+    found = np.full(pool.outputs[0].shape, -np.inf)
+    np.maximum.at(found, tuple(index[1][inside].T), x[tuple(index[0][inside].T)])
+    window = attrs["kernel_shape"], attrs.get("strides", 1), padding, attrs.get("dilations", 1)
+    expected = max_pool2d(torch.from_numpy(x), *window)
+    np.testing.assert_allclose(found, expected.numpy())
