@@ -10,7 +10,6 @@ from functools import cache
 from itertools import accumulate
 from math import prod
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -20,8 +19,6 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.frontends import load_workload
-from stream.opt.allocation.constraint_optimization.families import traffic
-from stream.opt.allocation.constraint_optimization.families.dma import _fan
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.node import ComputationNode, Tensor, TransferNode
@@ -121,15 +118,15 @@ def reads(node: ComputationNode, tensor: Tensor, outputs: set[tuple[int, ...]]) 
     return set(map(tuple, index[inside].tolist()))
 
 
-def _box(shape: tuple[int, ...], rows: range, cols: range) -> set[tuple[int, ...]]:
+def box(shape: tuple[int, ...], rows: range, cols: range) -> set[tuple[int, ...]]:
     return {(b, k, y, x) for b in range(shape[0]) for k in range(shape[1]) for y in rows for x in cols}
 
 
-def _block(size: int, parts: int, j: int) -> range:
+def block(size: int, parts: int, j: int) -> range:
     return range(j * size // parts, (j + 1) * size // parts)
 
 
-def _shape(elements: set[tuple[int, ...]]) -> tuple[int, ...]:
+def extent_of(elements: set[tuple[int, ...]]) -> tuple[int, ...]:
     index = np.array(sorted(elements))
     return tuple(int(n) for n in index.max(0) - index.min(0) + 1)
 
@@ -152,12 +149,12 @@ def oracle(name: str | Scenario) -> dict[str, Any]:
     c1, c2 = scenario.conv1_cores, scenario.conv2_cores
     iterations = shape2[2] // rows
     work2 = [
-        [_box(shape2, range(i * rows, (i + 1) * rows), _block(shape2[3], len(c2), j)) for j in range(len(c2))]
+        [box(shape2, range(i * rows, (i + 1) * rows), block(shape2[3], len(c2), j)) for j in range(len(c2))]
         for i in range(iterations)
     ]
     read2 = [[reads(conv2, mid, tile) for tile in tiles] for tiles in work2]
     new1 = _new([set().union(*tiles) for tiles in read2])
-    owned = [_box(shape1, range(shape1[2]), _block(shape1[3], len(c1), j)) for j in range(len(c1))]
+    owned = [box(shape1, range(shape1[2]), block(shape1[3], len(c1), j)) for j in range(len(c1))]
     work1 = [[new & own for own in owned] for new in new1]
     read1 = [[reads(conv1, inp, tile) for tile in tiles] for tiles in work1]
     moved2 = list(zip(*[_new(list(core)) for core in zip(*read2, strict=True)], strict=True))
@@ -165,12 +162,12 @@ def oracle(name: str | Scenario) -> dict[str, Any]:
     i = min(1, iterations - 1)
     return {
         "iterations": iterations,
-        "conv1_tile": tuple(_shape(tile) for tile in work1[i]),
-        "out_tile": tuple(_shape(tile) for tile in work2[i]),
-        "input_staged": tuple(_shape(tile) for tile in read1[i]),
-        "input_moved": tuple(_shape(tile) for tile in moved1[i]),
-        "window": tuple(_shape(tile) for tile in read2[i]),
-        "moved": tuple(_shape(tile) for tile in moved2[i]),
+        "conv1_tile": tuple(extent_of(tile) for tile in work1[i]),
+        "out_tile": tuple(extent_of(tile) for tile in work2[i]),
+        "input_staged": tuple(extent_of(tile) for tile in read1[i]),
+        "input_moved": tuple(extent_of(tile) for tile in moved1[i]),
+        "window": tuple(extent_of(tile) for tile in read2[i]),
+        "moved": tuple(extent_of(tile) for tile in moved2[i]),
         "sources": {
             dst: {src: len(moved & own) for src, own in zip(c1, owned, strict=True) if moved & own}
             for dst, moved in zip(c2, moved2[i], strict=True)
@@ -210,7 +207,7 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
     handed = handed or {pair: prod(moved.shape) for pair in space.pairs(into2, route)}
     oy = workload.get_dims(conv2)[2]
     work = workload.get_sliding_work(oy, allocation.problem.fusion_splits.get(oy, 1))
-    context = SimpleNamespace(space=space)
+    routes = allocation.solution.transfer_routes
     return {
         "iterations": allocation.problem.iterations,
         "conv1_tile": per_core(conv1, lambda c: workload.get_tensor_single_core(conv1.outputs[0], conv1, mapping, c)),
@@ -229,9 +226,16 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
         "in_place": allocation.solution.route_cycles[into2] == 0,
         "halos": {loop.type.name: loop.halo for loop in ssis[mid] if loop.halo},
         "linked_bits": space.moved_bits(into2, route),
-        "fan": (_fan(space, into2, True), _fan(space, into2, False)),
-        "target_shares": [traffic._target_share(context, tr) * len(route.targets) for tr in (into1, into2)],
-        "waits_elsewhere": space.runs_readers_elsewhere(conv1),
+        "linked_pairs": [pair for pair in space.pairs(into2, route) if not space.hardware.shares_memory(*pair)],
+        "received_bits": [
+            (
+                sum(space.moved_bits(tr, routes[tr], target=t) for t in routes[tr].targets),
+                space.moved_bits(tr, routes[tr]),
+            )
+            for tr in (into1, into2)
+        ],
+        "input_copied": space.copied_bits(inp),
+        "waited_on": space.is_waited_on(conv1),
         "first_tiles": {node.name: extra for node, extra in space.warmup.items()},
         "fill": allocation.solution.latency.fill,
     }

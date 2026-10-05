@@ -46,7 +46,7 @@ frontend. The pipeline handles such a read like any other affine access:
   own `o`, with a remainder dim of size `s` when `s > 1`, so fused convolutions and pools share their row and column
   axes; the window and the constant stay in the access maps. Only where the producer's extent is `s` times the
   reader's: an unpadded reader leaves its producer's axis its own, as an unfused one. A mapping naming the producer's
-  dim `s*z + r` tiles or splits `z`.
+  dim `s*z + r` tiles or splits `z`, so its tile is a multiple of `s`, and entries naming one fused axis cut it alike.
 - **Halos.** A tile's footprint is its interior window, not clipped at the tensor's origin, and a transfer's copy
   holds the window of the node it reaches. Each loop that slides that window carries its halo, the window less its
   step, on its `IterationVariable`: the rows a fused loop shares between iterations, the columns cores share.
@@ -56,9 +56,9 @@ frontend. The pipeline handles such a read like any other affine access:
   transfer. ZigZag costs the interior tile, which needs no border padding.
 - **Boundary iterations.** A producer's first tile also covers what its reader's first window reaches ahead (conv1
   computes 9, 8, 8, 7 rows under a 3x3 conv tiled to 8 rows), and its last is shorter
-  (`Workload.get_sliding_work`). The fill adds what the longer first tiles cost at the interior rate per element, once
-  per sweep of the window: a node's longer first and shorter last tiles cancel on the cores it runs on, so what counts
-  is who waits elsewhere, a transfer's reader and a node's readers on other cores.
+  (`Workload.get_sliding_work`). The fill adds, at the interior rate per element, the most a node's work runs ahead of its
+  steady pace over the nested fused loops: its longer first and shorter last tiles cancel on its own cores, so what
+  counts is who waits on them, a transfer's reader and a node's readers behind a moving transfer or on other cores.
 
 ---
 

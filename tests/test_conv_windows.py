@@ -2,7 +2,8 @@
 allocation against the oracle (bf16 elements; per core in the mapping's core order; interior iteration)."""
 
 import tempfile
-from collections import Counter
+from math import prod
+from pathlib import Path
 
 import pytest
 from conv_windows import (
@@ -10,11 +11,11 @@ from conv_windows import (
     MAPPINGS,
     SCENARIOS,
     Scenario,
-    _block,
-    _box,
-    _shape,
+    block,
+    box,
     conv,
     conv_chain,
+    extent_of,
     onnx_graph,
     oracle,
     reads,
@@ -152,16 +153,16 @@ def test_allocation_matches_the_oracle(scenario: str, hardware: str):
     if not found["in_place"]:
         handed = {(src, dst): n for dst, srcs in expected["sources"].items() for src, n in srcs.items() if src != dst}
         assert found["linked_bits"] == 16 * sum(handed.values())
-        fan_in, fan_out = (max(Counter(pair[k] for pair in handed).values()) for k in (1, 0))
-        assert found["fan"] == (fan_in, fan_out)
-        assert found["target_shares"] == [1.0, 1.0]
+        assert {(src.id, dst.id) for src, dst in found["linked_pairs"]} == set(handed)
+    assert all(received == moved for received, moved in found["received_bits"])
+    assert found["input_copied"] == 16 * sum(prod(tile) for tile in expected["input_moved"])
     rows, inputs = expected["conv1_rows"], expected["input_moved_rows"]
     first = {"Conv1": rows[0] * len(rows) / sum(rows) - 1, "Transfer(input)": inputs[0] * len(inputs) / sum(inputs) - 1}
     assert {name: found["first_tiles"].get(name, 0.0) for name in first} == first
     conv1_cores, conv2_cores = (
         set(cores) for cores in (SCENARIOS[scenario].conv1_cores, SCENARIOS[scenario].conv2_cores)
     )
-    assert found["waits_elsewhere"] is not conv1_cores.issuperset(conv2_cores)
+    assert found["waited_on"] is (not conv1_cores.issuperset(conv2_cores) or not found["in_place"])
 
 
 @pytest.mark.parametrize(
@@ -188,10 +189,10 @@ def test_a_reader_footprint_is_its_window_and_the_producer_footprint_its_tile(ti
     assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv1, at) == (1, 16, 8, 32)
 
 
-def _tiled(rows: int):
-    workload = load_workload(conv_chain(1))
+def _tiled(rows: int, path: str | None = None):
+    workload = load_workload(path or conv_chain(1))
     sizes = {z: workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]}
-    sizes[workload.get_dims(workload.get_computation_nodes()[1])[2]] = rows
+    sizes[workload.get_dims(workload.get_computation_nodes()[-1])[2]] = rows
     return workload.with_modified_dimension_sizes(sizes)
 
 
@@ -210,6 +211,66 @@ def test_conv1_computes_what_the_window_first_reaches_however_far_ahead(rows: in
     conv1, conv2 = tiled.get_computation_nodes()
     work = tiled.get_sliding_work(tiled.get_dims(conv2)[2], 32 // rows)
     assert work == {conv1: oracle(Scenario(1, rows, (0,), (0,)))["conv1_rows"], conv2: (rows,) * (32 // rows)}
+
+
+def test_a_depthwise_conv_between_two_convs_passes_both_lookaheads_on():
+    """Its output channel ``g + k`` indexes no single dim; the rows still slide: conv1 two rows ahead, depthwise one."""
+    shapes = {"input": [1, 8, 32, 32], "w1": [16, 8, 3, 3], "wd": [16, 1, 3, 3], "w2": [32, 16, 3, 3]}
+    depthwise = helper.make_node(
+        "Conv", ["m", "wd"], ["d"], name="Depthwise", kernel_shape=[3, 3], pads=[1] * 4, group=16
+    )
+    nodes = [conv("Conv1", "input", "w1", "m"), depthwise, conv("Conv2", "d", "w2", "y")]
+    tiled = _tiled(8, onnx_graph(nodes, shapes, ["y"]))
+    work = tiled.get_sliding_work(tiled.get_dims(tiled.get_computation_nodes()[-1])[2], 4)
+    assert {node.name: rows for node, rows in work.items() if node.name in ("Conv1", "Depthwise", "Conv2")} == {
+        "Conv2": (8, 8, 8, 8),
+        "Depthwise": (9, 8, 8, 7),
+        "Conv1": (10, 8, 8, 6),
+    }
+
+
+@pytest.mark.parametrize(
+    ("tiles", "warmup"),
+    [((("Conv2.D2", 8), ("Conv2.D1", 16)), 0.3203125), ((("Conv2.D1", 16), ("Conv2.D2", 8)), 0.3125)],
+)
+def test_two_fused_axes_delay_by_the_most_work_conv1_runs_ahead(tiles: tuple, warmup: float):
+    """conv1 computes 9, 8, 8, 7 rows and 17, 15 columns, the first entry the inner loop: its work runs ahead most by
+    0.3203125 tiles in the first row of columns, or by 0.3125 in the first column of rows."""
+    entries = "".join(f"  - dim: {dim}\n    tile: {tile}\n" for dim, tile in tiles)
+    mapping = (MAPPINGS / "s1.yaml").read_text().split("  intra_core_tiling:")[0] + "  intra_core_tiling:\n" + entries
+    with tempfile.TemporaryDirectory() as out:
+        (Path(out) / "m.yaml").write_text(mapping)
+        estimate = evaluate_mapping(
+            HARDWARE.format("eyeriss_like_quad_core"),
+            conv_chain(1),
+            out,
+            f"{out}/m.yaml",
+            SolveOptions(artifacts=False),
+        )
+    space = DecisionSpace(estimate.context.get("allocation").problem)
+    assert {node.name: extra for node, extra in space.warmup.items()}["Conv1"] == pytest.approx(warmup)
+
+
+@pytest.mark.parametrize(
+    ("tiles", "error"),
+    [
+        ((("Conv1.D2", 8), ("Conv2.D2", 2)), "Tiles 8 of Conv1.D2 and 2 of Conv2.D2 cut one fused axis differently"),
+        ((("Conv1.D2", 1),), "Tile 1 of Conv1.D2 is not a multiple of 2"),
+        ((("Conv1.D2", 6),), "Tile 6 of Conv1.D2 does not divide its extent 32"),
+    ],
+)
+def test_a_tile_of_a_strided_readers_producer_names_its_fault(tiles: tuple, error: str):
+    entries = "".join(f"  - dim: {dim}\n    tile: {tile}\n" for dim, tile in tiles)
+    mapping = (MAPPINGS / "s5.yaml").read_text().split("  intra_core_tiling:")[0] + "  intra_core_tiling:\n" + entries
+    with tempfile.TemporaryDirectory() as out, pytest.raises(ValueError, match=error):
+        (Path(out) / "m.yaml").write_text(mapping)
+        evaluate_mapping(
+            HARDWARE.format("eyeriss_like_quad_core"),
+            conv_chain(2),
+            out,
+            f"{out}/m.yaml",
+            SolveOptions(artifacts=False),
+        )
 
 
 @pytest.mark.slow
@@ -264,8 +325,8 @@ def test_a_transfer_to_two_windowed_readers_hands_each_core_their_widest_window(
     space = DecisionSpace(estimate.context.get("allocation").problem)
     transfer = next(tr for tr in space.transfer_nodes if tr.name == "Transfer(m)")
     conv3 = load_workload(path).get_node_by_name("Conv3")
-    owned = [_box((1, 16, 32, 32), range(32), _block(32, 4, i)) for i in range(4)]
-    read = [reads(conv3, conv3.inputs[0], _box((1, 32, 32, 32), range(32), _block(32, 4, j))) for j in range(4)]
+    owned = [box((1, 16, 32, 32), range(32), block(32, 4, i)) for i in range(4)]
+    read = [reads(conv3, conv3.inputs[0], box((1, 32, 32, 32), range(32), block(32, 4, j))) for j in range(4)]
     expected = {(i, j): n for i in range(4) for j in range(4) if (n := len(owned[i] & read[j]))}
     assert space.overlaps(transfer) == expected
 
@@ -276,8 +337,8 @@ def test_a_core_position_counts_the_last_split_dim_fastest_as_codegen_unrolls_co
     conv2 = workload.get_computation_nodes()[1]
     tiling = ((workload.get_dims(conv2)[2], 2), (workload.get_dims(conv2)[1], 4))
     found = [workload.get_tensor_shape_with_tiling(conv2.inputs[0], tiling, conv2, c) for c in range(8)]
-    tiles = [_box((1, 32, 32, 32), _block(32, 2, c // 4), _block(32, 4, c % 4)) for c in range(8)]
-    assert found == [_shape(reads(conv2, conv2.inputs[0], tile)) for tile in tiles]
+    tiles = [box((1, 32, 32, 32), block(32, 2, c // 4), block(32, 4, c % 4)) for c in range(8)]
+    assert found == [extent_of(reads(conv2, conv2.inputs[0], tile)) for tile in tiles]
 
 
 def test_a_strided_residual_block_solves():
