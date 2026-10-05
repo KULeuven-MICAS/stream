@@ -10,10 +10,10 @@ Prediction, from `outputs/<experiment>/allocation/reports/slot_latency_breakdown
 
 | | cycles |
 |---|---|
-| `iter_step` (compute per iteration) | 574 |
-| `overlap` | 1040 |
-| `latency_per_iteration` | 1614 |
-| `total_latency` | 2352144 |
+| `totals.initiation_interval_cycles` (compute per iteration) | 574 |
+| `totals.overlap_cycles` | 1040 |
+| `totals.iteration_latency_cycles` | 1614 |
+| `totals.total_latency_cycles` | 2352144 |
 
 Measurement, from the core trace decoded to Perfetto JSON (64 KiB buffer, one traced
 core, 1.25 GHz):
@@ -31,7 +31,7 @@ Dispatch wall clock, untraced, best of three: **1173.5 us** = 1466875 cycles.
 
 ## Where the model is right
 
-**The compute estimate is essentially exact.** Predicted `iter_step` 574 cycles against a
+**The compute estimate is essentially exact.** Predicted `initiation_interval_cycles` 574 cycles against a
 measured median kernel duration of 575. That is 0.2% on the quantity the cost model is
 most directly responsible for, and it says the per-core roofline and the kernel's own
 cost are being modelled correctly.
@@ -40,7 +40,7 @@ cost are being modelled correctly.
 
 **Stalling dominates and is under-modelled.** `LOCK_STALL` accounts for 626325 of the
 800138 cycles in the traced window, 78%. Spread over the 276 invocations that is ~2269
-cycles of stall per invocation against a predicted `overlap` of 1040, so the waiting is
+cycles of stall per invocation against a predicted `overlap_cycles` of 1040, so the waiting is
 roughly 2.2x what the model expects.
 
 **End to end the model is conservative by 1.60x**: 2352144 predicted against 1466875

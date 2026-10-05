@@ -126,7 +126,7 @@ def write_artifacts(
             "optimization metrics",
             save_optimization_metrics,
             allocator.model,
-            progress.trace,
+            schedule.solution.solve_stats.status,
             f"{reports}/optimization_metrics.yaml",
         )
         _observe(
@@ -196,17 +196,9 @@ def _save_slot_latency_breakdown(
     logger.info("Slot latency breakdown saved to %s", save_path)
 
 
-def save_optimization_metrics(model: SolverModel, trace: Trace, save_path: str) -> None:
-    """
-    Dump a concise YAML summary of the Gurobi run alongside the progress plot.
-
-    Headline fields (in order of relevance for a paper):
-      - search:    nodes explored, simplex/barrier iterations  -> "how much was searched"
-      - solution:  objective, best bound, MIP gap              -> "what was found / how tight"
-      - effort:    runtime (s), work units                     -> "how expensive it was"
-      - model:    variable / constraint / nonzero counts      -> "problem size"
-      - trace:     per-event progress records
-    """
+def save_optimization_metrics(model: SolverModel, status: str, save_path: str) -> None:
+    """Write the solve's status and, for Gurobi, how much it searched, what it found, what that cost and how large
+    the model was, as YAML (keys in docs/source/outputs.md)."""
 
     def _attr(name: str) -> Any | None:
         """Return a Gurobi model attribute or None if unavailable post-solve."""
@@ -225,56 +217,16 @@ def save_optimization_metrics(model: SolverModel, trace: Trace, save_path: str) 
             return None
         return value
 
-    status = _attr("Status")
-    # The status code is a Gurobi attribute (None for other backends). Only translate it via
-    # GRB constants when gurobipy is installed; otherwise it is already None.
-    if GRB is not None:
-        status_name = {
-            GRB.LOADED: "LOADED",
-            GRB.OPTIMAL: "OPTIMAL",
-            GRB.INFEASIBLE: "INFEASIBLE",
-            GRB.INF_OR_UNBD: "INF_OR_UNBD",
-            GRB.UNBOUNDED: "UNBOUNDED",
-            GRB.CUTOFF: "CUTOFF",
-            GRB.ITERATION_LIMIT: "ITERATION_LIMIT",
-            GRB.NODE_LIMIT: "NODE_LIMIT",
-            GRB.TIME_LIMIT: "TIME_LIMIT",
-            GRB.SOLUTION_LIMIT: "SOLUTION_LIMIT",
-            GRB.INTERRUPTED: "INTERRUPTED",
-            GRB.NUMERIC: "NUMERIC",
-            GRB.SUBOPTIMAL: "SUBOPTIMAL",
-            GRB.WORK_LIMIT: "WORK_LIMIT",
-        }.get(status, str(status))
-    else:
-        status_name = str(status)
-
-    # Per-event trace, normalized to a compact form (drop None values)
-    trace_records: list[dict[str, Any]] = []
-    for rec in trace:
-        entry: dict[str, Any] = {"time_s": rec.get("time"), "event": rec.get("event")}
-        for src, dst in (
-            ("best_obj", "incumbent"),
-            ("best_bound", "best_bound"),
-            ("gap", "gap"),
-            ("nodecnt", "nodes"),
-            ("cutcnt", "cuts"),
-            ("work", "work"),
-        ):
-            val = rec.get(src)
-            if isinstance(val, int | float) and math.isfinite(val):
-                entry[dst] = val
-        trace_records.append(entry)
-
     metrics: dict[str, Any] = {
-        "status": status_name,
+        "status": status,
         "search": {
             "nodes_explored": _attr("NodeCount"),
             "simplex_iterations": _attr("IterCount"),
             "barrier_iterations": _attr("BarIterCount"),
         },
         "solution": {
-            "objective": _attr("ObjVal"),
-            "best_bound": _attr("ObjBound"),
+            "objective_value": _attr("ObjVal"),
+            "objective_bound": _attr("ObjBound"),
             "mip_gap": _attr("MIPGap"),
         },
         "effort": {
@@ -293,7 +245,6 @@ def save_optimization_metrics(model: SolverModel, trace: Trace, save_path: str) 
             },
             "nonzeros": _attr("NumNZs"),
         },
-        "trace": trace_records,
     }
 
     with open(save_path, "w") as fh:
@@ -482,66 +433,37 @@ def plot_optimization_progress(  # noqa: PLR0912, PLR0915
 
 
 def save_optimization_trace(trace: Trace, file_path: str) -> None:
-    """
-    Save the optimization trace to a YAML file.
-
-    Writes a single chronological ``trace`` list. Each entry represents a
-    point where something changed and has the following fields:
-
-    - ``time_s``     – solver runtime in seconds
-    - ``event``      – ``"MIPSOL"`` (new incumbent found) or ``"MIP"`` (bound update)
-    - ``incumbent``  – present only on ``MIPSOL`` entries (when best_obj improved)
-    - ``best_bound`` – present only when the bound changed
-    - ``gap``        – relative gap at this point (when both values are available)
-
-    Args:
-        file_path: Destination path for the YAML file (e.g. "trace.yaml").
-    """
+    """Write each point of the solve where the incumbent or the bound moved, with the incumbent, bound and gap after
+    it, as YAML (keys in docs/source/outputs.md); nothing for a backend that records no progress."""
     if not trace:
-        # Non-Gurobi backends record no progress.
         return
 
-    def _fin(x) -> bool:
-        return x is not None and isinstance(x, int | float) and math.isfinite(x)
+    def _finite(x: Any) -> float | None:
+        return float(x) if isinstance(x, int | float) and math.isfinite(x) else None
 
-    # Sort by time, MIPSOL first when times are equal (mirrors plot logic)
-    sorted_trace = sorted(
-        trace,
-        key=lambda r: (float(r["time"]), 0 if r.get("event") == "MIPSOL" else 1),
-    )
-
-    entries: list[dict] = []
-    last_obj: float | None = None
-    last_bound: float | None = None
-
-    for rec in sorted_trace:
-        if not _fin(rec.get("time")):
+    entries: list[dict[str, Any]] = []
+    incumbent = bound = None
+    for rec in sorted(trace, key=lambda r: (float(r["time"]), 0 if r.get("event") == "MIPSOL" else 1)):
+        time_s, new_incumbent, new_bound = (
+            _finite(rec.get("time")),
+            _finite(rec.get("best_obj")),
+            _finite(rec.get("best_bound")),
+        )
+        if time_s is None or (new_incumbent in (None, incumbent) and new_bound in (None, bound)):
             continue
-
-        t = float(rec["time"])
-        obj = float(rec["best_obj"]) if _fin(rec.get("best_obj")) else None
-        bnd = float(rec["best_bound"]) if _fin(rec.get("best_bound")) else None
-        gap = float(rec["gap"]) if _fin(rec.get("gap")) else None
-
-        incumbent_improved = obj is not None and obj != last_obj
-        bound_changed = bnd is not None and bnd != last_bound
-
-        if not incumbent_improved and not bound_changed:
-            continue
-
-        entry: dict = {"time_s": t, "event": rec.get("event", "MIP")}
-        if incumbent_improved:
-            entry["incumbent"] = obj
-            last_obj = obj
-        if bound_changed:
-            entry["best_bound"] = bnd
-            last_bound = bnd
-        if gap is not None:
-            entry["gap"] = gap
-
-        entries.append(entry)
+        incumbent = incumbent if new_incumbent is None else new_incumbent
+        bound = bound if new_bound is None else new_bound
+        entries.append(
+            {
+                "time_s": time_s,
+                "event": rec.get("event", "MIP"),
+                "incumbent_objective": incumbent,
+                "objective_bound": bound,
+                "mip_gap": _finite(rec.get("gap")),
+            }
+        )
 
     with open(file_path, "w") as f:
-        yaml.dump({"trace": entries}, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump({"trace": entries}, f, default_flow_style=False, sort_keys=False)
 
     logger.info("Optimization trace saved to %s", file_path)

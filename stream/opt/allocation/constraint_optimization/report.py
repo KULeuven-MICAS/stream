@@ -246,11 +246,11 @@ def slot_latency_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
         runtime = node_runtime(space, n)
         breakdown[space.slot_of[n]]["compute_contributors"].append(
             {
-                "name": n.name,
-                "n_cores_in_lut": len(space.cost_lut.get_cores(n)),
-                "lut_latency_total": runtime,
-                "ssis_fraction": _json_scalar(active_fraction(n, space.ssis)),
-                "active_latency": get_active_latency(n, float(runtime), space.ssis),
+                "node": n.name,
+                "cost_lut_core_count": len(space.cost_lut.get_cores(n)),
+                "lut_latency_cycles": runtime,
+                "active_fraction": _json_scalar(active_fraction(n, space.ssis)),
+                "active_latency_cycles": get_active_latency(n, float(runtime), space.ssis),
             }
         )
     for (tr, choice), y in ctx.vars.y.items():
@@ -259,13 +259,15 @@ def slot_latency_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
         raw = int(space.transfer_latency_for_path(tr, choice))
         breakdown[space.slot_of[tr]]["transfer_contributors"].append(
             {
-                "name": tr.name,
+                "transfer": tr.name,
                 "tensor_bits": int(tr.inputs[0].size_bits()) if tr.inputs else None,
-                "min_link_bw": int(min(link.bandwidth for link in choice.links_used)) if choice.links_used else None,
-                "raw_path_cycles": raw,
-                "active_latency_absent_loops": int(get_active_latency(tr, float(raw), space.ssis)),
+                "min_link_bandwidth_bits_per_cycle": (
+                    int(min(link.bandwidth for link in choice.links_used)) if choice.links_used else None
+                ),
+                "path_cycles": raw,
+                "active_latency_cycles": int(get_active_latency(tr, float(raw), space.ssis)),
                 "reuse_factor": _json_scalar(value(q.get("reuse_factor", tr).expr)),
-                "contribution": _json_scalar(value(q.get("transfer_latency", (tr, choice)).expr)),
+                "latency_contribution_cycles": _json_scalar(value(q.get("transfer_latency", (tr, choice)).expr)),
             }
         )
     per_iteration = sum(latency.X for latency in ctx.vars.slot_latency.values())
@@ -273,11 +275,11 @@ def slot_latency_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
     shared = q.indexed("shared_busy") if "shared_busy" in q else {}
     return {
         "totals": {
-            "latency_per_iteration": _json_scalar(per_iteration),
-            "overlap": _json_scalar(overlap),
-            "iter_step": _json_scalar(per_iteration - overlap),
-            "total_latency": _json_scalar(value(q.get("total_latency").expr)),
-            "shared_busy": {core: _json_scalar(value(busy.expr)) for core, busy in shared.items()},
+            "iteration_latency_cycles": _json_scalar(per_iteration),
+            "overlap_cycles": _json_scalar(overlap),
+            "initiation_interval_cycles": _json_scalar(per_iteration - overlap),
+            "total_latency_cycles": _json_scalar(value(q.get("total_latency").expr)),
+            "shared_busy_cycles": {core: _json_scalar(value(busy.expr)) for core, busy in shared.items()},
         },
         "resource_slack": resource_slack(ctx),
         "tensor_reuse": tensor_reuse_breakdown(ctx, reuse_levels),

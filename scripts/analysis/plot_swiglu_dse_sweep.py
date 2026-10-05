@@ -302,14 +302,14 @@ def _load_optimization_trace(trace_path: str) -> list[float] | None:
     for entry in trace:
         if not isinstance(entry, dict):
             continue
-        v = entry.get("incumbent")
+        v = entry.get("incumbent_objective")
         if v is None:
             continue
         try:
             f = float(v)
         except (TypeError, ValueError):
             continue
-        if math.isnan(f) or math.isinf(f):
+        if math.isnan(f) or math.isinf(f) or (incumbents and f == incumbents[-1]):
             continue
         incumbents.append(f)
     return incumbents or None

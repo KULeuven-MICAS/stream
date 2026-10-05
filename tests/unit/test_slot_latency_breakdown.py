@@ -19,4 +19,4 @@ def test_slot_latency_breakdown_reports_solved_reuse_factor_and_contribution(
     slots = yaml.safe_load(path.read_text())["slots"]
     transfers = [tr for slot in slots for tr in slot["transfer_contributors"]]
     assert transfers
-    assert all(tr["reuse_factor"] is not None and tr["contribution"] is not None for tr in transfers)
+    assert all(tr["reuse_factor"] is not None and tr["latency_contribution_cycles"] is not None for tr in transfers)
