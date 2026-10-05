@@ -364,6 +364,24 @@ class DecisionSpace:
                     found += [(one, other, state.handover * bits) for one, other in pairs]
         return tuple(found)
 
+    @cached_property
+    def warmup(self) -> dict[HasIterationSpace, float]:
+        """How much longer than its interior tiles, relative to them, each node's first tile along a sliding window is:
+        the lookahead a producer computes and the halo a transfer moves before the window slides."""
+        found: dict[HasIterationSpace, float] = {}
+        if not any(loop.halo for ssis in self.ssis.values() for loop in ssis):
+            return found
+        for dim, splits in self.problem.fusion_splits.items():
+            for node, work in self.workload.get_sliding_work(dim, splits).items():
+                if (extra := work[0] * len(work) / sum(work) - 1) > 0:
+                    found[node] = found.get(node, 0.0) + extra
+        return found
+
+    def runs_readers_elsewhere(self, node: ComputationNode) -> bool:
+        """Whether a computation node reading ``node``'s output runs on a core ``node`` does not."""
+        cores = set(self.core_allocation(node)[0])
+        return any(not cores.issuperset(self.core_allocation(c)[0]) for c in self._consumers(node))
+
     def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
         """The computation nodes this one's output reaches, across the transfer between them."""
         reached = []

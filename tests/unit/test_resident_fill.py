@@ -41,7 +41,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
     cycles = {}
     y, z_stop, z_single = {}, {}, {}
     space.tensors_to_optimize_reuse_for, space.ssis = [], {}
-    space.rotation_levels, space.tiles_needed_levels = {}, {}
+    space.rotation_levels, space.tiles_needed_levels, space.warmup = {}, {}, {}
     for name, cost in (("key", KEY), ("value", VALUE)):
         tensor = _Node(name)
         transfer = _Node(f"Transfer({name})", [tensor])

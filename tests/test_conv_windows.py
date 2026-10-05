@@ -2,9 +2,10 @@
 allocation against the oracle (bf16 elements; per core in the mapping's core order; interior iteration)."""
 
 import pytest
-from conv_windows import SCENARIOS, conv_chain, oracle, reads, solve
+from conv_windows import SCENARIOS, Scenario, conv_chain, oracle, reads, solve
 
 from stream.frontends import load_workload
+from stream.opt.allocation.constraint_optimization.families import overlap
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
 
 C1, C2 = (1, 16, 32, 32), (1, 32, 32, 32)
@@ -82,18 +83,10 @@ RUNS = [
     *((s, "simba_small") for s in ("s1", "s2", "s3", "s4", "s5")),
     *((s, "fusemax") for s in ("s1", "s2", "s5", "s3_shared", "s4_shared")),
 ]
-XFAIL = {
-    "conv1_rows": ("step 5: first and last iterations are not modelled", set(SCENARIOS)),
-    "input_moved_rows": ("step 5: first and last iterations are not modelled", set(SCENARIOS)),
-}
 
 
 def _case(scenario: str, hardware: str, check: str):
-    reason, failing = XFAIL.get(check, ("", set()))
-    marks = [pytest.mark.slow] if hardware == "simba_small" else []
-    if scenario in failing:
-        marks.append(pytest.mark.xfail(strict=True, reason=reason))
-    return pytest.param(scenario, hardware, check, marks=marks)
+    return pytest.param(scenario, hardware, check, marks=[pytest.mark.slow] if hardware == "simba_small" else [])
 
 
 @pytest.mark.parametrize("check", CHECKS)
@@ -155,16 +148,16 @@ def test_a_halo_exchange_moves_over_the_links_what_other_cores_hand_over(scenari
     assert solve(scenario, hardware)["linked_bits"] == 16 * handed
 
 
-def _tiled_to_eight_rows():
+def _tiled(rows: int):
     workload = load_workload(conv_chain(1))
     sizes = {z: workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]}
-    sizes[workload.get_dims(workload.get_computation_nodes()[1])[2]] = 8
+    sizes[workload.get_dims(workload.get_computation_nodes()[1])[2]] = rows
     return workload.with_modified_dimension_sizes(sizes)
 
 
 def test_zigzag_costs_the_interior_tile_without_border_padding():
     """Tiled to 8 output rows, conv2 reads a 10-row window of conv1_out, of which it pads nothing."""
-    tiled = _tiled_to_eight_rows()
+    tiled = _tiled(8)
     estimator = ZigZagCostEstimator(workload=tiled, accelerator=None, mapping=None)  # type: ignore[arg-type]
     _, _, padding, pr_sizes = estimator.create_equation_and_dimension_relations_and_padding_and_pr_sizes(
         tiled.get_computation_nodes()[1]
@@ -175,8 +168,38 @@ def test_zigzag_costs_the_interior_tile_without_border_padding():
 
 def test_an_input_tile_is_what_the_window_reading_it_advances_by():
     """Tiled to 8 rows, conv1 holds a 10-row window of the input and takes in 8 new rows of it per tile."""
-    tiled = _tiled_to_eight_rows()
+    tiled = _tiled(8)
     conv1 = tiled.get_computation_nodes()[0]
     sizes = {z: tiled.get_dimension_size(z) for z in tiled.unique_dimensions()[0]}
     assert conv1.inputs[0].shape == (1, 8, 8, 32)
     assert tiled.get_tensor_shape_with_dimension_sizes(conv1.inputs[0], sizes, conv1) == (1, 8, 10, 32)
+
+
+@pytest.mark.parametrize("rows", [1, 4, 16])
+def test_conv1_computes_what_the_window_first_reaches_however_far_ahead(rows: int):
+    """A one-row tile reaches as far ahead as it steps, so conv1 is done a tile early: its last tile is empty."""
+    tiled = _tiled(rows)
+    conv1, conv2 = tiled.get_computation_nodes()
+    work = tiled.get_sliding_work(tiled.get_dims(conv2)[2], 32 // rows)
+    assert work == {conv1: oracle(Scenario(1, rows, (0,), (0,)))["conv1_rows"], conv2: (rows,) * (32 // rows)}
+
+
+FUSED = [run for run in RUNS if SCENARIOS[run[0]].rows and run[1] != "simba_small"]
+
+
+@pytest.mark.parametrize(("scenario", "hardware"), FUSED)
+def test_the_first_tiles_are_longer_by_the_lookahead_and_the_halo(scenario: str, hardware: str):
+    expected = oracle(scenario)
+    rows, moved = expected["conv1_rows"], expected["input_moved_rows"]
+    first = {"Conv1": rows[0] * len(rows) / sum(rows) - 1, "Transfer(input)": moved[0] * len(moved) / sum(moved) - 1}
+    found = solve(scenario, hardware)["first_tiles"]
+    assert {name: found.get(name, 0.0) for name in first} == {name: extra for name, extra in first.items()}
+
+
+@pytest.mark.parametrize(("scenario", "hardware"), FUSED)
+def test_the_fill_waits_on_the_first_tiles_of_what_runs_elsewhere(scenario: str, hardware: str, monkeypatch):
+    """conv2 waits on conv1's first tile only on cores conv1 does not run on; every reader waits on its transfer."""
+    fill, warmup = solve(scenario, hardware)["warmup"]
+    monkeypatch.setattr(overlap, "_warmup", lambda _ctx: None)
+    steady, _ = solve.__wrapped__(scenario, hardware)["warmup"]
+    assert fill - steady == pytest.approx(warmup, abs=1)

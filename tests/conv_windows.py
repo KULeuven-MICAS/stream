@@ -20,6 +20,7 @@ from xdsl.ir.affine import AffineDimExpr
 from stream.api import SolveOptions, evaluate_mapping
 from stream.frontends import load_workload
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
+from stream.opt.allocation.constraint_optimization.utils import get_active_latency
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.node import ComputationNode, Tensor, TransferNode
 from stream.workload.workload import Workload
@@ -82,6 +83,8 @@ def _sizes(node: ComputationNode) -> list[int]:
 
 def reads(node: ComputationNode, tensor: Tensor, outputs: set[tuple[int, ...]]) -> set[tuple[int, ...]]:
     """Every in-bounds element of ``tensor`` that computing the ``outputs`` elements of ``node`` reads."""
+    if not outputs:
+        return set()
     transform = AffineTransform.from_affine_map(node.get_mapping(tensor))
     out_dims = [expr.position for expr in node.get_mapping(node.outputs[0]).results]
     used = [d for d in range(node.num_dims) if transform.A[:, d].any()]
@@ -115,10 +118,10 @@ def _new(per_iteration: list[set]) -> list[set]:
 
 
 @cache
-def oracle(name: str) -> dict[str, Any]:
+def oracle(name: str | Scenario) -> dict[str, Any]:
     """The scenario's tile quantities by enumeration: conv2's tiles fix what conv1 must have computed by each
     iteration, conv1 computes what is new, and each core reads what its tile's elements read."""
-    scenario = SCENARIOS[name]
+    scenario = SCENARIOS[name] if isinstance(name, str) else name
     conv1, conv2 = load_workload(conv_chain(scenario.stride)).get_computation_nodes()
     mid, inp = conv2.inputs[0], conv1.inputs[0]
     shape1, shape2 = conv1.outputs[0].shape, conv2.outputs[0].shape
@@ -183,6 +186,17 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
     pairs = communicating_pairs(route.sources, route.targets, overlaps)
     share = {pair: prod(moved.shape) // sum(d == pair[1] for _, d in pairs) for pair in pairs}
     share |= {(route.sources[i], route.targets[j]): n for (i, j), n in overlaps.items()}
+    space, solution = DecisionSpace(allocation.problem), allocation.solution
+
+    def cycles(node: Any) -> float:
+        if node not in solution.route_cycles:
+            return space.active_runtime(node)
+        return get_active_latency(node, solution.route_cycles[node], ssis) / solution.reuse_factors[node]
+
+    waits = not set(mapping.get(conv1).resource_allocation[0]) >= set(mapping.get(conv2).resource_allocation[0])
+    warmup = {node: extra * cycles(node) for node, extra in space.warmup.items() if node != conv1 or waits}
+    oy = workload.get_dims(conv2)[2]
+    work = workload.get_sliding_work(oy, allocation.problem.fusion_splits.get(oy, 1))
     return {
         "iterations": allocation.problem.iterations,
         "conv1_tile": per_core(conv1, lambda c: workload.get_tensor_single_core(conv1.outputs[0], conv1, mapping, c)),
@@ -196,7 +210,11 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
             conv2, lambda c: workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, c, ssis[mid])
         ),
         "sources": {dst.id: {src.id: n for (src, d), n in share.items() if d == dst} for _, dst in pairs},
+        "conv1_rows": work[conv1],
+        "input_moved_rows": work[into1],
         "in_place": allocation.solution.route_cycles[into2] == 0,
         "halos": {loop.type.name: loop.halo for loop in ssis[mid] if loop.halo},
-        "linked_bits": DecisionSpace(allocation.problem).moved_bits(into2, route),
+        "linked_bits": space.moved_bits(into2, route),
+        "warmup": (solution.latency.fill, sum(warmup.values())),
+        "first_tiles": {node.name: extra for node, extra in space.warmup.items()},
     }

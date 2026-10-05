@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import replace
 from functools import cached_property
-from itertools import combinations
+from itertools import combinations, pairwise
 from math import prod
 from typing import TYPE_CHECKING, cast
 
@@ -14,7 +14,7 @@ from zigzag.utils import DiGraphWrapper
 
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload._svg import write_svg as _write_svg
-from stream.workload.affine_access import map_dim_positions
+from stream.workload.affine_access import footprint, map_dim_positions
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.fusion.analysis import FusionWindow
 from stream.workload.iterator_type import is_state_operand, sequential_dims
@@ -719,6 +719,48 @@ class Workload(DiGraphWrapper[Node]):
                 if prod(extents):
                     overlaps[(i, j)] = prod(extents)
         return overlaps
+
+    def get_sliding_work(self, dim: LayerDim, splits: int) -> dict[HasIterationSpace, tuple[int, ...]]:
+        """How far each node whose loops ``dim`` slides gets along it in each of the ``splits`` tiles of ``dim``: a
+        reader's window reaches ahead of its tile, so its producer computes, and a transfer moves, a longer first
+        tile, then interior ones, and a shorter last one, ending where the whole tensor does."""
+        unique_dims, dim_values = self.unique_dimensions()
+        sizes = [self.get_dimension_size(z) for z in unique_dims]
+        z = unique_dims.index(dim)
+        full = [n * splits if k == z else n for k, n in enumerate(sizes)]
+        highs: dict[HasIterationSpace, list[dict[int, int]]] = {}
+        tiles: dict[HasIterationSpace, dict[int, range]] = {}
+        work: dict[HasIterationSpace, tuple[int, ...]] = {}
+        for node in reversed(self.dataflow_sort()):
+            if not isinstance(node, HasIterationSpace):
+                continue
+            exprs = [dim_values[d] for d in self.global_idxs[node]]
+            tiles[node] = {d: range(lo, hi + 1) for d, (lo, hi) in enumerate(affine_bounds(e, sizes) for e in exprs)}
+            slides = {d: affine_coefficients(e, len(sizes))[1][z] * sizes[z] for d, e in enumerate(exprs)}
+            ends = {d: affine_bounds(exprs[d], full)[1] for d, step in slides.items() if step}
+            readers = [c for c in self.successors(node) if c in highs]
+            reached = {d: tiles[node][d].start - 1 for d in ends}
+            highs[node] = []
+            for i in range(splits):
+                for c in readers:
+                    start = highs[c][i - 1] if i else {d: tiles[c][d].start - 1 for d in highs[c][0]}
+                    box = tiles[c] | {d: range(start[d] + 1, high + 1) for d, high in highs[c][i].items()}
+                    if not all(box.values()):
+                        continue
+                    tensor = next(t for t in node.outputs if t in c.inputs)
+                    reads = footprint(c.get_mapping(tensor), box)
+                    for result, read in zip(node.get_mapping(tensor).results, reads, strict=True):
+                        if isinstance(result, AffineDimExpr) and result.position in reached:
+                            reached[result.position] = max(reached[result.position], read[-1])
+                for d, end in ends.items():
+                    own = tiles[node][d][-1] + slides[d] * i
+                    reached[d] = end if i == splits - 1 else min(end, reached[d] if readers else own)
+                highs[node].append(dict(reached))
+            if ends:
+                d = min(ends)
+                marks = [tiles[node][d].start - 1, *(high[d] for high in highs[node])]
+                work[node] = tuple(b - a for a, b in pairwise(marks))
+        return work
 
     def get_tensor_of_transfer_from_single_core(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
