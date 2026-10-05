@@ -20,10 +20,10 @@ The dispatch table (`ONNXModelParser.OP_TYPE_TO_PARSER`) recognises:
 
 | ONNX op | Becomes | Notes |
 |---------|---------|-------|
-| `Conv` | ComputationNode | Convolution. |
+| `Conv` | ComputationNode | Convolution: strides, dilations and padding (or `auto_pad`) per axis, `group`, and the bias as a third input. |
 | `Gemm` | ComputationNode | General matrix multiply (also matrix-vector). |
 | `MatMul` | ComputationNode | Batched matrix multiply. |
-| `MaxPool` | ComputationNode | Max pooling. |
+| `MaxPool` | ComputationNode | Max pooling, through the same per-axis window as `Conv`. |
 | `GlobalAveragePool` | ComputationNode | Global average pooling. |
 | `BatchNormalization` | ComputationNode | Batch normalisation. |
 | `Softmax`, `LayerNormalization`, `LpNormalization` | NormalizationNode | Reduce-then-broadcast; the reduced axis is a fusion barrier, the other axes stay parallel. |

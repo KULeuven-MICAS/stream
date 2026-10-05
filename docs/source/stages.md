@@ -36,6 +36,28 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 
 The mapping generators (`stream.mapping_generators`) and code generation backends (`stream.codegen_backends`) are entry-point groups: an object with a `name`, a `priority`, a `claims(accelerator)` predicate and `stages()` or `stage()` extends the pipeline for a new kind of hardware, the highest priority among those that claim it winning.
 
+### Windowed operators
+
+A convolution or a pool reads each spatial axis of its input through a sliding window, `s*o + d*f - p` of its
+output dim `o` and kernel dim `f`; the same per-axis strides, dilations and padding serve every windowed parser and
+frontend. The pipeline handles such a read like any other affine access:
+
+- **Couplings.** A reader that indexes a producer's axis as `s*o + windows + c` merges the producer's dim into its
+  own `o`, with a remainder dim of size `s` when `s > 1`, so fused convolutions and pools share their row and column
+  axes; the window and the constant stay in the access maps.
+- **Halos.** A tile's footprint is its interior window, not clipped at the tensor's origin, and a transfer's copy
+  holds the window of the node it reaches. Each loop that slides that window carries its halo, the window less its
+  step, on its `IterationVariable`: the rows a fused loop shares between iterations, the columns cores share.
+- **Line buffer.** A sliding loop keeps its halo resident: the copy holds the window (times its buffering) and the
+  transfer moves only the step, an input's tile per iteration being what its readers' windows advance by. A target
+  core is fed by every source core whose tile its window overlaps, and the halo it takes from a neighbour counts on
+  the links and DMA channels like any transfer. ZigZag costs the interior tile, which needs no border padding.
+- **Boundary iterations.** A producer's first tile also covers what its reader's first window reaches ahead (conv1
+  computes 9, 8, 8, 7 rows under a 3x3 conv tiled to 8 rows), and its last is shorter
+  (`Workload.get_sliding_work`). The fill adds what the longer first tiles cost at the interior rate per element: a
+  reader waits for its transfer's, and a node's readers on cores it does not run on wait for its; the shorter last
+  tiles end behind the sink's interior one.
+
 ---
 
 ## Constraint families

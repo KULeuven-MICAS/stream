@@ -31,13 +31,18 @@ HARDWARE = "stream/inputs/examples/hardware/{}.yaml"
 
 @dataclass(frozen=True)
 class Scenario:
-    """conv2's ``stride``, its output ``rows`` per iteration of the fused OY loop (None: one iteration), and the cores
-    each conv splits its output columns over."""
+    """conv2's ``stride``, its output ``rows`` per iteration of the fused OY loop (None: one iteration), the cores
+    each conv splits its output columns over, and whether a 3x3 max pool takes conv2's place."""
 
     stride: int
     rows: int | None
     conv1_cores: tuple[int, ...]
     conv2_cores: tuple[int, ...]
+    pool: bool = False
+
+    @property
+    def second(self) -> str:
+        return "Pool" if self.pool else "Conv2"
 
 
 SCENARIOS = {
@@ -48,32 +53,34 @@ SCENARIOS = {
     "s5": Scenario(2, 4, (0,), (0,)),
     "s3_shared": Scenario(1, None, (0, 1), (0, 1)),
     "s4_shared": Scenario(1, 8, (0,), (1,)),
+    "pool": Scenario(1, 8, (0, 1), (2, 3), pool=True),
 }
 
 
 @cache
-def conv_chain(stride: int = 1) -> str:
-    """input (1,8,32,32) -> Conv1 (16, 3x3, pad 1) -> Conv2 (32, 3x3, pad 1, ``stride``), bf16, as an ONNX path."""
+def conv_chain(stride: int = 1, pool: bool = False) -> str:
+    """input (1,8,32,32) -> Conv1 (16, 3x3, pad 1) -> Conv2 (32, 3x3, pad 1, ``stride``), or with ``pool`` a 3x3 max
+    pool of the same window, bf16, as an ONNX path."""
     side = 32 // stride
-    values = [
-        helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape)
-        for name, shape in (("input", [1, 8, 32, 32]), ("w1", [16, 8, 3, 3]), ("w2", [32, 16, 3, 3]))
-    ]
-    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [1, 32, side, side])
-    attrs = {"kernel_shape": [3, 3], "pads": [1, 1, 1, 1]}
+    shapes = {"input": [1, 8, 32, 32], "w1": [16, 8, 3, 3]} | ({} if pool else {"w2": [32, 16, 3, 3]})
+    values = [helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape) for name, shape in shapes.items()]
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [1, 16 if pool else 32, side, side])
+    attrs = {"kernel_shape": [3, 3], "pads": [1, 1, 1, 1], "strides": [stride, stride]}
+    second = ("MaxPool", ["conv1_out"], "Pool") if pool else ("Conv", ["conv1_out", "w2"], "Conv2")
     nodes = [
-        helper.make_node("Conv", ["input", "w1"], ["conv1_out"], name="Conv1", **attrs),
-        helper.make_node("Conv", ["conv1_out", "w2"], ["out"], name="Conv2", strides=[stride, stride], **attrs),
+        helper.make_node("Conv", ["input", "w1"], ["conv1_out"], name="Conv1", **attrs | {"strides": [1, 1]}),
+        helper.make_node(second[0], second[1], ["out"], name=second[2], **attrs),
     ]
     graph = helper.make_graph(nodes, "conv_chain", values, [out])
     model = shape_inference.infer_shapes(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]))
-    path = f"{tempfile.mkdtemp()}/conv_chain_{stride}.onnx"
+    path = f"{tempfile.mkdtemp()}/conv_chain_{stride}_{pool}.onnx"
     onnx.save(model, path)
     return path
 
 
 def _sizes(node: ComputationNode) -> list[int]:
-    sizes = [0] * node.num_dims
+    """Each dim's extent where a tensor axis is that dim alone, else 3: every window of these chains is 3x3."""
+    sizes = [3] * node.num_dims
     for tensor in node.tensors:
         for expr, size in zip(node.get_mapping(tensor).results, tensor.shape, strict=True):
             if isinstance(expr, AffineDimExpr):
@@ -122,7 +129,7 @@ def oracle(name: str | Scenario) -> dict[str, Any]:
     """The scenario's tile quantities by enumeration: conv2's tiles fix what conv1 must have computed by each
     iteration, conv1 computes what is new, and each core reads what its tile's elements read."""
     scenario = SCENARIOS[name] if isinstance(name, str) else name
-    conv1, conv2 = load_workload(conv_chain(scenario.stride)).get_computation_nodes()
+    conv1, conv2 = load_workload(conv_chain(scenario.stride, scenario.pool)).get_computation_nodes()
     mid, inp = conv2.inputs[0], conv1.inputs[0]
     shape1, shape2 = conv1.outputs[0].shape, conv2.outputs[0].shape
     rows = scenario.rows or shape2[2]
@@ -162,14 +169,14 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
     """The quantities of :func:`oracle` that the allocation the scenario's mapping solves to reports."""
     with tempfile.TemporaryDirectory() as out:
         mapping_path = str(MAPPINGS / f"{name}.yaml")
-        workload_path = conv_chain(SCENARIOS[name].stride)
+        workload_path = conv_chain(SCENARIOS[name].stride, SCENARIOS[name].pool)
         estimate = evaluate_mapping(
             HARDWARE.format(hardware), workload_path, out, mapping_path, SolveOptions(artifacts=False)
         )
     allocation = estimate.context.get("allocation")
     workload: Workload = allocation.problem.workload
     mapping = allocation.problem.mapping
-    conv1, conv2 = (cast(ComputationNode, workload.get_node_by_name(n)) for n in ("Conv1", "Conv2"))
+    conv1, conv2 = (cast(ComputationNode, workload.get_node_by_name(n)) for n in ("Conv1", SCENARIOS[name].second))
     into1, into2 = (
         next(t for t in workload.predecessors(n) if isinstance(t, TransferNode) and n.inputs[0] in t.outputs)
         for n in (conv1, conv2)

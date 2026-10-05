@@ -76,11 +76,17 @@ SPEC = {
         "input_moved_rows": (9, 8, 8, 7),
     },
 }
+SPEC["pool"] = SPEC["s4"] | {"out_tile": ((1, 16, 8, 16),) * 2}
 CHECKS = tuple(SPEC["s1"])
 IN_PLACE = {"s1": True, "s2": True, "s3": False, "s4": False, "s5": True, "s3_shared": True, "s4_shared": True}
+IN_PLACE["pool"] = False
 RUNS = [
-    *((s, hw) for s in ("s1", "s2", "s3", "s4", "s5") for hw in ("eyeriss_like_quad_core", "tpu_like_quad_core")),
-    *((s, "simba_small") for s in ("s1", "s2", "s3", "s4", "s5")),
+    *(
+        (s, hw)
+        for s in ("s1", "s2", "s3", "s4", "s5", "pool")
+        for hw in ("eyeriss_like_quad_core", "tpu_like_quad_core")
+    ),
+    *((s, "simba_small") for s in ("s1", "s2", "s3", "s4", "s5", "pool")),
     *((s, "fusemax") for s in ("s1", "s2", "s5", "s3_shared", "s4_shared")),
 ]
 
