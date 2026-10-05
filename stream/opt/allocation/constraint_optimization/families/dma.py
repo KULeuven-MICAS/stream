@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
@@ -97,7 +97,9 @@ def _channels(ctx: FormulationContext, tr: TransferNode, core: Core, incoming: b
 
 def _fan(space: DecisionSpace, tr: TransferNode, incoming: bool) -> int:
     """DMA channels a destination core is fed by (a fifo per source gathering into it), or a source core
-    drives (a fifo per destination it feeds a distinct slice to)."""
+    drives (a fifo per destination it feeds a distinct slice to), or per core whose tile overlaps a window."""
+    if overlaps := space.overlaps(tr):
+        return max(Counter(j if incoming else i for i, j in overlaps).values())
     if incoming:
         return max(
             1, space.placement_width(unique_tensors(tr.inputs)) // space.placement_width(unique_tensors(tr.outputs))

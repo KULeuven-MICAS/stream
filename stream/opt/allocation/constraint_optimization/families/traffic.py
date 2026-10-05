@@ -73,7 +73,8 @@ def _target_share(ctx: FormulationContext, tr: TransferNode) -> float:
     """Share of the transferred tensor one target receives: its tile under the consumer's inter-core tiling,
     as memory access estimation counts it. A broadcast gives every target the whole tensor."""
     tensor = tr.outputs[0]
-    tile = ctx.space.workload.get_tensor_of_transfer_to_single_core(tensor, tr, ctx.space.mapping)
+    space = ctx.space
+    tile = space.workload.get_tensor_of_transfer_to_single_core(tensor, tr, space.mapping, ssis=space.ssis.get(tensor))
     return tile.size_bits() / tensor.size_bits()
 
 
@@ -109,7 +110,7 @@ def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
         if link_latency <= 0:
             continue
         latency = get_active_latency(tr, link_latency, ctx.space.ssis)
-        bits = tr.inputs[0].size_bits() * active_fraction(tr, ctx.space.ssis)
+        bits = ctx.space.moved_bits(tr, choice) * active_fraction(tr, ctx.space.ssis)
         sides = tuple(_sides(ctx, tr, choice))
         if latency > 0:
             stream = DmaStream(choice, quantity.expr, bits / latency, latency, ctx.space.slot_of[tr], sides)

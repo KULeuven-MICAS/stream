@@ -5,6 +5,7 @@ import pytest
 from conv_windows import SCENARIOS, conv_chain, oracle, reads, solve
 
 from stream.frontends import load_workload
+from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
 
 C1, C2 = (1, 16, 32, 32), (1, 32, 32, 32)
 SPEC = {
@@ -144,3 +145,38 @@ def test_the_loops_sliding_a_window_keep_its_halo(scenario: str, hardware: str):
     shared = (sum(window[3] for window in windows) - C1[3]) // (cores - 1) if cores > 1 else 0
     halos = {"TEMPORAL": windows[0][2] - moved[0][2], "SPATIAL": shared}
     assert solve(scenario, hardware)["halos"] == {loop: halo for loop, halo in halos.items() if halo}
+
+
+@pytest.mark.parametrize(
+    ("scenario", "hardware"), [run for run in RUNS if not IN_PLACE[run[0]] and run[1] != "simba_small"]
+)
+def test_a_halo_exchange_moves_over_the_links_what_other_cores_hand_over(scenario: str, hardware: str):
+    handed = sum(n for dst, srcs in oracle(scenario)["sources"].items() for src, n in srcs.items() if src != dst)
+    assert solve(scenario, hardware)["linked_bits"] == 16 * handed
+
+
+def _tiled_to_eight_rows():
+    workload = load_workload(conv_chain(1))
+    sizes = {z: workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]}
+    sizes[workload.get_dims(workload.get_computation_nodes()[1])[2]] = 8
+    return workload.with_modified_dimension_sizes(sizes)
+
+
+def test_zigzag_costs_the_interior_tile_without_border_padding():
+    """Tiled to 8 output rows, conv2 reads a 10-row window of conv1_out, of which it pads nothing."""
+    tiled = _tiled_to_eight_rows()
+    estimator = ZigZagCostEstimator(workload=tiled, accelerator=None, mapping=None)  # type: ignore[arg-type]
+    _, _, padding, pr_sizes = estimator.create_equation_and_dimension_relations_and_padding_and_pr_sizes(
+        tiled.get_computation_nodes()[1]
+    )
+    assert not padding.data
+    assert sorted(pr_sizes.data.values()) == [10, 32]
+
+
+def test_an_input_tile_is_what_the_window_reading_it_advances_by():
+    """Tiled to 8 rows, conv1 holds a 10-row window of the input and takes in 8 new rows of it per tile."""
+    tiled = _tiled_to_eight_rows()
+    conv1 = tiled.get_computation_nodes()[0]
+    sizes = {z: tiled.get_dimension_size(z) for z in tiled.unique_dimensions()[0]}
+    assert conv1.inputs[0].shape == (1, 8, 8, 32)
+    assert tiled.get_tensor_shape_with_dimension_sizes(conv1.inputs[0], sizes, conv1) == (1, 8, 10, 32)

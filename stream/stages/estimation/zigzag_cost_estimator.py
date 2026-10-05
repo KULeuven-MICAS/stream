@@ -59,21 +59,17 @@ class ZigZagCostEstimator:
 
     def _affine_binary_op_expr_to_dims_and_coefficients(
         self, expr: AffineBinaryOpExpr
-    ) -> tuple[list[ZigZagLayerDim], list[int], int]:
-        """Convert an AffineBinaryOpExpr into a list of ZigZagLayerDims, their coefficients, and a constant term.
-        We assume that the expression is of the form: c1*D1 + c2*D2 + C, where C is disgarded for now"""
+    ) -> tuple[list[ZigZagLayerDim], list[int]]:
+        """Convert an AffineBinaryOpExpr of the form c1*D1 + c2*D2 + C into its ZigZagLayerDims and their coefficients;
+        the constant, a padding, only shifts the interior tile ZigZag costs."""
         dims: list[ZigZagLayerDim] = []
         coefficients: list[int] = []
-        constant_term: int = 0
 
         def process_expr(e: AffineDimExpr | AffineBinaryOpExpr | AffineConstantExpr, coeff: int) -> None:
-            nonlocal constant_term
             if isinstance(e, AffineDimExpr):
                 dim = ZigZagLayerDim(f"D{e.position}")
                 dims.append(dim)
                 coefficients.append(coeff)
-            elif isinstance(e, AffineConstantExpr):
-                constant_term += coeff * e.value
             elif isinstance(e, AffineBinaryOpExpr):
                 match e.kind:
                     case AffineBinaryOpKind.Add:
@@ -90,11 +86,11 @@ class ZigZagCostEstimator:
                             )
                     case _:
                         raise NotImplementedError(f"Unsupported operation {e.kind} in AffineBinaryOpExpr.")
-            else:
+            elif not isinstance(e, AffineConstantExpr):
                 raise NotImplementedError(f"Unsupported expression type {type(e)}.")
 
         process_expr(expr, 1)
-        return dims, coefficients, constant_term
+        return dims, coefficients
 
     def create_equation_and_dimension_relations_and_padding_and_pr_sizes(
         self, node: ComputationNode
@@ -105,7 +101,6 @@ class ZigZagCostEstimator:
         base_dims = [ZigZagLayerDim(f"D{i}") for i in range(node.num_dims)]
         extra_dims: list[ZigZagLayerDim] = []
         dimension_relations: list[ZigZagLayerDimRelation] = []
-        padding: dict[ZigZagLayerDim, tuple[int, int]] = {}
         pr_sizes: dict[ZigZagLayerDim, int] = {}
         unique_dims, _ = self.workload.unique_dimensions()
         unique_dim_sizes = [self.workload.get_dimension_size(dim) for dim in unique_dims]
@@ -128,7 +123,7 @@ class ZigZagCostEstimator:
                     dim = base_dims[expr.position]
                     operand_dims.append(dim)
                 elif isinstance(expr, AffineBinaryOpExpr):
-                    dims_in_expr, coefficients, constant = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
+                    dims_in_expr, coefficients = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
                     if len(dims_in_expr) == 1 and coefficients[0] == 1:
                         # Single-dimension self-offset (recurrence state read, e.g. h[t-1]). The
                         # cross-iteration carry is handled in scheduling, not costing, so treat it
@@ -151,11 +146,6 @@ class ZigZagCostEstimator:
                                 dim_3=dims_in_expr[1],
                             )
                         )
-                        # Set padding
-                        if constant != 0:
-                            assert constant < 0, "Padding should be negative in equation."
-                            constant = -constant
-                        padding[dim] = (constant, constant)
                         # Set pr dim sizes
                         pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
                 else:
@@ -170,7 +160,7 @@ class ZigZagCostEstimator:
         return (
             ZigZagLayerEquation(equation_str),
             dimension_relations,
-            ZigZagLayerPadding(padding),
+            ZigZagLayerPadding.empty(),
             ZigZagLayerDimSizes(pr_sizes),
         )
 

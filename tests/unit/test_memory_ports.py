@@ -145,7 +145,7 @@ def test_interval_off_keeps_only_the_burst_bound() -> None:
 
 def test_a_stream_whose_active_latency_rounds_to_zero_keeps_its_bits(monkeypatch: pytest.MonkeyPatch) -> None:
     tr, choice, ctx = MagicMock(), MagicMock(), MagicMock()
-    tr.inputs[0].size_bits.return_value = 4096
+    ctx.space.moved_bits.return_value = 4096
     ctx.quantities = QuantityRegistry()
     ctx.quantities.add("transfer_latency", "gated", index=(tr, choice))
     ctx.space.transfer_latency_for_path.return_value = 1

@@ -637,8 +637,8 @@ class Workload(DiGraphWrapper[Node]):
     def get_windows(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", dims: Sequence[LayerDim]
     ) -> dict[LayerDim, FusionWindow]:
-        """The window a tile of the transfer's copy of ``tensor`` spans along each of ``dims`` its reader slides over
-        with an overlap, and the step it advances by when that dim moves to its next tile."""
+        """The window a tile of the transfer's copy of ``tensor`` spans along each of ``dims`` that indexes its reader's
+        output and slides the read with an overlap, and the step it advances by when that dim moves to its next tile."""
         unique_dims, dim_values = self.unique_dimensions()
         sizes = self._tile_sizes(self._tiling(transfer, mapping))
         if (found := self._reader(tensor, transfer)) is None:
@@ -646,12 +646,13 @@ class Workload(DiGraphWrapper[Node]):
         read, reader = found
         shape = self.get_tensor_shape_with_dimension_sizes(read, sizes, reader)
         full = tensor.subview.source.type.get_shape()
+        sliding = set(dims) & set(self.get_tensor_dimensions(reader.outputs[0]))
         windows: dict[LayerDim, FusionWindow] = {}
         for axis, expr in enumerate(self.global_mapping(reader, reader.get_mapping(read)).results):
             index = expr.replace_dims_and_symbols(dim_values, ())
             for z, c in zip(unique_dims, affine_coefficients(index, len(unique_dims))[1], strict=True):
                 window = FusionWindow(axis, shape[axis], abs(c) * sizes[z], full[axis], prod(shape))
-                if z in dims and c and window.halo:
+                if z in sliding and c and window.halo:
                     windows.setdefault(z, window)
         return windows
 
@@ -734,6 +735,19 @@ class Workload(DiGraphWrapper[Node]):
             pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
         return self._tile(tensor, self.get_tensor_shape_with_tiling(tensor, pred_tiling))
 
+    def _advance(self, tensor: Tensor, sizes: dict[LayerDim, int], window: tuple[int, ...]) -> tuple[int, ...]:
+        """What the ``window`` its reader holds of an input advances by per tile of the dims ``sizes`` shrinks: the new
+        elements a line buffer of it takes in each tile, the rest staying resident."""
+        unique_dims, dim_values = self.unique_dimensions()
+        reader = next(n for n in self.get_iteration_space_nodes() if tensor in n.tensors)
+        shrunk = [sizes[z] if sizes[z] < self.get_dimension_size(z) else 0 for z in unique_dims]
+        advance = []
+        for expr, extent in zip(self.global_mapping(reader, reader.get_mapping(tensor)).results, window, strict=True):
+            coefficients = affine_coefficients(expr.replace_dims_and_symbols(dim_values, ()), len(unique_dims))[1]
+            step = sum(abs(c) * n for c, n in zip(coefficients, shrunk, strict=True))
+            advance.append(min(extent, step) if step else extent)
+        return tuple(advance)
+
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
         sizes provided in new_sizes.
@@ -750,6 +764,8 @@ class Workload(DiGraphWrapper[Node]):
                 tensor_name = original_tensor.name
                 original_tensors_dict[tensor_name] = original_tensor
                 new_shape_t = self.get_tensor_shape_with_dimension_sizes(original_tensor, new_sizes)
+                if not any(original_tensor in n.outputs for n in self.get_iteration_space_nodes()):
+                    new_shape_t = self._advance(original_tensor, new_sizes, new_shape_t)
                 inferred_shapes[tensor_name] = new_shape_t
 
         # Create new Tensor objects with the inferred shapes.

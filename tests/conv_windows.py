@@ -19,7 +19,7 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.frontends import load_workload
-from stream.opt.allocation.constraint_optimization.space import communicating_pairs
+from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.node import ComputationNode, Tensor, TransferNode
 from stream.workload.workload import Workload
@@ -198,4 +198,5 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
         "sources": {dst.id: {src.id: n for (src, d), n in share.items() if d == dst} for _, dst in pairs},
         "in_place": allocation.solution.route_cycles[into2] == 0,
         "halos": {loop.type.name: loop.halo for loop in ssis[mid] if loop.halo},
+        "linked_bits": DecisionSpace(allocation.problem).moved_bits(into2, route),
     }

@@ -229,7 +229,7 @@ class DecisionSpace:
         """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse."""
         if self.choice_shares_memory(tr, path):
             return 0
-        link = get_transfer_latency_for_path(tr, path)
+        link = get_transfer_latency_for_path(tr, path, self.moved_bits(tr, path))
         shared = (self.shared_cycles(core, tr, path, model.contiguous) for core, model in self.shared_bandwidth.items())
         return max(link, *shared) if self.shared_bandwidth else link
 
@@ -319,6 +319,15 @@ class DecisionSpace:
             found = self._overlaps[tr] = self.workload.get_transfer_overlaps(tr, self.mapping, self.ssis[tr.outputs[0]])
         return found
 
+    def moved_bits(self, tr: TransferNode, choice: MulticastPathPlan) -> int:
+        """Bits one firing of ``tr`` moves on ``choice``: its tensor, or where windows overlap neighbouring tiles what
+        each source hands the targets it shares no memory with."""
+        if not (overlaps := self.overlaps(tr)):
+            return tr.inputs[0].size_bits()
+        src, dst = choice.sources, choice.targets
+        moved = sum(n for (i, j), n in overlaps.items() if not self.hardware.shares_memory(src[i], dst[j]))
+        return moved * tr.inputs[0].operand_type.bitwidth
+
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
         """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
         return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
@@ -396,7 +405,7 @@ def communicating_pairs(
     if not src or not dst:
         return ()
     if overlaps:
-        return tuple((src[i], dst[j]) for i, j in overlaps if i < len(src) and j < len(dst))
+        return tuple((src[i], dst[j]) for i, j in overlaps)
     narrow = min(len(src), len(dst))
     return tuple((src[i], dst[j]) for i in range(len(src)) for j in range(len(dst)) if i % narrow == j % narrow)
 
