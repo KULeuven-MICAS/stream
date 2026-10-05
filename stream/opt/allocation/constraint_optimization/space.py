@@ -250,7 +250,7 @@ class DecisionSpace:
         tensor = tr.inputs[0]
         full = tuple(tensor.subview.source.type.get_shape())
         span = contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
-        return ceil(tensor.size_bits() / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
+        return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
 
     def offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""
@@ -319,14 +319,38 @@ class DecisionSpace:
             found = self._overlaps[tr] = self.workload.get_transfer_overlaps(tr, self.mapping, self.ssis[tr.outputs[0]])
         return found
 
-    def moved_bits(self, tr: TransferNode, choice: MulticastPathPlan) -> int:
-        """Bits one firing of ``tr`` moves on ``choice``: its tensor, or where windows overlap neighbouring tiles what
-        each source hands the targets it shares no memory with."""
+    def moved_bits(
+        self, tr: TransferNode, choice: MulticastPathPlan, source: Core | None = None, target: Core | None = None
+    ) -> int:
+        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of ``source`` or into ``target``: its
+        tensor less the halo a sliding loop keeps, or where windows overlap neighbouring tiles what each source hands
+        the targets it shares no memory with."""
+        tensor, out = tr.inputs[0], tr.outputs[0]
         if not (overlaps := self.overlaps(tr)):
-            return tr.inputs[0].size_bits()
-        src, dst = choice.sources, choice.targets
-        moved = sum(n for (i, j), n in overlaps.items() if not self.hardware.shares_memory(src[i], dst[j]))
-        return moved * tr.inputs[0].operand_type.bitwidth
+            temporal = self.ssis[out].get_temporal_variables() if out in self.ssis else []
+            if not (sliding := next((v for v in temporal if v.relevant and v.halo and v.size > 1), None)):
+                return tensor.size_bits()
+            axis, _ = self.workload.get_windows(out, tr, self.mapping, [sliding.dimension])[sliding.dimension]
+            tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis[out])
+            return tensor.size_bits() * min(tile.shape[axis], tensor.shape[axis]) // tensor.shape[axis]
+        moved = sum(
+            n
+            for (i, j), n in overlaps.items()
+            if not self.hardware.shares_memory(a := choice.sources[i], b := choice.targets[j])
+            and source in (None, a)
+            and target in (None, b)
+        )
+        return moved * tensor.operand_type.bitwidth
+
+    def copied_bits(self, t: Tensor) -> int:
+        """Bits of ``t`` its transfer lays out per firing: each target's window, a halo once per target holding it."""
+        tr = self._transfer_of.get(t)
+        overlaps = self.overlaps(tr) if tr else {}
+        return sum(overlaps.values()) * t.operand_type.bitwidth if overlaps else t.size_bits()
+
+    @cached_property
+    def _transfer_of(self) -> dict[Tensor, TransferNode]:
+        return {t: tr for tr in self.transfer_nodes for t in tr.outputs}
 
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
         """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
@@ -366,15 +390,17 @@ class DecisionSpace:
 
     @cached_property
     def warmup(self) -> dict[HasIterationSpace, float]:
-        """How much longer than its interior tiles, relative to them, each node's first tile along a sliding window is:
-        the lookahead a producer computes and the halo a transfer moves before the window slides."""
+        """How much longer than its interior tiles, relative to one of them, each node's first tiles along the sliding
+        windows are over the run: the lookahead a producer computes and the halo a transfer moves before a window
+        slides, once per sweep, which an inner fused loop restarts every iteration of the loops around it."""
         found: dict[HasIterationSpace, float] = {}
         if not any(loop.halo for ssis in self.ssis.values() for loop in ssis):
             return found
-        for dim, splits in self.problem.fusion_splits.items():
-            for node, work in self.workload.get_sliding_work(dim, splits).items():
+        splits = list(self.problem.fusion_splits.items())
+        for k, (dim, n) in enumerate(splits):
+            for node, work in self.workload.get_sliding_work(dim, n).items():
                 if (extra := work[0] * len(work) / sum(work) - 1) > 0:
-                    found[node] = found.get(node, 0.0) + extra
+                    found[node] = found.get(node, 0.0) + extra * prod(m for _, m in splits[k + 1 :])
         return found
 
     def runs_readers_elsewhere(self, node: ComputationNode) -> bool:

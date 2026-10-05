@@ -97,9 +97,14 @@ def _channels(ctx: FormulationContext, tr: TransferNode, core: Core, incoming: b
 
 def _fan(space: DecisionSpace, tr: TransferNode, incoming: bool) -> int:
     """DMA channels a destination core is fed by (a fifo per source gathering into it), or a source core
-    drives (a fifo per destination it feeds a distinct slice to), or per core whose tile overlaps a window."""
-    if overlaps := space.overlaps(tr):
-        return max(Counter(j if incoming else i for i, j in overlaps).values())
+    drives (a fifo per destination it feeds a distinct slice to), or per core it shares no memory with whose tile
+    overlaps a window."""
+    if space.overlaps(tr):
+        counts = [
+            Counter(b if incoming else a for a, b in space.pairs(tr, choice) if not space.hardware.shares_memory(a, b))
+            for choice in space.path_choices[tr]
+        ]
+        return max((n for count in counts for n in count.values()), default=0)
     if incoming:
         return max(
             1, space.placement_width(unique_tensors(tr.inputs)) // space.placement_width(unique_tensors(tr.outputs))

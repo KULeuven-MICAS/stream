@@ -71,9 +71,12 @@ def _span_bytes(tr: TransferNode) -> float:
 
 def _target_share(ctx: FormulationContext, tr: TransferNode) -> float:
     """Share of the transferred tensor one target receives: its tile under the consumer's inter-core tiling,
-    as memory access estimation counts it. A broadcast gives every target the whole tensor."""
+    as memory access estimation counts it, or on average where windows overlap. A broadcast gives every target the
+    whole tensor."""
     tensor = tr.outputs[0]
     space = ctx.space
+    if space.overlaps(tr):
+        return 1 / space.placement_width(tr.outputs)
     tile = space.workload.get_tensor_of_transfer_to_single_core(tensor, tr, space.mapping, ssis=space.ssis.get(tensor))
     return tile.size_bits() / tensor.size_bits()
 
@@ -83,12 +86,15 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortS
     sides: list[PortShare] = []
     span = _span_bytes(tr)
     write_share = _target_share(ctx, tr)
-    for cores, direction, share in (
+    moved = ctx.space.moved_bits(tr, choice) if ctx.space.overlaps(tr) else 0
+    for cores, direction, even in (
         (choice.sources, READ, 1.0 / len(choice.sources)),
         (choice.targets, WRITE, write_share),
     ):
         operand = transfer_operand_role(ctx, tr, read_side=direction == READ)
         for core in cores:
+            side = {"source": core} if direction == READ else {"target": core}
+            share = ctx.space.moved_bits(tr, choice, **side) / moved if moved else even
             port = ports.port_for(core, direction, operand)
             if port is None:
                 continue
