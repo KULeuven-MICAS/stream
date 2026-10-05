@@ -17,6 +17,7 @@ from stream.frontends import FrontendConfig, register_frontend
 from stream.parser.onnx.conv import conv_maps
 from stream.workload.node import ComputationNode, InEdge, Node, NormalizationNode, OutEdge
 from stream.workload.tensor import Tensor
+from stream.workload.utils import sliding_window
 from stream.workload.workload import Workload
 
 __all__ = [
@@ -120,10 +121,14 @@ def _linear(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> Compu
 def _conv2d(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> ComputationNode:
     """``aten::conv2d``: the access maps of an ONNX Conv with the same strides, dilations, padding and groups, the
     bias, where given, a third input read per output channel."""
-    window = tuple(
-        [value] * 2 if isinstance(value := call.attrs.get(key, default), int) else list(value)
+    stride, dilation, padding = (
+        [value] * 2 if isinstance(value := call.attrs.get(key, default), int) else value
         for key, default in (("stride", 1), ("dilation", 1), ("padding", 0))
     )
+    named = isinstance(padding, str)
+    auto_pad = {"same": "SAME_UPPER", "valid": "VALID"}[padding] if named else "NOTSET"
+    shapes = inputs[0].shape[2:], inputs[1].shape[2:]
+    window = sliding_window(*shapes, stride, dilation, None if named else padding, auto_pad)
     maps = conv_maps(inputs[0], inputs[1], len(inputs) > 2, window, int(call.attrs.get("groups", 1)))  # noqa: PLR2004
     return ComputationNode(type="Conv", name=call.output.name, inputs=inputs, outputs=(output,), operand_mapping=maps)
 

@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Sequence
+from math import ceil
 from typing import TYPE_CHECKING
 
 import sympy as sp
@@ -378,6 +379,26 @@ def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
         base = sympy_to_xdsl(rest)
         return base * int(coeff)
     raise ValueError(f"Unsupported sympy expression type: {type(expr)} ({expr})")
+
+
+def sliding_window(
+    sizes: Sequence[int],
+    kernel: Sequence[int],
+    strides: Sequence[int] | None = None,
+    dilations: Sequence[int] | None = None,
+    pads: Sequence[int] | None = None,
+    auto_pad: str = "NOTSET",
+) -> tuple[list[int], ...]:
+    """A sliding window's strides, dilations and leading padding per spatial axis: ``pads``, or what ONNX's
+    ``auto_pad`` (``SAME_UPPER``, ``SAME_LOWER``, ``VALID``) derives from the input ``sizes`` and the ``kernel``."""
+    strides, dilations = list(strides or [1] * len(sizes)), list(dilations or [1] * len(sizes))
+    if auto_pad == "NOTSET":
+        return strides, dilations, list(pads or [0] * len(sizes))[: len(sizes)]
+    totals = [
+        max(0, (ceil(n / s) - 1) * s + (f - 1) * d + 1 - n) if auto_pad != "VALID" else 0
+        for n, f, s, d in zip(sizes, kernel, strides, dilations, strict=True)
+    ]
+    return strides, dilations, [t // 2 if auto_pad == "SAME_UPPER" else t - t // 2 for t in totals]
 
 
 def window_index(

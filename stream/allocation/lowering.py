@@ -373,7 +373,7 @@ class _Lowering:
         loops = [v for v in ssis if v.relevant and v.type in sliding]
         windows = self.ssw.get_windows(tensor, transfer, self.mapping, [v.dimension for v in loops])
         for loop in loops:
-            loop.halo = windows[loop.dimension].halo if loop.dimension in windows else 0
+            loop.halo = windows[loop.dimension][1] if loop.dimension in windows else 0
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_dst_allocs = self.determine_possible_memory_allocations(node, src, dsts)

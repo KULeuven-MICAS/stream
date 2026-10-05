@@ -38,6 +38,13 @@ from stream.workload.workload import Workload, determine_fusion_cut_points
 logger = logging.getLogger(__name__)
 
 
+def _window(workload: Workload, tensor: Tensor, tiling: list[tuple[LayerDim, int]]) -> tuple[int, ...]:
+    """The tile of ``tensor`` under ``tiling`` its readers hold, their windows, else its producer's tile."""
+    readers = [n for n in workload.get_computation_nodes() if tensor in n.inputs]
+    shapes = [workload.get_tensor_shape_with_tiling(tensor, tiling, reader) for reader in readers]
+    return max(shapes, key=math.prod, default=workload.get_tensor_shape_with_tiling(tensor, tiling))
+
+
 def _tensor_bits(shape: tuple[int, ...], tensor: Tensor) -> int:
     """Storage (bits) of a tensor tile of the given ``shape``."""
     return math.prod(shape) * tensor.operand_type.bitwidth
@@ -415,10 +422,7 @@ class GenericMappingGenerator:
                 streamed_axis = {"name": str(fusion_dim), "size": size}
                 factor = size // tile if tile else 1
                 buffer_elements = max(
-                    (
-                        math.prod(sub.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]))
-                        for t in indexed[fusion_dim]
-                    ),
+                    (math.prod(_window(sub, t, [(fusion_dim, factor)])) for t in indexed[fusion_dim]),
                     default=0,
                 )
 
@@ -453,7 +457,7 @@ class GenericMappingGenerator:
                 seen.add(tensor.name)
                 full = tuple(tensor.shape)
                 tiled = (
-                    sub_workload.get_tensor_shape_with_tiling(tensor, [(fusion_dim, factor)])
+                    _window(sub_workload, tensor, [(fusion_dim, factor)])
                     if fusion_dim is not None and factor > 1
                     else full
                 )
@@ -546,9 +550,7 @@ class GenericMappingGenerator:
 
         full = sub_workload.get_dimension_size(fusion_dim)
         # Only the intermediates the fusion dim indexes shrink with the tile; the others stay resident.
-        streamed = [
-            t for t in intermediates if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)]) != t.shape
-        ]
+        streamed = [t for t in intermediates if _window(sub_workload, t, [(fusion_dim, full)]) != t.shape]
         if not streamed:
             return []
         unroll = self._inter_core_unrolling(sub_workload, cns).get(fusion_dim, 1)
@@ -561,9 +563,7 @@ class GenericMappingGenerator:
 
         def resident_bits(tile: int) -> int:
             factor = full // tile
-            return max(
-                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t) for t in streamed
-            )
+            return max(_tensor_bits(_window(sub_workload, t, [(fusion_dim, factor)]), t) for t in streamed)
 
         # Only tile when the whole per-core slice does not fit (the layer-fusion trigger).
         if budget <= 0 or resident_bits(per_core) <= budget:

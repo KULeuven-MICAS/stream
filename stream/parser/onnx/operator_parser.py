@@ -1,6 +1,5 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Generator
-from math import ceil
 from typing import Any
 
 from onnx import ModelProto, NodeProto, helper
@@ -9,6 +8,7 @@ from zigzag.parser.onnx.utils import (
 )
 
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
+from stream.workload.utils import sliding_window
 from stream.workload.workload import HasOutputs, Tensor
 
 
@@ -50,16 +50,14 @@ class OnnxOperatorParser(metaclass=ABCMeta):
                 return list(attribute.ints)
         return None
 
-    def get_window(self, sizes: tuple[int, ...], kernel: tuple[int, ...]) -> tuple[list[int], list[int], list[int]]:
-        """A sliding window's strides, dilations and leading padding per spatial axis, in ONNX's axis order: the
-        ``pads`` attribute, or what ``auto_pad`` derives from the input ``sizes`` and the ``kernel``."""
-        strides = self.get_node_attribute_ints("strides") or [1] * len(sizes)
-        dilations = self.get_node_attribute_ints("dilations") or [1] * len(sizes)
+    def get_window(self, sizes: tuple[int, ...], kernel: tuple[int, ...]) -> tuple[list[int], ...]:
+        """The node's sliding window per spatial axis, in ONNX's axis order, as :func:`sliding_window` reads it."""
         auto_pad = next((helper.get_attribute_value(a) for a in self.node.attribute if a.name == "auto_pad"), b"")
-        if auto_pad in (b"", b"NOTSET"):
-            return strides, dilations, (self.get_node_attribute_ints("pads") or [0] * len(sizes))[: len(sizes)]
-        totals = [
-            max(0, (ceil(n / s) - 1) * s + (f - 1) * d + 1 - n) if auto_pad != b"VALID" else 0
-            for n, f, s, d in zip(sizes, kernel, strides, dilations, strict=True)
-        ]
-        return strides, dilations, [t // 2 if auto_pad == b"SAME_UPPER" else t - t // 2 for t in totals]
+        return sliding_window(
+            sizes,
+            kernel,
+            self.get_node_attribute_ints("strides"),
+            self.get_node_attribute_ints("dilations"),
+            self.get_node_attribute_ints("pads"),
+            auto_pad.decode() or "NOTSET",
+        )

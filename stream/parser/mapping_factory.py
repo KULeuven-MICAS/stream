@@ -181,9 +181,10 @@ class MappingFactory:
         dim_idx = int(dim_name[1:])
         node = self.workload.get_node_by_name(node_name)
         assert isinstance(node, ComputationNode), f"Node {node_name} not found in workload."
-        dim = self.workload.get_dims(node)[dim_idx]
-        assert isinstance(dim, LayerDim), f"Dimension at index {dim_idx} of node {node_name} is not a LayerDim."
-        return dim, int(entry["tile"])
+        dim, step = self.workload.leading_dim(self.workload.get_dims(node)[dim_idx])
+        tile, rest = divmod(int(entry["tile"]), step)
+        assert not rest, f"Tile {entry['tile']} of {entry['dim']} is not a multiple of its stride {step}."
+        return dim, tile
 
     def create_runtime_args(self) -> dict[str, str]:
         runtime_args = {}
