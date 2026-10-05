@@ -1,0 +1,13 @@
+layers:
+- name: Conv1
+  core_allocation: [[0]]
+- name: Conv2
+  core_allocation: [[0]]
+fused_groups:
+- name: conv_chain
+  layers: [Conv1, Conv2]
+  intra_core_tiling:
+  - dim: Conv1.D2
+    tile: 8
+  - dim: Conv2.D2
+    tile: 8
