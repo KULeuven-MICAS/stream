@@ -121,12 +121,13 @@ class _Transfer:
 
 
 def _space(hardware, broadcast: bool = False) -> DecisionSpace:
-    """A bare decision space carrying only what the shared-memory latency check reads. ``transfer_is_broadcast``
-    inspects real tensors, so it is stubbed -- the plan and the transfer type drive everything else."""
+    """A bare decision space carrying only what the shared-memory latency check reads. ``transfer_is_broadcast`` and
+    ``overlaps`` inspect real tensors, so they are stubbed -- the plan and the transfer type drive everything else."""
     space = DecisionSpace.__new__(DecisionSpace)
     space.hardware = hardware
     space.accelerator = SimpleNamespace(memory_of=lambda core: core)
     space.transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
+    space.overlaps = lambda _tr: {}  # type: ignore[method-assign]
     return space
 
 

@@ -81,14 +81,7 @@ RUNS = [
     *((s, "simba_small") for s in ("s1", "s2", "s3", "s4", "s5")),
     *((s, "fusemax") for s in ("s1", "s2", "s5", "s3_shared", "s4_shared")),
 ]
-SPLIT = {"s3", "s4", "s3_shared"}
 XFAIL = {
-    "input_staged": ("step 3: a transfer's footprint comes from its consumer's window", SPLIT),
-    "window": ("step 3: a transfer's footprint comes from its consumer's window", set(SCENARIOS) - {"s1"}),
-    "sources": ("step 3: routes pair cores whose tiles overlap", SPLIT),
-    "in_place": ("step 3: routes pair cores whose tiles overlap", {"s3"}),
-    "input_moved": ("step 4: a sliding window moves only its new rows", set(SCENARIOS) - {"s1"}),
-    "moved": ("step 4: a sliding window moves only its new rows", SPLIT),
     "conv1_rows": ("step 5: first and last iterations are not modelled", set(SCENARIOS)),
     "input_moved_rows": ("step 5: first and last iterations are not modelled", set(SCENARIOS)),
 }
@@ -116,19 +109,20 @@ def test_fused_axes_are_one_unique_dimension(stride: int, sizes: list[int]):
     assert sorted(workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]) == sizes
 
 
-@pytest.mark.parametrize(("boundary", "tile"), [(None, 1), ("first", 0), ("last", 3)])
-def test_a_reader_footprint_is_its_window_and_the_producer_footprint_its_tile(boundary, tile: int):
+@pytest.mark.parametrize("tile", [None, 0, 3])
+def test_a_reader_footprint_is_its_window_and_the_producer_footprint_its_tile(tile: int | None):
     """An 8-row OY tile: conv2 reads the rows the oracle enumerates for that tile, conv1 writes 8 rows."""
     workload = load_workload(conv_chain(1))
     conv1, conv2 = workload.get_computation_nodes()
     sizes = {z: workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]}
-    sizes[workload.get_dims(conv2)[2]] = 8
-    mid = conv2.inputs[0]
-    tile_out = {(0, k, y, x) for k in range(32) for y in range(8 * tile, 8 * tile + 8) for x in range(32)}
+    sizes[oy := workload.get_dims(conv2)[2]] = 8
+    at = None if tile is None else {oy: tile}
+    mid, start = conv2.inputs[0], 8 * (1 if tile is None else tile)
+    tile_out = {(0, k, y, x) for k in range(32) for y in range(start, start + 8) for x in range(32)}
     rows = len({index[2] for index in reads(conv2, mid, tile_out)})
-    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv2, boundary) == (1, 16, rows, 32)
-    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, boundary=boundary) == (1, 16, 8, 32)
-    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv1, boundary) == (1, 16, 8, 32)
+    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv2, at) == (1, 16, rows, 32)
+    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, at=at) == (1, 16, 8, 32)
+    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv1, at) == (1, 16, 8, 32)
 
 
 @pytest.mark.parametrize(
@@ -139,3 +133,14 @@ def test_allocation_matches_the_oracle(scenario: str, hardware: str, check: str)
     if isinstance(found, Exception):
         raise found
     assert found == (IN_PLACE[scenario] if check == "in_place" else oracle(scenario)[check])
+
+
+@pytest.mark.parametrize(("scenario", "hardware"), [run for run in RUNS if run[1] != "simba_small"])
+def test_the_loops_sliding_a_window_keep_its_halo(scenario: str, hardware: str):
+    """The halo of conv2's window is what consecutive tiles share: its rows over the fused loop, and its columns over
+    the cores, whose windows overlap their neighbours' by what they hold beyond the tensor."""
+    windows, moved = oracle(scenario)["window"], oracle(scenario)["moved"]
+    cores = len(windows)
+    shared = (sum(window[3] for window in windows) - C1[3]) // (cores - 1) if cores > 1 else 0
+    halos = {"TEMPORAL": windows[0][2] - moved[0][2], "SPATIAL": shared}
+    assert solve(scenario, hardware)["halos"] == {loop: halo for loop, halo in halos.items() if halo}

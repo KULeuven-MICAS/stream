@@ -86,6 +86,8 @@ class IterationVariable:
                                  (kept only for global iteration-space alignment).
     type : IterationVariableType
         Whether this is a spatial, temporal, kernel, or spatiotemporal loop.
+    halo : int
+        Elements along its axis beyond the step that a tile of a sliding window also holds (0 for disjoint tiles).
 
     Notes
     -----
@@ -102,6 +104,7 @@ class IterationVariable:
         size: int,
         effect: LoopEffect,
         type: IterationVariableType = IterationVariableType.TEMPORAL,
+        halo: int = 0,
     ) -> None:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
@@ -111,6 +114,7 @@ class IterationVariable:
         else:
             self._reuse: Reuse = Reuse.NOT_SET
         self.type: IterationVariableType = type
+        self.halo: int = halo
 
     # ---------- derived convenience ----------------------------------------
     @property
@@ -154,7 +158,8 @@ class IterationVariable:
         else:
             tag = "A"  # absent
 
-        return f"{prefix}({self.dimension},{self.size},{tag})"
+        halo = f",H{self.halo}" if self.halo else ""
+        return f"{prefix}({self.dimension},{self.size},{tag}{halo})"
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, IterationVariable):
@@ -165,6 +170,7 @@ class IterationVariable:
             and self.effect == other.effect
             and self.reuse == other.reuse
             and self.type == other.type
+            and self.halo == other.halo
         )
 
     def __hash__(self) -> int:

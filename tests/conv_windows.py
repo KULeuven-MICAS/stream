@@ -4,6 +4,7 @@ straight from the access maps, and the same quantities read off a solved allocat
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from itertools import accumulate
@@ -171,23 +172,30 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
         for n in (conv1, conv2)
     )
 
-    def per_core(node: ComputationNode, tile: Tensor) -> tuple[tuple[int, ...], ...]:
-        return (tuple(tile.shape),) * len(mapping.get(node).resource_allocation[0])
+    def per_core(node: ComputationNode, tile: Callable[[int], Tensor]) -> tuple[tuple[int, ...], ...]:
+        return tuple(tuple(tile(core).shape) for core in range(len(mapping.get(node).resource_allocation[0])))
 
-    moved = workload.get_tensor_of_transfer_to_single_core(conv2.inputs[0], into2, mapping)
+    ssis = allocation.problem.ssis
+    mid, inp = conv2.inputs[0], conv1.inputs[0]
+    moved = workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, ssis=ssis[mid])
     route = allocation.solution.transfer_routes[into2]
-    pairs = communicating_pairs(route.sources, route.targets)
+    overlaps = workload.get_transfer_overlaps(into2, mapping, ssis[mid])
+    pairs = communicating_pairs(route.sources, route.targets, overlaps)
+    share = {pair: prod(moved.shape) // sum(d == pair[1] for _, d in pairs) for pair in pairs}
+    share |= {(route.sources[i], route.targets[j]): n for (i, j), n in overlaps.items()}
     return {
         "iterations": allocation.problem.iterations,
-        "conv1_tile": per_core(conv1, workload.get_tensor_single_core(conv1.outputs[0], conv1, mapping)),
-        "out_tile": per_core(conv2, workload.get_tensor_single_core(conv2.outputs[0], conv2, mapping)),
-        "input_staged": per_core(conv1, workload.get_tensor_single_core(conv1.inputs[0], into1, mapping)),
-        "input_moved": per_core(conv1, workload.get_tensor_of_transfer_to_single_core(conv1.inputs[0], into1, mapping)),
-        "window": per_core(conv2, workload.get_tensor_single_core(conv2.inputs[0], into2, mapping)),
-        "moved": per_core(conv2, moved),
-        "sources": {
-            dst.id: {src.id: prod(moved.shape) // sum(d == dst for _, d in pairs) for src, d in pairs if d == dst}
-            for _, dst in pairs
-        },
+        "conv1_tile": per_core(conv1, lambda c: workload.get_tensor_single_core(conv1.outputs[0], conv1, mapping, c)),
+        "out_tile": per_core(conv2, lambda c: workload.get_tensor_single_core(conv2.outputs[0], conv2, mapping, c)),
+        "input_staged": per_core(conv1, lambda c: workload.get_tensor_single_core(inp, into1, mapping, c)),
+        "input_moved": per_core(
+            conv1, lambda c: workload.get_tensor_of_transfer_to_single_core(inp, into1, mapping, c, ssis[inp])
+        ),
+        "window": per_core(conv2, lambda c: workload.get_tensor_single_core(mid, into2, mapping, c)),
+        "moved": per_core(
+            conv2, lambda c: workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, c, ssis[mid])
+        ),
+        "sources": {dst.id: {src.id: n for (src, d), n in share.items() if d == dst} for _, dst in pairs},
         "in_place": allocation.solution.route_cycles[into2] == 0,
+        "halos": {loop.type.name: loop.halo for loop in ssis[mid] if loop.halo},
     }

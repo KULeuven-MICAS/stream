@@ -379,38 +379,18 @@ def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
     raise ValueError(f"Unsupported sympy expression type: {type(expr)} ({expr})")
 
 
+def affine_coefficients(expr: AffineExpr, n: int) -> tuple[int, list[int]]:
+    """The constant of an affine-linear ``expr`` over ``n`` dims and the coefficient of each dim."""
+    c = int(expr.eval([0] * n, []))
+    return c, [int(expr.eval([int(i == d) for i in range(n)], [])) - c for d in range(n)]
+
+
 def affine_bounds(expr: AffineExpr, dim_sizes: list[int]) -> tuple[int, int]:
     """
     Compute min/max value of expr when each dim i is in [0, dim_sizes[i]-1].
     Assumes expr is affine-linear in dims (no mod/floordiv).
     """
-    # Extract coefficients by probing basis vectors (works with your AffineExpr.eval)
-    n = len(dim_sizes)
-
-    zero = [0] * n
-    c = int(expr.eval(zero, []))  # constant term
-
-    # coeff[i] = expr(e_i) - expr(0)
-    coeffs: list[int] = []
-    for i in range(n):
-        e = [0] * n
-        e[i] = 1
-        coeffs.append(int(expr.eval(e, [])) - c)
-
-    # Now compute min/max over a box.
-    # For each coeff a:
-    # - if a >= 0, min uses 0, max uses (S-1)
-    # - if a < 0, min uses (S-1), max uses 0
-    mins = c
-    maxs = c
-    for a, S in zip(coeffs, dim_sizes, strict=True):
-        lo = 0
-        hi = S - 1
-        if a >= 0:
-            mins += a * lo
-            maxs += a * hi
-        else:
-            mins += a * hi
-            maxs += a * lo
-
-    return mins, maxs
+    c, coeffs = affine_coefficients(expr, len(dim_sizes))
+    low = c + sum(a * (S - 1) for a, S in zip(coeffs, dim_sizes, strict=True) if a < 0)
+    high = c + sum(a * (S - 1) for a, S in zip(coeffs, dim_sizes, strict=True) if a > 0)
+    return low, high

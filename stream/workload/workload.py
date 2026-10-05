@@ -2,7 +2,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from functools import cached_property
 from itertools import combinations
-from typing import TYPE_CHECKING, Literal, cast
+from math import prod
+from typing import TYPE_CHECKING, cast
 
 import networkx as nx
 import numpy as np
@@ -15,6 +16,7 @@ from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload._svg import write_svg as _write_svg
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.affine_transform import AffineTransform
+from stream.workload.fusion.analysis import FusionWindow
 from stream.workload.iterator_type import is_state_operand, sequential_dims
 from stream.workload.node import (
     ComputationNode,
@@ -29,7 +31,7 @@ from stream.workload.node import (
 )
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.tensor import Tensor
-from stream.workload.utils import affine_bounds, sympy_to_xdsl
+from stream.workload.utils import affine_bounds, affine_coefficients, sympy_to_xdsl
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
@@ -540,106 +542,182 @@ class Workload(DiGraphWrapper[Node]):
         tensor: Tensor,
         dimension_sizes: dict[LayerDim, int],
         accessor: HasIterationSpace | None = None,
-        boundary: Literal["first", "last"] | None = None,
+        at: dict[LayerDim, int] | None = None,
     ) -> tuple[int, ...]:
-        """The extent per axis of what ``accessor`` touches of ``tensor`` (by default its producer, else the union of
-        its readers) when each unique dim spans ``dimension_sizes``: an interior tile, whose window is not clipped
-        but is at most the tensor, or the ``boundary`` tile at the start or end of every dim, clipped to it."""
-        unique_dims, dim_values = self.unique_dimensions()
-        sizes = [dimension_sizes[z] for z in unique_dims]
-        origin = [0] * len(sizes)
-        last = boundary == "last"
-        start = [self.get_dimension_size(z) - n for z, n in zip(unique_dims, sizes, strict=True)] if last else origin
-
-        def extents(node: HasIterationSpace) -> list[int]:
-            shape: list[int] = []
-            for expr, size in zip(
-                self.global_mapping(node, node.get_mapping(tensor)).results, tensor.shape, strict=True
-            ):
-                index = expr.replace_dims_and_symbols(dim_values, ())
-                low, high = affine_bounds(index, sizes)
-                shift = int(index.eval(start, [])) - int(index.eval(origin, []))
-                clipped = min(high + shift, size - 1) - max(low + shift, 0) + 1
-                shape.append(min(high - low + 1, size) if boundary is None else max(0, clipped))
-            return shape
-
+        """The extent per axis of what ``accessor`` touches of ``tensor`` (by default its producer, else its readers)
+        when each unique dim spans ``dimension_sizes``: an interior tile, its window at most the whole tensor, but
+        clipped to the tensor along the axes of the dims ``at`` places at a tile index."""
         readers = [n for n in self.get_iteration_space_nodes() if tensor in n.tensors]
         nodes = [accessor] if accessor else [n for n in readers if tensor in n.outputs] or readers
-        return tuple(max(axis) for axis in zip(*map(extents, nodes), strict=True))
+        return tuple(max(0, high - low + 1) for low, high, _ in self._bounds(tensor, nodes, dimension_sizes, at or {}))
+
+    def _bounds(
+        self, tensor: Tensor, nodes: Sequence[HasIterationSpace], dimension_sizes: dict[LayerDim, int], at: dict
+    ) -> list[tuple[int, int, bool]]:
+        """The inclusive index range per axis ``nodes`` touch of ``tensor`` as for the extents above, and whether the
+        axis is placed."""
+        unique_dims, dim_values = self.unique_dimensions()
+        sizes = [dimension_sizes[z] for z in unique_dims]
+        offset = [at.get(z, 0) * n for z, n in zip(unique_dims, sizes, strict=True)]
+        bounds = []
+        for axis, size in enumerate(tensor.subview.source.type.get_shape()):
+            ranges, placed = [], False
+            for node in nodes:
+                index = self.global_mapping(node, node.get_mapping(tensor)).results[axis]
+                index = index.replace_dims_and_symbols(dim_values, ())
+                low, high = affine_bounds(index, sizes)
+                coefficients = affine_coefficients(index, len(sizes))[1] if at else [0] * len(sizes)
+                if any(c and z in at for c, z in zip(coefficients, unique_dims, strict=True)):
+                    placed, shift = True, sum(c * o for c, o in zip(coefficients, offset, strict=True))
+                    ranges.append((max(low + shift, 0), min(high + shift, size - 1)))
+                else:
+                    ranges.append((low, min(high, low + size - 1)))
+            bounds.append((min(r[0] for r in ranges), max(r[1] for r in ranges), placed))
+        return bounds
+
+    def _tile_sizes(self, tiling: InterCoreTiling) -> dict[LayerDim, int]:
+        """The extent of every unique dim on one core of ``tiling``."""
+        factors = dict(tiling)
+        return {z: self.get_dimension_size(z) // factors.get(z, 1) for z in self.unique_dimensions()[0]}
+
+    @staticmethod
+    def _position(tiling: InterCoreTiling, core: int | None) -> dict[LayerDim, int]:
+        """The tile index along each dim of ``tiling`` of the core at position ``core``, the last dim fastest."""
+        if core is None or not tiling:
+            return {}
+        return {dim: int(i) for (dim, _), i in zip(tiling, np.unravel_index(core, [f for _, f in tiling]), strict=True)}
 
     def get_tensor_shape_with_tiling(
-        self, tensor: Tensor, tiling: InterCoreTiling, accessor: HasIterationSpace | None = None
+        self,
+        tensor: Tensor,
+        tiling: InterCoreTiling,
+        accessor: HasIterationSpace | None = None,
+        core: int | None = None,
     ) -> tuple[int, ...]:
-        unique_dims, _ = self.unique_dimensions()
-        dim_sizes = {}
-        for dim in unique_dims:
-            if any(dim == ict[0] for ict in tiling):
-                tiling_factor = next(ict[1] for ict in tiling if dim == ict[0])
-                dim_size = self.get_dimension_size(dim) // tiling_factor
-            else:
-                dim_size = self.get_dimension_size(dim)
-            dim_sizes[dim] = dim_size
-        new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes, accessor)
-        return new_shape
+        """The tile of ``tensor`` on one core of ``tiling``: an interior one, or the one at position ``core``."""
+        return self.get_tensor_shape_with_dimension_sizes(
+            tensor, self._tile_sizes(tiling), accessor, self._position(tiling, core)
+        )
 
-    def get_tensor_single_core(self, tensor: Tensor, node: HasOutputs, mapping: "Mapping") -> Tensor:
-        """
-        Get a new Tensor representing the portion residing on a single core, based on the nodes' tiling.
-        """
-        node_mapping = mapping.get(node)
-        assert node_mapping is not None, f"No mapping found for node {node.name}"
-        tilings = node_mapping.inter_core_tiling
-        if not tilings:
-            return tensor
-        # Assert all possible tilings are equal for now and take first one
+    def _reader(self, tensor: Tensor, node: Node) -> tuple[Tensor, HasIterationSpace] | None:
+        """The computation node whose window a transfer's copy of ``tensor`` holds, the one the copy reaches, and the
+        copy of ``tensor`` it reads."""
+        if not isinstance(node, TransferNode) or tensor not in node.outputs:
+            return None
+        succ = next(n for n in self.successors(node) if isinstance(n, HasInputs) and tensor in n.inputs)
+        if isinstance(succ, TransferNode) and len(succ.outputs) == 1:
+            return self._reader(succ.outputs[0], succ)
+        return (tensor, succ) if isinstance(succ, ComputationNode) else None
+
+    def _tiling(self, node: Node, mapping: "Mapping") -> InterCoreTiling:
+        tilings = mapping.get(node).inter_core_tiling
         assert all(t == tilings[0] for t in tilings), "Multiple different tilings not implemented yet."
-        tiling = tilings[0]
-        if tiling == tuple():
-            return tensor
-        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling, cast(HasIterationSpace, node))
-        new_subview = SubviewOp.from_static_parameters(
+        return tilings[0] if tilings else ()
+
+    @staticmethod
+    def _tile(tensor: Tensor, shape: tuple[int, ...]) -> Tensor:
+        subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
             source_type=tensor.subview.source.type,
-            offsets=[0 for _ in new_shape],
-            sizes=new_shape,
-            strides=[1 for _ in new_shape],
+            offsets=[0 for _ in shape],
+            sizes=shape,
+            strides=[1 for _ in shape],
         )
-        return Tensor(
-            name=tensor.name,
-            operand_type=tensor.operand_type,
-            shape=new_shape,
-            subview=new_subview,
-        )
+        return Tensor(name=tensor.name, operand_type=tensor.operand_type, shape=shape, subview=subview)
+
+    def get_tensor_single_core(
+        self, tensor: Tensor, node: HasOutputs, mapping: "Mapping", core: int | None = None
+    ) -> Tensor:
+        """The tile of ``tensor`` ``node`` holds on one core, interior or the one at position ``core``; a transfer's
+        copy holds the window of the computation node it reaches."""
+        read, accessor = self._reader(tensor, node) or (tensor, cast(HasIterationSpace, node))
+        shape = self.get_tensor_shape_with_tiling(read, self._tiling(node, mapping), accessor, core)
+        return tensor if shape == tensor.shape else self._tile(tensor, shape)
+
+    def get_windows(
+        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", dims: Sequence[LayerDim]
+    ) -> dict[LayerDim, FusionWindow]:
+        """The window a tile of the transfer's copy of ``tensor`` spans along each of ``dims`` its reader slides over
+        with an overlap, and the step it advances by when that dim moves to its next tile."""
+        unique_dims, dim_values = self.unique_dimensions()
+        sizes = self._tile_sizes(self._tiling(transfer, mapping))
+        if (found := self._reader(tensor, transfer)) is None:
+            return {}
+        read, reader = found
+        shape = self.get_tensor_shape_with_dimension_sizes(read, sizes, reader)
+        full = tensor.subview.source.type.get_shape()
+        windows: dict[LayerDim, FusionWindow] = {}
+        for axis, expr in enumerate(self.global_mapping(reader, reader.get_mapping(read)).results):
+            index = expr.replace_dims_and_symbols(dim_values, ())
+            for z, c in zip(unique_dims, affine_coefficients(index, len(unique_dims))[1], strict=True):
+                window = FusionWindow(axis, shape[axis], abs(c) * sizes[z], full[axis], prod(shape))
+                if z in dims and c and window.halo:
+                    windows.setdefault(z, window)
+        return windows
 
     def get_tensor_of_transfer_to_single_core(
-        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
+        self,
+        tensor: Tensor,
+        transfer: TransferNode,
+        mapping: "Mapping",
+        core: int | None = None,
+        ssis: SteadyStateIterationSpace | None = None,
     ) -> Tensor:
-        succ_idx = transfer.outputs.index(tensor)
-        succ = list(self.successors(transfer))[succ_idx]
-        accessor = None
+        """What ``transfer`` moves of ``tensor`` to one core per firing, interior or at position ``core``: the window
+        of the node it reaches, less the halo the innermost sliding loop of ``ssis`` keeps resident."""
+        succ = list(self.successors(transfer))[transfer.outputs.index(tensor)]
         if isinstance(succ, OutEdge):
             tiling = tuple()
         elif isinstance(succ, TransferNode):
-            # Current transfer's tiling determines the shape
             tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
         elif isinstance(succ, ComputationNode):
-            tiling, accessor = self.get_unique_dims_inter_core_tiling(succ, mapping), succ
+            tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
         else:
             raise TypeError(f"Unexpected successor type {type(succ)} for transfer node {transfer.name}")
-        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling, accessor)
-        new_subview = SubviewOp.from_static_parameters(
-            source=tensor.subview.source,
-            source_type=tensor.subview.source.type,
-            offsets=[0 for _ in new_shape],
-            sizes=new_shape,
-            strides=[1 for _ in new_shape],
-        )
-        return Tensor(
-            name=tensor.name,
-            operand_type=tensor.operand_type,
-            shape=new_shape,
-            subview=new_subview,
-        )
+        read, reader = self._reader(tensor, transfer) or (tensor, None)
+        shape = list(self.get_tensor_shape_with_tiling(read, tiling, reader, core))
+        temporal = ssis.get_temporal_variables() if ssis else []
+        if sliding := next((v for v in temporal if v.relevant and v.halo and v.size > 1), None):
+            shape[self.get_windows(tensor, transfer, mapping, [sliding.dimension])[sliding.dimension].fusion_dim] -= (
+                sliding.halo
+            )
+        return self._tile(tensor, tuple(shape))
+
+    def get_transfer_overlaps(
+        self, transfer: TransferNode, mapping: "Mapping", ssis: SteadyStateIterationSpace | None = None
+    ) -> dict[tuple[int, int], int]:
+        """Elements per firing the source at position i hands the target at position j, where the targets' windows
+        overlap the neighbouring sources' tiles; empty where they do not, and the positions pair up as they are."""
+        source, (tensor, *rest), tiling = transfer.inputs[0], transfer.outputs, self._tiling(transfer, mapping)
+        src = next(iter(self.predecessors(transfer)))
+        found = self._reader(tensor, transfer)
+        if rest or found is None or not self.get_windows(tensor, transfer, mapping, [d for d, _ in tiling]):
+            return {}
+        read, reader = found
+        src_tiling = self._tiling(src, mapping) if isinstance(src, ComputationNode) else ()
+        placed = {d for d, _ in (*tiling, *src_tiling)}
+        moved = self.get_tensor_of_transfer_to_single_core(tensor, transfer, mapping, ssis=ssis).shape
+        full = [(0, n - 1, True) for n in source.shape]
+
+        def bounds(t: Tensor, node: Node, tiling: InterCoreTiling, core: int) -> list[tuple[int, int, bool]]:
+            if not isinstance(node, HasIterationSpace):
+                return full
+            return self._bounds(
+                t, [node], self._tile_sizes(tiling), dict.fromkeys(placed, 0) | self._position(tiling, core)
+            )
+
+        overlaps: dict[tuple[int, int], int] = {}
+        for i in range(prod(f for _, f in src_tiling)):
+            have = bounds(source, src, src_tiling, i)
+            for j in range(prod(f for _, f in tiling)):
+                want = bounds(read, reader, tiling, j)
+                extents = [
+                    max(0, min(h[1], w[1]) - max(h[0], w[0]) + 1) if w[2] else m
+                    for h, w, m in zip(have, want, moved, strict=True)
+                ]
+                if prod(extents):
+                    overlaps[(i, j)] = prod(extents)
+        return overlaps
 
     def get_tensor_of_transfer_from_single_core(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
@@ -654,20 +732,7 @@ class Workload(DiGraphWrapper[Node]):
         else:
             assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
             pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
-        new_shape = self.get_tensor_shape_with_tiling(tensor, pred_tiling)
-        new_subview = SubviewOp.from_static_parameters(
-            source=tensor.subview.source,
-            source_type=tensor.subview.source.type,
-            offsets=[0 for _ in new_shape],
-            sizes=new_shape,
-            strides=[1 for _ in new_shape],
-        )
-        return Tensor(
-            name=tensor.name,
-            operand_type=tensor.operand_type,
-            shape=new_shape,
-            subview=new_subview,
-        )
+        return self._tile(tensor, self.get_tensor_shape_with_tiling(tensor, pred_tiling))
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new

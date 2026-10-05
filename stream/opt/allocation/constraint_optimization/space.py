@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from functools import cached_property
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -59,6 +59,7 @@ class DecisionSpace:
         self._candidates: dict[Tensor, set[Core]] = {}
         self._broadcast: dict[TransferNode, bool] = {}
         self._one_memory: dict[TransferNode, bool] = {}
+        self._overlaps: dict[TransferNode, dict[tuple[int, int], int]] = {}
 
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
@@ -294,9 +295,7 @@ class DecisionSpace:
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
             return False
         for choice in choices:
-            touching = [
-                (a, b) for a, b in communicating_pairs(choice.sources, choice.targets) if (b if incoming else a) == core
-            ]
+            touching = [(a, b) for a, b in self.pairs(tr, choice) if (b if incoming else a) == core]
             if not touching:
                 return False
             if any(not self.hardware.shares_memory(one, other) for one, other in touching):
@@ -311,8 +310,18 @@ class DecisionSpace:
             return True
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self.transfer_is_broadcast(tr):
             return False
-        pairs = communicating_pairs(choice.sources, choice.targets)
+        pairs = self.pairs(tr, choice)
         return bool(pairs) and all(self.hardware.shares_memory(one, other) for one, other in pairs)
+
+    def overlaps(self, tr: TransferNode) -> dict[tuple[int, int], int]:
+        """Elements per firing each source position hands each target position where windows overlap tiles."""
+        if (found := self._overlaps.get(tr)) is None:
+            found = self._overlaps[tr] = self.workload.get_transfer_overlaps(tr, self.mapping, self.ssis[tr.outputs[0]])
+        return found
+
+    def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
+        """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
+        return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
 
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
         """Whether every core of this choice uses one memory, so the data it hands over never moves."""
@@ -378,12 +387,16 @@ def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
     return list(dict.fromkeys(t for t in tensors if isinstance(t, Tensor)))
 
 
-def communicating_pairs(src: Sequence[Core], dst: Sequence[Core]) -> tuple[tuple[Core, Core], ...]:
-    """Which of the ``src`` cores hand to which ``dst`` cores: codegen matches them by spatial index, the spatial part
-    of a split running fastest, so the target at ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being
-    the narrower side."""
+def communicating_pairs(
+    src: Sequence[Core], dst: Sequence[Core], overlaps: Mapping[tuple[int, int], int] | None = None
+) -> tuple[tuple[Core, Core], ...]:
+    """Which of the ``src`` cores hand to which ``dst`` cores: those whose tiles ``overlaps`` the targets' windows,
+    else codegen matches them by spatial index, the spatial part of a split running fastest, so the target at ``j``
+    is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
     if not src or not dst:
         return ()
+    if overlaps:
+        return tuple((src[i], dst[j]) for i, j in overlaps if i < len(src) and j < len(dst))
     narrow = min(len(src), len(dst))
     return tuple((src[i], dst[j]) for i in range(len(src)) for j in range(len(dst)) if i % narrow == j % narrow)
 
