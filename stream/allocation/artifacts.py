@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+
 TRACE_KEYS = (
     "time_s",
     "event",
@@ -160,7 +162,7 @@ def _observe(what: str, write: Callable[..., Any], *args: Any, **kwargs: Any) ->
 
 def _write_yaml(data: dict[str, Any], path: str) -> None:
     with open(path, "w") as fh:
-        yaml.safe_dump(data, fh, sort_keys=False, default_flow_style=False)
+        yaml.dump(data, fh, Dumper=_DUMPER, sort_keys=False, default_flow_style=False)
     logger.info("Saved %s", path)
 
 
