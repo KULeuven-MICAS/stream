@@ -351,9 +351,13 @@ class DecisionSpace:
         )
 
     def copied_bits(self, t: Tensor) -> float:
-        """Bits per firing the transfer of ``t`` moves, a halo once per target holding it; ``t`` where none moves it."""
+        """Bits per firing the transfer of ``t`` delivers, in place or not: a halo once per target holding it."""
         tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
-        return self.moved_bits(tr, self.path_choices[tr][0]) if tr else t.size_bits()
+        if tr is None:
+            return t.size_bits()
+        if overlaps := self.overlaps(tr):
+            return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
+        return self.moved_bits(tr, self.path_choices[tr][0])
 
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
         """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
