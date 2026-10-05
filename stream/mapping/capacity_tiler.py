@@ -67,10 +67,11 @@ class CapacityTiler:
         budgets = {cid: int(cap * self.fill_fraction) for cid, cap in core_cap.items()}
 
         # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
-        all_dims: set[LayerDim] = {d for ts in core_tensors.values() for entry in ts for d in entry[1]}
+        indexed = {d for ts in core_tensors.values() for entry in ts for d in entry[1]}
+        ordered = dict.fromkeys(d for cn in cns for d in self.sub_workload.get_dims(cn) if d in indexed)
         per_core: dict[LayerDim, int] = {}
         divisors: dict[LayerDim, list[int]] = {}
-        for dim in all_dims - protected:
+        for dim in (d for d in ordered if d not in protected):
             full = self.sub_workload.get_dimension_size(dim)
             u = unroll.get(dim, 1)
             size = full // u if u > 1 and full % u == 0 else full
