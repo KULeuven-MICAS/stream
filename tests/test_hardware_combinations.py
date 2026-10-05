@@ -22,8 +22,8 @@ import tempfile
 import pytest
 from zigzag.utils import open_yaml
 
+from stream.allocation.schedule import SteadyStateSchedule
 from stream.api import SolveOptions, evaluate_mapping
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
@@ -147,15 +147,15 @@ def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -
     """Assert structural CO result properties.
 
     Reused by the swiglu arm. Checks:
-    - Positive scheduler metrics (latency_total, latency_per_iteration, iterations)
+    - Positive schedule metrics (latency_total, latency_per_iteration, iterations)
     - Exactly expected_node_count ComputationNodes
     - Each node has non-empty resource_allocation
     - No ComputationNode allocated to the offchip core
     """
-    scheduler: SteadyStateScheduler = ctx.get("scheduler")
-    assert scheduler.latency_total > 0, "Expected positive latency_total"
-    assert scheduler.latency_per_iteration > 0, "Expected positive latency_per_iteration"
-    assert scheduler.iterations > 0, "Expected positive iterations"
+    schedule: SteadyStateSchedule = ctx.get("allocation")
+    assert schedule.solution.latency.total > 0, "Expected positive latency_total"
+    assert schedule.solution.latency.per_iteration > 0, "Expected positive latency_per_iteration"
+    assert schedule.iterations > 0, "Expected positive iterations"
 
     mapping = ctx.get("mapping")
     workload = ctx.get("workload")
@@ -195,9 +195,9 @@ def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) 
         i.e. the spatial array was not modelled and the latency is untrustworthy.
       - workload_hparams: human-readable dims/tiles of this combination (per-workload caption).
     """
-    scheduler = ctx.get("scheduler")
-    solve_stats = scheduler.solve_stats if scheduler is not None else None
-    perf = scheduler.performance_stats if scheduler is not None else None
+    schedule = ctx.get("allocation")
+    solve_stats = schedule.solution.solve_stats if schedule is not None else None
+    perf = schedule.solution.performance if schedule is not None else None
     agg = perf.get("aggregate") if isinstance(perf, dict) else None
     group_latencies = ctx.get("group_latencies")
     record_metric("total_latency", ctx.get("total_latency"))

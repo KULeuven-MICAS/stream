@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from stream.allocation.schedule import SteadyStateSchedule
 from stream.api import evaluate_mapping
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import (
     TwoConvWorkloadConfig,
@@ -64,7 +64,7 @@ def test_co_tpu_two_conv(output_dir: Path):
     """Run the two-conv TPU CO pipeline and verify structural properties.
 
     Asserts:
-    - positive scheduler metrics
+    - positive schedule metrics
     - exactly two computation nodes
     - each computation node has a resource allocation
     """
@@ -76,22 +76,23 @@ def test_co_tpu_two_conv(output_dir: Path):
 
     ctx = evaluate_mapping(_ACCELERATOR, workload_path, str(output_dir), mapping_path).context
 
-    scheduler: SteadyStateScheduler = ctx.get("scheduler")
+    schedule: SteadyStateSchedule = ctx.get("allocation")
+    latency = schedule.solution.latency
 
-    print(f"latency_total: {scheduler.latency_total}")
-    print(f"latency_per_iteration: {scheduler.latency_per_iteration}")
-    print(f"iterations: {scheduler.iterations}")
+    print(f"latency_total: {latency.total}")
+    print(f"latency_per_iteration: {latency.per_iteration}")
+    print(f"iterations: {schedule.iterations}")
 
-    assert scheduler.latency_total > 0, "Expected positive latency_total"
-    assert scheduler.latency_per_iteration > 0, "Expected positive latency_per_iteration"
-    assert scheduler.iterations > 0, "Expected positive iterations"
+    assert latency.total > 0, "Expected positive latency_total"
+    assert latency.per_iteration > 0, "Expected positive latency_per_iteration"
+    assert schedule.iterations > 0, "Expected positive iterations"
     # OR-Tools solves the objective levels in turn and ends on a tiebreaker; the rank is the first level.
-    assert scheduler.cost_to_rank >= scheduler.latency_total
+    assert schedule.cost_to_rank >= latency.total
 
-    # The solved scheduler must yield a JSON-serializable AllocationIR (runtime_args carry AffineMaps).
-    allocation = AllocationIR.from_internal(scheduler)
+    # The solved schedule must yield a JSON-serializable AllocationIR (runtime_args carry AffineMaps).
+    allocation = AllocationIR.from_internal(schedule)
     allocation.model_dump_json()
-    assert allocation.latency.total == scheduler.latency_total
+    assert allocation.latency.total == latency.total
     assert allocation.mapping_nodes
 
     mapping = ctx.get("mapping")

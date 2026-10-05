@@ -60,7 +60,7 @@ def test_cores_sharing_a_memory_use_the_first_cores():
 
 def test_cores_sharing_a_memory_fit_their_tiles_in_it_together():
     # Each core alone holds 242 KB here, so a per-core bound of 300 KB would let them hold 484 KB together.
-    rows = solve_swiglu(fusemax(sram_kb=300)).get("scheduler").performance_stats["memory_occupancy"]
+    rows = solve_swiglu(fusemax(sram_kb=300)).get("allocation").solution.performance["memory_occupancy"]
     (sram,) = [row for row in rows if row["core_id"] in (0, 1)]
     assert sram["core_id"] == 0
     assert sram["resident_bits"] <= sram["capacity_bits"] == 300 * 8192

@@ -3,7 +3,6 @@ import os
 from math import ceil, prod
 
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
@@ -48,7 +47,7 @@ class MemoryAccessesEstimationStage(Stage):
         "workload",
         "accelerator",
         "mapping",
-        "scheduler",
+        "allocation",
         "output_path",
     )
 
@@ -66,8 +65,7 @@ class MemoryAccessesEstimationStage(Stage):
         self.workload: Workload = self.ctx.get("workload")
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
-        self.scheduler: SteadyStateScheduler = self.ctx.get("scheduler")
-        self.ssis = self.scheduler.ssis
+        self.ssis = self.ctx.get("allocation").ssis
         self.output_path = self.ctx.get("output_path")
         self.yaml_path: str = os.path.join(self.output_path, "memory_accesses.yaml")
 

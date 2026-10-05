@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print("cycles:", estimate.cycles)
 ```
 
-A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`, whose useful keys are `scheduler`, `workload`, `accelerator` and `group_latencies`. `SolveOptions` sets the solver backend, the number of columns, the constraint selection, the kernel library, the tile search and instrumentation, and its `stage_options` carries what a plugin's stages read, such as `fusion_cut_points` and `intra_core_tiling` for the generic mapping generator or `npu` and `trace_size` for the AIE code generator.
+A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`, whose useful keys are `allocation`, `workload`, `accelerator` and `group_latencies`. `SolveOptions` sets the solver backend, the number of columns, the constraint selection, the kernel library, the tile search and instrumentation, and its `stage_options` carries what a plugin's stages read, such as `fusion_cut_points` and `intra_core_tiling` for the generic mapping generator or `npu` and `trace_size` for the AIE code generator.
 
 Whatever depends on the hardware is found through entry-point groups, so a separate package extends Stream without a fork: `stream.frontends` (workload formats), `stream.mapping_generators` (a mapping when none is given), `stream.constraints` (namespace MILP constraints), `stream.core_cost_backends` (per-core cost) and `stream.codegen_backends` (code generation).
 
@@ -200,7 +200,7 @@ from stream.ir import WorkloadIR, AcceleratorIR, AllocationIR
 # ctx = evaluate_mapping(...).context
 workload_ir = WorkloadIR.from_internal(ctx.get("workload"))
 accelerator_ir = AcceleratorIR.from_internal(ctx.get("accelerator"))
-allocation_ir = AllocationIR.from_internal(ctx.get("scheduler"))
+allocation_ir = AllocationIR.from_internal(ctx.get("allocation"))
 
 workload_data = workload_ir.model_dump()      # JSON-compatible dict
 hardware_data = accelerator_ir.model_dump()

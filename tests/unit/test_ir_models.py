@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import pytest
-
 from stream.ir import AcceleratorIR, AllocationIR, WorkloadIR
 from stream.ir.accelerator import (
     AcceleratorCompilerView,
@@ -416,7 +414,7 @@ class TestAcceleratorIR:
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: synthetic dict matching SteadyStateScheduler.get_ir() shape
+# Fixtures: synthetic dict matching SteadyStateSchedule.get_ir() shape
 # ---------------------------------------------------------------------------
 
 ALLOCATION_RAW: dict = {
@@ -551,14 +549,6 @@ class TestAllocationIR:
         ir = AllocationIR.from_internal(mock_scheduler)
         assert ir.runtime_args == {"input": "(d0, d1) -> (d0, d1)"}
         ir.model_dump_json()  # must stay JSON-serializable
-
-    def test_from_internal_pre_solve_raises(self):
-        """AllocationIR.from_internal() raises ValueError when latency_total == -1 (pre-solve sentinel)."""
-        mock_scheduler = MagicMock()
-        mock_scheduler.latency_total = -1
-
-        with pytest.raises(ValueError, match="Cannot build AllocationIR from unsolved"):
-            AllocationIR.from_internal(mock_scheduler)
 
     def test_algorithmic_view(self):
         """AllocationIR.algorithmic_view() returns AllocationAlgorithmicView with latency,

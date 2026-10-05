@@ -9,8 +9,8 @@ import tempfile
 import pytest
 import yaml
 
+from stream.allocation.schedule import SteadyStateSchedule
 from stream.api import evaluate_mapping
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_conv_relu_flatten_gemm import (
     make_conv_relu_flatten_gemm_workload,
@@ -131,10 +131,11 @@ def test_pipeline_end_to_end():
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir).context
 
-    scheduler: SteadyStateScheduler = ctx.get("scheduler")
-    assert scheduler is not None, "No scheduler in context"
-    assert scheduler.latency_total > 0, f"Expected positive latency, got {scheduler.latency_total}"
-    assert scheduler.iterations > 0, f"Expected positive iterations, got {scheduler.iterations}"
+    schedule: SteadyStateSchedule = ctx.get("allocation")
+    assert schedule is not None, "No allocation in context"
+    latency = schedule.solution.latency.total
+    assert latency > 0, f"Expected positive latency, got {latency}"
+    assert schedule.iterations > 0, f"Expected positive iterations, got {schedule.iterations}"
 
     # Verify total_latency was set by FusionGroupIterationStage
     total_latency = ctx.get("total_latency")
@@ -162,10 +163,11 @@ def test_pipeline_multi_group():
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir).context
 
-    # Verify scheduler result
-    scheduler: SteadyStateScheduler = ctx.get("scheduler")
-    assert scheduler is not None, "No scheduler in context"
-    assert scheduler.latency_total > 0, f"Expected positive latency, got {scheduler.latency_total}"
+    # Verify the allocation result
+    schedule: SteadyStateSchedule = ctx.get("allocation")
+    assert schedule is not None, "No allocation in context"
+    latency = schedule.solution.latency.total
+    assert latency > 0, f"Expected positive latency, got {latency}"
 
     # Verify total_latency aggregated across all groups
     total_latency = ctx.get("total_latency")

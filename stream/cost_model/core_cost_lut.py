@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import pickle
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.core_cost import CoreCostEntry
@@ -88,6 +89,15 @@ class CoreCostLUT:
         self.lut[new_node] = self.lut.pop(target)
         self._index.pop(node_key(target), None)
         self._index[node_key(new_node)] = new_node
+
+    def with_nodes(self, nodes: Iterable[ComputationNode]) -> CoreCostLUT:
+        """A copy that holds the entries of each same-named node under ``nodes`` instead; this LUT is unchanged."""
+        view = CoreCostLUT()
+        view.lut = dict(self.lut)
+        view._index = dict(self._index)
+        for new_node in nodes:
+            view.replace_node(next(n for n in view.get_nodes() if n.name == new_node.name), new_node)
+        return view
 
     def remove_cores_with_same_id(self, node: ComputationNode, core: Core):
         if node not in self.lut:

@@ -73,7 +73,7 @@ def _run_gemm_pipeline(output_path: str):
         output_path: Directory where pipeline outputs are written.
 
     Returns:
-        ctx: Stage context with ``scheduler`` accessible via ``ctx.get``.
+        ctx: Stage context with ``allocation`` accessible via ``ctx.get``.
     """
     # Parameters from launch.json
     M, K, N = 256, 8192, 2048
@@ -96,7 +96,7 @@ def _run_swiglu_pipeline(output_path: str):
         output_path: Directory where pipeline outputs are written.
 
     Returns:
-        ctx: Stage context with ``scheduler`` accessible via ``ctx.get``.
+        ctx: Stage context with ``allocation`` accessible via ``ctx.get``.
     """
     # Parameters from launch.json (known working, verified)
     seq_len, embedding_dim, hidden_dim = 256, 512, 2048
@@ -128,8 +128,7 @@ def _extract_latency_total(ctx) -> float:
     ``latency_total`` is the primary value minimised by the MILP solver —
     the metric used for cross-backend objective comparison.
     """
-    scheduler = ctx.get("scheduler")
-    return float(scheduler.latency_total)
+    return float(ctx.get("allocation").solution.latency.total)
 
 
 def _print_result_table(rows: list[dict]) -> None:

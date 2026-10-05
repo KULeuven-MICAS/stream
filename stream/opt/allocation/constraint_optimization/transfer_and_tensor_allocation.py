@@ -18,6 +18,7 @@ try:
 except ModuleNotFoundError:
     GRB = None  # type: ignore[assignment]
 
+from stream.allocation.solution import AllocationSolution, Latency, end_to_end_mac_utilization
 from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
@@ -2365,9 +2366,9 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
-    def solve(
-        self, *, tee: bool = True
-    ) -> tuple[TensorReuseLevels, TensorDepths, TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:
+    def solve(self, *, tee: bool = True, total_mac_ops: int | None = None) -> AllocationSolution:
+        """Solve the model and read the allocation back; ``total_mac_ops`` of the untiled group, when known,
+        adds its end-to-end MAC utilization to the performance report."""
         self.model.set_param(SolverParams.VERBOSITY, 1 if tee else 0)
         self.model.set_param(SolverParams.TIME_LIMIT, self.SOLVE_TIME_LIMIT_S)
         with span("milp_optimize"):
@@ -2404,20 +2405,48 @@ class TransferAndTensorAllocator:
             self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
             self.save_slot_latency_breakdown(save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml"))
 
-        assert self.total_latency is not None, "Total latency variable was not created."
-        total_latency = int(self.total_latency.X)
-        overlap = int(self.overlap.X)
-        latency_per_iteration = sum(slot_lat.X for slot_lat in self.slot_latency.values())
-        return (
-            tensor_reuse_levels,
-            tensor_depths,
-            tensor_alloc,
-            routing,
-            chosen_memory_cores,
-            total_latency,
-            overlap,
-            int(latency_per_iteration),
-        )
+        with span("milp_report"):
+            assert self.total_latency is not None, "Total latency variable was not created."
+            latency = Latency(
+                total=int(self.total_latency.X),
+                per_iteration=int(sum(slot_lat.X for slot_lat in self.slot_latency.values())),
+                overlap=int(self.overlap.X),
+                fill=round(self.fill.X),
+            )
+            return AllocationSolution(
+                tensor_placements=tensor_alloc,
+                transfer_routes=routing,
+                memory_cores=chosen_memory_cores,
+                reuse_levels=tensor_reuse_levels,
+                depths=tensor_depths,
+                single_buffered=frozenset(self.get_single_buffered()),
+                latency=latency,
+                primary_cost=self.primary_cost(),
+                throughput_bound=self.throughput_bound(),
+                solve_stats=self.model.solve_stats(),
+                performance=self._performance_report(latency.total, total_mac_ops),
+                capacity_slack=self._reported_capacity_slack(),
+            )
+
+    def _performance_report(self, total_latency: int, total_mac_ops: int | None) -> dict[str, Any] | None:
+        """:meth:`compute_performance_stats` with the end-to-end MAC utilization; None if it fails."""
+        try:
+            performance = self.compute_performance_stats()
+        except Exception as exc:  # observability must never break the solve
+            _logger.warning("Failed to compute performance stats: %s", exc)
+            return None
+        try:
+            performance["aggregate"] |= end_to_end_mac_utilization(self.accelerator, total_mac_ops, total_latency)
+        except Exception as exc:
+            _logger.warning("Failed to compute end-to-end MAC utilization: %s", exc)
+        return performance
+
+    def _reported_capacity_slack(self) -> dict[int, dict[str, float]]:
+        try:
+            return self.capacity_slack()
+        except Exception as exc:
+            _logger.warning("Failed to compute capacity slack: %s", exc)
+            return {}
 
     def get_tensor_reuse_levels(
         self,

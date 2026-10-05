@@ -137,8 +137,7 @@ class TileSearchStage(Stage):
 
     def _seed_exhausted(self, ctx) -> bool:
         """A seed that alone hits the solve budget is not a model to search over."""
-        stats = ctx.get("scheduler").solve_stats
-        if stats is not None and stats.status == "TIME_LIMIT":
+        if ctx.get("allocation").solution.solve_stats.status == "TIME_LIMIT":
             logger.info("Seed solve hit the time limit; skipping tile candidates")
             return True
         return False
@@ -147,4 +146,4 @@ class TileSearchStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
-        return ctxs, ctxs[0].get("scheduler").cost_to_rank
+        return ctxs, ctxs[0].get("allocation").cost_to_rank

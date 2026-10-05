@@ -43,7 +43,7 @@ from stream.ir import WorkloadIR, AcceleratorIR, AllocationIR
 # ctx = evaluate_mapping(...).context
 workload_ir    = WorkloadIR.from_internal(ctx.get("workload"))
 accelerator_ir = AcceleratorIR.from_internal(ctx.get("accelerator"))
-allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))
+allocation_ir  = AllocationIR.from_internal(ctx.get("allocation"))
 
 allocation_data = allocation_ir.model_dump()   # JSON-compatible dict
 ```
