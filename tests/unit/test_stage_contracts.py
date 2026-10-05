@@ -1,17 +1,17 @@
 """Stages declare the context fields they read and write; a pipeline is checked before it runs and as it runs."""
 
 import ast
+import functools
 import importlib
+import logging
 import re
 from pathlib import Path
 
 import pytest
 
-from stream.profiling import timed
 from stream.stages.context import StageContext, StageContractError
-from stream.stages.stage import LeafStage, MainStage, Stage, check_contracts
+from stream.stages.stage import CONTRACT, LeafStage, MainStage, Stage, check_contracts
 
-CONTRACT = ("reads", "optional_reads", "writes", "result_reads", "result_writes")
 ROW = re.compile(r"^\| `(\w+)` \|")
 
 
@@ -73,9 +73,35 @@ def test_a_result_read_is_checked_against_what_the_stages_after_it_write():
         check_contracts([_Wrap, _Produce, LeafStage], {"source"})
 
 
-def test_a_wrapped_stage_is_checked_by_the_contract_of_the_stage_it_wraps():
-    with pytest.raises(StageContractError, match="_Consume"):
-        check_contracts([timed(_Consume), LeafStage], {"source"})
+def test_a_missing_read_is_a_value_error_as_before_contracts():
+    with pytest.raises(ValueError, match=r"_Produce reads \['source'\]"):
+        _Produce([LeafStage], StageContext())
+
+
+class _Legacy(Stage):
+    REQUIRED_FIELDS = ("source",)
+
+    def run(self):
+        self.ctx.set(seen=self.ctx.get("source"))
+        return [self.ctx]
+
+    def is_leaf(self) -> bool:
+        return True
+
+
+def _leaf(list_of_callables, ctx):
+    return LeafStage(list_of_callables, ctx)
+
+
+@pytest.mark.parametrize("stages", [[_Legacy], [_leaf], [functools.partial(LeafStage)], [_Produce, _leaf]])
+def test_a_stage_without_a_contract_runs_unchecked_with_a_warning(stages, caplog: pytest.LogCaptureFixture):
+    """An out-of-tree stage written before contracts, or a stage callable that is no Stage class, still runs: its
+    run may return a list, and the pipeline warns once that it cannot check it."""
+    with caplog.at_level(logging.WARNING, logger="stream.stages.stage"):
+        (ctx,) = MainStage(stages, StageContext.from_kwargs(source=1)).run()
+        MainStage(stages, StageContext.from_kwargs(source=1)).run()
+    assert ctx.get("source") == 1
+    assert len([r for r in caplog.records if "declares no contract" in r.getMessage()]) <= 1
 
 
 def test_a_running_stage_cannot_read_a_field_it_does_not_declare():

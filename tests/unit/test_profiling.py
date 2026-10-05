@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from stream.profiling import profile, span, timed
+from stream.profiling import profile, span
 from stream.stages.stage import LeafStage, Stage
 
 
@@ -47,9 +47,9 @@ class _Leaf(LeafStage):
         yield self.ctx
 
 
-def test_a_timed_stage_excludes_the_stages_it_runs():
+def test_a_stage_is_a_span_that_excludes_the_stages_it_runs():
     with profile() as recorded:
-        (result,) = list(timed(_Outer)([timed(_Leaf)], "ctx").run())
+        (result,) = list(_Outer([_Leaf], "ctx").run())
     assert result == "ctx"
     outer, leaf = recorded.spans[("_Outer",)], recorded.spans[("_Outer", "_Leaf")]
     assert outer.exclusive_ns < leaf.exclusive_ns

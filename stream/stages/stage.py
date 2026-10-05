@@ -1,33 +1,47 @@
 import functools
-import inspect
+import logging
 from abc import ABCMeta, abstractmethod
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from stream.stages.context import StageContext, StageContractError, running
+from stream.profiling import span
+from stream.stages.context import RUNNING, StageContext, StageContractError
+
+logger = logging.getLogger(__name__)
+
+CONTRACT = ("reads", "optional_reads", "writes", "result_reads", "result_writes")
+
+
+class _EveryField:
+    """The fields a stage that declares no contract may touch: all of them."""
+
+    def __contains__(self, field: object) -> bool:
+        return True
 
 
 class Stage(metaclass=ABCMeta):
-    """A step of a pipeline, which runs the stages after it and yields what they yield.
-
-    Its contract names the context fields it touches: it needs its ``reads`` and may use its ``optional_reads``,
-    sets its ``writes`` before the stages after it run, and reads its ``result_reads`` and sets its ``result_writes``
-    on the context those stages yield. :class:`MainStage` checks a pipeline's contracts before it runs, and while a
-    stage runs the context rejects any field its contract leaves out.
-    """
+    """A step of a pipeline, which runs the stages after it and yields what they yield. Its contract names the fields
+    it touches: it needs its ``reads``, may use its ``optional_reads``, sets its ``writes`` before the stages after it
+    run, and reads its ``result_reads`` and sets its ``result_writes`` on the context those stages yield."""
 
     reads: ClassVar[tuple[str, ...]] = ()
     optional_reads: ClassVar[tuple[str, ...]] = ()
     writes: ClassVar[tuple[str, ...]] = ()
     result_reads: ClassVar[tuple[str, ...]] = ()
     result_writes: ClassVar[tuple[str, ...]] = ()
-    readable: ClassVar[frozenset[str]] = frozenset()
-    writable: ClassVar[frozenset[str]] = frozenset()
+    declares_contract: ClassVar[bool] = False
+    readable: ClassVar[Container[str]] = _EveryField()
+    writable: ClassVar[Container[str]] = _EveryField()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        cls.writable = frozenset((*cls.writes, *cls.result_writes))
-        cls.readable = frozenset((*cls.reads, *cls.optional_reads, *cls.result_reads)) | cls.writable
+        cls.declares_contract = any(
+            field in base.__dict__ for base in cls.__mro__ if base not in (Stage, object) for field in CONTRACT
+        )
+        if cls.declares_contract:
+            cls.writable = frozenset((*cls.writes, *cls.result_writes))
+            cls.readable = frozenset((*cls.reads, *cls.optional_reads, *cls.result_reads)) | cls.writable
         if "__init__" in cls.__dict__:
             cls.__init__ = _in_stage(cls.__init__)
         if "run" in cls.__dict__:
@@ -66,44 +80,72 @@ class Stage(metaclass=ABCMeta):
     def run(self) -> Iterator[StageContext]: ...
 
 
+@contextmanager
+def _entered(stage: Stage) -> Iterator[None]:
+    """Run the enclosed code of ``stage`` against its contract and in a span named after it, once however deep its
+    own methods call each other."""
+    if RUNNING.get() is stage:
+        yield
+        return
+    token = RUNNING.set(stage)
+    try:
+        with span(type(stage).__name__):
+            yield
+    finally:
+        RUNNING.reset(token)
+
+
 def _in_stage(init: Callable[..., None]) -> Callable[..., None]:
     @functools.wraps(init)
-    def checked(self: Stage, *args: Any, **kwargs: Any) -> None:
-        with running(type(self)):
+    def entered(self: Stage, *args: Any, **kwargs: Any) -> None:
+        with _entered(self):
             init(self, *args, **kwargs)
 
-    return checked
+    return entered
 
 
-def _run_in_stage(run: Callable[[Stage], Iterator[StageContext]]) -> Callable[[Stage], Iterator[StageContext]]:
+def _run_in_stage(run: Callable[[Stage], Iterable[StageContext]]) -> Callable[[Stage], Iterator[StageContext]]:
     @functools.wraps(run)
-    def checked(self: Stage) -> Iterator[StageContext]:
-        results = run(self)
+    def entered(self: Stage) -> Iterator[StageContext]:
+        with _entered(self):
+            results = iter(run(self))
         while True:
-            with running(type(self)):
+            with _entered(self):
                 try:
                     result = next(results)
                 except StopIteration:
                     return
             yield result
 
-    return checked
+    return entered
 
 
-def check_contracts(stages: Sequence["StageCallable"], fields: Iterable[str]) -> set[str]:
-    """The fields a context holding ``fields`` holds after ``stages`` run, each stage running the ones after it;
-    raises a :class:`StageContractError` naming the stage that reads a field neither the context nor a stage
-    before it writes."""
+def check_contracts(stages: Sequence["StageCallable"], fields: Iterable[str]) -> set[str] | None:
+    """The fields a context holding ``fields`` holds after ``stages`` run, each stage running the ones after it, or
+    None from a stage that declares no contract on, which runs unchecked; raises a :class:`StageContractError` naming
+    the stage that reads a field neither the context nor a stage before it writes."""
     available = set(fields)
     if not stages:
         return available
-    stage = inspect.unwrap(stages[0])
-    if not (isinstance(stage, type) and issubclass(stage, Stage)):
-        raise StageContractError(f"{stage!r} is not a Stage, so it declares no contract")
+    stage = stages[0]
+    if not (isinstance(stage, type) and issubclass(stage, Stage) and stage.declares_contract):
+        _warn_unchecked(stage)
+        return None
     _require(stage, stage.reads, available)
     after = check_contracts(stages[1:], available | set(stage.writes))
+    if after is None:
+        return None
     _require(stage, stage.result_reads, after)
     return after | set(stage.result_writes)
+
+
+@functools.cache
+def _warn_unchecked(stage: "StageCallable") -> None:
+    logger.warning(
+        "%s declares no contract (reads, writes, ...), so the pipeline cannot check the fields it and the stages "
+        "after it touch",
+        getattr(stage, "__name__", stage),
+    )
 
 
 def _require(stage: type[Stage], reads: tuple[str, ...], available: set[str]) -> None:
@@ -134,7 +176,9 @@ class MainStage:
 
 
 class LeafStage(Stage):
-    """Leaf stage class that doesn't do anything besides return the ctx."""
+    """Leaf stage class that doesn't do anything besides return the ctx; it touches no field."""
+
+    reads: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         assert not list_of_callables, "LeafStage must have an empty list_of_callables"

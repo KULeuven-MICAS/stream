@@ -1,26 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-_RUNNING: ContextVar[Any] = ContextVar("stream_running_stage", default=None)
+RUNNING: ContextVar[Any] = ContextVar("stream_running_stage", default=None)
+"""The stage whose own code is running, whose contract every context access is checked against."""
 
 
-class StageContractError(Exception):
+class StageContractError(ValueError):
     """A stage reads or writes a context field its contract does not declare, or reads one nothing wrote."""
-
-
-@contextmanager
-def running(stage: type) -> Iterator[None]:
-    """Check every context access in this block against the contract of ``stage``."""
-    token = _RUNNING.set(stage)
-    try:
-        yield
-    finally:
-        _RUNNING.reset(token)
 
 
 @dataclass
@@ -35,9 +24,9 @@ class StageContext:
         return cls(data=dict(kwargs))
 
     def get(self, key: str, default: Any = None) -> Any:
-        stage = _RUNNING.get()
+        stage = RUNNING.get()
         if stage is not None and key not in stage.readable:
-            raise StageContractError(f"{stage.__name__} reads {key!r}, which its contract does not declare")
+            raise StageContractError(f"{type(stage).__name__} reads {key!r}, which its contract does not declare")
         return self.data.get(key, default)
 
     def set(self, **kwargs: Any) -> None:
@@ -50,6 +39,6 @@ class StageContext:
 
     @staticmethod
     def _check_writes(keys: Any) -> None:
-        stage = _RUNNING.get()
+        stage = RUNNING.get()
         if stage is not None and (undeclared := [key for key in keys if key not in stage.writable]):
-            raise StageContractError(f"{stage.__name__} writes {undeclared}, which its contract does not declare")
+            raise StageContractError(f"{type(stage).__name__} writes {undeclared}, which its contract does not declare")
