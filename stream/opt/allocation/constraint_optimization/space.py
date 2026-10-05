@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from functools import cached_property
+from functools import cached_property, reduce
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, TypeAlias
+
+import numpy as np
 
 from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -321,36 +323,37 @@ class DecisionSpace:
 
     def moved_bits(
         self, tr: TransferNode, choice: MulticastPathPlan, source: Core | None = None, target: Core | None = None
-    ) -> int:
-        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of ``source`` or into ``target``: its
-        tensor less the halo a sliding loop keeps, or where windows overlap neighbouring tiles what each source hands
-        the targets it shares no memory with."""
+    ) -> float:
+        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of ``source`` or into ``target``: what
+        sources hand targets they share no memory with where windows overlap neighbouring tiles, else its tensor (a
+        source's even share, a target's tile) less the halo a sliding loop keeps resident."""
         tensor, out = tr.inputs[0], tr.outputs[0]
-        if not (overlaps := self.overlaps(tr)):
-            temporal = self.ssis[out].get_temporal_variables() if out in self.ssis else []
-            if not (sliding := next((v for v in temporal if v.relevant and v.halo and v.size > 1), None)):
-                return tensor.size_bits()
-            axis, _ = self.workload.get_windows(out, tr, self.mapping, [sliding.dimension])[sliding.dimension]
-            tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis[out])
-            return tensor.size_bits() * min(tile.shape[axis], tensor.shape[axis]) // tensor.shape[axis]
-        moved = sum(
-            n
-            for (i, j), n in overlaps.items()
-            if not self.hardware.shares_memory(a := choice.sources[i], b := choice.targets[j])
-            and source in (None, a)
-            and target in (None, b)
+        if overlaps := self.overlaps(tr):
+            moved = sum(
+                n
+                for (i, j), n in overlaps.items()
+                if not self.hardware.shares_memory(a := choice.sources[i], b := choice.targets[j])
+                and source in (None, a)
+                and target in (None, b)
+            )
+            return moved * tensor.operand_type.bitwidth
+        sources = len(choice.sources) if source is not None else 1
+        if not (sliding := self.workload.sliding_halo(out, tr, self.mapping, self.ssis.get(out))) and target is None:
+            return tensor.size_bits() / sources
+        tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis.get(out))
+        if target is not None:
+            return tile.size_bits()
+        return (
+            tensor.size_bits()
+            * min(tile.shape[sliding[0]], tensor.shape[sliding[0]])
+            // tensor.shape[sliding[0]]
+            / sources
         )
-        return moved * tensor.operand_type.bitwidth
 
-    def copied_bits(self, t: Tensor) -> int:
-        """Bits of ``t`` its transfer lays out per firing: each target's window, a halo once per target holding it."""
-        tr = self._transfer_of.get(t)
-        overlaps = self.overlaps(tr) if tr else {}
-        return sum(overlaps.values()) * t.operand_type.bitwidth if overlaps else t.size_bits()
-
-    @cached_property
-    def _transfer_of(self) -> dict[Tensor, TransferNode]:
-        return {t: tr for tr in self.transfer_nodes for t in tr.outputs}
+    def copied_bits(self, t: Tensor) -> float:
+        """Bits per firing the transfer of ``t`` moves, a halo once per target holding it; ``t`` where none moves it."""
+        tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
+        return self.moved_bits(tr, self.path_choices[tr][0]) if tr else t.size_bits()
 
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
         """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
@@ -390,23 +393,31 @@ class DecisionSpace:
 
     @cached_property
     def warmup(self) -> dict[HasIterationSpace, float]:
-        """How much longer than its interior tiles, relative to one of them, each node's first tiles along the sliding
-        windows are over the run: the lookahead a producer computes and the halo a transfer moves before a window
-        slides, once per sweep, which an inner fused loop restarts every iteration of the loops around it."""
+        """How far, in interior tiles, each node's work along the sliding windows runs ahead of its steady pace at most,
+        the fused loops nested as listed, innermost first: the lookahead a producer computes and the halo a transfer
+        moves before a window slides, each sweep of an inner loop restarting them."""
         found: dict[HasIterationSpace, float] = {}
         if not any(loop.halo for ssis in self.ssis.values() for loop in ssis):
             return found
-        splits = list(self.problem.fusion_splits.items())
-        for k, (dim, n) in enumerate(splits):
+        splits = self.problem.fusion_splits
+        rates: dict[HasIterationSpace, list] = {}
+        for k, (dim, n) in enumerate(splits.items()):
             for node, work in self.workload.get_sliding_work(dim, n).items():
-                if (extra := work[0] * len(work) / sum(work) - 1) > 0:
-                    found[node] = found.get(node, 0.0) + extra * prod(m for _, m in splits[k + 1 :])
+                rates.setdefault(node, [np.ones(m) for m in splits.values()])[k] = np.array(work) * n / sum(work)
+        for node, rate in rates.items():
+            excess = np.cumsum(reduce(np.multiply.outer, reversed(rate)).ravel() - 1).max()
+            if excess > 0:
+                found[node] = float(excess)
         return found
 
-    def runs_readers_elsewhere(self, node: ComputationNode) -> bool:
-        """Whether a computation node reading ``node``'s output runs on a core ``node`` does not."""
+    def is_waited_on(self, node: ComputationNode) -> bool:
+        """Whether a reader of ``node``'s output waits for its tiles: one on a core ``node`` does not run on, or behind
+        a transfer that takes cycles on some route."""
+        after = [tr for tr in self.workload.successors(node) if tr in self.path_choices]
         cores = set(self.core_allocation(node)[0])
-        return any(not cores.issuperset(self.core_allocation(c)[0]) for c in self._consumers(node))
+        return any(self.transfer_latency_for_path(tr, c) for tr in after for c in self.path_choices[tr]) or any(
+            not cores.issuperset(self.core_allocation(c)[0]) for c in self._consumers(node)
+        )
 
     def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
         """The computation nodes this one's output reaches, across the transfer between them."""
@@ -443,9 +454,9 @@ def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
 def communicating_pairs(
     src: Sequence[Core], dst: Sequence[Core], overlaps: Mapping[tuple[int, int], int] | None = None
 ) -> tuple[tuple[Core, Core], ...]:
-    """Which of the ``src`` cores hand to which ``dst`` cores: those whose tiles ``overlaps`` the targets' windows,
-    else codegen matches them by spatial index, the spatial part of a split running fastest, so the target at ``j``
-    is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
+    """Which ``src`` cores hand to which ``dst`` cores: those whose tiles ``overlaps`` the targets' windows, else by
+    spatial index as codegen pairs them, its contract and why overlaps only pair windowed transfers: the target at
+    ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
     if not src or not dst:
         return ()
     if overlaps:

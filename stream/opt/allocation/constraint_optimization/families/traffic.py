@@ -69,38 +69,31 @@ def _span_bytes(tr: TransferNode) -> float:
     return contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
 
 
-def _target_share(ctx: FormulationContext, tr: TransferNode) -> float:
-    """Share of the transferred tensor one target receives: its tile under the consumer's inter-core tiling,
-    as memory access estimation counts it, or on average where windows overlap. A broadcast gives every target the
-    whole tensor."""
-    tensor = tr.outputs[0]
-    space = ctx.space
-    if space.overlaps(tr):
-        return 1 / space.placement_width(tr.outputs)
-    tile = space.workload.get_tensor_of_transfer_to_single_core(tensor, tr, space.mapping, ssis=space.ssis.get(tensor))
-    return tile.size_bits() / tensor.size_bits()
+def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None) -> float:
+    """Share of the bits a transfer moves one target receives, on average over the targets of ``choice`` (its first
+    route by default): 1 for a broadcast, every target receiving the whole tensor."""
+    choice = choice or ctx.space.path_choices[tr][0]
+    moved = ctx.space.moved_bits(tr, choice)
+    return sum(ctx.space.moved_bits(tr, choice, target=t) for t in choice.targets) / moved / len(choice.targets)
 
 
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
     ports = ctx.space.accelerator.ports
     sides: list[PortShare] = []
     span = _span_bytes(tr)
-    write_share = _target_share(ctx, tr)
-    moved = ctx.space.moved_bits(tr, choice) if ctx.space.overlaps(tr) else 0
-    for cores, direction, even in (
-        (choice.sources, READ, 1.0 / len(choice.sources)),
-        (choice.targets, WRITE, write_share),
-    ):
+    moved = ctx.space.moved_bits(tr, choice)
+    broadcast = _target_share(ctx, tr, choice) == 1.0
+    for cores, direction in ((choice.sources, READ), (choice.targets, WRITE)):
         operand = transfer_operand_role(ctx, tr, read_side=direction == READ)
         for core in cores:
             side = {"source": core} if direction == READ else {"target": core}
-            share = ctx.space.moved_bits(tr, choice, **side) / moved if moved else even
+            share = ctx.space.moved_bits(tr, choice, **side) / moved
             port = ports.port_for(core, direction, operand)
             if port is None:
                 continue
             # Targets in one core_memory_sharing group receive a broadcast once, into their shared memory.
             broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
-            if direction == WRITE and write_share == 1.0 and broadcast_again:
+            if direction == WRITE and broadcast and broadcast_again:
                 continue
             sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, direction)))
     return sides

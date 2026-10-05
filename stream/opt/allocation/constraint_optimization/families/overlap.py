@@ -369,8 +369,8 @@ def _resident_fill(ctx: FormulationContext) -> None:
 
 def _warmup(ctx: FormulationContext) -> Any:
     """Cycles a sliding window's longer first tiles add, at the interior cost per element: a node's longer first and
-    shorter last tiles cancel on its own resources, so what counts is who waits elsewhere, a transfer's reader and a
-    node's readers on other cores; None where no window slides."""
+    shorter last tiles cancel on its own resources, so what counts is who waits on them, a transfer's reader and the
+    readers of a node behind a moving transfer or on other cores; None where no window slides."""
     space, model = ctx.space, ctx.model
     if not space.warmup:
         return None
@@ -380,7 +380,7 @@ def _warmup(ctx: FormulationContext) -> Any:
     ready = {n: model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name=f"ready_{n.name}") for n in cost}
     warmup = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="warmup")
     for node, start in ready.items():
-        waits = not isinstance(node, ComputationNode) or space.runs_readers_elsewhere(node)
+        waits = not isinstance(node, ComputationNode) or space.is_waited_on(node)
         delay = space.warmup.get(node, 0.0) * cost[node] if waits else 0
         for reader in (c for c in space.workload.successors(node) if c in ready):
             model.add_constr(ready[reader] >= start + delay, name=f"warmup_{node.name}_{reader.name}")
