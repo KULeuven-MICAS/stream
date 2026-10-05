@@ -69,11 +69,9 @@ class TransferAndTensorAllocator:
         problem: SteadyStateProblem,
         *,
         families: FamilySelection,
-        output_path: str = "",
         backend: str = "ORTOOLS_GSCIP",
     ):
         self.families = families
-        self.output_path = output_path
         self.space = DecisionSpace(problem)
         self.model: SolverModel = create_solver(SolverBackend[backend], "transfer_tensor_alloc")
         self.model.set_param(SolverParams.VERBOSITY, 1)

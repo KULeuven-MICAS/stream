@@ -295,8 +295,8 @@ The `check_total` field in the objective section recomputes
 extracted variable values, serving as an independent sanity check.
 
 **Code:** none; `save_slot_latency_breakdown` writes the closest report,
-`slot_latency_breakdown.yaml` (per-slot contributors, totals, slack and reuse), when the
-`allocation_artifacts` observer is on.
+`slot_latency_breakdown.yaml` (per-slot contributors, totals, slack and reuse), among the
+[allocation artifacts](outputs.md#allocation-artifacts).
 
 ## The big-M linearisation pattern
 

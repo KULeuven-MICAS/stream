@@ -3,7 +3,7 @@
 Writes one JSON with, per case, its wall time, its estimate (so a restructuring can show it changes no result)
 and every span's calls, inclusive and exclusive seconds. Prints the share of the suite's time per span name.
 
-    python scripts/benchmark/dse_runtime.py out.json [--cases 'swiglu*'] [--repeat 3] [--no-timing]
+    python scripts/benchmark/dse_runtime.py out.json [--cases 'swiglu*'] [--repeat 3] [--no-timing] [--no-artifacts]
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ SWIGLU_TILING = [
 AIE = "stream/inputs/aie/hardware/whole_array_strix.yaml"
 
 Case = Callable[[str, dict[str, Any]], MappingEstimate]
-BACKEND = {"name": "ortools_gscip"}
+SUITE: dict[str, Any] = {"backend": "ortools_gscip", "artifacts": True}
 
 
 @cache
@@ -58,7 +58,7 @@ def _workload(name: str) -> str:
 
 def _two_conv(hardware: str) -> Case:
     def run(path: str, instrumentation: dict[str, Any]) -> MappingEstimate:
-        options = SolveOptions(backend=BACKEND["name"], instrumentation=instrumentation)
+        options = SolveOptions(backend=SUITE["backend"], artifacts=SUITE["artifacts"], instrumentation=instrumentation)
         return evaluate_mapping(hardware, _workload("two_conv"), path, options=options)
 
     return run
@@ -67,7 +67,10 @@ def _two_conv(hardware: str) -> Case:
 def _swiglu(hardware: str) -> Case:
     def run(path: str, instrumentation: dict[str, Any]) -> MappingEstimate:
         options = SolveOptions(
-            backend=BACKEND["name"], stage_options={"intra_core_tiling": SWIGLU_TILING}, instrumentation=instrumentation
+            backend=SUITE["backend"],
+            artifacts=SUITE["artifacts"],
+            stage_options={"intra_core_tiling": SWIGLU_TILING},
+            instrumentation=instrumentation,
         )
         return evaluate_mapping(hardware, _workload("swiglu"), path, options=options)
 
@@ -78,7 +81,11 @@ def _aie_swiglu(path: str, instrumentation: dict[str, Any]) -> MappingEstimate:
     workload = make_swiglu_workload(256, 512, 2048, "bf16", "bf16", last_gemm_down=True)
     mapping = make_swiglu_mapping(256, 512, 2048, True, 32, 32, 64)
     options = SolveOptions(
-        backend=BACKEND["name"], nb_cols_to_use=8, stage_options={"npu": "npu2"}, instrumentation=instrumentation
+        backend=SUITE["backend"],
+        artifacts=SUITE["artifacts"],
+        nb_cols_to_use=8,
+        stage_options={"npu": "npu2"},
+        instrumentation=instrumentation,
     )
     return generate_code(AIE, workload, path, mapping, options)
 
@@ -131,9 +138,10 @@ def main() -> None:
     parser.add_argument("--cases", default="*")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--no-timing", action="store_true")
+    parser.add_argument("--no-artifacts", action="store_true")
     parser.add_argument("--backend", default="ortools_gscip")
     args = parser.parse_args()
-    BACKEND["name"] = args.backend
+    SUITE.update(backend=args.backend, artifacts=not args.no_artifacts)
     selected = {name: case for name, case in cases().items() if fnmatch.fnmatch(name, args.cases)}
     results: dict[str, list[dict[str, Any]]] = {}
     for name, case in selected.items():

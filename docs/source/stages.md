@@ -95,7 +95,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 |-------|---------|------------------|----------|----------------|-----------------|
 | `AIECodeGenerationStage` |  | `trace_size`, `trace_max_tiles`, `trace_tiles`, `trace_group`, `npu`, `group_index` |  | `allocation`, `workload`, `accelerator`, `output_path` | `module` |
 | `AcceleratorParserStage` | `accelerator` | `kernel_library` | `accelerator` |  |  |
-| `AllocationStage` | `steady_state_problem`, `output_path` | `backend`, `families`, `time_limit_s`, `solver_log`, `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
+| `AllocationStage` | `steady_state_problem`, `output_path` | `backend`, `families`, `time_limit_s`, `solver_log`, `total_mac_ops`, `artifacts` | `allocation`, `workload`, `mapping` |  |  |
 | `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |

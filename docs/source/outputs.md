@@ -27,7 +27,13 @@ print(schedule.solution.latency.total)
 
 ## Allocation artifacts
 
-With `SolveOptions(instrumentation={"allocation_artifacts": {}})`, each allocation solve also writes into `group_<index>/tetra/`: the schedule as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`, open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers), a picture of the solved steady-state workload (`steady_state_workload_final.svg`), the solver's progress and metrics (`optimization_progress.png`, `optimization_trace.yaml`, `optimization_metrics.yaml`) and where each slot's latency goes (`slot_latency_breakdown.yaml`). They are off by default, so a sweep pays nothing for them.
+Each allocation solve writes into `group_<index>/allocation/`:
+
+- `reports/` - the solver's metrics (`optimization_metrics.yaml`) and, for Gurobi, its progress (`optimization_trace.yaml`), and where each slot's latency goes (`slot_latency_breakdown.yaml`).
+- `traces/` - the schedule as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`); open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers.
+- `figures/` - the solver's progress for Gurobi (`optimization_progress.png`) and a picture of the solved steady-state workload (`steady_state_workload_final.svg`).
+
+A solve that has no solution writes the model instead, as `allocation/model.ilp`. A sweep that only needs the estimates turns the artifacts off with `SolveOptions(artifacts=False)`.
 
 ## Typed IR (for tools and agents)
 

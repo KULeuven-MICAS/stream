@@ -6,8 +6,7 @@ where the two disagree, not the absolute numbers, which are one design on one pa
 
 ## The two sides
 
-Prediction, from `outputs/<experiment>/tetra/slot_latency_breakdown.yaml` (written by the
-`allocation_artifacts` observer, `SolveOptions(instrumentation={"allocation_artifacts": {}})`):
+Prediction, from `outputs/<experiment>/allocation/reports/slot_latency_breakdown.yaml`:
 
 | | cycles |
 |---|---|

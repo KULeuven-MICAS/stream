@@ -36,25 +36,28 @@ Stream parses the hardware and workload, proposes a mapping, and runs the alloca
 
 ### What you get
 
-Everything lands under the output directory, one folder per fused group. The `tetra/` files describe the allocation solve and are written only when asked for, with `SolveOptions(instrumentation={"allocation_artifacts": {}})`:
+Everything lands under the output directory, one folder per fused group. The `allocation/` folder describes the allocation solve; `SolveOptions(artifacts=False)` leaves it out, as a sweep that only needs the estimates does:
 
 ```
 outputs/first-run/
-└── group_0/                             # one fused group of layers
-    ├── mapping.yaml                     # the generated mapping that was used
-    ├── tiled_workload.png               # the workload after inter-core tiling
-    ├── core_cost_lut.yaml               # per-node, per-core cost estimates
-    └── tetra/                           # the MILP allocation result (allocation_artifacts)
-        ├── optimization_metrics.yaml    # objective, solve time, gap, ...
-        ├── optimization_trace.yaml      # the solver's progress (Gurobi)
-        ├── optimization_progress.png
-        ├── slot_latency_breakdown.yaml  # where the latency is spent
-        ├── steady_state_trace.json      # schedule trace (open in Perfetto)
-        ├── steady_state_trace_compact.json
-        └── steady_state_workload_final.svg
+└── group_0/                                 # one fused group of layers
+    ├── mapping.yaml                         # the generated mapping that was used
+    ├── tiled_workload.svg                   # the workload after inter-core tiling
+    ├── core_cost_lut.yaml                   # per-node, per-core cost estimates
+    └── allocation/                          # the MILP allocation result
+        ├── reports/
+        │   ├── optimization_metrics.yaml    # objective, solve time, gap, model size
+        │   ├── optimization_trace.yaml      # the solver's progress (Gurobi)
+        │   └── slot_latency_breakdown.yaml  # where the latency is spent
+        ├── traces/
+        │   ├── steady_state_trace.json      # schedule trace (open in Perfetto)
+        │   └── steady_state_trace_compact.json
+        └── figures/
+            ├── optimization_progress.png    # the solver's progress (Gurobi)
+            └── steady_state_workload_final.svg
 ```
 
-The pictures are the quickest way to see what happened: `group_0/tiled_workload.png` (how the layers were split across cores) and, with the artifacts on, `group_0/tetra/steady_state_workload_final.svg` (the resulting steady-state schedule). `steady_state_trace.json` opens in [Perfetto](https://ui.perfetto.dev) for a timeline view. See [Outputs](outputs.md) for the full reference.
+The pictures are the quickest way to see what happened: `group_0/tiled_workload.svg` (how the layers were split across cores) and `group_0/allocation/figures/steady_state_workload_final.svg` (the resulting steady-state schedule). `steady_state_trace.json` opens in [Perfetto](https://ui.perfetto.dev) for a timeline view. See [Outputs](outputs.md) for the full reference.
 
 You can run the same call against any of the bundled example architectures or the swiglu workload - see the [User Guide](user-guide.md) for the input formats.
 

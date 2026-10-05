@@ -66,10 +66,10 @@ class SolveOptions:
     ``stage_options`` carries what a plugin's stages read from the context, such as the generic mapping
     generator's ``fusion_cut_points`` and ``intra_core_tiling``, or the AIE code generator's ``npu``,
     ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers to wrap the stages with, such as
-    ``timing`` or ``allocation_artifacts`` (the traces, plots and reports of each solve). ``solver_log`` prints the
-    solver's log, and ``time_limit_s`` bounds each allocation solve, after which its best incumbent is taken.
-    ``families`` are the constraint families the allocation model is built from, by name or ``{name: options}``;
-    None builds :func:`default_families`.
+    ``timing``. ``artifacts`` writes the reports, traces and figures of each allocation solve; a sweep turns them off.
+    ``solver_log`` prints the solver's log, and ``time_limit_s`` bounds each allocation solve, after which its best
+    incumbent is taken. ``families`` are the constraint families the allocation model is built from, by name or
+    ``{name: options}``; None builds :func:`default_families`.
     """
 
     backend: str = "ortools_gscip"
@@ -79,6 +79,7 @@ class SolveOptions:
     tile_search: bool = False
     time_limit_s: float = DEFAULT_TIME_LIMIT_S
     solver_log: bool = False
+    artifacts: bool = True
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
     families: Sequence[FamilySpec] | None = None
@@ -211,6 +212,7 @@ def _solve(
             tile_search=options.tile_search,
             time_limit_s=options.time_limit_s,
             solver_log=options.solver_log,
+            artifacts=options.artifacts,
             **options.stage_options,
         )
         (ctx,) = MainStage(instrument(stages, observers), ctx).run()

@@ -1,7 +1,6 @@
 import logging
 import os
 
-from stream.allocation import artifacts
 from stream.allocation.artifacts import SolveProgress, write_artifacts, write_infeasible_model
 from stream.allocation.problem import SteadyStateProblem
 from stream.allocation.schedule import SteadyStateSchedule, solved_iteration_spaces, solved_mapping
@@ -22,30 +21,26 @@ class AllocationStage(Stage):
     transfer takes -- and hand downstream the schedule it yields."""
 
     reads = ("steady_state_problem", "output_path")
-    optional_reads = ("backend", "families", "time_limit_s", "solver_log", "total_mac_ops")
+    optional_reads = ("backend", "families", "time_limit_s", "solver_log", "total_mac_ops", "artifacts")
     writes = ("allocation", "workload", "mapping")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
         self.problem: SteadyStateProblem = self.ctx.get("steady_state_problem")
-        self.output_path = os.path.join(self.ctx.get("output_path"), "tetra")
+        self.output_path = os.path.join(self.ctx.get("output_path"), "allocation")
         self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")
         self.families: FamilySelection = self.ctx.get("families") or load_families(
             self.problem.transfer_context.default_families
         )
         self.time_limit_s: float = self.ctx.get("time_limit_s", DEFAULT_TIME_LIMIT_S)
         self.solver_log: bool = self.ctx.get("solver_log", False)
+        self.artifacts: bool = self.ctx.get("artifacts", True)
 
     def run(self):
         problem = self.problem
         with span("milp_build"):
-            allocator = TransferAndTensorAllocator(
-                problem,
-                output_path=self.output_path,
-                families=self.families,
-                backend=self.backend,
-            )
-        progress = SolveProgress() if artifacts.active() else None
+            allocator = TransferAndTensorAllocator(problem, families=self.families, backend=self.backend)
+        progress = SolveProgress() if self.artifacts else None
         try:
             solution = allocator.solve(
                 tee=self.solver_log,
@@ -65,7 +60,8 @@ class AllocationStage(Stage):
                 families=self.families.specs(),
                 solution=solution,
             )
-        write_artifacts(allocator, schedule, progress)
+        if progress is not None:
+            write_artifacts(self.output_path, allocator, schedule, progress)
         self.ctx.set(allocation=schedule, workload=schedule.workload, mapping=schedule.mapping)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()

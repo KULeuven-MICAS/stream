@@ -1,15 +1,13 @@
-"""The files a solve can write beside its result -- the Perfetto traces of the schedule, the solver's progress
-and metrics, the slot latency breakdown and a picture of the solved workload. They are written only while an
-``allocation_artifacts`` observer, or :func:`artifacts`, is active, so a sweep pays nothing for them."""
+"""The files a solve writes beside its result, unless ``SolveOptions(artifacts=False)``: the solver's metrics and
+progress and the slot latency breakdown (``reports/``), the Perfetto traces of the schedule (``traces/``), and the
+solver's progress plot and a picture of the solved workload (``figures/``)."""
 
 from __future__ import annotations
 
 import logging
 import math
 import os
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
@@ -32,28 +30,10 @@ if TYPE_CHECKING:
         TransferAndTensorAllocator,
     )
     from stream.opt.solver import SolverModel
-    from stream.stages.stage import StageCallable
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE: ContextVar[bool] = ContextVar("stream_allocation_artifacts", default=False)
-
 Trace = list[dict[str, Any]]
-
-
-@contextmanager
-def artifacts() -> Iterator[None]:
-    """Write the artifacts of every allocation solved in this block."""
-    token = _ACTIVE.set(True)
-    try:
-        yield
-    finally:
-        _ACTIVE.reset(token)
-
-
-def active() -> bool:
-    """Whether the allocations solved now write their artifacts."""
-    return _ACTIVE.get()
 
 
 class SolveProgress:
@@ -133,41 +113,30 @@ class SolveProgress:
 
 
 def write_artifacts(
-    allocator: TransferAndTensorAllocator, schedule: SteadyStateSchedule, progress: SolveProgress | None
+    directory: str, allocator: TransferAndTensorAllocator, schedule: SteadyStateSchedule, progress: SolveProgress
 ) -> None:
-    """Write the artifacts of a solved allocation into the allocator's output path, if they are asked for; an
-    artifact that cannot be written is logged and left out, never failing the solve."""
-    if not _ACTIVE.get():
-        return
-    output_path = allocator.output_path
-    os.makedirs(output_path, exist_ok=True)
-    trace = progress.trace if progress is not None else []
-    with span("milp_files"):
-        _observe(
-            "optimization progress plot",
-            plot_optimization_progress,
-            trace,
-            show=False,
-            save_path=os.path.join(output_path, "optimization_progress.png"),
-        )
-        _observe(
-            "optimization trace", save_optimization_trace, trace, os.path.join(output_path, "optimization_trace.yaml")
-        )
+    """Write the artifacts of a solved allocation under ``directory``; an artifact that cannot be written is logged
+    and left out, never failing the solve."""
+    reports, traces, figures = (os.path.join(directory, kind) for kind in ("reports", "traces", "figures"))
+    for path in (reports, traces, figures):
+        os.makedirs(path, exist_ok=True)
+    with span("artifact_reports"):
+        _observe("optimization trace", save_optimization_trace, progress.trace, f"{reports}/optimization_trace.yaml")
         _observe(
             "optimization metrics",
             save_optimization_metrics,
             allocator.model,
-            trace,
-            os.path.join(output_path, "optimization_metrics.yaml"),
+            progress.trace,
+            f"{reports}/optimization_metrics.yaml",
         )
         _observe(
             "slot latency breakdown",
             _save_slot_latency_breakdown,
             allocator,
             schedule,
-            os.path.join(output_path, "slot_latency_breakdown.yaml"),
+            f"{reports}/slot_latency_breakdown.yaml",
         )
-    with span("trace_export"):
+    with span("artifact_traces"):
         latency = schedule.solution.latency
         for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
             _observe(
@@ -178,15 +147,22 @@ def write_artifacts(
                 iterations=schedule.iterations,
                 overlap=latency.overlap,
                 latency_per_iteration=latency.per_iteration,
-                output_path=output_path,
+                output_path=traces,
                 compact=compact,
                 filename=fname,
             )
-    with span("visualize"):
+    with span("artifact_figures"):
+        _observe(
+            "optimization progress plot",
+            plot_optimization_progress,
+            progress.trace,
+            show=False,
+            save_path=f"{figures}/optimization_progress.png",
+        )
         _observe(
             "solved workload",
             schedule.workload.visualize,
-            os.path.join(output_path, "steady_state_workload_final.svg"),
+            f"{figures}/steady_state_workload_final.svg",
             schedule.mapping,
             schedule.ssis,
         )
@@ -565,27 +541,7 @@ def save_optimization_trace(trace: Trace, file_path: str) -> None:
 
         entries.append(entry)
 
-    os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
     with open(file_path, "w") as f:
         yaml.dump({"trace": entries}, f, default_flow_style=False, sort_keys=False)
 
     logger.info("Optimization trace saved to %s", file_path)
-
-
-class AllocationArtifacts:
-    """The allocation_artifacts observer: every allocation solved during the run writes its artifacts
-    (see :mod:`stream.allocation.artifacts`) into ``<group output>/tetra``."""
-
-    def __init__(self, *, run_name: str) -> None:
-        self.run_name = run_name
-        self._context = artifacts()
-        self._context.__enter__()
-
-    def instrument(self, stages: list[StageCallable]) -> list[StageCallable]:
-        return stages
-
-    def finish(self) -> None:
-        self._context.__exit__(None, None, None)
-
-    def fail(self, reason: str) -> None:
-        self._context.__exit__(None, None, None)
