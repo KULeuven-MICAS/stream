@@ -84,6 +84,11 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 [project.entry-points."stream.constraints"]
 aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 
+# Pipeline observers, enabled per run by SolveOptions.instrumentation. `timing` profiles every stage and
+# the spans inside them.
+[project.entry-points."stream.instrumentation"]
+timing = "stream.profiling:TimingInstrumentation"
+
 # Optional allocation-model constraint families, selected per solve by SolveOptions.families. The
 # entry-point name is the family's `name`, its object a ConstraintFamily factory.
 [project.entry-points."stream.constraint_families"]
