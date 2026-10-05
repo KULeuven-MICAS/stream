@@ -40,7 +40,7 @@ The mapping generators (`stream.mapping_generators`) and code generation backend
 
 ## Constraint families
 
-The allocation model is built from constraint families, each a group of constraints and the quantities they define, registered in the `stream.constraint_families` entry-point group. `SolveOptions(families=...)` lists the families of a solve, by name or as `{name: options}`, the options being the family's constructor arguments. Without it a solve builds the default set, `stream.api.default_families(hardware)`: Stream's own families and those of each core namespace the accelerator has, such as `aie2`'s.
+The allocation model is built from constraint families, each a group of constraints and the quantities they define. Stream's own families are built in; another package registers its own in the `stream.constraint_families` entry-point group. `SolveOptions(families=...)` lists the families of a solve, by name or as `{name: options}`, the options being the family's constructor arguments. Without it a solve builds the default set, `stream.api.default_families(hardware)`: Stream's own families and those of each core namespace the accelerator has, such as `aie2`'s.
 
 | Family | What it constrains | Options |
 |--------|--------------------|---------|
@@ -76,7 +76,12 @@ ports = SolveOptions(families=[*default_families(hardware), "memory_ports"])
 
 A family's `build(ctx)` (and `declare`) receives a `FormulationContext`: `ctx.space`, the read-only problem and the choices derived from it (each tensor's placements, each transfer's routes and the links they use, each tensor's reuse stops and the tiles they hold); `ctx.vars`, the core decision variables (`x` places a tensor, `y` routes a transfer, `z_stop` stops a tensor's reuse, `z_single` holds its window in one buffer, `slot_latency`); `ctx.model`, the `SolverModel`; `ctx.quantities`, the `QuantityRegistry` of the quantities the families provide; and the modelling helpers families share, such as `binary_product` and `tensor_uses_core_var`. A family that creates a constraint with `ctx.add_constr(expr, name=..., resource=..., kind=..., subject=..., rule=..., bound=...)` states what it stands for: the core or link it binds, the hardware limit (`ResourceKind`) it is part of and that limit's `bound`, the tensor whose demand it carries, or the `StructuralRule` it enforces. When a model has no solution, the diagnosis maps the solver's IIS back to cores, links and causes through these tags alone. A family can also contribute to the objective: `objective(ctx)` runs once every family has built and returns `ObjectiveLevel`s; the levels of one name are summed and the solve minimizes them lexicographically, highest priority first. Stream's levels are `latency` (priority 4: the run's latency from `overlap`, the DMA peaks from `dma_channels` and the weighted off-chip traffic from `offchip_traffic`), `offchip_traffic` (3), `buffering` (2, from `object_fifo_depth`) and `route_hops` (1, from `path_choice`). A family's `report(ctx)` adds sections to the solved allocation's performance report; one that fails is logged and leaves its section None. Before any family builds, the model checks that every memory fits the tensors pinned to it under some reuse choice, whichever families a solve selects, and fails one that cannot with an `InfeasibleAllocationError`.
 
-A core namespace (a `HardwareNamespace`, registered in the `stream.namespaces` entry-point group under the namespace's name) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs. Stream's own families and its `aie2` namespace are registered in-tree; the entry-point groups are for those of other packages.
+A core namespace (a `HardwareNamespace`) contributes its families by naming them in its `families`, next to the facts the model reads of it: which cores share memory, what the toolchain reserves, and what a dispatch of several designs costs. Another package plugs into the allocation model through two entry-point groups:
+
+- `stream.constraint_families` - a family factory under the family's `name`, whose keyword arguments are its options.
+- `stream.namespaces` - a `HardwareNamespace` subclass under the core namespace it describes, built with `from_config` whenever the accelerator has a core of that namespace.
+
+Stream's own families and its `aie2` namespace are built in, so an install whose entry points are stale still has them.
 
 ### Migrating from Stream 1.x
 
@@ -93,7 +98,7 @@ Stream 2.0 replaces `ConstraintSelection` with the family list; each of its togg
 | `pipelining=PipeliningModel.SPAN` | `options={"overlap": {"model": "span"}}` |
 | `families=[...]` | the default set plus those families, `[*default_families(hardware), ...]` |
 
-The rest of the 2.0 changes an extension meets: the `stream.constraints` entry-point group is `stream.namespaces`, and `NamespaceConstraints` is `HardwareNamespace` (`AIE2Constraints`, `AIE2Namespace`), whose `add_*_constraints` hooks are families now (a namespace that still defines one is rejected with the family that replaces it); the context carries the solved `allocation` (an `Allocation`, read by `AllocationIR.from_internal`) instead of the `scheduler`; `AllocationIR` lists its `families` instead of a `constraint_selection`; and a stage declares its contract (below) instead of `REQUIRED_FIELDS`.
+The rest of the 2.0 changes an extension meets: the `stream.constraints` entry-point group is `stream.namespaces` (an entry point left in the old group is ignored, with a warning), and `NamespaceConstraints` is `HardwareNamespace` (`AIE2Constraints`, `AIE2Namespace`), whose `add_*_constraints` hooks are families now (a namespace that still defines one is rejected with the family that replaces it); the context carries the solved `allocation` (an `Allocation`, read by `AllocationIR.from_internal`) instead of the `scheduler`; `AllocationIR` lists its `families` instead of a `constraint_selection`; and a stage declares its contract (below) instead of `REQUIRED_FIELDS`.
 
 ---
 

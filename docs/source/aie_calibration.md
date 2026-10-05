@@ -6,7 +6,7 @@ where the two disagree, not the absolute numbers, which are one design on one pa
 
 ## The two sides
 
-Prediction, from `outputs/<experiment>/allocation/reports/slot_latency_breakdown.yaml`:
+Prediction, from `outputs/<experiment>/group_<i>/allocation/reports/slot_latency_breakdown.yaml`:
 
 | | cycles |
 |---|---|
