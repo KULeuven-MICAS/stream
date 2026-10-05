@@ -5,9 +5,8 @@ import tempfile
 import numpy as np
 import onnx
 import pytest
-import torch
+from numpy.lib.stride_tricks import sliding_window_view
 from onnx import TensorProto, helper
-from torch.nn.functional import conv2d, max_pool2d, pad
 from xdsl.ir.affine import AffineBinaryOpExpr
 
 from stream.parser.onnx.model import ONNXModelParser
@@ -71,6 +70,27 @@ CONVS = {
 }
 
 
+def _pair(value) -> tuple[int, int]:
+    return tuple(value) if isinstance(value, list) else (value, value)
+
+
+def _windows(x, kernel, strides, dilations, pads, fill: float = 0.0):
+    """The window each output of an (N, C, H, W) input reads, as (N, C, OH, OW, KH, KW); ``pads`` per spatial axis."""
+    (dh, dw), (sh, sw) = _pair(dilations), _pair(strides)
+    span = [(k - 1) * d + 1 for k, d in zip(kernel, (dh, dw), strict=True)]
+    padded = np.pad(x, ((0, 0), (0, 0), *pads), constant_values=fill)
+    return sliding_window_view(padded, span, axis=(2, 3))[:, :, ::sh, ::sw, ::dh, ::dw]
+
+
+def _conv2d(x, w, b, pads, strides=1, dilations=1, group=1):
+    """Direct grouped 2-D convolution with bias."""
+    win = _windows(x, w.shape[2:], strides, dilations, pads)
+    n, c, oh, ow = win.shape[:4]
+    win = win.reshape(n, group, c // group, oh, ow, *w.shape[2:])
+    out = np.einsum("ngchwij,gkcij->ngkhw", win, w.reshape(group, -1, *w.shape[1:]))
+    return out.reshape(n, -1, oh, ow) + b[:, None, None]
+
+
 def _parse_conv(shapes: dict[str, tuple[int, ...]], attrs: dict) -> ONNXModelParser:
     return _parse("Conv", shapes, {"kernel_shape": list(shapes["W"][2:]), **attrs})
 
@@ -87,10 +107,10 @@ def _parse(op: str, shapes: dict[str, tuple[int, ...]], attrs: dict) -> ONNXMode
     return parser
 
 
-@pytest.mark.parametrize(("x_shape", "w_shape", "attrs", "torch_pads"), CONVS.values(), ids=CONVS)
-def test_conv_access_maps_compute_torch_conv2d(x_shape, w_shape, attrs, torch_pads):
+@pytest.mark.parametrize(("x_shape", "w_shape", "attrs", "pads"), CONVS.values(), ids=CONVS)
+def test_conv_access_maps_compute_a_direct_conv2d(x_shape, w_shape, attrs, pads):
     """Every point of the parsed iteration space accumulates input times weight into the output its maps name, and
-    adds the bias it names once per output: that is torch's conv2d (``torch_pads`` is left, right, top, bottom)."""
+    adds the bias it names once per output: that is a direct conv2d (``pads`` is left, right, top, bottom)."""
     shapes = {"X": x_shape, "W": w_shape, "B": (w_shape[0],)}
     parser = _parse_conv(shapes, attrs)
     (conv,) = parser.workload.get_computation_nodes()
@@ -102,15 +122,17 @@ def test_conv_access_maps_compute_torch_conv2d(x_shape, w_shape, attrs, torch_pa
     found, bias = np.zeros(conv.outputs[0].shape), np.zeros(conv.outputs[0].shape)
     np.add.at(found, tuple(index[3][inside].T), x[tuple(index[0][inside].T)] * w[tuple(index[1][inside].T)])
     bias[tuple(index[3].T)] = b[tuple(index[2].T)]
-    expected = conv2d(
-        pad(torch.from_numpy(x), torch_pads),
-        torch.from_numpy(w),
-        torch.from_numpy(b),
-        stride=attrs.get("strides", 1),
-        dilation=attrs.get("dilations", 1),
-        groups=attrs.get("group", 1),
+    left, right, top, bottom = pads
+    expected = _conv2d(
+        x,
+        w,
+        b,
+        ((top, bottom), (left, right)),
+        attrs.get("strides", 1),
+        attrs.get("dilations", 1),
+        attrs.get("group", 1),
     )
-    np.testing.assert_allclose(found + bias, expected.numpy(), atol=1e-9)
+    np.testing.assert_allclose(found + bias, expected, atol=1e-9)
 
 
 def test_zigzag_prices_a_biased_conv_as_its_product():
@@ -134,9 +156,9 @@ POOLS = {
 
 
 @pytest.mark.parametrize(("x_shape", "attrs", "padding"), POOLS.values(), ids=POOLS)
-def test_maxpool_access_maps_compute_torch_max_pool2d(x_shape, attrs, padding):
+def test_maxpool_access_maps_compute_a_direct_max_pool2d(x_shape, attrs, padding):
     """Every output is the largest input its iteration points read, through the same per-axis window as a Conv's:
-    that is torch's max_pool2d."""
+    that is a direct max_pool2d."""
     parser = _parse("MaxPool", {"X": x_shape}, attrs)
     (pool,) = parser.workload.get_computation_nodes()
     x = np.random.default_rng(0).standard_normal(x_shape)
@@ -146,6 +168,6 @@ def test_maxpool_access_maps_compute_torch_max_pool2d(x_shape, attrs, padding):
     inside = ((index[0] >= 0) & (index[0] < x.shape)).all(1)
     found = np.full(pool.outputs[0].shape, -np.inf)
     np.maximum.at(found, tuple(index[1][inside].T), x[tuple(index[0][inside].T)])
-    window = attrs["kernel_shape"], attrs.get("strides", 1), padding, attrs.get("dilations", 1)
-    expected = max_pool2d(torch.from_numpy(x), *window)
-    np.testing.assert_allclose(found, expected.numpy())
+    pads = [(p, p) for p in padding]
+    windows = _windows(x, attrs["kernel_shape"], attrs.get("strides", 1), attrs.get("dilations", 1), pads, -np.inf)
+    np.testing.assert_allclose(found, windows.max(axis=(-2, -1)))
