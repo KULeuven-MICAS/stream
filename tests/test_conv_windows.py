@@ -2,7 +2,7 @@
 allocation against the oracle (bf16 elements; per core in the mapping's core order; interior iteration)."""
 
 import pytest
-from conv_windows import SCENARIOS, conv_chain, oracle, solve
+from conv_windows import SCENARIOS, conv_chain, oracle, reads, solve
 
 from stream.frontends import load_workload
 
@@ -81,23 +81,21 @@ RUNS = [
     *((s, "simba_small") for s in ("s1", "s2", "s3", "s4", "s5")),
     *((s, "fusemax") for s in ("s1", "s2", "s5", "s3_shared", "s4_shared")),
 ]
-ALL = set(SCENARIOS)
+SPLIT = {"s3", "s4", "s3_shared"}
 XFAIL = {
-    "iterations": ("step 2: the fused OY axes of both convs are one loop", {"s2", "s4", "s4_shared"}),
-    "conv1_tile": ("step 2: conv1 computes the rows of the shared OY tile", {"s2", "s4", "s4_shared", "s5"}),
-    "input_staged": ("step 3: a transfer's footprint comes from its consumer's window", ALL - {"s1"}),
-    "window": ("step 3: a transfer's footprint comes from its consumer's window", ALL - {"s1"}),
-    "sources": ("step 3: routes pair cores whose tiles overlap", ALL - {"s1"}),
-    "input_moved": ("step 4: a sliding window moves only its new rows", ALL - {"s1"}),
-    "moved": ("step 4: a sliding window moves only its new rows", ALL - {"s1"}),
+    "input_staged": ("step 3: a transfer's footprint comes from its consumer's window", SPLIT),
+    "window": ("step 3: a transfer's footprint comes from its consumer's window", set(SCENARIOS) - {"s1"}),
+    "sources": ("step 3: routes pair cores whose tiles overlap", SPLIT),
     "in_place": ("step 3: routes pair cores whose tiles overlap", {"s3"}),
-    "conv1_rows": ("step 5: first and last iterations are not modelled", ALL),
-    "input_moved_rows": ("step 5: first and last iterations are not modelled", ALL),
+    "input_moved": ("step 4: a sliding window moves only its new rows", set(SCENARIOS) - {"s1"}),
+    "moved": ("step 4: a sliding window moves only its new rows", SPLIT),
+    "conv1_rows": ("step 5: first and last iterations are not modelled", set(SCENARIOS)),
+    "input_moved_rows": ("step 5: first and last iterations are not modelled", set(SCENARIOS)),
 }
 
 
 def _case(scenario: str, hardware: str, check: str):
-    reason, failing = XFAIL[check]
+    reason, failing = XFAIL.get(check, ("", set()))
     marks = [pytest.mark.slow] if hardware == "simba_small" else []
     if scenario in failing:
         marks.append(pytest.mark.xfail(strict=True, reason=reason))
@@ -110,7 +108,6 @@ def test_oracle_matches_the_hand_derived_sizes(scenario: str, check: str):
     assert oracle(scenario)[check] == SPEC[scenario][check]
 
 
-@pytest.mark.xfail(strict=True, reason="step 2: a windowed coupling merges the fused axes")
 @pytest.mark.parametrize(
     ("stride", "sizes"), [(1, [1, 3, 3, 3, 3, 8, 16, 32, 32, 32]), (2, [1, 2, 2, 3, 3, 3, 3, 8, 16, 16, 16, 32])]
 )
@@ -119,7 +116,24 @@ def test_fused_axes_are_one_unique_dimension(stride: int, sizes: list[int]):
     assert sorted(workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]) == sizes
 
 
-@pytest.mark.parametrize(("scenario", "hardware", "check"), [_case(*run, check) for run in RUNS for check in XFAIL])
+@pytest.mark.parametrize(("boundary", "tile"), [(None, 1), ("first", 0), ("last", 3)])
+def test_a_reader_footprint_is_its_window_and_the_producer_footprint_its_tile(boundary, tile: int):
+    """An 8-row OY tile: conv2 reads the rows the oracle enumerates for that tile, conv1 writes 8 rows."""
+    workload = load_workload(conv_chain(1))
+    conv1, conv2 = workload.get_computation_nodes()
+    sizes = {z: workload.get_dimension_size(z) for z in workload.unique_dimensions()[0]}
+    sizes[workload.get_dims(conv2)[2]] = 8
+    mid = conv2.inputs[0]
+    tile_out = {(0, k, y, x) for k in range(32) for y in range(8 * tile, 8 * tile + 8) for x in range(32)}
+    rows = len({index[2] for index in reads(conv2, mid, tile_out)})
+    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv2, boundary) == (1, 16, rows, 32)
+    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, boundary=boundary) == (1, 16, 8, 32)
+    assert workload.get_tensor_shape_with_dimension_sizes(mid, sizes, conv1, boundary) == (1, 16, 8, 32)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "hardware", "check"), [_case(*run, check) for run in RUNS for check in (*CHECKS, "in_place")]
+)
 def test_allocation_matches_the_oracle(scenario: str, hardware: str, check: str):
     found = solve(scenario, hardware).get(check, NotImplementedError(check))
     if isinstance(found, Exception):

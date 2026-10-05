@@ -196,7 +196,7 @@ class _DimResolver:
     def __init__(self, workload: Workload):
         self._global_idxs = workload.global_idxs
         _, self._expressions = workload.unique_dimensions()
-        self._ranges = workload.get_dimension_sizes()
+        self._size = workload.get_dimension_size
 
     def dims(self, node: HasIterationSpace) -> list[LayerDim]:
         span = self._global_idxs[node]
@@ -204,7 +204,7 @@ class _DimResolver:
 
     def size(self, dim: LayerDim) -> int | None:
         try:
-            return self._ranges[self._expressions.index(dim)]
+            return self._size(dim)
         except Exception:  # noqa: BLE001 -- unknown sizes render blank, exactly as get_dimension_size
             return None
 

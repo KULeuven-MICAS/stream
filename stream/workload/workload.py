@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from functools import cached_property
 from itertools import combinations
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import networkx as nx
 import numpy as np
@@ -13,6 +13,7 @@ from zigzag.utils import DiGraphWrapper
 
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload._svg import write_svg as _write_svg
+from stream.workload.affine_access import map_dim_positions
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.iterator_type import is_state_operand, sequential_dims
 from stream.workload.node import (
@@ -141,29 +142,41 @@ class Workload(DiGraphWrapper[Node]):
         )
 
     def _is_identity_relation(self, relation: AffineExpr) -> bool:
-        """Whether a dimension relation merges two dims that are the *same* iteration axis.
-
-        A relation is kept for the global dedup only when it has the clean form ``d_a - d_b (+ const)``
-        -- exactly two dim terms with coefficients ``+1`` and ``-1`` (a constant padding offset is
-        allowed). That is a genuine identity: the producer axis and the consumer axis are one and the
-        same, so they collapse to a single ``LayerDim``.
-
-        Windowed / strided couplings -- a conv or pool input index ``2*ox + fx``, which yields a
-        coefficient other than ``+/-1`` or more than two dim terms -- are cross-node *dependencies*,
-        not identities. Folding them into the global equality system is what forced output-spatial
-        dims to become compound (untileable) expressions. They are excluded here so every node keeps
-        pure, tileable iteration dims; the exact producer region a consumer tile needs (the halo) is
-        derived on demand from the affine maps via ``compose_dependency``, not baked into this basis.
-        """
+        """Whether a dimension relation ``d_a - d_b (+ const)`` merges two dims that are the same iteration axis."""
         row = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (relation,))).A[0]
         return sorted(int(c) for c in row if c != 0) == [-1, 1]
 
+    def _coupling(
+        self, consumer: HasIterationSpace, produced: AffineExpr, read: AffineExpr, remainders: list[int]
+    ) -> AffineExpr | None:
+        """The relation one producer->consumer axis adds: the identity ``produced - read``, or for a windowed read
+        ``s*d + windows + c`` of a producer dim, ``produced - s*d - r`` with ``r`` a new remainder of size ``s``."""
+        if self._is_identity_relation(relation := produced - read):
+            return relation
+        rows = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (produced, read)))
+        outputs = {
+            self.global_idxs[consumer].start + d
+            for t in consumer.outputs
+            for d in map_dim_positions(consumer.get_mapping(t))
+        }
+        indexed = [int(d) for d in np.flatnonzero(rows.A[1]) if d in outputs]
+        if sorted(rows.A[0][rows.A[0] != 0]) != [1] or rows.b[0] or len(indexed) != 1 or rows.A[1][indexed[0]] < 1:
+            return None
+        stride = int(rows.A[1][indexed[0]])
+        relation = AffineDimExpr(int(np.flatnonzero(rows.A[0])[0])) - AffineDimExpr(indexed[0]) * stride
+        if stride == 1:
+            return relation
+        remainders.append(stride)
+        return relation - AffineDimExpr(self.num_dims + len(remainders) - 1)
+
     def dimension_relations(self) -> tuple[AffineExpr, ...]:
-        return self._dimension_relations
+        return self._couplings[0]
 
     @cached_property
-    def _dimension_relations(self) -> tuple[AffineExpr, ...]:
-        result = []
+    def _couplings(self) -> tuple[tuple[AffineExpr, ...], tuple[int, ...]]:
+        """The dimension relations, and the size of each remainder dim they add as a column after the node dims."""
+        result: list[AffineExpr] = []
+        remainders: list[int] = []
         # Relations between shared intermediate tensors:
         for src, dst in self.edges:
             if isinstance(src, HasIterationSpace) and isinstance(dst, HasIterationSpace):
@@ -174,9 +187,7 @@ class Workload(DiGraphWrapper[Node]):
                 mapping_out = self.global_mapping(src, src.get_mapping(output))
                 mapping_in = self.global_mapping(dst, dst.get_mapping(output))
                 for expr_out, expr_in in zip(mapping_out.results, mapping_in.results, strict=True):
-                    # expr_out == expr_in <=> expr_out - expr_in == 0; keep only identity merges.
-                    relation = expr_out - expr_in
-                    if self._is_identity_relation(relation):
+                    if (relation := self._coupling(dst, expr_out, expr_in, remainders)) is not None:
                         result.append(relation)
         # Relations between shared inputs:
         for node in self.nodes:
@@ -193,7 +204,7 @@ class Workload(DiGraphWrapper[Node]):
                             a, b, expr_a, expr_b
                         ):
                             result.append(relation)
-        return tuple(result)
+        return tuple(result), tuple(remainders)
 
     def _both_parallel_outputs(
         self, a: "HasIterationSpace", b: "HasIterationSpace", expr_a: AffineExpr, expr_b: AffineExpr
@@ -389,6 +400,11 @@ class Workload(DiGraphWrapper[Node]):
                         group_nodes[consumer_group].insert(0, bridge_in)
 
     def get_dimension_sizes(self) -> tuple[int, ...]:
+        """The extent of every global dimension slot, then of every remainder dim."""
+        return self._dimension_sizes
+
+    @cached_property
+    def _dimension_sizes(self) -> tuple[int, ...]:
         result_to_shape: list[tuple[AffineExpr, int]] = []
         for node in self.get_iteration_space_nodes():
             for tensor, mapping in zip(node.tensors, node.operand_mapping, strict=True):
@@ -441,7 +457,7 @@ class Workload(DiGraphWrapper[Node]):
             f"Could not determine sizes for all {self.num_dims} dims: "
             f"missing {sorted(set(range(self.num_dims)) - set(dim_to_size.keys()))}"
         )
-        return tuple(dim_to_size[i] for i in range(self.num_dims))
+        return (*(dim_to_size[i] for i in range(self.num_dims)), *self._couplings[1])
 
     def get_dims(self, node: HasIterationSpace) -> list[LayerDim]:
         global_idxs = self.global_idxs
@@ -452,9 +468,10 @@ class Workload(DiGraphWrapper[Node]):
         return dims
 
     def get_dimension_size(self, dim: LayerDim) -> int:
+        """The extent of ``dim`` at its own slot: for a unique dim its free column, the last slot it is the value of."""
         _, expressions = self.unique_dimensions()
         dim_ranges = self.get_dimension_sizes()
-        idx = expressions.index(dim)
+        idx = len(expressions) - 1 - expressions[::-1].index(dim)
         return dim_ranges[idx]
 
     def unique_dimensions(self) -> tuple[tuple[LayerDim, ...], tuple[AffineExpr, ...]]:
@@ -463,7 +480,7 @@ class Workload(DiGraphWrapper[Node]):
 
     @cached_property
     def _unique_dimensions(self) -> tuple[tuple[LayerDim, ...], tuple[AffineExpr, ...]]:
-        relations = AffineMap(self.num_dims, 0, self.dimension_relations())
+        relations = AffineMap(self.num_dims + len(self._couplings[1]), 0, self.dimension_relations())
         transform = AffineTransform.from_affine_map(relations)
 
         A_sp = sp.Matrix(transform.A)
@@ -519,32 +536,40 @@ class Workload(DiGraphWrapper[Node]):
         return tuple(converted_tiling)
 
     def get_tensor_shape_with_dimension_sizes(
-        self, tensor: Tensor, dimension_sizes: dict[LayerDim, int]
+        self,
+        tensor: Tensor,
+        dimension_sizes: dict[LayerDim, int],
+        accessor: HasIterationSpace | None = None,
+        boundary: Literal["first", "last"] | None = None,
     ) -> tuple[int, ...]:
+        """The extent per axis of what ``accessor`` touches of ``tensor`` (by default its producer, else the union of
+        its readers) when each unique dim spans ``dimension_sizes``: an interior tile, whose window is not clipped
+        but is at most the tensor, or the ``boundary`` tile at the start or end of every dim, clipped to it."""
         unique_dims, dim_values = self.unique_dimensions()
-        # The size of each unique dim z0..zN
-        z_sizes = [dimension_sizes[z] for z in unique_dims]
-        # This is the logical tensor domain we want to clip to.
-        # If your Tensor already knows its shape, use it.
-        logical_shape = tensor.shape  # type: ignore[attr-defined]
+        sizes = [dimension_sizes[z] for z in unique_dims]
+        origin = [0] * len(sizes)
+        last = boundary == "last"
+        start = [self.get_dimension_size(z) - n for z, n in zip(unique_dims, sizes, strict=True)] if last else origin
 
-        def extents_for(node: HasIterationSpace) -> list[int]:
-            global_mapping = self.global_mapping(node, node.get_mapping(tensor))
-            out: list[int] = []
-            for axis, idx_expr in enumerate(global_mapping.results):
-                idx_expr_in_z = idx_expr.replace_dims_and_symbols(dim_values, ())
-                amin, amax = affine_bounds(idx_expr_in_z, z_sizes)
-                # Clip to valid tensor index range [0, logical_shape[axis]-1]
-                lo = max(amin, 0)
-                hi = min(amax, logical_shape[axis] - 1)
-                out.append(int(max(0, hi - lo + 1)))
-            return out
+        def extents(node: HasIterationSpace) -> list[int]:
+            shape: list[int] = []
+            for expr, size in zip(
+                self.global_mapping(node, node.get_mapping(tensor)).results, tensor.shape, strict=True
+            ):
+                index = expr.replace_dims_and_symbols(dim_values, ())
+                low, high = affine_bounds(index, sizes)
+                shift = int(index.eval(start, [])) - int(index.eval(origin, []))
+                clipped = min(high + shift, size - 1) - max(low + shift, 0) + 1
+                shape.append(min(high - low + 1, size) if boundary is None else max(0, clipped))
+            return shape
 
-        # A tensor several nodes access can have a different footprint per accessor; take the largest.
-        shapes = [extents_for(n) for n in self.get_iteration_space_nodes() if tensor in n.tensors]
-        return tuple(max(axis_extents) for axis_extents in zip(*shapes, strict=True))
+        readers = [n for n in self.get_iteration_space_nodes() if tensor in n.tensors]
+        nodes = [accessor] if accessor else [n for n in readers if tensor in n.outputs] or readers
+        return tuple(max(axis) for axis in zip(*map(extents, nodes), strict=True))
 
-    def get_tensor_shape_with_tiling(self, tensor: Tensor, tiling: InterCoreTiling) -> tuple[int, ...]:
+    def get_tensor_shape_with_tiling(
+        self, tensor: Tensor, tiling: InterCoreTiling, accessor: HasIterationSpace | None = None
+    ) -> tuple[int, ...]:
         unique_dims, _ = self.unique_dimensions()
         dim_sizes = {}
         for dim in unique_dims:
@@ -554,7 +579,7 @@ class Workload(DiGraphWrapper[Node]):
             else:
                 dim_size = self.get_dimension_size(dim)
             dim_sizes[dim] = dim_size
-        new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes)
+        new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes, accessor)
         return new_shape
 
     def get_tensor_single_core(self, tensor: Tensor, node: HasOutputs, mapping: "Mapping") -> Tensor:
@@ -571,7 +596,7 @@ class Workload(DiGraphWrapper[Node]):
         tiling = tilings[0]
         if tiling == tuple():
             return tensor
-        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling)
+        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling, cast(HasIterationSpace, node))
         new_subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
             source_type=tensor.subview.source.type,
@@ -591,16 +616,17 @@ class Workload(DiGraphWrapper[Node]):
     ) -> Tensor:
         succ_idx = transfer.outputs.index(tensor)
         succ = list(self.successors(transfer))[succ_idx]
+        accessor = None
         if isinstance(succ, OutEdge):
             tiling = tuple()
         elif isinstance(succ, TransferNode):
             # Current transfer's tiling determines the shape
             tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
         elif isinstance(succ, ComputationNode):
-            tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
+            tiling, accessor = self.get_unique_dims_inter_core_tiling(succ, mapping), succ
         else:
             raise TypeError(f"Unexpected successor type {type(succ)} for transfer node {transfer.name}")
-        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling)
+        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling, accessor)
         new_subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
             source_type=tensor.subview.source.type,
@@ -747,7 +773,8 @@ class Workload(DiGraphWrapper[Node]):
         return tuple(relevant_dims)
 
     def strides_for_tensor(self, tensor: Tensor) -> dict[LayerDim, tuple[int, ...]]:
-        unique_dims, all_dims = self.unique_dimensions()
+        unique_dims, dim_values = self.unique_dimensions()
+        all_dims = dim_values[: self.num_dims]
         node = next(iter(n for n in self.get_iteration_space_nodes() if tensor in n.tensors))
         mapping = node.get_mapping(tensor)
         global_mapping = self.global_mapping(node, mapping)
@@ -1029,22 +1056,9 @@ class Workload(DiGraphWrapper[Node]):
         - Tensor information including shapes and strides
         """
         unique_dims, dim_values = self.unique_dimensions()
-        dim_sizes = self.get_dimension_sizes()
-
-        # Build unique dimensions info. `dim_sizes` is indexed by *global loop slot* (0..num_dims-1),
-        # while `unique_dims` are the free variables z0..zk -- a unique dim z_i does NOT live at global
-        # slot i. Its size is the size of the loop slot that *is* that free variable, i.e. the slot j
-        # where dim_values[j] == z_i (that slot always exists: it is the free variable's own column).
-        # This keeps unique_dimensions consistent with each node's per-dimension sizes.
-        value_strs = [str(dv) for dv in dim_values]
-        unique_dims_info = {}
-        for i, dim in enumerate(unique_dims):
-            key = str(dim)
-            slot = value_strs.index(key) if key in value_strs else None
-            unique_dims_info[key] = {
-                "index": i,
-                "size": dim_sizes[slot] if slot is not None and slot < len(dim_sizes) else None,
-            }
+        unique_dims_info = {
+            str(dim): {"index": i, "size": self.get_dimension_size(dim)} for i, dim in enumerate(unique_dims)
+        }
 
         # Build nodes info
         nodes_info = [self._node_ir(node) for node in self.dataflow_sort()]

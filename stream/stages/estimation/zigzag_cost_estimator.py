@@ -120,7 +120,7 @@ class ZigZagCostEstimator:
         operand_names = ["O"] + self.input_operand_names[: len(tensors) - 1]
         equation_str = ""
         for tensor, operand_name in zip(tensors, operand_names, strict=True):
-            tensor_shape = self.workload.get_tensor_shape_with_dimension_sizes(tensor, per_core_dim_sizes)
+            tensor_shape = self.workload.get_tensor_shape_with_dimension_sizes(tensor, per_core_dim_sizes, node)
             mapping = node.get_mapping(tensor)
             operand_dims: list[ZigZagLayerDim] = []
             for i, expr in enumerate(mapping.results):
