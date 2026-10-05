@@ -8,13 +8,11 @@ logger = logging.getLogger(__name__)
 
 
 class SteadyStateLoweringStage(Stage):
-    """Lower the fused group to the steady-state problem its allocation solves.
+    """Lower the fused group to the steady-state problem its allocation solves."""
 
-    Reads: workload, accelerator, mapping, cost_lut, fusion_splits, nb_cols_to_use
-    Writes: steady_state_problem
-    """
-
-    REQUIRED_FIELDS = ("workload", "accelerator", "mapping", "cost_lut", "fusion_splits")
+    reads = ("workload", "accelerator", "mapping", "cost_lut", "fusion_splits")
+    optional_reads = ("nb_cols_to_use",)
+    writes = ("steady_state_problem",)
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)

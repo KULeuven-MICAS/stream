@@ -12,10 +12,11 @@ from stream.workload.workload import Workload
 
 
 class StructuralDedupStage(Stage):
-    REQUIRED_FIELDS = ("workload",)
+    reads = ("workload",)
+    writes = ("block_classes",)
 
     def run(self) -> Generator[StageContext]:
-        workload: Workload = self.ctx.require_value("workload", self.__class__.__name__)
+        workload: Workload = self.ctx.get("workload")
         block_class_id: dict[str, int] = {}
         for class_id, block in enumerate(find_repeated_blocks(workload)):
             for node in block.nodes:

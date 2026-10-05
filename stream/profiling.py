@@ -128,6 +128,7 @@ def timed(stage_callable: StageCallable) -> StageCallable:
         return _TimedStage(stage_callable, list_of_callables, ctx)
 
     build.__name__ = getattr(stage_callable, "__name__", "stage")
+    build.__wrapped__ = stage_callable  # type: ignore[attr-defined]
     return build  # type: ignore[return-value]
 
 

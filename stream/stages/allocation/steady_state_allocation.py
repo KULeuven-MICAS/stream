@@ -19,13 +19,11 @@ DEFAULT_TIME_LIMIT_S = 300
 
 class AllocationStage(Stage):
     """Solve the allocation of the steady-state problem -- where each tensor lives and which route each
-    transfer takes -- and hand downstream the schedule it yields.
+    transfer takes -- and hand downstream the schedule it yields."""
 
-    Reads: steady_state_problem, output_path, backend, families, total_mac_ops, time_limit_s, solver_log
-    Writes: allocation, workload, mapping
-    """
-
-    REQUIRED_FIELDS = ("steady_state_problem", "output_path")
+    reads = ("steady_state_problem", "output_path")
+    optional_reads = ("backend", "families", "time_limit_s", "solver_log", "total_mac_ops")
+    writes = ("allocation", "workload", "mapping")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)

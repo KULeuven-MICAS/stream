@@ -27,21 +27,28 @@ def _compute_columns(schedule: "SteadyStateSchedule") -> tuple[int, ...]:
 
 
 class FusionGroupIterationStage(Stage):
-    """Iterate over fusion groups, running the inner pipeline once per group on its own workload and mapping.
+    """Iterate over fusion groups, running the inner pipeline once per group on its own workload and mapping."""
 
-    Reads: sub_workloads, sub_mappings, output_path
-    Writes: total_latency (float), group_latencies (dict), group_cycles (dict), group_wall_times (dict)
-    """
-
-    REQUIRED_FIELDS = ("accelerator", "workload", "output_path", "sub_workloads", "sub_mappings")
+    reads = ("accelerator", "output_path", "sub_workloads", "sub_mappings")
+    optional_reads = ("memory_accesses",)
+    writes = ("workload", "mapping", "output_path", "group_index")
+    result_reads = ("allocation",)
+    result_writes = (
+        "total_latency",
+        "group_latencies",
+        "group_columns",
+        "group_cycles",
+        "group_wall_times",
+        "group_allocations",
+        "group_memory_accesses",
+    )
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
-        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
-        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
-        self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
-        self.sub_workloads = self.ctx.require_value("sub_workloads", self.__class__.__name__)
-        self.sub_mappings = self.ctx.require_value("sub_mappings", self.__class__.__name__)
+        self.accelerator = self.ctx.get("accelerator")
+        self.output_path = self.ctx.get("output_path")
+        self.sub_workloads = self.ctx.get("sub_workloads")
+        self.sub_mappings = self.ctx.get("sub_mappings")
 
     def run(self):  # noqa: PLR0915
         sub_workloads = self.sub_workloads
@@ -89,8 +96,8 @@ class FusionGroupIterationStage(Stage):
                 group_allocations[i] = None
             # Capture the memory-access breakdown (per core, per tensor, off-chip vs on-chip) so the
             # exploration result can show where the traffic goes -- the memory-wall view.
+            mem_accesses = ctx.get("memory_accesses")
             try:
-                mem_accesses = ctx.get("memory_accesses")
                 offchip_id = getattr(self.accelerator, "offchip_core_id", None)
                 group_memory_accesses[i] = mem_accesses.to_ir(offchip_id) if mem_accesses is not None else None
             except Exception as exc:  # noqa: BLE001 -- observability must never fail the solve

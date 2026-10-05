@@ -48,7 +48,9 @@ def state_tensor(node: ComputationNode, state, positions: dict[str, int]) -> tup
 class KernelStateStage(Stage):
     """Add each node's kernel-carried state to it, before anything reads the iteration space."""
 
-    REQUIRED_FIELDS = ("workload", "mapping")
+    reads = ("workload", "mapping")
+    optional_reads = ("placement_alternatives", "placement_reserves")
+    writes = ("workload", "mapping", "placement_alternatives", "placement_reserves")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
@@ -79,7 +81,7 @@ class KernelStateStage(Stage):
             workload = Workload(rebuilt.values())
             self.ctx.set(workload=workload, mapping=self.mapping.with_updated_workload(workload, self.workload))
             for field in ("placement_alternatives", "placement_reserves"):
-                if shapes := self.ctx.data.get(field):
+                if shapes := self.ctx.get(field):
                     self.ctx.set(**{field: [s.with_updated_workload(workload, self.workload) for s in shapes]})
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()

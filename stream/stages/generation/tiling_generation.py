@@ -25,7 +25,8 @@ class TilingGenerationStage(Stage):
     TODO: Add support for multiple layer stacks. Curently it assumes all layers are fused together.
     """
 
-    REQUIRED_FIELDS = ("workload", "mapping", "output_path")
+    reads = ("workload", "mapping", "output_path")
+    writes = ("workload", "mapping", "fusion_splits", "total_mac_ops")
 
     def __init__(
         self,

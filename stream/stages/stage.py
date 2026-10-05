@@ -1,11 +1,37 @@
+import functools
+import inspect
 from abc import ABCMeta, abstractmethod
-from typing import Protocol, runtime_checkable
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from stream.stages.context import StageContext
+from stream.stages.context import StageContext, StageContractError, running
 
 
 class Stage(metaclass=ABCMeta):
-    REQUIRED_FIELDS: tuple[str, ...] = ()
+    """A step of a pipeline, which runs the stages after it and yields what they yield.
+
+    Its contract names the context fields it touches: it needs its ``reads`` and may use its ``optional_reads``,
+    sets its ``writes`` before the stages after it run, and reads its ``result_reads`` and sets its ``result_writes``
+    on the context those stages yield. :class:`MainStage` checks a pipeline's contracts before it runs, and while a
+    stage runs the context rejects any field its contract leaves out.
+    """
+
+    reads: ClassVar[tuple[str, ...]] = ()
+    optional_reads: ClassVar[tuple[str, ...]] = ()
+    writes: ClassVar[tuple[str, ...]] = ()
+    result_reads: ClassVar[tuple[str, ...]] = ()
+    result_writes: ClassVar[tuple[str, ...]] = ()
+    readable: ClassVar[frozenset[str]] = frozenset()
+    writable: ClassVar[frozenset[str]] = frozenset()
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.writable = frozenset((*cls.writes, *cls.result_writes))
+        cls.readable = frozenset((*cls.reads, *cls.optional_reads, *cls.result_reads)) | cls.writable
+        if "__init__" in cls.__dict__:
+            cls.__init__ = _in_stage(cls.__init__)
+        if "run" in cls.__dict__:
+            cls.run = _run_in_stage(cls.run)
 
     def __init__(self, list_of_callables: list["StageCallable"], ctx: StageContext):
         """
@@ -23,8 +49,8 @@ class Stage(metaclass=ABCMeta):
                 "List of callables empty on a non leaf runnable, so nothing can be generated. "
                 "Final callable in list_of_callables must return Stage instances that have is_leaf() == True"
             )
-        if self.REQUIRED_FIELDS:
-            self.ctx.require_fields(self.REQUIRED_FIELDS, self.__class__.__name__)
+        if self.reads and (missing := [f for f in self.reads if ctx.data.get(f) is None]):
+            raise StageContractError(f"{type(self).__name__} reads {missing}, which the context does not hold")
 
     def __iter__(self):
         return self.run()
@@ -37,7 +63,52 @@ class Stage(metaclass=ABCMeta):
         return False
 
     @abstractmethod
-    def run(self) -> StageContext: ...
+    def run(self) -> Iterator[StageContext]: ...
+
+
+def _in_stage(init: Callable[..., None]) -> Callable[..., None]:
+    @functools.wraps(init)
+    def checked(self: Stage, *args: Any, **kwargs: Any) -> None:
+        with running(type(self)):
+            init(self, *args, **kwargs)
+
+    return checked
+
+
+def _run_in_stage(run: Callable[[Stage], Iterator[StageContext]]) -> Callable[[Stage], Iterator[StageContext]]:
+    @functools.wraps(run)
+    def checked(self: Stage) -> Iterator[StageContext]:
+        results = run(self)
+        while True:
+            with running(type(self)):
+                try:
+                    result = next(results)
+                except StopIteration:
+                    return
+            yield result
+
+    return checked
+
+
+def check_contracts(stages: Sequence["StageCallable"], fields: Iterable[str]) -> set[str]:
+    """The fields a context holding ``fields`` holds after ``stages`` run, each stage running the ones after it;
+    raises a :class:`StageContractError` naming the stage that reads a field neither the context nor a stage
+    before it writes."""
+    available = set(fields)
+    if not stages:
+        return available
+    stage = inspect.unwrap(stages[0])
+    if not (isinstance(stage, type) and issubclass(stage, Stage)):
+        raise StageContractError(f"{stage!r} is not a Stage, so it declares no contract")
+    _require(stage, stage.reads, available)
+    after = check_contracts(stages[1:], available | set(stage.writes))
+    _require(stage, stage.result_reads, after)
+    return after | set(stage.result_writes)
+
+
+def _require(stage: type[Stage], reads: tuple[str, ...], available: set[str]) -> None:
+    if missing := [field for field in reads if field not in available]:
+        raise StageContractError(f"{stage.__name__} reads {missing}, which neither the context nor a stage writes")
 
 
 @runtime_checkable
@@ -51,6 +122,7 @@ class MainStage:
     """
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
+        check_contracts(list_of_callables, ctx.data)
         self.ctx = ctx
         self.list_of_callables = list_of_callables
 

@@ -20,7 +20,8 @@ class StageInstrumentation(Protocol):
     """Wraps a stage list to observe a run, and is told how the run ended."""
 
     def instrument(self, stages: list[StageCallable]) -> list[StageCallable]:
-        """Return the stage list to run -- typically the original with observers interleaved."""
+        """Return the stage list to run -- typically the original with observers interleaved. A stage wrapped in
+        another callable names it as ``__wrapped__``, so the pipeline can check the wrapped stage's contract."""
         ...
 
     def finish(self) -> None:

@@ -8,8 +8,8 @@ The framework lives in `stream/stages/`.
 
 ## Execution model
 
-- **`Stage`** - the base unit of work. A **`LeafStage`** does work and yields results; a **`MainStage`** owns an ordered list of sub-stages and runs them as a pipeline.
-- **`StageContext`** (`stream/stages/context.py`) - the shared, mutable state threaded through the run. Inputs (hardware/workload/mapping paths, backend, output path) go in; results (`total_latency`, `group_latencies`, `allocation`, `workload`, `accelerator`, …) come out. You read results with `ctx.get("…")`.
+- **`Stage`** - the base unit of work. Each stage runs the stages after it in its `list_of_callables` and yields what they yield; a **`LeafStage`** ends the list. A **`MainStage`** takes the ordered list and a context and runs the pipeline.
+- **`StageContext`** (`stream/stages/context.py`) - the fields the stages hand each other. Inputs (hardware, workload, mapping path, backend, output path) go in; results (`group_cycles`, `group_latencies`, `allocation`, `workload`, `accelerator`, ...) come out. You read results with `ctx.get("...")`.
 
 The public API functions in `stream/api.py` assemble the right stage list for you - you normally don't build a `MainStage` by hand.
 
@@ -80,18 +80,57 @@ A core namespace (a `NamespaceConstraints` in the `stream.constraints` group) co
 
 ---
 
+## Stage contracts
+
+A stage declares the context fields it touches, as tuples of field names on the class:
+
+- `reads` - the fields it needs when it starts; each must be in the context it is given or written by a stage before it, and not None.
+- `optional_reads` - the fields it reads when they are there, such as the options a plugin's stages take through `SolveOptions(stage_options=...)`.
+- `writes` - the fields it sets before the stages after it run.
+- `result_reads`, `result_writes` - the fields it reads and sets on the context the stages after it yield, as `FusionGroupIterationStage` does with each group's `allocation`.
+
+`MainStage` checks a pipeline's contracts before it runs anything: following the list, and through the stages a stage runs after it (the inner pipelines of `FusionGroupIterationStage` and `TileSearchStage` are the rest of the list), each read must be in the initial context or in the writes of a stage before it, and each result read in what the stages after it write. A pipeline that breaks the rule fails with a `StageContractError` naming the stage and the field. While a stage runs, the context lets it read only the fields its contract names and write only its writes, raising a `StageContractError` otherwise; outside a stage, as when a caller reads the result, every field is open. `ctx.data` is the raw store, for a stage that snapshots and restores the whole context, as `TileSearchStage` does between candidates.
+
+| Stage | `reads` | `optional_reads` | `writes` | `result_reads` | `result_writes` |
+|-------|---------|------------------|----------|----------------|-----------------|
+| `AIECodeGenerationStage` |  | `trace_size`, `trace_max_tiles`, `trace_tiles`, `trace_group`, `npu`, `group_index` |  | `allocation`, `workload`, `accelerator`, `output_path` | `module` |
+| `AcceleratorParserStage` | `accelerator` | `kernel_library` | `accelerator` |  |  |
+| `AllocationStage` | `steady_state_problem`, `output_path` | `backend`, `families`, `time_limit_s`, `solver_log`, `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
+| `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
+| `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
+| `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |
+| `FusionAnalysisStage` | `workload` |  | `fusion_edges` |  |  |
+| `FusionGroupIterationStage` | `accelerator`, `output_path`, `sub_workloads`, `sub_mappings` | `memory_accesses` | `workload`, `mapping`, `output_path`, `group_index` | `allocation` | `total_latency`, `group_latencies`, `group_columns`, `group_cycles`, `group_wall_times`, `group_allocations`, `group_memory_accesses` |
+| `FusionProposalStage` | `workload` | `fusion_capacity_elements` | `proposed_fusion_regions` |  |  |
+| `GenericMappingGenerationStage` | `accelerator`, `workload`, `output_path` | `fusion_cut_points`, `intra_core_tiling` | `sub_workloads`, `sub_mappings` |  |  |
+| `KernelStateStage` | `workload`, `mapping` | `placement_alternatives`, `placement_reserves` | `workload`, `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
+| `LeafStage` |  |  |  |  |  |
+| `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |
+| `ONNXModelParserStage` | `workload_path`, `output_path` |  | `onnx_model`, `workload` |  |  |
+| `PlacementGenerationStage` | `workload`, `mapping`, `accelerator` |  | `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
+| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits` | `nb_cols_to_use` | `steady_state_problem` |  |  |
+| `StructuralDedupStage` | `workload` |  | `block_classes` |  |  |
+| `TileSearchStage` | `workload`, `mapping`, `output_path` | `tile_search` | `mapping`, `output_path`, `placement_alternatives`, `placement_reserves` | `allocation` | `output_path` |
+| `TilingGenerationStage` | `workload`, `mapping`, `output_path` |  | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |
+
+A test checks this table against the stages' declarations. Constraint families follow the same rule one level down: a family declares the quantities it `requires` and `provides`, and the model builder orders and checks them (see [Constraint families](#constraint-families)).
+
+---
+
 ## Writing a custom stage
 
-To add behaviour, subclass `Stage` (or `LeafStage`), accept the downstream stages as your sub-stage list, and yield `(result, info)` tuples as you iterate them:
+Subclass `Stage`, declare its contract, and run the stages after it:
 
 ```python
-from stream.stages.stage import LeafStage
+from stream.stages.stage import Stage
 
-class MyStage(LeafStage):
+class LayerCountStage(Stage):
+    reads = ("workload",)
+    writes = ("layer_count",)
+
     def run(self):
-        for result, info in self.sub_stage.run():
-            # transform / measure / filter here
-            yield result, info
+        self.ctx.set(layer_count=len(self.ctx.get("workload").get_computation_nodes()))
+        yield from self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run()
 ```
 
-Insert your stage at the right position in the list passed to `MainStage`. If your stage reduces (keeps only the best result), `yield` once **after** the loop rather than inside it.
+Insert it at the right position in the list passed to `MainStage`. A stage that reduces (keeps only the best of several results) yields once **after** its loop rather than inside it. Out-of-tree stages, such as those a mapping generator's `stages()` or a code generation backend's `stage()` returns, declare their contracts the same way, and an observer that wraps a stage in another callable names it as the wrapper's `__wrapped__`.
