@@ -22,8 +22,8 @@ def resource_key(res: Core | CommunicationLink | tuple[CommunicationLink, ...] |
     return str(res)
 
 
-def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
-    """Cycles one firing of this transfer costs on this path.
+def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan, bits: int | None = None) -> int:
+    """Cycles one firing of this transfer costs on this path, moving its tensor or ``bits``.
 
     The bytes over the narrowest link, spread over the chains that carry them: sources and
     targets that pair up one to one take a slice each over disjoint chains and move at once,
@@ -35,7 +35,7 @@ def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> 
     assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
     tensor = tr.inputs[0]
     chains = len(path.targets) if 1 < len(path.sources) == len(path.targets) else 1
-    return ceil(tensor.size_bits() / (min_bw * chains))
+    return ceil((tensor.size_bits() if bits is None else bits) / (min_bw * chains))
 
 
 def get_active_transfer_latency_for_path(tr: TransferNode, choice: MulticastPathPlan, reuse_factor, ssis) -> int:

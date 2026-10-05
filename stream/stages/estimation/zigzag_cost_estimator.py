@@ -19,10 +19,12 @@ from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappi
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
 
 from stream.cost_model.core_cost import CoreCostEntry
+from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
-from stream.workload.workload import ComputationNode, Workload
+from stream.workload.utils import affine_bounds, is_mac_operator_type
+from stream.workload.workload import ComputationNode, Tensor, Workload
 
 ZigZagLayerNode = zigzag_layer_node.LayerNode
 ZigZagLayerNodeAttributes = zigzag_layer_node.LayerNodeAttributes
@@ -58,21 +60,17 @@ class ZigZagCostEstimator:
 
     def _affine_binary_op_expr_to_dims_and_coefficients(
         self, expr: AffineBinaryOpExpr
-    ) -> tuple[list[ZigZagLayerDim], list[int], int]:
-        """Convert an AffineBinaryOpExpr into a list of ZigZagLayerDims, their coefficients, and a constant term.
-        We assume that the expression is of the form: c1*D1 + c2*D2 + C, where C is disgarded for now"""
+    ) -> tuple[list[ZigZagLayerDim], list[int]]:
+        """Convert an AffineBinaryOpExpr of the form c1*D1 + c2*D2 + C into its ZigZagLayerDims and their coefficients;
+        the constant, a padding, only shifts the interior tile ZigZag costs."""
         dims: list[ZigZagLayerDim] = []
         coefficients: list[int] = []
-        constant_term: int = 0
 
         def process_expr(e: AffineDimExpr | AffineBinaryOpExpr | AffineConstantExpr, coeff: int) -> None:
-            nonlocal constant_term
             if isinstance(e, AffineDimExpr):
                 dim = ZigZagLayerDim(f"D{e.position}")
                 dims.append(dim)
                 coefficients.append(coeff)
-            elif isinstance(e, AffineConstantExpr):
-                constant_term += coeff * e.value
             elif isinstance(e, AffineBinaryOpExpr):
                 match e.kind:
                     case AffineBinaryOpKind.Add:
@@ -89,37 +87,28 @@ class ZigZagCostEstimator:
                             )
                     case _:
                         raise NotImplementedError(f"Unsupported operation {e.kind} in AffineBinaryOpExpr.")
-            else:
+            elif not isinstance(e, AffineConstantExpr):
                 raise NotImplementedError(f"Unsupported expression type {type(e)}.")
 
         process_expr(expr, 1)
-        return dims, coefficients, constant_term
+        return dims, coefficients
 
-    def create_equation_and_dimension_relations_and_padding_and_pr_sizes(
+    def create_equation_and_dimension_relations_and_pr_sizes(
         self, node: ComputationNode
-    ) -> tuple[ZigZagLayerEquation, list[ZigZagLayerDimRelation], ZigZagLayerPadding, ZigZagLayerDimSizes]:
+    ) -> tuple[ZigZagLayerEquation, list[ZigZagLayerDimRelation], ZigZagLayerDimSizes]:
         """Create the ZigZag equation, e.g. O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][ix][iy].
         If a node has a AffineBinaryOpExpr as one of its dims, it is replaced with a generic dim name,
         and the dimension_relations attribute is used to capture the relation."""
         base_dims = [ZigZagLayerDim(f"D{i}") for i in range(node.num_dims)]
         extra_dims: list[ZigZagLayerDim] = []
         dimension_relations: list[ZigZagLayerDimRelation] = []
-        padding: dict[ZigZagLayerDim, tuple[int, int]] = {}
         pr_sizes: dict[ZigZagLayerDim, int] = {}
-        unique_dims, _ = self.workload.unique_dimensions()
-        unique_dim_sizes = [self.workload.get_dimension_size(dim) for dim in unique_dims]
-        # Per-core tile: shrink inter-core-tiled dims so the PR (affine) tensor extents derived
-        # below stay consistent with the per-core loop sizes from create_layer_dim_sizes.
-        factors = self._inter_core_factors(node)
-        per_core_dim_sizes = {
-            dim: self._per_core_size(size, factors.get(str(dim), 1))
-            for dim, size in zip(unique_dims, unique_dim_sizes, strict=False)
-        }
-        tensors = (node.outputs[0],) + node.inputs
-        operand_names = ["O"] + self.input_operand_names[: len(node.inputs)]
+        per_core_dim_sizes = self._per_core_sizes(node)
+        tensors = (node.outputs[0],) + self._operands(node)
+        operand_names = ["O"] + self.input_operand_names[: len(tensors) - 1]
         equation_str = ""
         for tensor, operand_name in zip(tensors, operand_names, strict=True):
-            tensor_shape = self.workload.get_tensor_shape_with_dimension_sizes(tensor, per_core_dim_sizes)
+            tensor_shape = self.workload.get_tensor_shape_with_dimension_sizes(tensor, per_core_dim_sizes, node)
             mapping = node.get_mapping(tensor)
             operand_dims: list[ZigZagLayerDim] = []
             for i, expr in enumerate(mapping.results):
@@ -127,7 +116,7 @@ class ZigZagCostEstimator:
                     dim = base_dims[expr.position]
                     operand_dims.append(dim)
                 elif isinstance(expr, AffineBinaryOpExpr):
-                    dims_in_expr, coefficients, constant = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
+                    dims_in_expr, coefficients = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
                     if len(dims_in_expr) == 1 and coefficients[0] == 1:
                         # Single-dimension self-offset (recurrence state read, e.g. h[t-1]). The
                         # cross-iteration carry is handled in scheduling, not costing, so treat it
@@ -150,11 +139,6 @@ class ZigZagCostEstimator:
                                 dim_3=dims_in_expr[1],
                             )
                         )
-                        # Set padding
-                        if constant != 0:
-                            assert constant < 0, "Padding should be negative in equation."
-                            constant = -constant
-                        padding[dim] = (constant, constant)
                         # Set pr dim sizes
                         pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
                 else:
@@ -166,48 +150,35 @@ class ZigZagCostEstimator:
                 equation_str += " = "
             elif tensor != tensors[-1]:
                 equation_str += " * "
-        return (
-            ZigZagLayerEquation(equation_str),
-            dimension_relations,
-            ZigZagLayerPadding(padding),
-            ZigZagLayerDimSizes(pr_sizes),
-        )
-
-    def _inter_core_factors(self, node: ComputationNode) -> dict[str, int]:
-        """Total inter-core split factor per workload dimension for *node* (keyed by ``str(dim)``).
-
-        A layer tiled across N cores has each core compute only its tile, so the cost model
-        should see the per-core tile size (full dim size / split factor), not the full layer.
-        Returns ``{}`` when the node has no inter-core tiling. Keyed by ``str(dim)`` for robust
-        matching across the workload's dimension representations.
-        """
-        factors: dict[str, int] = {}
-        try:
-            for dim, factor in self.workload.get_unique_dims_inter_core_tiling(node, self.mapping):
-                factors[str(dim)] = factors.get(str(dim), 1) * factor
-        except Exception:
-            return {}
-        return factors
+        return ZigZagLayerEquation(equation_str), dimension_relations, ZigZagLayerDimSizes(pr_sizes)
 
     @staticmethod
-    def _per_core_size(full_size: int, factor: int) -> int:
-        """Per-core tile size: divide the full dimension size by its inter-core split factor when it
-        divides evenly; otherwise leave it unchanged (never produce a 0 or partial dimension size)."""
-        return full_size // factor if factor > 1 and full_size % factor == 0 else full_size
+    def _operands(node: ComputationNode) -> tuple[Tensor, ...]:
+        """The inputs ZigZag prices: a multiply-accumulate's two operands, so not a further input such as a bias."""
+        return node.inputs[:2] if is_mac_operator_type(node.type) else node.inputs
+
+    def _per_core_sizes(self, node: ComputationNode) -> dict[LayerDim, int]:
+        """Each unique dim's extent on one core of the node's inter-core split, a split that does not divide its dim
+        evenly, or a node without a mapping, leaving it whole."""
+        try:
+            tiling = self.workload.get_unique_dims_inter_core_tiling(node, self.mapping)
+        except Exception:  # noqa: BLE001
+            tiling = ()
+        factors: dict[LayerDim, int] = {}
+        for dim, factor in tiling:
+            factors[dim] = factors.get(dim, 1) * factor
+        sizes = {dim: self.workload.get_dimension_size(dim) for dim in self.workload.unique_dimensions()[0]}
+        return {dim: size // f if size % (f := factors.get(dim, 1)) == 0 else size for dim, size in sizes.items()}
 
     def create_layer_dim_sizes(self, node: ComputationNode) -> ZigZagLayerDimSizes:
-        dims = self.workload.get_dims(node)
-        factors = self._inter_core_factors(node)
-        data: dict[ZigZagLayerDim, int] = {}
-        for i, dim in enumerate(dims):
-            # workload is already tiled; only the inter-core split still has to be divided out.
-            full = self.workload.get_dimension_size(dim)
-            data[ZigZagLayerDim(f"D{i}")] = self._per_core_size(full, factors.get(str(dim), 1))
-        return ZigZagLayerDimSizes(data)
+        """Each node dim's extent on one core, a strided reader's producer dim ``2*z + r`` spanning its unique dims."""
+        sizes = list(self._per_core_sizes(node).values())
+        bounds = (affine_bounds(dim, sizes) for dim in self.workload.get_dims(node))
+        return ZigZagLayerDimSizes({ZigZagLayerDim(f"D{i}"): high - low + 1 for i, (low, high) in enumerate(bounds)})
 
     def create_operand_precision(self, node: ComputationNode) -> ZigZagLayerOperandPrecision:
         precisions: dict[str, int] = {
-            self.input_operand_names[i]: node.inputs[i].operand_type.bitwidth for i in range(len(node.inputs))
+            self.input_operand_names[i]: tensor.operand_type.bitwidth for i, tensor in enumerate(self._operands(node))
         }
         assert len(node.outputs) == 1, "Only single output nodes are supported."
         precisions["O"] = node.outputs[0].operand_type.bitwidth
@@ -223,22 +194,20 @@ class ZigZagCostEstimator:
         # Assume all operands constant for a single node workload
 
         constant_operands: list[ZigZagLayerOperand] = []
-        for i in range(len(node.inputs)):
+        for i in range(len(self._operands(node))):
             constant_operands.append(ZigZagLayerOperand(self.input_operand_names[i]))
         return constant_operands
 
     def create_operand_source(self, node: ComputationNode) -> ZigZagInputOperandSource:
         # For now, assume all input operands originate from the layer id itself
         operand_source: ZigZagInputOperandSource = {}
-        for i in range(len(node.inputs)):
+        for i in range(len(self._operands(node))):
             operand_source[ZigZagLayerOperand(self.input_operand_names[i])] = 0
         return operand_source
 
     def get_layer_node_attributes(self, node: ComputationNode) -> ZigZagLayerNodeAttributes:
         layer_type: str = node.type
-        equation, dimension_relations, padding, pr_sizes = (
-            self.create_equation_and_dimension_relations_and_padding_and_pr_sizes(node)
-        )
+        equation, dimension_relations, pr_sizes = self.create_equation_and_dimension_relations_and_pr_sizes(node)
         layer_dim_sizes = self.create_layer_dim_sizes(node)
         operand_precision = self.create_operand_precision(node)
         constant_operands = self.create_constant_operands(node)
@@ -251,16 +220,14 @@ class ZigZagCostEstimator:
             dimension_relations=dimension_relations,
             constant_operands=constant_operands,
             input_operand_source=input_operand_source,
-            padding=padding,
+            padding=ZigZagLayerPadding.empty(),
             pr_layer_dim_sizes=pr_sizes,
         )
 
     def get_memory_operand_links(self, node: ComputationNode, core: Core) -> ZigZagMemoryOperandLinks:
         # Check that the core memory hierarchy contains two input memory operands I1 and I2 and one output O
         memory_operands = list(core.mem_hierarchy_dict.keys())
-        # Bug 4: relaxed to >= because cores like pooling may have extra memory operands
-        # (e.g. I1/I2/O for a MaxPool node with only 2 tensors: 1 input + 1 output)
-        assert len(memory_operands) >= len(node.tensors)
+        assert len(memory_operands) > len(self._operands(node))
         assert any(op.name == "I1" for op in memory_operands), (
             f"Core {core.id} memory hierarchy must contain memory operand I1."
         )
@@ -271,7 +238,7 @@ class ZigZagCostEstimator:
             f"Core {core.id} memory hierarchy must contain memory operand O."
         )
         memory_operand_links: ZigZagMemoryOperandLinks = {}
-        for i in range(len(node.inputs)):
+        for i in range(len(self._operands(node))):
             mem_op = next(op for op in memory_operands if op.name == f"I{i + 1}")
             layer_op = ZigZagLayerOperand(self.input_operand_names[i])
             memory_operand_links[layer_op] = mem_op

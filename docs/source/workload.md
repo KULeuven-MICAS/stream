@@ -20,10 +20,10 @@ The dispatch table (`ONNXModelParser.OP_TYPE_TO_PARSER`) recognises:
 
 | ONNX op | Becomes | Notes |
 |---------|---------|-------|
-| `Conv` | ComputationNode | Convolution. |
+| `Conv` | ComputationNode | Convolution: strides, dilations and padding (or `auto_pad`) per axis, `group`, and the bias as a third input. |
 | `Gemm` | ComputationNode | General matrix multiply (also matrix-vector). |
 | `MatMul` | ComputationNode | Batched matrix multiply. |
-| `MaxPool` | ComputationNode | Max pooling. |
+| `MaxPool` | ComputationNode | Max pooling, through the same per-axis window as `Conv`. |
 | `GlobalAveragePool` | ComputationNode | Global average pooling. |
 | `BatchNormalization` | ComputationNode | Batch normalisation. |
 | `Softmax`, `LayerNormalization`, `LpNormalization` | NormalizationNode | Reduce-then-broadcast; the reduced axis is a fusion barrier, the other axes stay parallel. |
@@ -37,7 +37,8 @@ To support a new operator, register a parser (see [Extending ingestion](#extendi
 
 Every `ComputationNode` carries an **`operand_mapping`**: one affine map (`AffineMap`) per operand, from the node's iteration space to that operand's indices. A MatMul `ik,kj->ij`, for example, maps its three operands with `(i,k)`, `(k,j)` and `(i,j)`. Everything the pipeline needs is *derived* from these maps rather than hard-coded per op:
 
-- **Loop dimensions and sizes** come from the maps and the operand shapes.
+- **Loop dimensions and sizes** come from the maps and the operand shapes. A dim no operand axis indexes alone, such
+  as a pool's kernel, takes its extent from the node's `window_extents`, `(dim, extent)` pairs its parser sets.
 - **Reduction dimensions** are the iteration dimensions that index an input but not the output (a contraction, like `k` above); the rest are parallel.
 - **Operand access relations** classify how each operand is read — a plain affine access, a piecewise-affine access (masked / windowed regions), or a data-dependent access (gather / routing) — which is what fusion analysis reasons over.
 

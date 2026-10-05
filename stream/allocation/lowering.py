@@ -30,7 +30,7 @@ from stream.workload.node import (
     TransferNode,
     TransferType,
 )
-from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import IterationVariableType, SteadyStateIterationSpace
 from stream.workload.utils import (
     generate_steady_state_iteration_spaces,
     generate_tensor_ssis,
@@ -362,8 +362,18 @@ class _Lowering:
                     f"Tensor {tensor.name} already has an SSIS, cannot assign the same tensor multiple SSIS."
                 )
                 tensor_ssis = generate_tensor_ssis(workload, tensor, node, ssis)
+                if isinstance(node, TransferNode):
+                    self.add_halos(tensor, node, tensor_ssis)
                 ssis[tensor] = tensor_ssis
         return ssis
+
+    def add_halos(self, tensor: Tensor, transfer: TransferNode, ssis: SteadyStateIterationSpace) -> None:
+        """Give each loop that slides the window of a transfer's copy the halo its consecutive tiles share."""
+        sliding = (IterationVariableType.TEMPORAL, IterationVariableType.SPATIAL)
+        loops = [v for v in ssis if v.relevant and v.type in sliding]
+        windows = self.ssw.get_windows(tensor, transfer, self.mapping, [v.dimension for v in loops])
+        for loop in loops:
+            loop.halo = windows[loop.dimension][1] if loop.dimension in windows else 0
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_dst_allocs = self.determine_possible_memory_allocations(node, src, dsts)

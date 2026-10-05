@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from itertools import pairwise
+from itertools import combinations, pairwise
 from typing import TYPE_CHECKING, Any
 
 from xdsl.context import Context
@@ -117,7 +117,7 @@ class MappingFactory:
             layers = tuple(fused_group.get("layers", []))
             intra_core_tiling = fused_group.get("intra_core_tiling", []) or []
             if intra_core_tiling:
-                tiling = tuple(self._convert_intra_core_tiling_entry(entry) for entry in intra_core_tiling)
+                tiling = self._intra_core_tiling(intra_core_tiling)
             else:
                 tiling = self._call_tile_tiling(layers)
             fused_groups.append(
@@ -175,15 +175,34 @@ class MappingFactory:
                 (runtime if dim.runtime else compiled).add(node_dims[position])
         return tuple(dim for dim, _ in tiling if dim in runtime and dim not in compiled)
 
+    def _intra_core_tiling(self, entries: list[dict[str, Any]]) -> tuple[tuple[LayerDim, int], ...]:
+        """The fused group's tiling over unique dims; entries that name one fused axis must tile it alike."""
+        tiling = [(*self._convert_intra_core_tiling_entry(entry), entry) for entry in entries]
+        for (dim, tile, entry), (other_dim, other_tile, other) in combinations(tiling, 2):
+            if dim == other_dim and tile != other_tile:
+                raise ValueError(
+                    f"Tiles {entry['tile']} of {entry['dim']} and {other['tile']} of {other['dim']} cut one fused axis "
+                    "differently."
+                )
+        return tuple((dim, tile) for dim, tile, _ in tiling)
+
     def _convert_intra_core_tiling_entry(self, entry: dict[str, Any]) -> tuple[LayerDim, int]:
+        """A tile of a node dim as a tile of its unique dim: a strided reader's producer dim ``s*z + r`` tiles ``z`` by
+        whole strides, a fused loop stepping its reader's rows."""
         node_name, dim_name = entry["dim"].rsplit(".", 1)
         assert dim_name[0] == "D", f"Unsupported intra_core_tiling dimension format: {entry['dim']!r}"
-        dim_idx = int(dim_name[1:])
         node = self.workload.get_node_by_name(node_name)
         assert isinstance(node, ComputationNode), f"Node {node_name} not found in workload."
-        dim = self.workload.get_dims(node)[dim_idx]
-        assert isinstance(dim, LayerDim), f"Dimension at index {dim_idx} of node {node_name} is not a LayerDim."
-        return dim, int(entry["tile"])
+        node_dim, tile = self.workload.get_dims(node)[int(dim_name[1:])], int(entry["tile"])
+        if (extent := self.workload.get_dimension_size(node_dim)) % tile:
+            raise ValueError(f"Tile {tile} of {entry['dim']} does not divide its extent {extent}.")
+        dim, step = self.workload.leading_dim(node_dim)
+        if tile % step:
+            raise ValueError(
+                f"Tile {tile} of {entry['dim']} is not a multiple of {step}, the stride its fused reader steps it by: "
+                f"tile it by whole strides, or tile the reader."
+            )
+        return dim, tile // step
 
     def create_runtime_args(self) -> dict[str, str]:
         runtime_args = {}

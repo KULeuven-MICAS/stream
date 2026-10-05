@@ -18,6 +18,7 @@ from stream.frontends.torch_export import (
     convert_aten_calls,
     register_aten_op,
 )
+from stream.parser.onnx.conv import conv_maps
 from stream.workload.fusion.proposer import propose_fusion_regions
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import ComputationNode, NormalizationNode
@@ -104,3 +105,35 @@ def test_torch_export_end_to_end():
     assert frontend.name == "torch_export"
     workload = frontend.load(exported)
     assert any(n.type == "MatMul" for n in workload.get_computation_nodes())
+
+
+def test_a_conv_keeps_its_bias_and_the_window_of_the_onnx_conv():
+    graph_inputs = [AtenTensor("x", (1, 4, 9, 8)), AtenTensor("w", (6, 2, 3, 3)), AtenTensor("b", (6,))]
+    attrs = {"stride": [2, 1], "padding": [1, 1], "dilation": 1, "groups": 2}
+    calls = [AtenCall("aten::conv2d", ("x", "w", "b"), AtenTensor("y", (1, 6, 5, 8)), attrs=attrs)]
+    workload, report = convert_aten_calls(graph_inputs, calls)
+    (conv,) = workload.get_computation_nodes()
+    assert report.is_complete
+    assert conv.operand_mapping == conv_maps(*conv.inputs[:2], True, ([2, 1], [1, 1], [1, 1]), 2)
+
+
+@pytest.mark.parametrize(("padding", "pads"), [(1, [1, 1]), ("same", [1, 1]), ("valid", [0, 0])])
+def test_torch_export_keeps_a_conv_window_given_positionally(padding, pads):
+    torch = pytest.importorskip("torch")
+    module = torch.nn.Conv2d(4, 6, 3, stride=1 if isinstance(padding, str) else (2, 1), padding=padding)
+    exported = torch.export.export(module, (torch.randn(1, 4, 9, 8),))
+    (conv,) = frontend_for(exported).load(exported).get_computation_nodes()
+    strides = [1, 1] if isinstance(padding, str) else [2, 1]
+    assert conv.operand_mapping == conv_maps(*conv.inputs[:2], True, (strides, [1, 1], pads), 1)
+
+
+def test_torch_export_reads_a_softmax_axis_given_positionally():
+    torch = pytest.importorskip("torch")
+
+    class Softmax(torch.nn.Module):
+        def forward(self, x):
+            return torch.softmax(x, 1)
+
+    exported = torch.export.export(Softmax(), (torch.randn(2, 4, 4),))
+    (softmax,) = frontend_for(exported).load(exported).get_computation_nodes()
+    assert isinstance(softmax, NormalizationNode) and softmax.reduction_axes == (1,)

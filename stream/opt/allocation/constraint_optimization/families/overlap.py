@@ -18,6 +18,7 @@ from stream.opt.allocation.constraint_optimization.space import core_id
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.iterator_type import is_state_operand
+from stream.workload.node import ComputationNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
@@ -363,4 +364,25 @@ def _resident_fill(ctx: FormulationContext) -> None:
             shared[core] += [tiles * share * w._raw for tiles, w in held]
     for core, terms in shared.items():
         model.add_constr(fill >= model.quicksum(terms), name=f"fill_shared_{core}")
-    q.add("fill", fill._raw)
+    q.add("fill", fill._raw + warmup if (warmup := _warmup(ctx)) is not None else fill._raw)
+
+
+def _warmup(ctx: FormulationContext) -> Any:
+    """Cycles a sliding window's longer first tiles add, at the interior cost per element: a node's longer first and
+    shorter last tiles cancel on its own resources, so what counts is who waits on them, a transfer's reader and the
+    readers of a node behind a moving transfer or on other cores; None where no window slides."""
+    space, model = ctx.space, ctx.model
+    if not space.warmup:
+        return None
+    cost: dict[Any, Any] = {n: space.active_runtime(n) for n in space.ssc_nodes}
+    for (tr, _), quantity in ctx.quantities.indexed("transfer_latency").items():
+        cost[tr] = cost.get(tr, 0) + quantity.expr
+    ready = {n: model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name=f"ready_{n.name}") for n in cost}
+    warmup = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="warmup")
+    for node, start in ready.items():
+        waits = not isinstance(node, ComputationNode) or space.is_waited_on(node)
+        delay = space.warmup.get(node, 0.0) * cost[node] if waits else 0
+        for reader in (c for c in space.workload.successors(node) if c in ready):
+            model.add_constr(ready[reader] >= start + delay, name=f"warmup_{node.name}_{reader.name}")
+        model.add_constr(warmup >= start, name=f"warmup_{node.name}")
+    return warmup._raw

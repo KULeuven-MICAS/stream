@@ -46,6 +46,8 @@ def canonical_form(node: ComputationNode) -> str:
     for i, tensor in enumerate(node.tensors):
         results = ",".join(_expr_str(result, canon) for result in node.get_mapping(tensor).results)
         parts.append(f"o{i}|w{tensor.operand_type.bitwidth}|s{tuple(int(s) for s in tensor.shape)}|m[{results}]")
+    if node.window_extents:
+        parts.append(f"window={tuple((canon(d), n) for d, n in node.window_extents)}")
     return ";".join(parts)
 
 

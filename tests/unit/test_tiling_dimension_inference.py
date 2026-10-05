@@ -8,6 +8,7 @@ the fast, MILP-free counterpart to the slow resnet CO tests in ``tests/test_resn
 from __future__ import annotations
 
 from stream.parser.onnx.model import ONNXModelParser
+from stream.workload.utils import affine_bounds
 
 _RESNET18 = "stream/inputs/examples/workload/resnet18.onnx"
 
@@ -24,17 +25,12 @@ def test_resnet18_unique_dimension_inference():
     unique_dims, _ = workload.unique_dimensions()
     sizes = workload.get_dimension_sizes()
 
-    # Every node dim resolves to a pure, tileable LayerDim: strided conv/pool axes are their own free
-    # variable (not folded into an untileable compound), so the basis is wider than a naive identity
-    # merge but every dimension is addressable.
-    from stream.datatypes import LayerDim
-
-    assert len(unique_dims) == 87, f"Expected 87 unique loop dimensions, got {len(unique_dims)}"
-    assert all(
-        isinstance(workload.get_dims(n)[i], LayerDim)
-        for n in workload.get_computation_nodes()
-        for i in range(len(workload.get_dims(n)))
-    ), "Every node iteration dim must be a pure LayerDim (no compound expressions)"
+    assert len(unique_dims) == 71, f"Expected 71 unique loop dimensions, got {len(unique_dims)}"
+    unique_sizes = [workload.get_dimension_size(z) for z in unique_dims]
+    for node in workload.get_computation_nodes():
+        for dim in workload.get_dims(node):
+            low, high = affine_bounds(dim, unique_sizes)
+            assert (low, high + 1) == (0, workload.get_dimension_size(dim)), f"{node.name}: {dim}"
     assert all(s > 0 for s in sizes), "Every inferred dimension size must be positive"
 
     distinct = set(sizes)

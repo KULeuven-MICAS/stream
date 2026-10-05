@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from functools import cached_property
+from collections.abc import Iterable, Mapping, Sequence
+from functools import cached_property, reduce
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, TypeAlias
+
+import numpy as np
 
 from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -59,6 +61,7 @@ class DecisionSpace:
         self._candidates: dict[Tensor, set[Core]] = {}
         self._broadcast: dict[TransferNode, bool] = {}
         self._one_memory: dict[TransferNode, bool] = {}
+        self._overlaps: dict[TransferNode, dict[tuple[int, int], int]] = {}
 
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
@@ -228,7 +231,7 @@ class DecisionSpace:
         """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse."""
         if self.choice_shares_memory(tr, path):
             return 0
-        link = get_transfer_latency_for_path(tr, path)
+        link = get_transfer_latency_for_path(tr, path, self.moved_bits(tr, path))
         shared = (self.shared_cycles(core, tr, path, model.contiguous) for core, model in self.shared_bandwidth.items())
         return max(link, *shared) if self.shared_bandwidth else link
 
@@ -249,7 +252,7 @@ class DecisionSpace:
         tensor = tr.inputs[0]
         full = tuple(tensor.subview.source.type.get_shape())
         span = contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
-        return ceil(tensor.size_bits() / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
+        return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
 
     def offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""
@@ -294,9 +297,7 @@ class DecisionSpace:
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
             return False
         for choice in choices:
-            touching = [
-                (a, b) for a, b in communicating_pairs(choice.sources, choice.targets) if (b if incoming else a) == core
-            ]
+            touching = [(a, b) for a, b in self.pairs(tr, choice) if (b if incoming else a) == core]
             if not touching:
                 return False
             if any(not self.hardware.shares_memory(one, other) for one, other in touching):
@@ -311,8 +312,56 @@ class DecisionSpace:
             return True
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self.transfer_is_broadcast(tr):
             return False
-        pairs = communicating_pairs(choice.sources, choice.targets)
+        pairs = self.pairs(tr, choice)
         return bool(pairs) and all(self.hardware.shares_memory(one, other) for one, other in pairs)
+
+    def overlaps(self, tr: TransferNode) -> dict[tuple[int, int], int]:
+        """Elements per firing each source position hands each target position where windows overlap tiles."""
+        if (found := self._overlaps.get(tr)) is None:
+            found = self._overlaps[tr] = self.workload.get_transfer_overlaps(tr, self.mapping, self.ssis[tr.outputs[0]])
+        return found
+
+    def moved_bits(
+        self, tr: TransferNode, choice: MulticastPathPlan, source: Core | None = None, target: Core | None = None
+    ) -> float:
+        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of ``source`` or into ``target``: what
+        sources hand targets they share no memory with where windows overlap neighbouring tiles, else its tensor (a
+        source's even share, a target's tile) less the halo a sliding loop keeps resident."""
+        tensor, out = tr.inputs[0], tr.outputs[0]
+        if overlaps := self.overlaps(tr):
+            moved = sum(
+                n
+                for (i, j), n in overlaps.items()
+                if not self.hardware.shares_memory(a := choice.sources[i], b := choice.targets[j])
+                and source in (None, a)
+                and target in (None, b)
+            )
+            return moved * tensor.operand_type.bitwidth
+        sources = len(choice.sources) if source is not None else 1
+        if not (sliding := self.workload.sliding_halo(out, tr, self.mapping, self.ssis.get(out))) and target is None:
+            return tensor.size_bits() / sources
+        tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis.get(out))
+        if target is not None:
+            return tile.size_bits()
+        return (
+            tensor.size_bits()
+            * min(tile.shape[sliding[0]], tensor.shape[sliding[0]])
+            // tensor.shape[sliding[0]]
+            / sources
+        )
+
+    def copied_bits(self, t: Tensor) -> float:
+        """Bits per firing the transfer of ``t`` delivers, in place or not: a halo once per target holding it."""
+        tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
+        if tr is None:
+            return t.size_bits()
+        if overlaps := self.overlaps(tr):
+            return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
+        return self.moved_bits(tr, self.path_choices[tr][0])
+
+    def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
+        """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
+        return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
 
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
         """Whether every core of this choice uses one memory, so the data it hands over never moves."""
@@ -346,6 +395,34 @@ class DecisionSpace:
                     found += [(one, other, state.handover * bits) for one, other in pairs]
         return tuple(found)
 
+    @cached_property
+    def warmup(self) -> dict[HasIterationSpace, float]:
+        """How far, in interior tiles, each node's work along the sliding windows runs ahead of its steady pace at most,
+        the fused loops nested as listed, innermost first: the lookahead a producer computes and the halo a transfer
+        moves before a window slides, each sweep of an inner loop restarting them."""
+        found: dict[HasIterationSpace, float] = {}
+        if not any(loop.halo for ssis in self.ssis.values() for loop in ssis):
+            return found
+        splits = self.problem.fusion_splits
+        rates: dict[HasIterationSpace, list] = {}
+        for k, (dim, n) in enumerate(splits.items()):
+            for node, work in self.workload.get_sliding_work(dim, n).items():
+                rates.setdefault(node, [np.ones(m) for m in splits.values()])[k] = np.array(work) * n / sum(work)
+        for node, rate in rates.items():
+            excess = np.cumsum(reduce(np.multiply.outer, reversed(rate)).ravel() - 1).max()
+            if excess > 0:
+                found[node] = float(excess)
+        return found
+
+    def is_waited_on(self, node: ComputationNode) -> bool:
+        """Whether a reader of ``node``'s output waits for its tiles: one on a core ``node`` does not run on, or behind
+        a transfer that takes cycles on some route."""
+        after = [tr for tr in self.workload.successors(node) if tr in self.path_choices]
+        cores = set(self.core_allocation(node)[0])
+        return any(self.transfer_latency_for_path(tr, c) for tr in after for c in self.path_choices[tr]) or any(
+            not cores.issuperset(self.core_allocation(c)[0]) for c in self._consumers(node)
+        )
+
     def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
         """The computation nodes this one's output reaches, across the transfer between them."""
         reached = []
@@ -378,12 +455,16 @@ def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
     return list(dict.fromkeys(t for t in tensors if isinstance(t, Tensor)))
 
 
-def communicating_pairs(src: Sequence[Core], dst: Sequence[Core]) -> tuple[tuple[Core, Core], ...]:
-    """Which of the ``src`` cores hand to which ``dst`` cores: codegen matches them by spatial index, the spatial part
-    of a split running fastest, so the target at ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being
-    the narrower side."""
+def communicating_pairs(
+    src: Sequence[Core], dst: Sequence[Core], overlaps: Mapping[tuple[int, int], int] | None = None
+) -> tuple[tuple[Core, Core], ...]:
+    """Which ``src`` cores hand to which ``dst`` cores: those whose tiles ``overlaps`` the targets' windows, else by
+    spatial index as codegen pairs them, its contract and why overlaps only pair windowed transfers: the target at
+    ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
     if not src or not dst:
         return ()
+    if overlaps:
+        return tuple((src[i], dst[j]) for i, j in overlaps)
     narrow = min(len(src), len(dst))
     return tuple((src[i], dst[j]) for i in range(len(src)) for j in range(len(dst)) if i % narrow == j % narrow)
 

@@ -128,7 +128,9 @@ class MemoryAccessesEstimationStage(Stage):
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
                 self.core_memory_accesses.add_write(mem_core, t_core, accesses_per_fire * nb_fires)
             for tensor in tn.outputs:
-                t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
+                t_core = self.workload.get_tensor_of_transfer_to_single_core(
+                    tensor, tn, self.mapping, ssis=self.ssis.get(tensor)
+                )
                 bandwidth = mem_core.get_max_memory_bandwidth(type="read")
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
                 self.core_memory_accesses.add_read(mem_core, t_core, accesses_per_fire * nb_fires)
@@ -139,7 +141,9 @@ class MemoryAccessesEstimationStage(Stage):
         assert compute_reuse != 0, "Compute tile reuse factor cannot be zero."
         nb_fires = nb_temporal_iterations // compute_reuse
         for tensor in tn.outputs:
-            t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
+            t_core = self.workload.get_tensor_of_transfer_to_single_core(
+                tensor, tn, self.mapping, ssis=self.ssis.get(tensor)
+            )
             # Get the destination core allocation
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]

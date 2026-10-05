@@ -36,6 +36,30 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 
 The mapping generators (`stream.mapping_generators`) and code generation backends (`stream.codegen_backends`) are entry-point groups: an object with a `name`, a `priority`, a `claims(accelerator)` predicate and `stages()` or `stage()` extends the pipeline for a new kind of hardware, the highest priority among those that claim it winning.
 
+### Windowed operators
+
+A convolution or a pool reads each spatial axis of its input through a sliding window, `s*o + d*f - p` of its
+output dim `o` and kernel dim `f`; the same per-axis strides, dilations and padding serve every windowed parser and
+frontend. The pipeline handles such a read like any other affine access:
+
+- **Couplings.** A reader that indexes a producer's axis as `s*o + windows + c` merges the producer's dim into its
+  own `o`, with a remainder dim of size `s` when `s > 1`, so fused convolutions and pools share their row and column
+  axes; the window and the constant stay in the access maps. Only where the producer's extent is `s` times the
+  reader's: an unpadded reader leaves its producer's axis its own, as an unfused one. A mapping naming the producer's
+  dim `s*z + r` tiles or splits `z`, so its tile is a multiple of `s`, and entries naming one fused axis cut it alike.
+- **Halos.** A tile's footprint is its interior window, not clipped at the tensor's origin, and a transfer's copy
+  holds the window of the node it reaches. Each loop that slides that window carries its halo, the window less its
+  step, on its `IterationVariable`: the rows a fused loop shares between iterations, the columns cores share.
+- **Line buffer.** A sliding loop keeps its halo resident: the copy holds the window (times its buffering) and the
+  transfer moves only the step. A target core is fed by every source core whose tile its window overlaps, and the halo
+  it takes from a core it shares no memory with counts on the links, ports, DMA channels and off-chip traffic like any
+  transfer. ZigZag costs the interior tile, which needs no border padding.
+- **Boundary iterations.** A producer's first tile also covers what its reader's first window reaches ahead (conv1
+  computes 9, 8, 8, 7 rows under a 3x3 conv tiled to 8 rows), and its last is shorter
+  (`Workload.get_sliding_work`). The fill adds, at the interior rate per element, the most a node's work runs ahead of its
+  steady pace over the nested fused loops: its longer first and shorter last tiles cancel on its own cores, so what
+  counts is who waits on them, a transfer's reader and a node's readers behind a moving transfer or on other cores.
+
 ---
 
 ## Constraint families

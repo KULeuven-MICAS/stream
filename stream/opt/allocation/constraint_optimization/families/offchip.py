@@ -31,7 +31,7 @@ class OffchipTraffic:
     def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
         q, space, z_stop = ctx.quantities, ctx.space, ctx.vars.z_stop
         traffic = ctx.model.quicksum(
-            t.size_bits() / space.reuse_levels[(t, s)] * z_stop[(t, s)]._raw
+            space.copied_bits(t) / space.reuse_levels[(t, s)] * z_stop[(t, s)]._raw
             for t in space.tensors_to_optimize_reuse_for
             for s in space.stops(t)
         )._raw

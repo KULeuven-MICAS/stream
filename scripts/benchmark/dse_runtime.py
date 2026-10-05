@@ -35,7 +35,17 @@ HARDWARE = {
     "fusemax": "fusemax.yaml",
     "meta_prototype": "meta_prototype_dual_core_simd_offchip.yaml",
 }
-TWO_CONV = TwoConvWorkloadConfig(1, 8, 32, 32, 16, 32, 3, "bf16", "bf16")
+TWO_CONV = TwoConvWorkloadConfig(
+    batch_size=1,
+    height=32,
+    width=32,
+    in_channels=8,
+    out_channels_1=16,
+    out_channels_2=32,
+    kernel_size=3,
+    in_dtype="bf16",
+    weight_dtype="bf16",
+)
 SWIGLU_TILING = [
     {"dim": "Gemm_Left.D1", "tile": 128},
     {"dim": "Gemm_Down.D2", "tile": 128},

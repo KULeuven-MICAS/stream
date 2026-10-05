@@ -1,0 +1,19 @@
+layers:
+- name: Conv1
+  core_allocation: [[0, 1]]
+  inter_core_tiling:
+  - - dim: D1
+      split: 2
+- name: Pool
+  core_allocation: [[2, 3]]
+  inter_core_tiling:
+  - - dim: D3
+      split: 2
+fused_groups:
+- name: conv_chain
+  layers: [Conv1, Pool]
+  intra_core_tiling:
+  - dim: Conv1.D2
+    tile: 8
+  - dim: Pool.D2
+    tile: 8

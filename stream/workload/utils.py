@@ -1,4 +1,6 @@
 from collections import defaultdict
+from collections.abc import Sequence
+from math import ceil
 from typing import TYPE_CHECKING
 
 import sympy as sp
@@ -379,38 +381,45 @@ def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
     raise ValueError(f"Unsupported sympy expression type: {type(expr)} ({expr})")
 
 
+def sliding_window(
+    sizes: Sequence[int],
+    kernel: Sequence[int],
+    strides: Sequence[int] | None = None,
+    dilations: Sequence[int] | None = None,
+    pads: Sequence[int] | None = None,
+    auto_pad: str = "NOTSET",
+) -> tuple[list[int], ...]:
+    """A sliding window's strides, dilations and leading padding per spatial axis: ``pads``, or what ONNX's
+    ``auto_pad`` (``SAME_UPPER``, ``SAME_LOWER``, ``VALID``) derives from the input ``sizes`` and the ``kernel``."""
+    strides, dilations = list(strides or [1] * len(sizes)), list(dilations or [1] * len(sizes))
+    if auto_pad == "NOTSET":
+        return strides, dilations, list(pads or [0] * len(sizes))[: len(sizes)]
+    totals = [
+        max(0, (ceil(n / s) - 1) * s + (f - 1) * d + 1 - n) if auto_pad != "VALID" else 0
+        for n, f, s, d in zip(sizes, kernel, strides, dilations, strict=True)
+    ]
+    return strides, dilations, [t // 2 if auto_pad == "SAME_UPPER" else t - t // 2 for t in totals]
+
+
+def window_index(
+    outputs: Sequence[AffineExpr], kernels: Sequence[AffineExpr], strides, dilations, pads
+) -> tuple[AffineExpr, ...]:
+    """The index a sliding window reads along each spatial axis: ``s*o + d*f - p`` of its output and kernel dims."""
+    return tuple(s * o + d * f - p for o, f, s, d, p in zip(outputs, kernels, strides, dilations, pads, strict=True))
+
+
+def affine_coefficients(expr: AffineExpr, n: int) -> tuple[int, list[int]]:
+    """The constant of an affine-linear ``expr`` over ``n`` dims and the coefficient of each dim."""
+    c = int(expr.eval([0] * n, []))
+    return c, [int(expr.eval([int(i == d) for i in range(n)], [])) - c for d in range(n)]
+
+
 def affine_bounds(expr: AffineExpr, dim_sizes: list[int]) -> tuple[int, int]:
     """
     Compute min/max value of expr when each dim i is in [0, dim_sizes[i]-1].
     Assumes expr is affine-linear in dims (no mod/floordiv).
     """
-    # Extract coefficients by probing basis vectors (works with your AffineExpr.eval)
-    n = len(dim_sizes)
-
-    zero = [0] * n
-    c = int(expr.eval(zero, []))  # constant term
-
-    # coeff[i] = expr(e_i) - expr(0)
-    coeffs: list[int] = []
-    for i in range(n):
-        e = [0] * n
-        e[i] = 1
-        coeffs.append(int(expr.eval(e, [])) - c)
-
-    # Now compute min/max over a box.
-    # For each coeff a:
-    # - if a >= 0, min uses 0, max uses (S-1)
-    # - if a < 0, min uses (S-1), max uses 0
-    mins = c
-    maxs = c
-    for a, S in zip(coeffs, dim_sizes, strict=True):
-        lo = 0
-        hi = S - 1
-        if a >= 0:
-            mins += a * lo
-            maxs += a * hi
-        else:
-            mins += a * hi
-            maxs += a * lo
-
-    return mins, maxs
+    c, coeffs = affine_coefficients(expr, len(dim_sizes))
+    low = c + sum(a * (S - 1) for a, S in zip(coeffs, dim_sizes, strict=True) if a < 0)
+    high = c + sum(a * (S - 1) for a, S in zip(coeffs, dim_sizes, strict=True) if a > 0)
+    return low, high

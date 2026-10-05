@@ -416,7 +416,7 @@ class GenericMappingGenerator:
                 factor = size // tile if tile else 1
                 buffer_elements = max(
                     (
-                        math.prod(sub.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]))
+                        math.prod(sub.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)], readers=True))
                         for t in indexed[fusion_dim]
                     ),
                     default=0,
@@ -453,7 +453,7 @@ class GenericMappingGenerator:
                 seen.add(tensor.name)
                 full = tuple(tensor.shape)
                 tiled = (
-                    sub_workload.get_tensor_shape_with_tiling(tensor, [(fusion_dim, factor)])
+                    sub_workload.get_tensor_shape_with_tiling(tensor, [(fusion_dim, factor)], readers=True)
                     if fusion_dim is not None and factor > 1
                     else full
                 )
@@ -547,7 +547,9 @@ class GenericMappingGenerator:
         full = sub_workload.get_dimension_size(fusion_dim)
         # Only the intermediates the fusion dim indexes shrink with the tile; the others stay resident.
         streamed = [
-            t for t in intermediates if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)]) != t.shape
+            t
+            for t in intermediates
+            if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)], readers=True) != t.shape
         ]
         if not streamed:
             return []
@@ -562,7 +564,8 @@ class GenericMappingGenerator:
         def resident_bits(tile: int) -> int:
             factor = full // tile
             return max(
-                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t) for t in streamed
+                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)], readers=True), t)
+                for t in streamed
             )
 
         # Only tile when the whole per-core slice does not fit (the layer-fusion trigger).
