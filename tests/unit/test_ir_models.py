@@ -33,6 +33,7 @@ from stream.ir.workload import (
     WorkloadAlgorithmicView,
     WorkloadCompilerView,
 )
+from stream.stages.parsing.accelerator_parser import parse_accelerator
 
 # ---------------------------------------------------------------------------
 # Fixtures: synthetic dicts matching get_ir() shapes
@@ -101,6 +102,7 @@ ACCELERATOR_RAW: dict = {
     "num_cores": 3,
     "offchip_core_id": 2,
     "nb_shared_mem_groups": 1,
+    "core_memory_sharing": [],
     "cores": [
         {
             "id": 0,
@@ -770,3 +772,11 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
     ir = AllocationIR.from_internal(allocation)
     assert ir.overlays == ["vendor-overlay", "vendor-overlay-acme"]
     assert ir.model_dump()["overlays"] == ["vendor-overlay", "vendor-overlay-acme"]
+
+
+def test_the_hardware_ir_names_the_cores_sharing_a_memory_and_what_a_specialized_core_runs():
+    """FuseMax's array and vector core share one memory; only the vector core restricts its operators."""
+    ir = AcceleratorIR.from_internal(parse_accelerator("stream/inputs/examples/hardware/fusemax.yaml"))
+    assert ir.core_memory_sharing == [[0, 1]]
+    served = {core.id: core.extra_fields["operator_types"] for core in ir.cores}
+    assert served[0] is None and "MaxPool" in served[1]
