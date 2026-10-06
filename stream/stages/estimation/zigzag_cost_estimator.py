@@ -18,7 +18,7 @@ from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGener
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
 
-from stream.cost_model.core_cost import CoreCostEntry
+from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND, CoreCostEntry
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
@@ -315,7 +315,7 @@ class ZigZagCostEstimator:
                 cme=None,
                 mapping=None,
                 layer=node,
-                metadata={"backend": "ideal-cycle"},
+                metadata={"backend": IDEAL_CYCLE_BACKEND},
             )
 
     def run_zigzag(self, node: ComputationNode, core: Core) -> CostModelEvaluation:

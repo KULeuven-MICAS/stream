@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 from zigzag.utils import open_yaml
 
-from stream.opt.allocation.constraint_optimization.report import end_to_end_mac_utilization, mac_roofline_peak
+from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND, CoreCostEntry
+from stream.opt.allocation.constraint_optimization.report import (
+    end_to_end_mac_utilization,
+    mac_roofline_peak,
+    node_utilization,
+)
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.workload.utils import is_mac_operator_type
@@ -91,3 +97,25 @@ class TestEndToEndMacUtilization:
         """A workload with no matmul/conv has no MAC roofline: None, not a misleading measured 0.0."""
         accelerator = load_accelerator(TPU_V7)
         assert end_to_end_mac_utilization(accelerator, 0, SWIGLU_REF_LATENCY)["end_to_end_mac_utilization"] is None
+
+
+def cost(node_type: str, backend: str, ideal: float = 98.0) -> CoreCostEntry:
+    layer = SimpleNamespace(type=node_type)
+    return CoreCostEntry(0.0, ideal, ideal, ideal, layer=layer, metadata={"backend": backend})
+
+
+class TestNodeUtilization:
+    def test_efficiency_compares_one_call_with_its_ideal(self) -> None:
+        """A node idle on 15 of 16 iterations runs 6 cycles per iteration, yet each call meets its ideal."""
+        row = node_utilization(cost("Relu", "zigzag"), n_cores=1, runtime=98, active=6)
+        assert (row["latency_cycles"], row["compute_efficiency"]) == (6, 1.0)
+
+    @pytest.mark.parametrize(
+        ("node_type", "backend", "fallback"),
+        [("Conv", IDEAL_CYCLE_BACKEND, True), ("Relu", IDEAL_CYCLE_BACKEND, False), ("Conv", "aie", False)],
+    )
+    def test_only_a_matmul_or_conv_costed_at_ideal_cycles_fell_back(
+        self, node_type: str, backend: str, fallback: bool
+    ) -> None:
+        """A kernel library prices AIE cores without a ZigZag evaluation; that is a cost, not a fallback."""
+        assert node_utilization(cost(node_type, backend), n_cores=1, runtime=98, active=98)["fallback"] is fallback
