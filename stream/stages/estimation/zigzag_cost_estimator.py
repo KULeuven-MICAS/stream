@@ -306,7 +306,7 @@ class ZigZagCostEstimator:
             # getattr default guards an aie2 tile, whose Core.__getattr__ raises instead of returning None.
             array = getattr(core, "operational_array", None)
             unit_count = max(1, int(getattr(array, "total_unit_count", 1) or 1))
-            ideal_cycle = ceil(total_ops / unit_count) * self.get_cc_per_op(node.type.lower())
+            ideal_cycle = ceil(total_ops / unit_count) * self.get_cc_per_op(node.type)
             return CoreCostEntry(
                 energy_total=0.0,
                 latency_total=float(ideal_cycle),
@@ -349,7 +349,7 @@ class ZigZagCostEstimator:
 
     def get_cc_per_op(self, op_type: str):
         """Return the number of cycles that the operational units need to finish the given operation."""
-        match op_type:
+        match op_type.lower():
             case "silu":
                 return 4
             case "sigmoid":
