@@ -26,9 +26,8 @@ class GenericMappingGenerationStage(Stage):
         self.output_path = self.ctx.get("output_path")
 
     def run(self):
-        from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415
-
-        # Caller-supplied cuts win over the derived ones.
+        # Caller-supplied cuts win over the ones the generator derives (the affine barriers, and where a group's
+        # weights cannot stay on its cores).
         cut_points = self.ctx.get("fusion_cut_points", None)
         if cut_points == PER_LAYER:
             # A cut point ends its group, so cut after every layer but the last -> one group per layer.
@@ -36,8 +35,7 @@ class GenericMappingGenerationStage(Stage):
             cut_points = names[:-1]
             logger.info(f"Layer-by-layer: cutting at every layer boundary ({len(cut_points)} cuts)")
         elif cut_points is None:
-            cut_points = determine_fusion_cut_points(self.workload)
-            logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+            logger.info("Fusion cut points derived by the mapping generator")
         else:
             logger.info(f"Using {len(cut_points)} caller-supplied fusion cut points: {cut_points}")
 
