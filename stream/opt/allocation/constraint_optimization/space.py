@@ -90,6 +90,8 @@ class DecisionSpace:
                     continue
                 try:
                     normalized = _normalize_tensor_choices(self.core_allocation(node))
+                    if isinstance(node, TransferNode):
+                        normalized = self._reader_placements(node, tensor, normalized)
                 except ValueError as exc:
                     raise InfeasibleAllocationError(
                         structural_infeasibility(
@@ -174,6 +176,16 @@ class DecisionSpace:
     def stops(self, t: Tensor) -> range:
         """The reuse stops ``t`` may take: -1 (none) up to its outermost applicable temporal loop."""
         return range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
+
+    def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
+        """A transfer's copy lives on the cores of the computation node it reaches, not on every target of the
+        transfer; a copy for another transfer or an edge keeps the transfer's placements."""
+        reader = list(self.workload.successors(tr))[tr.outputs.index(t)]
+        if not isinstance(reader, ComputationNode):
+            return choices
+        cores = {core for choice in _normalize_tensor_choices(self.core_allocation(reader)) for core in choice}
+        narrowed = (tuple(core for core in choice if core in cores) for choice in choices)
+        return tuple(dict.fromkeys(choice for choice in narrowed if choice)) or choices
 
     def core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
         if isinstance(node, InEdge | OutEdge):
