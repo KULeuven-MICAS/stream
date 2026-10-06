@@ -22,6 +22,7 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
     make_resnet_subgraph,
 )
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
@@ -277,3 +278,12 @@ def test_cores_without_an_operational_array_split_a_node_evenly():
     cores = [SimpleNamespace(), SimpleNamespace()]
     assert GenericMappingGenerator._fastest_even_split(cores) == cores
 
+
+def test_a_mapping_cannot_place_an_operator_on_a_core_that_does_not_execute_it():
+    """A conv pinned to FuseMax's vector unit is rejected when the mapping is read, not priced."""
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_FUSEMAX)
+    layers = [{"name": node.type, "core_allocation": [[1]]} for node in workload.get_computation_nodes()]
+
+    with pytest.raises(ValueError, match="only executes"):
+        MappingFactory({"layers": layers}, workload, accelerator).create()
