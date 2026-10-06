@@ -81,8 +81,9 @@ def _held_bits(terms: Held) -> Any:
 
 
 def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
-    """Fail before the model is built when a memory cannot fit the tensors pinned to it under any reuse choice."""
-    pinned: dict[Core, int] = defaultdict(int)
+    """Fail before the model is built when a memory cannot fit the tensors pinned to it under any reuse choice; a copy
+    pinned with its source counts only what it holds beyond it, as in :func:`_memory_loads`."""
+    held: dict[Tensor, tuple[Core, int]] = {}
     for node in space.workload.get_iteration_space_nodes():
         carried = [x for x in node.inputs if is_state_operand(node, x)]
         for t in (*node.outputs, *carried):
@@ -91,7 +92,16 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
                 continue
             (c,) = candidates
             tile = space.workload.get_tensor_single_core(t, node, space.mapping)
-            pinned[space.accelerator.memory_of(c)] += _min_resident_bits(space, t, tile.size_bits())
+            held[t] = (space.accelerator.memory_of(c), _min_resident_bits(space, t, tile.size_bits()))
+    pinned: dict[Core, int] = defaultdict(int)
+    for memory, bits in held.values():
+        pinned[memory] += bits
+    for tr in space.transfer_nodes:
+        if tr.inputs[0] in held:
+            source_memory, source_bits = held[tr.inputs[0]]
+            for copy in tr.outputs:
+                if copy in held and held[copy][0] == source_memory:
+                    pinned[source_memory] -= min(held[copy][1], source_bits)
     for c, bits in pinned.items():
         cap = space.memory_capacity_bits(c)
         if bits > cap:
@@ -195,16 +205,17 @@ def _min_resident_bits(space: DecisionSpace, t: Tensor, tensor_size: int) -> int
 
 
 def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Core], Held]) -> dict[Core, Any]:
-    """Bits each memory holds: every tensor's residency, an in-place copy only what it holds beyond its source."""
+    """Bits each memory holds: every tensor's residency, a copy in the memory of its source (in place, even where the
+    transfer also reaches other memories) only what it holds beyond the source."""
     space, ledger = ctx.space, ctx.ledger
     load: dict[Core, Any] = defaultdict(int)
-    copies = {copy: tr.inputs[0] for tr in space.transfer_nodes if space.within_one_memory(tr) for copy in tr.outputs}
+    copies = {copy: tr.inputs[0] for tr in space.transfer_nodes for copy in tr.outputs}
     for (t, memory), terms in held.items():
         ledger.memory[memory.id] += terms
-        if t not in copies:
+        source = held.get((copies[t], memory)) if t in copies else None
+        if not source:
             load[memory] = load[memory] + _held_bits(terms)
             continue
-        source = held.get((copies[t], memory), [])
         name = f"inplace_{t.name}_{resource_key(memory)}"
         extra = ctx.model.add_var(vtype=SolverVarType.CONTINUOUS, name=name)
         ctx.add_constr(extra >= _held_bits(terms) - _held_bits(source), name=f"{name}_ge", resource=memory)
