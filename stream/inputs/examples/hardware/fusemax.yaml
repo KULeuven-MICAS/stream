@@ -1,5 +1,5 @@
 # Two FuseMax cores sharing a top-level on-chip memory, plus an explicit DRAM controller
-name: quad_core
+name: fusemax
 
 cores:
   0: ./cores/fusemax_array.yaml  # main array core

@@ -12,7 +12,8 @@ from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 
 FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
-# Fused tiles of the SwiGLU arm of tests/test_hardware_combinations.py, which split every node over both cores.
+# Fused tiles of the SwiGLU arm of tests/test_hardware_combinations.py: the Gemms run on the array, Silu and Mul on the
+# vector core.
 TILING = [
     {"dim": "Gemm_Left.D1", "tile": 128},
     {"dim": "Gemm_Down.D2", "tile": 128},
@@ -59,7 +60,7 @@ def test_cores_sharing_a_memory_use_the_first_cores():
 
 
 def test_cores_sharing_a_memory_fit_their_tiles_in_it_together():
-    # Each core alone holds 242 KB here, so a per-core bound of 300 KB would let them hold 484 KB together.
+    # The array holds 246 KB here and the vector core 8 KB, both bounded by the one 300 KB memory.
     rows = solve_swiglu(fusemax(sram_kb=300)).get("allocation").solution.performance["memory_occupancy"]
     (sram,) = [row for row in rows if row["core_id"] in (0, 1)]
     assert sram["core_id"] == 0
@@ -68,7 +69,8 @@ def test_cores_sharing_a_memory_fit_their_tiles_in_it_together():
 
 def test_a_shared_memory_too_small_for_both_cores_is_infeasible():
     with pytest.raises(InfeasibleAllocationError):
-        solve_swiglu(fusemax(sram_kb=200))
+        # Apart, each core fits its tiles in 133 KB; together they need 136 KB.
+        solve_swiglu(fusemax(sram_kb=134))
 
 
 def test_a_handover_between_cores_sharing_a_memory_stays_in_it():

@@ -29,6 +29,7 @@ from stream.stages.stage import LeafStage, MainStage
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 _TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
+_FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
 _WORKLOAD_CONFIG = TwoConvWorkloadConfig(
     batch_size=1,
     in_channels=8,
@@ -233,3 +234,22 @@ def test_pool_ops_saturate_the_vpus_on_tpu_v7():
             assert cores_used == len(vpu_ids), (
                 f"{layer['name']} inter-core split {split} uses {cores_used} cores, expected {len(vpu_ids)}"
             )
+
+
+def test_fusemax_runs_convs_on_its_array_and_the_rest_on_its_vector_unit():
+    """FuseMax's 256x1 vector unit serves the elementwise and pooling ops; the 256x256 array takes the convs."""
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_FUSEMAX)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        paths, _ = GenericMappingGenerator(accelerator, workload, tmpdir).generate_all_groups()
+        layers = []
+        for path in paths:
+            with open(path) as f:
+                layers += yaml.safe_load(f)["layers"]
+
+    cores = {layer["name"]: {core for slot in layer["core_allocation"] for core in slot} for layer in layers}
+    assert {name: ids for name, ids in cores.items() if "Conv" in name} == {
+        name: {0} for name in cores if "Conv" in name
+    }
+    assert all(ids == {1} for name, ids in cores.items() if "Conv" not in name)
