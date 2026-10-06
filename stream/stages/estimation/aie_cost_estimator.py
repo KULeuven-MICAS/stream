@@ -22,7 +22,7 @@ class AIECostEstimator:
         dim_sizes = [self.workload.get_dimension_size(dim) for dim in self.workload.get_dims(node)]
         macs = round(prod(dim_sizes) * core_work_share(self.workload, self.mapping, node, core, self._steps(node)))
         kernel = self.mapping.get(node).kernel
-        ideal_ops_per_cycle = self.ops_per_cycle(node, core)
+        ideal_ops_per_cycle = self._mac_unit_ops(kernel) or self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
         cycles, metadata = self._kernel_cycles(kernel, macs)
         if cycles is None:
@@ -52,6 +52,14 @@ class AIECostEstimator:
             return ceil(call_cycles * macs / call_ops), {"backend": "aie", "measured_symbol": spec.symbol}
         rate = kernel.library.families[spec.family].ops_per_cycle
         return ceil(macs / rate), {"backend": "aie", "family": spec.family}
+
+    @staticmethod
+    def _mac_unit_ops(kernel) -> int | None:
+        """MACs per cycle of the matmul unit a matmul kernel runs on: the library's MAC tile, one issued per cycle."""
+        if kernel is None or kernel.library is None or (spec := kernel.library.spec(kernel.function_name)) is None:
+            return None
+        family = kernel.library.families[spec.family]
+        return prod(family.mac.values()) if spec.family == "matmul" and family.mac else None
 
     def _steps(self, node: ComputationNode) -> int:
         return split_steps(self.workload, self.mapping, node, self.fusion_splits)

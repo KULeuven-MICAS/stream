@@ -80,7 +80,8 @@ class KernelLibrary:
 
     @property
     def mac(self) -> Mapping[str, int]:
-        """The matmul unit's tile, which is also the tiling an operand leaves a matmul in."""
+        """The matmul unit's tile, one of which it computes per cycle, which is also the tiling an operand leaves a
+        matmul in."""
         family = self.families.get("matmul")
         if family is None or family.mac is None:
             raise ValueError("the kernel library declares no matmul MAC tile")
