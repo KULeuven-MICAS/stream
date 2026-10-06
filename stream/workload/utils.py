@@ -146,16 +146,21 @@ def _add_temporal_iteration_variables(
     fusion_splits: dict[LayerDim, int],
     workload: "Workload",
 ) -> dict["HasIterationSpace", list[IterationVariable]]:
-    """Iterate through all computation nodes and add the temporal iteration variables."""
+    """Iterate through all computation nodes and add the temporal iteration variables: a node varies along a fused dim
+    it steps along, even through a strided reader's ``s*d + r``."""
+
+    def steps(node: "HasIterationSpace") -> set[LayerDim]:
+        return {workload.leading_dim(d)[0] for d in workload.get_dims(node)}
+
     for node in workload.get_iteration_space_nodes():
         for dim, size in fusion_splits.items():
             if isinstance(node, ComputationNode):
-                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.ABSENT
+                effect = LoopEffect.VARYING if dim in steps(node) else LoopEffect.ABSENT
             elif isinstance(node, TransferNode):
                 compute_preds_succs = get_compute_predecessors_successors(node, workload)
-                if dim in workload.get_dims(node):
+                if dim in steps(node):
                     effect = LoopEffect.VARYING
-                elif any(dim in workload.get_dims(n) for n in compute_preds_succs):
+                elif any(dim in steps(n) for n in compute_preds_succs):
                     effect = LoopEffect.INVARIANT
                 else:
                     effect = LoopEffect.ABSENT
