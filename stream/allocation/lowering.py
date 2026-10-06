@@ -97,16 +97,22 @@ class _Lowering:
         )
 
     def build_transfer_graph(self) -> Workload:
-        new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
-        # Go through the tensors of the workload to find sources and destinations of the tensor
+        """Insert the transfers of every tensor but a kernel's carried state, which stays resident on its node's
+        cores, so neither it nor an input edge that only delivers it gets a transfer."""
+        state = {
+            t
+            for n in self.workload.nodes
+            if isinstance(n, HasIterationSpace)
+            for t in n.inputs
+            if is_state_operand(n, t)
+        }
+        new_nodes: dict[str, Node] = {
+            node.name: node
+            for node in self.workload.nodes
+            if not (isinstance(node, InEdge) and all(t in state for t in node.outputs))
+        }
         for tensor in self.workload.tensors:
-            # A kernel's carried state is resident on the cores its node runs on: it is read
-            # where it already sits, from one step of that node's own loop to the next, so
-            # there is nothing to move and no source to move it from.
-            if any(
-                isinstance(n, HasIterationSpace) and tensor in n.inputs and is_state_operand(n, tensor)
-                for n in self.workload.nodes
-            ):
+            if tensor in state:
                 continue
             srcs = [n for n in self.workload.nodes if isinstance(n, HasOutputs) and tensor in n.outputs]
             assert len(srcs) == 1, f"Expected exactly one source for tensor {tensor}, found {len(srcs)}"

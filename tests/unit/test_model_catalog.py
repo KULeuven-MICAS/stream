@@ -7,7 +7,11 @@ tests, not numerical ones (the chunked-scan math is verified in tests/rewrites).
 
 from __future__ import annotations
 
-from stream.workload.iterator_type import IteratorType, derive_iterator_types, sequential_dims
+import pytest
+
+from stream.api import evaluate_mapping
+from stream.workload.blocks import build_block
+from stream.workload.iterator_type import IteratorType, derive_iterator_types, is_state_operand, sequential_dims
 from stream.workload.models import MODEL_CATALOG, build_attention_block, build_mamba_block
 from stream.workload.node import FusionEdge, NormalizationNode
 from stream.workload.normalization import parallel_axes, reduction_axes
@@ -77,3 +81,21 @@ def test_mamba_fuses_into_one_region():
     assert len(groups) == 1
     names = {c.name for c in groups[0].get_computation_nodes()}
     assert {"dA", "Abar", "scan", "readout"} <= names
+
+
+@pytest.mark.parametrize(
+    ("block", "config"),
+    [("mamba", {"seq": 16, "d_inner": 16, "d_state": 4}), ("linear_attention", {"seq": 8, "d_k": 8, "d_v": 8})],
+)
+def test_a_recurrence_with_an_initial_state_input_solves_end_to_end(tmp_path, block, config):
+    """The carried state stays resident on its node: no transfer moves it and its input edge feeds nothing."""
+    workload = build_block(block, **config)
+    states = {t.name for n in workload.get_computation_nodes() for t in n.inputs if is_state_operand(n, t)}
+    assert states
+    allocation = evaluate_mapping(
+        "stream/inputs/examples/hardware/tpu_like_quad_core.yaml", workload, str(tmp_path)
+    ).context.get("allocation")
+    assert allocation.solution.latency.total > 0
+    lowered = allocation.problem.workload
+    assert not {t.name for tr in lowered.get_transfer_nodes() for t in tr.inputs} & states
+    assert not {t.name for e in lowered.get_in_edges() for t in e.outputs} & states
