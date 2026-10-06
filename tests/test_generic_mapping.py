@@ -5,6 +5,7 @@ The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics.
 """
 
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -253,3 +254,26 @@ def test_fusemax_runs_convs_on_its_array_and_the_rest_on_its_vector_unit():
         name: {0} for name in cores if "Conv" in name
     }
     assert all(ids == {1} for name, ids in cores.items() if "Conv" not in name)
+
+
+@pytest.mark.parametrize(
+    ("units", "kept"),
+    [
+        ([65536, 256], [65536]),
+        ([1024, 1024, 1024, 1024], [1024, 1024, 1024, 1024]),
+        ([1024, 1024, 1024, 600], [1024, 1024, 1024]),
+        ([1024, 1024, 900], [1024, 1024, 900]),
+    ],
+)
+def test_an_even_split_keeps_the_cores_that_finish_it_first(units, kept):
+    """An even split runs at the pace of its smallest array, so a small core joins only when it adds MACs."""
+    cores = [SimpleNamespace(operational_array=SimpleNamespace(total_unit_count=u)) for u in units]
+    chosen = GenericMappingGenerator._fastest_even_split(cores)
+    assert [core.operational_array.total_unit_count for core in chosen] == kept
+
+
+def test_cores_without_an_operational_array_split_a_node_evenly():
+    """A core that declares no MAC array, such as an AIE tile, gives no ground to prefer one over another."""
+    cores = [SimpleNamespace(), SimpleNamespace()]
+    assert GenericMappingGenerator._fastest_even_split(cores) == cores
+

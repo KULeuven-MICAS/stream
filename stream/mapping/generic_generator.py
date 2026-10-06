@@ -202,7 +202,7 @@ class GenericMappingGenerator:
         3. Fallback: if nothing matches, use all cores with kind 'compute'.
 
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
-        Conv/Gemm go to all 4 generic compute cores.
+        Conv/Gemm go to the generic compute cores that split it fastest.
         """
         _SKIP_TYPES = {"offchip", "shim", "memory"}
         node_op = node.type
@@ -226,13 +226,23 @@ class GenericMappingGenerator:
             return specialized_cores
 
         if generic_cores:
-            # use all generic compute cores together
-            return generic_cores
+            return self._fastest_even_split(generic_cores)
 
         # fallback: no match — use all cores with kind 'compute'
         fallback = [c for c in self.accelerator.core_list if c.type == "compute"]
         logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
         return fallback
+
+    @staticmethod
+    def _fastest_even_split(cores: list[Core]) -> list[Core]:
+        """The largest-array cores whose even split finishes first: an even split runs at the pace of its
+        smallest array, so ``n`` cores of at least ``u`` units each deliver ``n * u`` MACs per cycle."""
+
+        def units(core: Core) -> int:
+            return getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
+
+        _, floor = max((n * u, u) for n, u in enumerate(sorted(map(units, cores), reverse=True), start=1))
+        return [core for core in cores if units(core) >= floor]
 
     def _factor_split_across_dims(
         self, sub_workload: Workload, cn: ComputationNode, n_cores: int, protected: set[LayerDim]
