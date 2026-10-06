@@ -28,3 +28,10 @@ def test_a_solve_writes_its_artifacts_by_default(tmp_path: Path, two_conv: TwoCo
 
 def test_a_sweep_can_turn_the_artifacts_off(tmp_path: Path, two_conv: TwoConvWorkloadConfig) -> None:
     assert not _solve(tmp_path, two_conv, SolveOptions(artifacts=False))
+
+
+def test_a_tile_search_leaves_the_chosen_candidates_artifacts_beside_its_group(
+    tmp_path: Path, two_conv: TwoConvWorkloadConfig
+) -> None:
+    assert ARTIFACTS <= _solve(tmp_path, two_conv, SolveOptions(tile_search=True))
+    assert (tmp_path / "group_0" / "core_cost_lut.yaml").exists()

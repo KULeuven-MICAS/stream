@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from dataclasses import replace
 
 from stream.ir.infeasibility import InfeasibleAllocationError, save_infeasibility_report
@@ -134,7 +135,9 @@ class TileSearchStage(Stage):
         return best_context, best_index, best_latency, len(candidates)
 
     def _finish(self, best_context, best_index, best_latency, n):
+        """Hand on the chosen candidate's context, its files copied into the group's own folder."""
         logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, n, best_latency)
+        shutil.copytree(best_context.get("output_path"), self.output_path, dirs_exist_ok=True)
         best_context.set(output_path=self.output_path)
         self.ctx = best_context
         return best_context
