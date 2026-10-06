@@ -1,10 +1,14 @@
 """The capacity-aware intra-core tiler streams a resident weight on overflow, leaves fitting groups alone."""
 
 import math
+import os
+import subprocess
+import sys
 import tempfile
 
 import pytest
 
+from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.parser.mapping_validator import MappingValidator
@@ -151,3 +155,34 @@ def test_refined_mapping_validates():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+_PLAN = """
+import sys, tempfile
+from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.stages.context import StageContext
+from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
+from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
+from stream.stages.stage import LeafStage, MainStage
+ctx = StageContext.from_kwargs(accelerator=sys.argv[1], workload_path=sys.argv[2], output_path=tempfile.mkdtemp())
+ctx = MainStage([AcceleratorParserStage, ONNXModelParserStage, LeafStage], ctx).run()[0]
+gen = GenericMappingGenerator(ctx.get("accelerator"), ctx.get("workload"), tempfile.mkdtemp())
+(sub,) = ctx.get("workload").split_fusion_groups(cut_points=gen._cut_points(None))
+print(gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes())))
+"""
+
+
+def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed():
+    """The overflowing SwiGLU streams two dims, in the order its nodes walk them, whatever order a set iterates in."""
+    workload = make_swiglu_workload(512, 1024, 4096, "bf16", "bf16")
+    plans = {
+        subprocess.run(
+            [sys.executable, "-c", _PLAN, _TPU_QUAD, workload],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()[-1]
+        for seed in range(4)
+    }
+    assert plans == {str([{"dim": "Gemm_Left.D0", "tile": 8}, {"dim": "Gemm_Left.D2", "tile": 128}])}
