@@ -38,7 +38,6 @@ class AllocationSolution:
     reuse_factors: Mapping[TransferNode, float]
     route_cycles: Mapping[TransferNode, int]
     primary_cost: float
-    throughput_bound: float
     solve_stats: SolveStats
     metrics: dict[str, Any]
     performance: dict[str, Any] | None

@@ -81,7 +81,7 @@ class FusionGroupIterationStage(Stage):
             ctx = ctxs[0]
 
             allocation = ctx.get("allocation")
-            group_latency = allocation.solution.primary_cost
+            group_latency = allocation.estimated_cycles
             total_latency += group_latency
             group_latencies[i] = group_latency
             group_columns[i] = _compute_columns(allocation)

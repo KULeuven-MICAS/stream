@@ -33,7 +33,7 @@ def solve(
             make_2_conv_workload(two_conv),
             str(tmp_path_factory.mktemp("two_conv")),
             make_2_conv_mapping(two_conv),
-            SolveOptions(families=[*DEFAULT_FAMILIES, *family_specs]),
+            SolveOptions(families=[*(f for f in DEFAULT_FAMILIES if f != "memory_ports"), *family_specs]),
         )
 
     return run

@@ -197,7 +197,6 @@ class TestAllocationGetIr:
             reuse_factors={},
             route_cycles={},
             primary_cost=float(latency[0]),
-            throughput_bound=float(latency[0]),
             solve_stats=SolveStats("ORTOOLS", "gscip", "OPTIMAL", 1.0, 0.1, 0.0, 1, 1),
             metrics={},
             performance=None,

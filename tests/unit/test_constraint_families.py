@@ -158,8 +158,11 @@ def test_the_defaults_are_streams_families_and_the_namespaces() -> None:
 
 
 def test_streams_families_build_in_their_declared_order() -> None:
-    assert order(DEFAULT_FAMILIES) == list(DEFAULT_FAMILIES)
-    assert order(DEFAULT_FAMILIES[::-1]) == list(DEFAULT_FAMILIES)
+    """Each family builds where it is listed; memory_ports declares its demand before the overlap it bounds."""
+    expected = list(DEFAULT_FAMILIES)
+    expected.insert(expected.index("overlap"), "memory_ports")
+    assert order(DEFAULT_FAMILIES) == expected
+    assert order(DEFAULT_FAMILIES[::-1]) == expected
 
 
 def test_a_namespace_family_runs_right_after_what_it_bounds() -> None:
@@ -174,7 +177,7 @@ def test_a_namespace_family_runs_right_after_what_it_bounds() -> None:
 
 
 def test_a_declaring_family_runs_its_declare_before_the_overlap_and_its_build_after() -> None:
-    steps = order([*DEFAULT_FAMILIES, "memory_ports"])
+    steps = order(DEFAULT_FAMILIES)
     declare, build = (i for i, name in enumerate(steps) if name == "memory_ports")
     assert steps.index("slot_latency") < declare < steps.index("overlap") < build < steps.index("dma_channels")
 
@@ -195,8 +198,10 @@ def test_dropping_a_family_drops_those_that_need_it() -> None:
     kept = drop_families(default_families(AIE), ["object_fifo_depth", "dma_channels"])
     assert {"object_fifo_depth", "aie2_object_fifo_depth", "dma_channels", "aie2_dma_channels"}.isdisjoint(kept)
     assert "aie2_buffer_descriptors" in kept
-    assert default_families(AIE, without=["overlap"]) == tuple(f for f in default_families(AIE) if f != "overlap")
-    assert "memory_ports" not in drop_families([*DEFAULT_FAMILIES, "memory_ports"], ["overlap"])
+    assert default_families(AIE, without=["overlap"]) == tuple(
+        f for f in default_families(AIE) if f not in ("overlap", "memory_ports")
+    )
+    assert "memory_ports" not in drop_families(DEFAULT_FAMILIES, ["overlap"])
 
 
 @pytest.mark.slow
@@ -225,5 +230,8 @@ def test_a_default_family_takes_options_by_name():
     families = default_families(ACCELERATOR, options={"overlap": {"model": "span"}})
     assert {"overlap": {"model": "span"}} in families
     assert "overlap" not in families
-    with pytest.raises(KeyError, match="memory_ports"):
-        default_families(ACCELERATOR, options={"memory_ports": {}})
+    assert {"memory_ports": {"burst": False}} in default_families(
+        ACCELERATOR, options={"memory_ports": {"burst": False}}
+    )
+    with pytest.raises(KeyError, match="buffering"):
+        default_families(ACCELERATOR, options={"buffering": {}})

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from stream.opt.allocation.constraint_optimization.families import LATENCY, OFFCHIP_TRAFFIC
+from stream.opt.allocation.constraint_optimization.families import LATENCY, OFFCHIP_TIMED, OFFCHIP_TRAFFIC
 from stream.opt.solver import ObjectiveLevel
 
 if TYPE_CHECKING:
@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 class OffchipTraffic:
     """The bits crossing the off-chip boundary, the objective level after the latency; with ``charge`` the latency
-    also pays the time the off-chip links take to move them, which a slot hides when compute is longer, unless a
-    shared-bandwidth model already times them."""
+    also pays the time the off-chip links take to move them, unless a shared-bandwidth model or the overlap's
+    off-chip contention already times them."""
 
     name: ClassVar[str] = "offchip_traffic"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -36,7 +36,7 @@ class OffchipTraffic:
             for s in space.stops(t)
         )._raw
         levels = [ObjectiveLevel(expr=traffic, priority=OFFCHIP_TRAFFIC, name="offchip_traffic")]
-        if "offchip_traffic_weight" in q:
+        if "offchip_traffic_weight" in q and OFFCHIP_TIMED not in q:
             levels.append(
                 ObjectiveLevel(expr=q.get("offchip_traffic_weight").expr * traffic, priority=LATENCY, name="latency")
             )

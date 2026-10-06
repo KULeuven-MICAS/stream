@@ -17,6 +17,7 @@ from stream.opt.allocation.constraint_optimization.allocation_model import Alloc
 from stream.opt.allocation.constraint_optimization.families import (
     DEFAULT_FAMILIES,
     LATENCY,
+    OFFCHIP_TIMED,
     available_families,
     drop_families,
     load_families,
@@ -55,24 +56,23 @@ def _value(model: AllocationModel, name: str) -> float:
 
 
 def _latency_level(model: AllocationModel) -> tuple[float, float]:
-    """The solved latency level, and what it is made of: the latency, the DMA peaks and the off-chip charge."""
-    value, objective = model.model.value, model.objective
-    charge = _value(model, "offchip_traffic_weight") * value(objective["offchip_traffic"].expr)
-    parts = _value(model, "total_latency") + _value(model, "dma_peak_in") + _value(model, "dma_peak_out") + charge
-    return value(objective["latency"].expr), parts
+    """The solved latency level, and the latency the overlap models, which times the off-chip links itself."""
+    return model.model.value(model.objective["latency"].expr), _value(model, "total_latency")
 
 
 @pytest.mark.parametrize("case", ["default", "no_dma"])
 def test_the_objective_levels_come_in_priority_order(models: dict[str, AllocationModel], case: str):
-    """Latency decides first; offchip traffic breaks its ties, buffering breaks traffic's, and the route length
-    breaks buffering's."""
+    """Latency decides first; offchip traffic breaks its ties, the DMA peaks traffic's, buffering the peaks', and the
+    route length breaks buffering's."""
     objective = models[case].objective
-    assert list(objective) == ["latency", "offchip_traffic", "buffering", "route_hops"]
-    assert [level.priority for level in objective.values()] == [4, 3, 2, 1]
+    levels = ["latency", "offchip_traffic", *(["dma_peaks"] if case == "default" else []), "buffering", "route_hops"]
+    assert list(objective) == levels
+    assert [level.priority for level in objective.values()] == ([5, 4, 3, 2, 1] if case == "default" else [5, 4, 2, 1])
 
 
-def test_the_latency_level_sums_its_families_contributions(models: dict[str, AllocationModel]):
-    """The run's latency, the DMA peaks where dma_channels is selected, and the weighted off-chip traffic."""
+def test_the_latency_level_is_the_latency_the_solve_models(models: dict[str, AllocationModel]):
+    """The latency level is the latency the solve models, which the reported cycles are: no DMA peak or off-chip
+    charge is added to it once the overlap times the off-chip links."""
     for model in models.values():
         solved, parts = _latency_level(model)
         assert solved == pytest.approx(parts)
@@ -102,7 +102,8 @@ def _offchip_traffic(**options: Any) -> Any:
 
 
 def test_offchip_traffic_is_charged_in_the_primary_objective():
-    """With the family's weight registered, the bytes join the latency in the primary objective."""
+    """With the family's weight registered, the bytes join the latency in the primary objective, unless a family
+    already times the off-chip links."""
     ctx = SimpleNamespace(
         model=MagicMock(quicksum=MagicMock(return_value=SimpleNamespace(_raw=2048))),
         space=SimpleNamespace(tensors_to_optimize_reuse_for=[]),
@@ -114,6 +115,8 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
     ctx.quantities.add("offchip_traffic_weight", 1 / 512)
     traffic, latency = family.objective(ctx)
     assert (traffic.expr, latency.name, latency.priority, latency.expr) == (2048, "latency", LATENCY, 4)
+    ctx.quantities.add(OFFCHIP_TIMED, 1)
+    assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
 
 
 @pytest.mark.parametrize(
@@ -157,7 +160,7 @@ class _Rogue:
 
 def test_levels_of_one_name_must_share_a_priority(solve: Solve):
     families = {**available_families(), "rogue": _Rogue}
-    with pytest.raises(ValueError, match="'latency' has priority 5 in 'rogue'"):
+    with pytest.raises(ValueError, match="'latency' has priority 6 in 'rogue'"):
         solve([*DEFAULT_FAMILIES, "rogue"], families_available=families, hook="_build_model")
 
 

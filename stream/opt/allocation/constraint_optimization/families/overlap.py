@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
-from stream.opt.allocation.constraint_optimization.families import LATENCY, SLOT_PRESSURE, TOTAL_LATENCY
+from stream.opt.allocation.constraint_optimization.families import (
+    LATENCY,
+    OFFCHIP_TIMED,
+    SLOT_PRESSURE,
+    TOTAL_LATENCY,
+)
 from stream.opt.allocation.constraint_optimization.families.latency import reuse_selectors
 from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
 from stream.opt.allocation.constraint_optimization.space import core_id
@@ -53,6 +58,7 @@ class Overlap:
         "idle_latency",
         "recurrence_bound",
         TOTAL_LATENCY,
+        OFFCHIP_TIMED,
     )
 
     def __init__(
@@ -74,6 +80,8 @@ class Overlap:
             q.add("idle_latency", v._raw, index=res)
         self._define_overlap_var(ctx, idle_lat, latency)
         _resident_fill(ctx)
+        if self.offchip_contention:
+            q.add(OFFCHIP_TIMED, 1)
 
     def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
         q = ctx.quantities
