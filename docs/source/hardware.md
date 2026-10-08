@@ -64,7 +64,7 @@ core_connectivity:
 | `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
-| `core_memory_sharing` | no | Groups of core ids that share their top-level memory, e.g. `["0, 1", "2, 3"]`. Its capacity bounds everything the group's cores hold in it together: split tiles add up, a tensor each core holds whole counts once. |
+| `core_memory_sharing` | no | Groups of core ids that share their top-level memory, e.g. `["0, 1", "2, 3"]`. Its capacity bounds everything the group's cores hold in it together: split tiles add up, a tensor each core holds whole counts once. Data between the group's cores moves in place, without a route; the group sends and receives through its first core where that one has links. |
 
 ### Memory ports
 
@@ -86,6 +86,8 @@ Each entry in `core_connectivity` is one connection:
 | `unit_energy_cost` | no | Per-word energy for this connection; inherits the accelerator-level default if omitted. |
 
 Connections are how the MILP allocator routes tensors between cores. A typical accelerator has fast point-to-point `link`s on-chip and one wider `bus` to the off-chip core.
+
+A transfer's route serves each target from the nearest core holding the data it reads, then joins each source's targets in one tree (a Steiner tree, grown from the shortest paths with each link weighted by the time the transfer already keeps it busy), so data shared by several targets crosses each link once. Partial sums, of a computation split over a dimension it reduces, are added up on their way to their target; one headed off-chip is completed in the on-chip memories next to it, a slice each, as a reduce-scatter. A route never passes through the off-chip core, and a bus carries what each core sends over it separately. Each link is charged the share of the transfer's data crossing it.
 
 ---
 

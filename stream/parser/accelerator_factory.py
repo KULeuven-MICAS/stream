@@ -209,7 +209,7 @@ class AcceleratorFactory:
             elif connection_type == "bus":
                 # Connect cores to bus, edge by edge
                 # Make sure all links refer to the same `CommunicationLink` instance
-                bus_instance = CommunicationLink("Any", "Any", bw, uec, bidirectional=True)
+                bus_instance = CommunicationLink("Any", "Any", bw, uec, bidirectional=True, members=tuple(core_objs))
                 pairs_this_connection = [(a, b) for idx, a in enumerate(core_objs) for b in core_objs[idx + 1 :]]
                 for core_a, core_b in pairs_this_connection:
                     edges += get_bidirectional_edges(
@@ -224,4 +224,7 @@ class AcceleratorFactory:
                 raise ValueError(
                     f"Invalid connection type '{connection_type}' for connection {core_objs}. Expected 'link' or 'bus'."
                 )
-        return CoreGraph(edges)
+        graph = CoreGraph(edges)
+        # A core that shares another's memory is reached through it, so it needs no link of its own.
+        graph.add_nodes_from(cores[i] for group in self.data["core_memory_sharing"] for i in group)
+        return graph

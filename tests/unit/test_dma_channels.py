@@ -73,6 +73,7 @@ class _Plan:
 
     def __init__(self, sources, targets):
         self.sources, self.targets = tuple(sources), tuple(targets)
+        self.pairs = ()
 
 
 def _pairs(sources, targets):

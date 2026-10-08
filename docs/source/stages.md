@@ -71,11 +71,11 @@ The allocation model is built from constraint families, each a group of constrai
 | `placement` | each movable tensor takes one of its placements | |
 | `path_choice` | each transfer takes one route, whose ends hold the tensors it moves; the route length is the last objective level | |
 | `reuse_rates` | how many iterations one firing of a transfer serves | |
-| `link_contention` | a link carries at most one transfer per slot | |
 | `memory_capacity` | what each memory holds fits in its capacity | |
 | `object_fifo_depth` | the object-fifo depth each core's tensors need, and the buffering depth, an objective level | `depth` (without it only the buffering level) |
 | `buffer_descriptors` | the buffer descriptors each core's transfers need | |
 | `slot_latency` | a slot lasts as long as the slowest node or transfer in it | |
+| `link_contention` | the transfers of a slot share each link: the slot lasts as long as they keep any link busy together; a circuit-switched link (`aie2`) carries at most one transfer per slot | |
 | `reuse_levels`, `output_reuse` | a tensor handed between cores, and a final output, are held up to their outermost irrelevant loop | |
 | `reuse_compatibility` | the reuse levels on either side of a memory-to-compute transfer agree | |
 | `spatial_reuse` | reuse covers every temporal loop inside a tensor's outermost spatial loop | |

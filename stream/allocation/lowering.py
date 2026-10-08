@@ -6,6 +6,7 @@ from itertools import combinations
 from math import ceil, prod
 from typing import cast
 
+import numpy as np
 from xdsl.ir.affine import AffineMap
 
 from stream.allocation.problem import AllocationProblem
@@ -39,7 +40,7 @@ from stream.workload.utils import (
     get_equivalent_dimension,
     get_node_with_largest_resource_allocation,
 )
-from stream.workload.workload import Workload
+from stream.workload.workload import Workload, position_of
 
 
 def largest_divisor_leq(n: int, cap: int) -> int:
@@ -417,7 +418,15 @@ class _Lowering:
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_dst_allocs = self.determine_possible_memory_allocations(node, src, dsts)
         possible_inter_core_tiling = self.determine_possible_inter_core_tiling(node, possible_dst_allocs, dsts)
-        possible_allocations = self.determine_possible_transfer_plans(src, possible_dst_allocs)
+        self.mapping.set_for_node(
+            node,
+            resource_allocation=(),
+            inter_core_tiling=possible_inter_core_tiling,
+            memory_allocation=possible_dst_allocs,
+        )
+        possible_allocations = self.determine_possible_transfer_plans(
+            node, src, possible_dst_allocs, possible_inter_core_tiling
+        )
         self.mapping.set_for_node(
             node,
             resource_allocation=possible_allocations,
@@ -467,25 +476,25 @@ class _Lowering:
         self, node: TransferNode, possible_dst_allocs: tuple[tuple[Core, ...], ...], dsts: tuple[HasInputs, ...]
     ) -> tuple[InterCoreTiling, ...]:
         possible_inter_core_tiling = []
-        node_dims = set(self.ssw.get_dims(node))
-        # The first hop of a transfer chain lands on a memory tile, so its own destinations
-        # are transfers; the consumers that decide the split are the compute nodes behind it.
+        # A tensor its largest consumer does not split is held whole by every tile it sits on,
+        # so its transfer carries no tiling however many copies exist; any other consumer reads
+        # its part of a copy. Only the hop that lands on the memory tiles carries copies; the hop
+        # from them to the cores still describes how those cores split the work.
         compute_dsts = [dst for dst in dsts if isinstance(dst, ComputationNode)] or [
             dst
             for dst in get_compute_predecessors_successors(tr=node, workload=self.ssw)
             if isinstance(dst, ComputationNode)
         ]
-        # A tensor whose dimensions the consumers do not split is held whole by every tile
-        # it sits on, so its transfer carries no tiling however many copies exist.
-        # Only the hop that lands on the memory tiles carries copies; the hop from them to
-        # the cores still describes how those cores split the work.
+        node_dims = set(self.ssw.get_dims(node))
+        largest = get_node_with_largest_resource_allocation(compute_dsts, self.mapping) if compute_dsts else None
         replicated = (
             node.transfer_type is TransferType.MEM_TO_MEM
-            and bool(compute_dsts)
-            and not any(
-                dim in node_dims
-                for dst in compute_dsts
-                for dim, _ in self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping)
+            and largest is not None
+            and (
+                not any(
+                    dim in node_dims for dim, _ in self.ssw.get_unique_dims_inter_core_tiling(largest, self.mapping)
+                )
+                or self._each_column_reads_whole(largest, node)
             )
         )
         for dst_allocs in possible_dst_allocs:
@@ -515,6 +524,11 @@ class _Lowering:
         largest_alloc_node = get_node_with_largest_resource_allocation(compute_preds_succs, self.mapping)
         # Get its compute tiling and find the tiling loop that matches the number of memory allocs
         largest_alloc_tiling = self.ssw.get_unique_dims_inter_core_tiling(largest_alloc_node, self.mapping)
+        node_dims = set(self.ssw.get_dims(node))
+        if not any(dim in node_dims for dim, _ in largest_alloc_tiling) and (
+            slice_ := self._slice_of(node, len(memory_allocs))
+        ):
+            return (slice_,)
         mem_tiling = self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
         return (mem_tiling,)
 
@@ -540,15 +554,29 @@ class _Lowering:
         return (dim, largest_divisor_leq(size, nb_allocs))
 
     def determine_possible_transfer_plans(
-        self, src: HasOutputs, possible_dst_allocs: tuple[tuple[Core, ...], ...]
+        self,
+        node: TransferNode,
+        src: HasOutputs,
+        possible_dst_allocs: tuple[tuple[Core, ...], ...],
+        possible_tilings: tuple[InterCoreTiling, ...],
     ) -> tuple[MulticastPathPlan, ...]:
+        """The route of each placement of ``node``, moving what each target reads from the sources that hold it."""
         all_possible_resource_plans = []
         possible_src_allocs = self._retrieve_core_allocation(src)
+        bitwidth = node.inputs[0].operand_type.bitwidth
         for src_allocs in possible_src_allocs:
-            for dst_allocs in possible_dst_allocs:
+            for dst_allocs, tiling in zip(possible_dst_allocs, possible_tilings, strict=True):
+                demand = self.ssw.get_transfer_demand(
+                    node,
+                    self.mapping,
+                    tiling,
+                    len(src_allocs),
+                    len(dst_allocs),
+                    self.hardware.pairs_by_spatial_index((*src_allocs, *dst_allocs)),
+                    dst_allocs,
+                )
                 possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
-                    src_allocs=src_allocs,
-                    dst_allocs=dst_allocs,
+                    src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory
                 )
                 all_possible_resource_plans.extend(possible_resource_plans)
         return tuple(all_possible_resource_plans)
@@ -637,19 +665,13 @@ class _Lowering:
             TransferType.MEM_TO_MEM: 1,  # for input transfers to mem tile
             TransferType.COMPUTE_TO_MEM: 4,  # for output transfers to mem tile
         }
-        # Check the dims of node and find their unrolling factors in inter_core_tiling of src
-        node_dims = self.ssw.get_dims(node)
         inter_core_tiling_entries = self.mapping.get(src).inter_core_tiling
-        if not inter_core_tiling_entries:
-            inter_core_tiling_src = ()
-        else:
-            inter_core_tiling_src = inter_core_tiling_entries[0]
-        total_relevant_unrolling = 1
-        for dim in node_dims:
-            for tiling_dim, size in inter_core_tiling_src:
-                if tiling_dim == dim:
-                    total_relevant_unrolling *= size
+        inter_core_tiling_src = inter_core_tiling_entries[0] if inter_core_tiling_entries else ()
+        total_relevant_unrolling = self._relevant_unrolling(src, node)
         columns = self._columns_of(src)
+        all_mem_cores = sorted(self._get_accelerator_memory_cores(), key=lambda core: (core.col_id, core.id))
+        if node.transfer_type is TransferType.MEM_TO_MEM and self._each_column_reads_whole(src, node):
+            return (tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src)),)
         if columns and node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
             # A column's cores share its one memory tile, so both need one tile per occupied column, not per core.
             required_nb_memory_cores = min(columns, total_relevant_unrolling)
@@ -661,7 +683,6 @@ class _Lowering:
         if total_relevant_unrolling > 1:
             required_nb_memory_cores = largest_divisor_leq(total_relevant_unrolling, required_nb_memory_cores)
         # Unrolling binds allocation position to spatial index, so column order keeps a tile with its own cores.
-        all_mem_cores = sorted(self._get_accelerator_memory_cores(), key=lambda core: (core.col_id, core.id))
         candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
         # A tensor its consumers do not split is held whole, so a single tile can be left
         # feeding every column. One copy per occupied column is the alternative: each tile
@@ -670,7 +691,42 @@ class _Lowering:
             per_column = tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src))
             if len(per_column) > 1 and per_column not in candidates:
                 candidates.append(per_column)
+        # Partial sums of a reduction the source splits across columns are completed a slice per column's memory tile,
+        # a reduce-scatter: no link carries more than when one tile completes them all, and the slices leave in
+        # parallel.
+        if node.transfer_type is TransferType.COMPUTE_TO_MEM and self.ssw.splits_reduction(src, inter_core_tiling_src):
+            per_column = tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src))
+            if len(per_column) > 1 and self._slice_of(node, len(per_column)):
+                return (per_column,)
         return tuple(candidates)
+
+    def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
+        """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a
+        whole copy in each column's memory serves them without data crossing columns, where the code generator does
+        not pair the cores by spatial index."""
+        allocations, tilings = self.mapping.get(dst).resource_allocation, self.mapping.get(dst).inter_core_tiling
+        if not allocations or not tilings or self.hardware.pairs_by_spatial_index(allocations[0]):
+            return False
+        cores, tiling = allocations[0], tilings[0]
+        node_dims = set(self.ssw.get_dims(node))
+        relevant = [i for i, (dim, _) in enumerate(tiling) if dim in node_dims]
+        tiles = prod(tiling[i][1] for i in relevant)
+        read: dict[int | None, set[tuple[int, ...]]] = {}
+        for p, core in enumerate(cores):
+            position = np.unravel_index(position_of(p, len(cores), tiling), [f for _, f in tiling])
+            read.setdefault(core.col_id, set()).add(tuple(int(position[i]) for i in relevant))
+        return tiles > 1 and len(read) > 1 and all(len(seen) == tiles for seen in read.values())
+
+    def _relevant_unrolling(self, src: HasOutputs, node: TransferNode) -> int:
+        """How many ways ``src``'s inter-core tiling splits the dimensions of ``node``."""
+        tilings = self.mapping.get(src).inter_core_tiling
+        node_dims = self.ssw.get_dims(node)
+        return prod(size for dim, size in (tilings[0] if tilings else ()) if dim in node_dims)
+
+    def _slice_of(self, node: TransferNode, parts: int) -> tuple[LayerDim, int] | None:
+        """The split of ``node``'s largest dimension that ``parts`` divides, if any."""
+        dims = [dim for dim in self.ssw.get_dims(node) if self.ssw.get_dimension_size(dim) % parts == 0]
+        return (max(dims, key=self.ssw.get_dimension_size), parts) if dims else None
 
     def _column_ids_of(self, src: HasOutputs) -> set[int]:
         """The array columns the source's cores sit in, empty if they carry no coordinates."""

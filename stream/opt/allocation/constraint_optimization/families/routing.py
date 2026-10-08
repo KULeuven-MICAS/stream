@@ -165,23 +165,39 @@ LINK_CONTENTION = ResourceKind("link_contention", "communication link over-subsc
 
 
 class LinkContention:
-    """A link carries at most one transfer per slot."""
+    """The transfers of a slot share each link: the slot lasts at least as long as they keep any link busy together,
+    each for the part of its latency its share of the data keeps that link busy. On circuit-switched links a transfer
+    holds the link alone, so a link carries at most one transfer per slot."""
 
     name: ClassVar[str] = "link_contention"
-    requires: ClassVar[tuple[str, ...]] = ()
+    requires: ClassVar[tuple[str, ...]] = ("transfer_latency",)
     provides: ClassVar[tuple[str, ...]] = ()
 
     def build(self, ctx: FormulationContext) -> None:
-        usage: dict[tuple[CommunicationLink, int], list[SolverVar]] = defaultdict(list)
-        slot_of, links = ctx.space.slot_of, ctx.space.links_in_choice
+        space, model = ctx.space, ctx.model
+        held: dict[tuple[CommunicationLink, int], list[SolverVar]] = defaultdict(list)
+        busy: dict[tuple[CommunicationLink, int], list] = defaultdict(list)
         for (tr, choice), y in ctx.vars.y.items():
-            s = slot_of[tr]
-            for link in links[(tr, choice)]:
-                usage[(link, s)].append(y)
-        for (link, s), vars_ in usage.items():
+            s = space.slot_of[tr]
+            latency = ctx.quantities.get("transfer_latency", (tr, choice)).expr
+            for link in space.links_in_choice[(tr, choice)]:
+                if space.hardware.circuit_switched(link.cores):
+                    held[(link, s)].append(y)
+            for link, share in space.link_load(tr, choice).items():
+                if not space.hardware.circuit_switched(link.cores):
+                    busy[(link, s)].append(share * latency)
+        for (link, s), vars_ in held.items():
             ctx.add_constr(
-                ctx.model.quicksum(v._raw for v in vars_) <= 1,
+                model.quicksum(v._raw for v in vars_) <= 1,
                 name=f"link_usage_{resource_key(link)}_{s}",
                 resource=link,
                 kind=LINK_CONTENTION,
             )
+        for (link, s), terms in busy.items():
+            if len(terms) > 1:
+                ctx.add_constr(
+                    ctx.vars.slot_latency[s] >= model.quicksum(terms),
+                    name=f"link_busy_{resource_key(link)}_{s}",
+                    resource=link,
+                    kind=LINK_CONTENTION,
+                )

@@ -19,7 +19,6 @@ from stream.opt.allocation.constraint_optimization.families import (
 )
 from stream.opt.allocation.constraint_optimization.families.latency import reuse_selectors
 from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
-from stream.opt.allocation.constraint_optimization.space import core_id
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.iterator_type import is_state_operand
@@ -108,8 +107,8 @@ class Overlap:
         q.add("iteration", iteration)
         busy_terms: dict[CommunicationLink, list[Any]] = defaultdict(list)
         for key in ctx.vars.y:
-            for link in space.links_in_choice[key]:
-                busy_terms[link].append(latency[key])
+            for link, share in space.link_load(*key).items():
+                busy_terms[link].append(share * latency[key])
         for res, v in idle_lat.items():
             if not self._bounds_overlap(space, res):
                 continue
@@ -284,7 +283,7 @@ def _is_offchip_link(space: DecisionSpace, res: Resource) -> bool:
     off = space.offchip_core_id
     if off is None or not isinstance(res, CommunicationLink):
         return False
-    return off in (core_id(res.sender), core_id(res.receiver))
+    return any(core.id == off for core in res.cores)
 
 
 def _recurrence_bound(space: DecisionSpace) -> int:
