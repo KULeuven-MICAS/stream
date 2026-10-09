@@ -126,13 +126,15 @@ memories:
           - I2, fh
     served_dimensions: [D1, D2]
 
+  # The global buffer stages the weights too: it is the core's one top memory, where a transfer to the core
+  # lands, and the 64 KB weight SRAM below it holds the tiles the array reads.
   sram_1M:
     size: 8388608
     r_cost: 100
     w_cost: 130
     area: 25
     latency: 1
-    operands: [I1, O]
+    operands: [I1, I2, O]
     ports:
       - name: rw_port_1
         type: read_write
@@ -140,6 +142,7 @@ memories:
         bandwidth_max: 384
         allocation:
           - I1, fh
+          - I2, fh
           - O, fh
           - O, th
       - name: rw_port_2
@@ -148,6 +151,7 @@ memories:
         bandwidth_max: 384
         allocation:
           - I1, tl
+          - I2, tl
           - O, tl
           - O, fl
     served_dimensions: [D1, D2]

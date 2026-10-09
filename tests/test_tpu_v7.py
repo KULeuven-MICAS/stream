@@ -135,3 +135,18 @@ def test_a_one_input_op_is_costed_on_the_vector_unit_through_its_registers_and_v
     assert {"Relu", "MaxPool"} <= entries.keys()
     assert all(entry.metadata["backend"] == "zigzag" for entry in entries.values())
     assert entries["Relu"].latency_total >= entries["Relu"].ideal_cycle > 0
+
+
+def test_a_convolution_spreads_its_contraction_over_the_mxu_rows(tmp_path):
+    """The MXU maps an im2col convolution's whole contraction (channels by kernel window) over its rows, as the
+    silicon does, rather than one loop per array dimension: the ResNet stem's 3 x 7 x 7 window fills far more of the
+    array than its 3 channels alone."""
+    workload = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    estimate = evaluate_mapping(TPU_V7, workload, str(tmp_path), options=SolveOptions(artifacts=False))
+    conv = next(
+        entry
+        for node, costs in estimate.context.get("cost_lut").lut.items()
+        if node.type == "Conv"
+        for entry in costs.values()
+    )
+    assert conv.cme.ideal_temporal_cycle < 4 * conv.cme.ideal_cycle
