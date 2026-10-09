@@ -186,3 +186,17 @@ def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed():
         for seed in range(4)
     }
     assert plans == {str([{"dim": "Gemm_Left.D0", "tile": 8}, {"dim": "Gemm_Left.D2", "tile": 128}])}
+
+
+def test_a_node_left_on_one_core_holds_its_tensors_whole():
+    """The group splits the Gemm's output columns over four cores, but a Gemm left on one core keeps all of them."""
+    acc, w = _parse(_TPU_QUAD, _GEMM)
+    (cn,) = w.get_computation_nodes()
+    unroll = {w.get_dims(cn)[2]: 4}
+    cores = [c for c in acc.core_list if c.id in (0, 1, 2, 3)]
+    tiler = CapacityTiler(w, acc)
+    assert tiler.plan((cn,), {cn: cores}, unroll, set()) == [{"dim": "Gemm.D1", "tile": 512}]
+    assert tiler.plan((cn,), {cn: cores[:1]}, unroll, set()) == [
+        {"dim": "Gemm.D1", "tile": 512},
+        {"dim": "Gemm.D2", "tile": 128},
+    ]

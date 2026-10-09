@@ -54,9 +54,13 @@ class CapacityTiler:
         core_cap: dict[int, int] = {}
         core_tensors: dict[int, list[tuple[Tensor, frozenset[LayerDim]]]] = {}
         core_seen: dict[int, set[str]] = {}
+        whole: dict[int, set[str]] = {}
         for cn in cns:
             node_tensors = self._node_tensors(cn)
-            for core in cores_per_node.get(cn, []):
+            cores = cores_per_node.get(cn, [])
+            for core in cores:
+                if len(cores) == 1:
+                    whole.setdefault(core.id, set()).update(t.name for t, _ in node_tensors)
                 core_cap[core.id] = core.get_memory_capacity()
                 bucket = core_tensors.setdefault(core.id, [])
                 seen = core_seen.setdefault(core.id, set())
@@ -82,18 +86,20 @@ class CapacityTiler:
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
         resident: dict[LayerDim, int] = {dim: seeded.get(dim, per_core[dim]) for dim in per_core}
 
-        # Per core, each resident tensor as (base bits, scaling dims) so overflow() is cheap arithmetic.
-        base_of: dict[str, tuple[float, tuple[LayerDim, ...]]] = {}
+        # Per core, each resident tensor as (base bits, scaling dims) so overflow() is cheap arithmetic. A node
+        # left on one core holds its tensors whole there, not the slice its group splits across cores.
+        base_of: dict[tuple[str, bool], tuple[float, tuple[LayerDim, ...]]] = {}
         core_terms: dict[int, list[tuple[float, tuple[LayerDim, ...]]]] = {}
         for cid, tensors in core_tensors.items():
             terms: list[tuple[float, tuple[LayerDim, ...]]] = []
             for t, dims in tensors:
-                cached = base_of.get(t.name)
+                key = (t.name, t.name in whole.get(cid, ()))
+                cached = base_of.get(key)
                 if cached is None:
                     full_bits = math.prod(t.shape) * t.operand_type.bitwidth
-                    split = math.prod(unroll[d] for d in dims if unroll.get(d, 1) > 1)
+                    split = 1 if key[1] else math.prod(unroll[d] for d in dims if unroll.get(d, 1) > 1)
                     cached = (full_bits / split, tuple(d for d in dims if d in per_core))
-                    base_of[t.name] = cached
+                    base_of[key] = cached
                 terms.append(cached)
             core_terms[cid] = terms
 
