@@ -351,10 +351,13 @@ class DecisionSpace:
         )
 
     def copied_bits(self, t: Tensor) -> float:
-        """Bits per firing the transfer of ``t`` delivers, in place or not: a halo once per target holding it."""
+        """Bits per firing the transfers of ``t`` deliver, in place or not: a halo once per target holding it."""
+        if len(readers := [tr for tr in self.transfer_nodes if t in tr.inputs]) > 1:
+            return sum(self._delivered_bits(tr) for tr in readers)
         tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
-        if tr is None:
-            return t.size_bits()
+        return t.size_bits() if tr is None else self._delivered_bits(tr)
+
+    def _delivered_bits(self, tr: TransferNode) -> float:
         if overlaps := self.overlaps(tr):
             return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
         return self.moved_bits(tr, self.path_choices[tr][0])
