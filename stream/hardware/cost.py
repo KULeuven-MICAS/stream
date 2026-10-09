@@ -134,8 +134,9 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
         node = DEFAULT_TECH_NODE
     density = _DENSITIES[node]
 
-    cores_data = bundle.validated_data()["cores"]
-    alias_of, alias_owner = _alias_maps(bundle)
+    data = bundle.validated_data()
+    cores_data = data["cores"]
+    alias_of, alias_owner = _alias_maps(bundle, data)
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
@@ -181,11 +182,17 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
     )
 
 
-def _alias_maps(bundle: HardwareBundle) -> tuple[dict[tuple[int, str], str], dict[str, tuple[int, str]]]:
+def _alias_maps(
+    bundle: HardwareBundle, data: dict[str, Any]
+) -> tuple[dict[tuple[int, str], str], dict[str, tuple[int, str]]]:
+    """Each group of memory views that are one physical macro, owned by its first view: the declared
+    `memory_aliases`, and the top-level memory of each `core_memory_sharing` group."""
+    groups = [[(int(r.split(".")[0]), r.split(".", 1)[1]) for r in group] for group in bundle.memory_aliases]
+    for group in data.get("core_memory_sharing", []):
+        groups.append([(i, list(data["cores"][i]["memories"])[-1]) for i in group if "memories" in data["cores"][i]])
     alias_of: dict[tuple[int, str], str] = {}
     alias_owner: dict[str, tuple[int, str]] = {}
-    for group in bundle.memory_aliases:
-        refs = [(int(r.split(".")[0]), r.split(".", 1)[1]) for r in group]
+    for refs in groups:
         label = "+".join(f"{cid}.{name}" for cid, name in refs)
         alias_owner[label] = refs[0]
         for ref in refs:

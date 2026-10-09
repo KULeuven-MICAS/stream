@@ -1,55 +1,53 @@
-# SwiGLU on TPU7x, one layer at a time.
+# SwiGLU (256 tokens, d_model 4096, d_ff 14336) on a two-chip TPU7x slice, one layer at a time.
 #
-# Every layer is its own fused group, so each runs to completion and its full output goes back to
-# HBM before the next starts. The three Gemms take all 32 MXU cores (eight per TensorCore) and split
-# their output columns (D2) 32 ways -- the natural split for a weight-stationary array, since each
-# core then holds a different slice of the weights and never reloads them. SiLU and the gate multiply
-# go to the four vector cores; putting them on the MXUs would burn matrix arrays on elementwise work.
-#
-# This is the baseline the fused mapping is measured against: same hardware, same core assignment,
-# the only difference being that nothing is kept on-chip between layers. A Gemm's weights do not fit
-# its cores, so each streams them in 256-wide K-blocks matched to the 256-row array, and gate/up take
-# each core's 448 output columns in four 112-wide tiles so the tokens fill the other array dimension.
-# The vector cores take 32 tokens at a time: a whole batch of SiLU's input and output (3.5 MiB per
-# core) overflows their 2 MiB operand buffer.
+# The same tensor-parallel split as swiglu_tpu_v7_fused.yaml -- gate and up split d_ff over the eight
+# MXUs, SiLU and the multiply over the four VPUs, down its contraction over the MXUs with a
+# reduce-scatter of the partial sums -- but each layer is its own group, its inputs read from and its
+# output written to HBM. Each layer is cut into at least eight blocks, so a block's loads overlap the
+# block before's compute, along the axes that keep the arrays full: gate and up in blocks of 256 hidden
+# columns and half of d_model per MXU, down in blocks of 256 of its contraction and half of d_model, the
+# elementwise layers in blocks of 128 tokens and 896 hidden columns per VPU. The projections are bound
+# by HBM; the down projection's reduce-scatter, with no other layer to hide behind, by the ICI link.
 layers:
 - name: Gemm_Left
-  core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
-  inter_core_tiling: [[{dim: D2, split: 32}]]
+  core_allocation: [[0, 1, 4, 5, 8, 9, 12, 13]]
+  inter_core_tiling: [[{dim: D2, split: 8}]]
 - name: Gemm_Right
-  core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
-  inter_core_tiling: [[{dim: D2, split: 32}]]
+  core_allocation: [[0, 1, 4, 5, 8, 9, 12, 13]]
+  inter_core_tiling: [[{dim: D2, split: 8}]]
 - name: Silu
-  core_allocation: [[8, 18, 28, 38]]
+  core_allocation: [[2, 6, 10, 14]]
   inter_core_tiling: [[{dim: D1, split: 4}]]
 - name: Elt_Mul
-  core_allocation: [[8, 18, 28, 38]]
+  core_allocation: [[2, 6, 10, 14]]
   inter_core_tiling: [[{dim: D1, split: 4}]]
 - name: Gemm_Down
-  core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
-  inter_core_tiling: [[{dim: D2, split: 32}]]
+  core_allocation: [[0, 1, 4, 5, 8, 9, 12, 13]]
+  inter_core_tiling: [[{dim: D1, split: 8}]]
 
 fused_groups:
 - name: Gate_Proj
   layers: [Gemm_Left]
   intra_core_tiling:
-  - {dim: Gemm_Left.D0, tile: 256}
-  - {dim: Gemm_Left.D1, tile: 256}
-  - {dim: Gemm_Left.D2, tile: 112}
+  - {dim: Gemm_Left.D1, tile: 2048}
+  - {dim: Gemm_Left.D2, tile: 256}
 - name: Up_Proj
   layers: [Gemm_Right]
   intra_core_tiling:
-  - {dim: Gemm_Right.D0, tile: 256}
-  - {dim: Gemm_Right.D1, tile: 256}
-  - {dim: Gemm_Right.D2, tile: 112}
+  - {dim: Gemm_Right.D1, tile: 2048}
+  - {dim: Gemm_Right.D2, tile: 256}
 - name: Activation
   layers: [Silu]
-  intra_core_tiling: [{dim: Silu.D0, tile: 32}]
+  intra_core_tiling:
+  - {dim: Silu.D0, tile: 128}
+  - {dim: Silu.D1, tile: 896}
 - name: Gate_Multiply
   layers: [Elt_Mul]
-  intra_core_tiling: [{dim: Elt_Mul.D0, tile: 32}]
+  intra_core_tiling:
+  - {dim: Elt_Mul.D0, tile: 128}
+  - {dim: Elt_Mul.D1, tile: 896}
 - name: Down_Proj
   layers: [Gemm_Down]
   intra_core_tiling:
-  - {dim: Gemm_Down.D0, tile: 256}
   - {dim: Gemm_Down.D1, tile: 256}
+  - {dim: Gemm_Down.D2, tile: 2048}

@@ -1,7 +1,10 @@
-# TPU7x HBM3e stack, fronted as the off-chip memory controller.
+# TPU7x HBM3E, fronted as the off-chip memory controller of a two-chip slice.
 #
-# 192 GiB per chip at 7.38 TB/s; this models a two-chip slice, so 384 GiB and double the bandwidth.
-# 107345 bits/cycle at the 1.1 GHz core clock is ~14.76 TB/s, the published 2 x 7380 GB/s.
+# Each chiplet owns four of a chip's eight HBM3E stacks: 96 GiB at 3.69 TB/s (7.37 TB/s per chip,
+# Cloud TPU7x docs and Hot Chips 2025). Stream has one off-chip core, so the slice's four chiplets'
+# stacks are one core of 384 GiB whose port carries all four chiplets' bandwidth, each chiplet's
+# VMEM linked to it at its own 3.69 TB/s (tpu_v7_ironwood.yaml). 13,400 bits per cycle at 2.2 GHz
+# per chiplet, 53,600 for the slice.
 name: tpu_v7_hbm
 type: zigzag.offchip
 
@@ -17,7 +20,7 @@ memories:
       - name: rw_port_1
         type: read_write
         bandwidth_min: 256
-        bandwidth_max: 107345
+        bandwidth_max: 53600
         allocation:
           - I1, fh
           - I1, tl

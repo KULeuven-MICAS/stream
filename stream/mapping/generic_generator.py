@@ -23,6 +23,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
+from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import (
@@ -75,6 +76,10 @@ class GenericMappingGenerator:
         # {"dim": "NodeName.D{n}", "tile": size}; they override the trivial default in
         # _build_intra_core_tiling, filtered per group to the nodes that group actually contains.
         self.intra_core_tiling = intra_core_tiling
+        self._activations = {t.name for cn in workload.get_computation_nodes() for t in cn.outputs}
+        self._accumulates_across_cores = all(
+            cls.accumulates_across_cores for cls in namespace_classes(accelerator).values()
+        )
 
     # ---------------------------------------------------------------------- #
     # Public API                                                              #
@@ -259,6 +264,11 @@ class GenericMappingGenerator:
         Parallel output dimensions (OY/OX/K) are consumed before reduction ones, so a
         contraction only absorbs what the output axes could not: splitting a reduction
         leaves every core holding a partial sum that has to be reduced across the mesh.
+        A contraction indexing an activation (an input another node of the workload
+        produces) at least twice the output ranks with them where the cores can add partial
+        sums: reducing the output, its partial sums at accumulator precision, then moves less
+        than gathering that input onto every core, as in a tensor-parallel MLP whose down
+        projection contracts the hidden dimension.
         Within each group the dimension that leaves the fused group's cores the smallest
         footprint goes first (an operand it does not index stays whole on every core; weights
         that overflow a core count before activations a sliding window streams), then the one
@@ -289,6 +299,18 @@ class GenericMappingGenerator:
             for r in m.results
         ]
 
+        output_bits = sum(_tensor_bits(t.shape, t) for t in cn.outputs)
+        activations = [
+            map_dim_positions(cn.get_mapping(t))
+            for t in cn.inputs
+            if t.name in self._activations and _tensor_bits(t.shape, t) >= 2 * output_bits
+        ]
+
+        def ranks_as_parallel(idx: int) -> bool:
+            if types.get(idx) == IteratorType.PARALLEL:
+                return True
+            return self._accumulates_across_cores and any(idx in indexed for indexed in activations)
+
         def footprint(idx: int, size: int) -> float:
             factor = math.gcd(n_cores, size)
             return sum(bits / factor if idx in indexed else bits for bits, indexed in operands)
@@ -296,11 +318,19 @@ class GenericMappingGenerator:
         def outer(idx: int) -> int:
             return -next((axis for axis, read in enumerate(output) if idx in read), len(output))
 
+        # A dim a node of the group reduces over is not one all of them split, so their tiles do not line up along
+        # it: it is preferred only for the weights it fits.
         group = self._group_footprints(sub_workload, n_cores)
+        for reducer in sub_workload.get_computation_nodes():
+            reducer_dims = sub_workload.get_dims(reducer)
+            for p, kind in derive_iterator_types(reducer).items():
+                lead = sub_workload.leading_dim(reducer_dims[p])[0] if p < len(reducer_dims) else None
+                if kind == IteratorType.REDUCTION and lead in group:
+                    group[lead] = (group[lead][0], math.inf)
         dim_sizes = sorted(
             ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
             key=lambda pair: (
-                types.get(pair[0]) == IteratorType.PARALLEL,
+                ranks_as_parallel(pair[0]),
                 tuple(-x for x in group.get(sub_workload.leading_dim(dims[pair[0]])[0], (math.inf, math.inf))),
                 -footprint(*pair),
                 pair[1],
