@@ -31,32 +31,16 @@ def _parse(hardware: str, workload: str):
 
 
 def _worst_core_ratio(gen: GenericMappingGenerator, sub, cns, tiling) -> float:
-    """Worst per-core footprint / (capacity * fill) after applying ``tiling`` by global dim, using the
-    same arithmetic footprint model the tiler does (full tensor / inter-core split, scaled by tiles)."""
+    """Worst memory footprint / (capacity * fill) the tiler measures for ``tiling``."""
     tiler = CapacityTiler(sub, gen.accelerator)
+    cores = {cn: gen._select_cores_for_node(cn) for cn in cns}
     unroll = gen._inter_core_unrolling(sub, cns)
-    node_tensors = {cn: tiler._node_tensors(cn) for cn in cns}
-    all_dims = {d for ts in node_tensors.values() for entry in ts for d in entry[1]}
-    percore = {d: (sub.get_dimension_size(d) // unroll.get(d, 1)) for d in all_dims}
-    resident = dict(percore)
-    resident.update(tiler._seed_resident(cns, tiling, {d: 1 for d in all_dims}))
-
-    def bits(t, dims):
-        base = math.prod(t.shape) * t.operand_type.bitwidth / math.prod(unroll[d] for d in dims if unroll.get(d, 1) > 1)
-        return base * math.prod(resident[d] / percore[d] for d in dims if percore.get(d, 0) > 0)
-
-    caps: dict[int, float] = {}
-    foot: dict[int, float] = {}
-    seen: dict[int, set] = {}
-    for cn in cns:
-        for core in gen._select_cores_for_node(cn):
-            caps[core.id] = core.get_memory_capacity()
-            s = seen.setdefault(core.id, set())
-            for tensor, dims in node_tensors[cn]:
-                if tensor.name not in s:
-                    s.add(tensor.name)
-                    foot[core.id] = foot.get(core.id, 0.0) + bits(tensor, dims)
-    return max((foot[c] / (caps[c] * tiler.fill_fraction) for c in caps if caps[c] > 0), default=0.0)
+    dims = {sub.leading_dim(d)[0] for cn in cns for d in sub.get_dims(cn)}
+    per_core = {d: sub.get_dimension_size(d) // unroll.get(d, 1) for d in dims}
+    resident = per_core | tiler._seed_resident(cns, tiling, per_core)
+    held = tiler.memory_bits(cns, cores, unroll, resident)
+    capacities = tiler._capacities(cns, cores)
+    return max(bits / (capacities[m] * tiler.fill_fraction) for m, bits in held.items())
 
 
 def test_divisors_desc():
@@ -65,8 +49,9 @@ def test_divisors_desc():
     assert _divisors_desc(14336)[0] == 14336  # sqrt enumeration returns the whole dim first
 
 
-def test_streams_contraction_axis_when_weight_overflows():
-    """A large Gemm whose resident weight overflows gets its contraction axis (D1) tiled until it fits."""
+def test_streams_output_axes_when_weight_overflows():
+    """A large Gemm whose resident weight overflows streams its output axes until it fits, keeping the contraction
+    whole so no partial sum has to stay resident."""
     acc, w = _parse(_TPU_QUAD, _GEMM)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     subs = w.split_fusion_groups(cut_points=gen._cut_points(None))
@@ -81,7 +66,7 @@ def test_streams_contraction_axis_when_weight_overflows():
             refined_any = True
             # the trivial mapper overflowed; the refined tiling must fit and must tile a contraction axis
             assert _worst_core_ratio(gen, sub, cns, refined) <= 1.0
-            assert any(".D1" in e["dim"] for e in refined), f"expected a contraction-axis tile, got {refined}"
+            assert refined and not any(".D1" in e["dim"] for e in refined), f"expected output-axis tiles, got {refined}"
     assert refined_any, "the Gemm was expected to overflow the trivial mapping"
 
 
@@ -99,46 +84,20 @@ def test_noop_when_group_fits():
 
 
 def test_footprint_is_summed_per_physical_core():
-    """A fused group is accounted per physical core: distinct tensors sum, a shared tensor counts once."""
+    """Nodes on one core sum their tiles, and a tensor both hold with the same tile counts once."""
     acc, w = _parse(_TPU_QUAD, _SWIGLU_FITS)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     sub = next(s for s in w.split_fusion_groups(cut_points=gen._cut_points(None)) if tuple(s.get_computation_nodes()))
     cns = tuple(sub.get_computation_nodes())
-    assert len(cns) > 1, "need a multi-node fused group to observe summation"
+    a, b = next((a, b) for a in cns for b in cns if a is not b and set(a.outputs) & set(b.inputs))
+    core = gen._select_cores_for_node(a)[0]
     tiler = CapacityTiler(sub, acc)
-    node_tensors = {cn: tiler._node_tensors(cn) for cn in cns}
 
-    def bits(tensor) -> float:
-        return math.prod(tensor.shape) * tensor.operand_type.bitwidth
+    def held(*nodes) -> float:
+        return sum(tiler.memory_bits(nodes, dict.fromkeys(nodes, [core]), {}, {}).values())
 
-    # A producer/consumer pair that shares an intermediate tensor, so dedup is observable.
-    pair = next(
-        (
-            (a, b, shared)
-            for a in cns
-            for b in cns
-            if a is not b and (shared := {t.name for t, _ in node_tensors[a]} & {t.name for t, _ in node_tensors[b]})
-        ),
-        None,
-    )
-    assert pair, "a fused group must have a producer/consumer pair sharing a tensor"
-    a, b, shared = pair
-
-    # The tiler's bucket for a core hosting both nodes: each tensor once, by name (its `core_seen` set).
-    bucket: dict[str, float] = {}
-    for cn in (a, b):
-        for t, _ in node_tensors[cn]:
-            bucket.setdefault(t.name, bits(t))
-    packed_bits = sum(bucket.values())
-
-    a_bits = sum(bits(t) for t, _ in node_tensors[a])
-    b_bits = sum(bits(t) for t, _ in node_tensors[b])
-    shared_bits = sum(bits(t) for t, _ in node_tensors[a] if t.name in shared)
-
-    # SUM, with the shared intermediate counted once rather than twice.
-    assert packed_bits == pytest.approx(a_bits + b_bits - shared_bits)
-    assert packed_bits > max(a_bits, b_bits)  # the shared core holds more than either node alone
-    assert packed_bits < a_bits + b_bits  # ... but less than a per-view sum that double-counts it
+    shared = sum(math.prod(t.shape) * t.operand_type.bitwidth for t in set(a.outputs) & set(b.inputs))
+    assert held(a, b) == pytest.approx(held(a) + held(b) - shared)
 
 
 def test_refined_mapping_validates():
@@ -189,14 +148,18 @@ def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed():
 
 
 def test_a_node_left_on_one_core_holds_its_tensors_whole():
-    """The group splits the Gemm's output columns over four cores, but a Gemm left on one core keeps all of them."""
+    """Split over four cores, each Gemm core streams 32 of its 512 output columns per iteration; left on one core it
+    holds the columns of all four, so the group's per-core tile shrinks to 8 for the same 32 columns there."""
     acc, w = _parse(_TPU_QUAD, _GEMM)
     (cn,) = w.get_computation_nodes()
     unroll = {w.get_dims(cn)[2]: 4}
     cores = [c for c in acc.core_list if c.id in (0, 1, 2, 3)]
     tiler = CapacityTiler(w, acc)
-    assert tiler.plan((cn,), {cn: cores}, unroll, set()) == [{"dim": "Gemm.D1", "tile": 512}]
+    assert tiler.plan((cn,), {cn: cores}, unroll, set()) == [
+        {"dim": "Gemm.D0", "tile": 16},
+        {"dim": "Gemm.D2", "tile": 32},
+    ]
     assert tiler.plan((cn,), {cn: cores[:1]}, unroll, set()) == [
-        {"dim": "Gemm.D1", "tile": 512},
-        {"dim": "Gemm.D2", "tile": 128},
+        {"dim": "Gemm.D0", "tile": 16},
+        {"dim": "Gemm.D2", "tile": 8},
     ]
