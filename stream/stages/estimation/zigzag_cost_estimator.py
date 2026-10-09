@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass
 from math import ceil
@@ -319,17 +320,44 @@ class ZigZagCostEstimator:
             )
 
     def run_zigzag(self, node: ComputationNode, core: Core) -> CostModelEvaluation:
-        """Run the ZigZag flow to estimate performance of a given node on a core."""
-
-        main_stage = self.instantiate_zigzag_flow(node, core)
+        """Run the ZigZag flow to estimate performance of a given node on a core: its best spatial mapping unrolling
+        one loop per array dimension or, where unrolling several fills more of the array, as an array maps an im2col
+        convolution's whole contraction over its rows, the faster of the two. ZigZag ranks spatial mappings by how
+        much of the array they fill, and among those that fill it alike prefers the one spreading over most loops,
+        which can starve an operand of bandwidth; only the cost model tells which of the two is faster."""
         logger.info(f"Launching intra-core mapping optimization for {node} -> {core} ...")
-        answers = main_stage.run()
-        assert len(answers) == 1, "CoreCostEstimationStage's subflow returned more than one cost entry"
-        cme: CostModelEvaluation = answers[0][0]  # type: ignore
-        return cme
+        cmes: list[CostModelEvaluation] = []
+        failure: Exception | None = None
+        for mix in (False, True):
+            if mix and cmes and self._array_fill(node, core, True) <= self._array_fill(node, core, False):
+                break
+            try:
+                answers = self.instantiate_zigzag_flow(copy.deepcopy(node), core, mix).run()
+            except Exception as exc:  # noqa: BLE001 -- the other kind of spatial mapping may still cost it
+                failure = exc
+                continue
+            assert len(answers) == 1, "CoreCostEstimationStage's subflow returned more than one cost entry"
+            cmes.append(answers[0][0])  # type: ignore
+        if not cmes:
+            assert failure is not None
+            raise failure
+        return min(cmes, key=lambda cme: cme.latency_total2)
 
-    def instantiate_zigzag_flow(self, node: ComputationNode, core: Core) -> _KwargsMainStage:
-        """Instantiate a runnable ZigZag mainstage"""
+    @staticmethod
+    def _array_fill(node: ComputationNode, core: Core, mix: bool) -> int:
+        """The units of the array the best spatial mapping of either kind keeps busy, found without costing it."""
+        stage = SpatialMappingGeneratorStage(
+            [CostModelStage],
+            accelerator=core.to_zigzag_core(),
+            layer=copy.deepcopy(node),
+            enable_mix_spatial_mapping_generation=mix,
+            nb_mappings_generated=1,
+        )
+        return next(stage.generate_spatial_mappings()).hw_utilization
+
+    def instantiate_zigzag_flow(self, node: ComputationNode, core: Core, mix: bool = False) -> _KwargsMainStage:
+        """Instantiate a runnable ZigZag mainstage, generating spatial mappings that unroll several loops over one
+        array dimension if ``mix``."""
         main_stage = _KwargsMainStage(
             [  # Initializes the MainStage as entry point
                 MinimalLatencyStage,  # type: ignore
@@ -344,6 +372,7 @@ class ZigZagCostEstimator:
             loma_show_progress_bar=self.loma_show_progress_bar,
             temporal_mapping_type=self.temporal_mapping_type,
             nb_mappings_generated=self.nb_spatial_mappings_generated,
+            enable_mix_spatial_mapping_generation=mix,
         )
         return main_stage
 
