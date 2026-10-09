@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
-from stream.opt.allocation.constraint_optimization.families import LATENCY
+from stream.opt.allocation.constraint_optimization.families import DMA_PEAKS
 from stream.opt.allocation.constraint_optimization.space import unique_tensors
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
@@ -23,9 +23,9 @@ DMA_CHANNELS = ResourceKind("dma_channels", "DMA channel limit exceeded")
 
 
 class DmaChannels:
-    """The DMA channels each core's transfers drive in and out, whose peaks the latency objective charges; a
-    namespace family bounds them. Incoming channels follow the transfer outputs a core holds, outgoing ones the
-    inputs; a fifo carries every slice its core works through, so a transfer costs a core its fan, not its slices."""
+    """The DMA channels each core's transfers drive in and out, whose peaks an objective level after the off-chip
+    traffic keeps low; a namespace family bounds them. Incoming channels follow the transfer outputs a core holds,
+    outgoing ones the inputs; a fifo carries every slice its core works through, so a core pays its fan, not slices."""
 
     name: ClassVar[str] = "dma_channels"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -72,7 +72,7 @@ class DmaChannels:
     def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
         q = ctx.quantities
         peaks = q.get("dma_peak_in").expr + q.get("dma_peak_out").expr
-        return [ObjectiveLevel(expr=peaks, priority=LATENCY, name="latency")]
+        return [ObjectiveLevel(expr=peaks, priority=DMA_PEAKS, name="dma_peaks")]
 
 
 def _dma_candidate_cores(space: DecisionSpace) -> set[Core]:

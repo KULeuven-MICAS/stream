@@ -1,5 +1,4 @@
 import logging
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, TypeAlias
@@ -201,7 +200,6 @@ class AllocationModel:
                 reuse_factors=reuse_factors,
                 route_cycles={tr: space.transfer_latency_for_path(tr, route) for tr, route in routing.items()},
                 primary_cost=value(self.objective["latency"].expr),
-                throughput_bound=self.throughput_bound(slot_latencies),
                 solve_stats=stats,
                 metrics=solver_metrics(stats, self.model.model_size()),
                 performance=performance,
@@ -253,19 +251,3 @@ class AllocationModel:
                 raise ValueError(f"{t.node_name}: expected exactly one placement choice, got {chosen}")
             tensor_alloc[t] = chosen[0]
         return tensor_alloc
-
-    def throughput_bound(self, slot_latencies: dict[int, float]) -> float:
-        """The pipelined compute bound of the steady state, from the solved allocation."""
-        space, q, value = self.space, self.quantities, self.model.value
-        busy: dict[Any, float] = defaultdict(float)
-        for n in space.ssc_nodes:
-            active = float(space.active_runtime(n))
-            for group in space.mapping.get(n).resource_allocation:
-                for core in group:
-                    busy[core] += active
-        per_iteration = max(busy.values(), default=0.0)
-        per_iteration = max(per_iteration, float(q.get("recurrence_bound").expr))
-        for shared in q.indexed("shared_busy").values() if "shared_busy" in q else ():
-            per_iteration = max(per_iteration, value(shared.expr))
-        chain = sum(slot_latencies.values())
-        return space.iterations * per_iteration + max(0.0, chain - per_iteration) + value(q.get("fill").expr)

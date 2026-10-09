@@ -20,9 +20,12 @@ TOTAL_LATENCY = "total_latency"
 FamilySpec = str | Mapping[str, Any]
 Build = Callable[["FormulationContext"], None]
 
-LATENCY, OFFCHIP_TRAFFIC, BUFFERING, ROUTE_HOPS = 4, 3, 2, 1
-"""The priorities of Stream's objective levels: the latency decides first, then the off-chip traffic, the
-buffering depth and the route length each break the ties of the level above."""
+LATENCY, OFFCHIP_TRAFFIC, DMA_PEAKS, BUFFERING, ROUTE_HOPS = 5, 4, 3, 2, 1
+"""The priorities of Stream's objective levels: the latency decides first, then the off-chip traffic, the DMA
+channel peaks, the buffering depth and the route length each break the ties of the level above."""
+
+OFFCHIP_TIMED = "offchip_timed"
+"""Registered by a family whose latency already pays for the time the off-chip links take."""
 
 DEFAULT_FAMILIES: tuple[str, ...] = (
     "placement",
@@ -38,6 +41,7 @@ DEFAULT_FAMILIES: tuple[str, ...] = (
     "reuse_compatibility",
     "spatial_reuse",
     "overlap",
+    "memory_ports",
     "dma_channels",
     "offchip_traffic",
 )

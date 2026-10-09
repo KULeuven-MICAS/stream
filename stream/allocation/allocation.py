@@ -51,11 +51,9 @@ class Allocation:
 
     @property
     def estimated_cycles(self) -> float:
-        """What running this steady state takes: a lone node pipelines to its throughput bound,
-        while a fused group is held to how its nodes overlap, which the solved cost captures."""
-        if len(self.problem.source_workload.get_computation_nodes()) == 1:
-            return self.solution.throughput_bound
-        return self.solution.primary_cost
+        """What running this steady state takes: the latency the solve modelled, every iteration held to its busiest
+        core, link and memory port and overlapped with the next as far as they let it."""
+        return float(self.solution.latency.total)
 
     def get_ir(self) -> dict:
         """The allocation as a plain dict: latencies, solve configuration, statistics and families, fusion splits,
