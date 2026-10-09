@@ -282,14 +282,14 @@ class ZigZagCostEstimator:
             cme = self.increase_cc_per_op(cme, node.type)
             return CoreCostEntry(
                 energy_total=getattr(cme, "energy_total", 0),
-                latency_total=getattr(cme, "latency_total2", getattr(cme, "ideal_cycle", 0)),
+                latency_total=self.steady_latency(cme),
                 ideal_cycle=getattr(cme, "ideal_cycle", 0),
                 ideal_temporal_cycle=getattr(cme, "ideal_temporal_cycle", 0),
                 mem_energy_breakdown=getattr(cme, "mem_energy_breakdown", {}),
                 cme=cme,
                 mapping=getattr(cme, "mapping", None),
                 layer=node,
-                metadata={"backend": "zigzag"},
+                metadata={"backend": "zigzag", "drain_cycles": cme.systolic_drain_cycle},
             )
         except Exception as exc:
             # Fallback: this core is not costable by ZigZag -- either it has no ZigZag backend (e.g. an
@@ -344,7 +344,13 @@ class ZigZagCostEstimator:
         if not cmes:
             assert failure is not None
             raise failure
-        return min(cmes, key=lambda cme: cme.latency_total2)
+        return min(cmes, key=self.steady_latency)
+
+    @staticmethod
+    def steady_latency(cme: CostModelEvaluation) -> float:
+        """Cycles a tile keeps its core busy: the next tile of a run enters a systolic array behind it, so its results
+        draining out of the array overlap that tile, and only the run's last tiles drain (see ``Overlap``)."""
+        return cme.latency_total2 - cme.systolic_drain_cycle
 
     @staticmethod
     def _array_fill(node: ComputationNode, core: Core, mix: bool) -> int:

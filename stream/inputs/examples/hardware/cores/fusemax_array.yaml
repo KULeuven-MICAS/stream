@@ -114,6 +114,8 @@ operational_array:
   unit_area: 1 # unit
   dimensions: [D1, D2]
   sizes: [256, 256]
+  # Output stationary and systolic: inputs move from one PE to the next across both dimensions
+  systolic_dimensions: [D1, D2]
 
 # No fixed `dataflows`: let ZigZag generate the spatial (PE-array) mapping per layer.
 # A fixed dataflow here yielded an EMPTY spatial mapping (near-zero MAC utilization) in
