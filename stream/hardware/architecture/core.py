@@ -177,6 +177,7 @@ class Core:
             "row_id": self.row_id,
             "col_id": self.col_id,
             "utilization": self.utilization,
+            "operator_types": getattr(self, "operator_types", None),
         }
 
         # Merge backend-specific fields (uniform protocol)

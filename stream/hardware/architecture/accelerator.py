@@ -60,6 +60,14 @@ class Accelerator:
     def nb_shared_mem_groups(self) -> int:
         return len(set(self.shared_mem_group_ids.values()))
 
+    @property
+    def core_memory_sharing(self) -> list[list[int]]:
+        """The ids of each group of cores that share one top-level memory."""
+        groups: dict[int, list[int]] = {}
+        for core_id, owner in sorted(self.shared_mem_group_ids.items()):
+            groups.setdefault(owner, []).append(core_id)
+        return [ids for ids in groups.values() if len(ids) > 1]
+
     def memory_of(self, core: Core) -> Core:
         """The core owning the top-level memory ``core`` uses: the first of its `core_memory_sharing` group."""
         return self.get_core(self.shared_mem_group_ids.get(core.id, core.id))
@@ -147,6 +155,7 @@ class Accelerator:
             "num_cores": len(list(self.cores.nodes)),
             "offchip_core_id": self.offchip_core_id,
             "nb_shared_mem_groups": self.nb_shared_mem_groups,
+            "core_memory_sharing": self.core_memory_sharing,
             "cores": cores_ir,
             "core_connectivity": links_ir,
         }

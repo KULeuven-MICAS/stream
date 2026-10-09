@@ -28,8 +28,8 @@ class CoreIR(BaseModel):
     name: str = Field(description="Core human-readable name")
     core_type: str = Field(description="Core type namespace, e.g. 'aie2.compute' or 'zigzag.compute'")
     type: str = Field(description="Core role: 'compute', 'offchip', or 'dma'")
-    row_id: int = Field(description="Row position in the 2-D core grid (-1 for offchip)")
-    col_id: int = Field(description="Column position in the 2-D core grid (-1 for offchip)")
+    row_id: int | None = Field(description="Row position in the 2-D core grid (-1 for offchip, None when ungridded)")
+    col_id: int | None = Field(description="Column position in the 2-D core grid (-1 for offchip, None when ungridded)")
     utilization: float = Field(description="Core utilization ratio in [0, 1]")
     extra_fields: dict[str, Any] = Field(
         default_factory=dict,
@@ -85,6 +85,9 @@ class AcceleratorIR(BaseModel):
         description="ID of the offchip memory core, or None if the accelerator has no offchip core"
     )
     nb_shared_mem_groups: int = Field(description="Number of shared memory groups in the accelerator")
+    core_memory_sharing: list[list[int]] = Field(
+        default_factory=list, description="The ids of each group of cores that share one top-level memory"
+    )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
     core_connectivity: list[dict[str, Any]] = Field(
         description="Connectivity entries: bus (bidirectional, multiple cores) or link (directed pair)"
@@ -120,6 +123,7 @@ class AcceleratorIR(BaseModel):
             num_cores=raw["num_cores"],
             offchip_core_id=raw["offchip_core_id"],
             nb_shared_mem_groups=raw["nb_shared_mem_groups"],
+            core_memory_sharing=raw["core_memory_sharing"],
             cores=cores,
             core_connectivity=raw["core_connectivity"],
         )

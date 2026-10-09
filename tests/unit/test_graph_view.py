@@ -6,6 +6,8 @@ and derived affine metadata per node — the single serialization a viewer consu
 
 from __future__ import annotations
 
+from stream.frontends import load_workload
+from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_scan import make_scan_workload
 from stream.ir import WorkloadGraphView
 from stream.parser.onnx.model import ONNXModelParser
@@ -161,3 +163,13 @@ def test_a_loaded_workload_surfaces_proposed_regions_under_a_capacity():
     view = _view_of_file("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
     assert view["proposed_regions"]
     assert any(n["proposed_region"] is not None for n in view["nodes"])
+
+
+def test_edges_name_the_unique_dims_of_each_tensor_axis():
+    """Between two convs a tensor's axes are the first conv's output dims; the graph input slides each kernel
+    window over the output rows and columns."""
+    config = TwoConvWorkloadConfig(1, 32, 32, 8, 16, 32, 3, "bf16", "bf16")
+    view = _view(load_workload(make_2_conv_workload(config)))
+    tensors = {(e.source, e.target): e.tensors for e in view.edges}
+    assert [t.dims for t in tensors["Conv1", "Conv2"]] == [["z3", "z8", "z5", "z4"]]
+    assert [t.dims for t in tensors["input", "Conv1"]] == [["z3", "z2", "(z5 + z1) - 1", "(z4 + z0) - 1"]]
