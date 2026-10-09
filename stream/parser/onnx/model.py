@@ -122,13 +122,16 @@ class ONNXModelParser:
         name_to_tensor_dict: dict[str, Tensor] = {}
         workload_nodes: list[Node] = []
 
-        # Add InEdges
+        # Add InEdges, for the graph inputs a node reads
+        read = {name for node in self.onnx_model.graph.node for name in node.input}
         for input in self.onnx_model.graph.input:
+            if input.name not in read:
+                continue
             tensor = onnx_tensor_to_tensor(input)
             workload_nodes.append(InEdge(name=input.name, outputs=(tensor,)))
             name_to_tensor_dict[input.name] = tensor
         for initializer in self.onnx_model.graph.initializer:
-            if initializer.data_type in (TensorProto.INT64, TensorProto.INT32):
+            if initializer.data_type in (TensorProto.INT64, TensorProto.INT32) or initializer.name not in read:
                 continue
             tensor = onnx_tensor_to_tensor(initializer)
             workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,)))

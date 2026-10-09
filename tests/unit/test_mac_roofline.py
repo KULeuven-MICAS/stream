@@ -21,10 +21,10 @@ from stream.workload.utils import is_mac_operator_type
 HARDWARE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "stream", "inputs", "examples", "hardware")
 TPU_V7 = os.path.abspath(os.path.join(HARDWARE_DIR, "tpu_v7_ironwood.yaml"))
 
-# Verified TPU7x reference: SwiGLU 256x512x2048 fused solves at 2863 cycles vs an ideal 384 on 32 MXUs.
+# A SwiGLU 256x512x2048 (805M MACs) finishing in 2863 cycles, against an ideal 768 on the eight 256x256x2 MXUs.
 SWIGLU_REF_MAC_OPS = 805_306_368
 SWIGLU_REF_LATENCY = 2863
-TPU_V7_MXU_PEAK = 32 * 256 * 256
+TPU_V7_MXU_PEAK = 8 * 256 * 256 * 2
 
 
 def load_accelerator(path: str):
@@ -47,11 +47,11 @@ class TestIsMacOperatorType:
 
 class TestMacRooflinePeak:
     def test_tpu_v7_counts_only_the_mxus(self) -> None:
-        """TPU7x has 32 MXU + 4 VPU + 4 VMEM + 1 HBM core. Only the MXUs admit MatMul/Gemm/Conv."""
+        """TPU7x has 8 MXU + 4 VPU + 4 VMEM + 1 HBM core. Only the MXUs admit MatMul/Gemm/Conv."""
         accelerator = load_accelerator(TPU_V7)
         peak, n_cores = mac_roofline_peak(accelerator)
-        assert n_cores == 32
-        assert peak == TPU_V7_MXU_PEAK == 2097152
+        assert n_cores == 8
+        assert peak == TPU_V7_MXU_PEAK == 1048576
 
     def test_vector_cores_are_excluded_from_the_peak(self) -> None:
         """The peak excludes the VPUs; fails if they ever creep back into the roofline denominator."""
@@ -63,7 +63,7 @@ class TestMacRooflinePeak:
             if c.id != offchip_id
         )
         peak, _ = mac_roofline_peak(accelerator)
-        assert all_cores_peak == 2097152 + 4 * 8 * 128  # + the four (8, 128) VPUs
+        assert all_cores_peak == 1048576 + 4 * 8 * 128 * 4  # + the four (8, 128, 4) VPUs
         assert peak < all_cores_peak
 
     def test_unrestricted_cores_count_but_specialised_non_mac_cores_do_not(self) -> None:
@@ -81,17 +81,17 @@ class TestMacRooflinePeak:
 
 class TestEndToEndMacUtilization:
     def test_swiglu_ref_matches_the_hand_computed_roofline(self) -> None:
-        """805,306,368 MACs over 32x(256x256) is an ideal 384 cycles; solved 2863 -> ~13.4% util."""
+        """805,306,368 MACs over 8x(256x256x2) is an ideal 768 cycles; done in 2863 -> ~26.8% util."""
         accelerator = load_accelerator(TPU_V7)
         agg = end_to_end_mac_utilization(accelerator, SWIGLU_REF_MAC_OPS, SWIGLU_REF_LATENCY)
 
         ideal_cycles = SWIGLU_REF_MAC_OPS / TPU_V7_MXU_PEAK
-        assert ideal_cycles == 384
+        assert ideal_cycles == 768
         assert agg["peak_macs_per_cycle"] == TPU_V7_MXU_PEAK
-        assert agg["mac_capable_cores"] == 32
+        assert agg["mac_capable_cores"] == 8
         assert agg["total_mac_ops"] == SWIGLU_REF_MAC_OPS
         assert agg["end_to_end_mac_utilization"] == pytest.approx(ideal_cycles / SWIGLU_REF_LATENCY)
-        assert agg["end_to_end_mac_utilization"] == pytest.approx(0.13413, abs=1e-5)
+        assert agg["end_to_end_mac_utilization"] == pytest.approx(0.26825, abs=1e-5)
 
     def test_no_mac_work_reports_none_not_zero(self) -> None:
         """A workload with no matmul/conv has no MAC roofline: None, not a misleading measured 0.0."""

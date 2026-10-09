@@ -42,6 +42,8 @@ class HardwareNamespace:
     pairs_by_spatial_index: bool = False
     """Whether its code generator matches the target at ``j`` with the sources at ``j``, ``j + m``, ... (``m`` the
     narrower side) whatever the tilings place where, instead of each side holding its tiles in core order."""
+    accumulates_across_cores: bool = True
+    """Whether a computation split over a dimension it reduces can be completed by adding its cores' partial sums."""
     circuit_switched: bool = False
     """Whether a transfer holds every link it crosses to itself for its slot, instead of sharing their bandwidth."""
 
@@ -76,6 +78,7 @@ class AIE2Namespace(HardwareNamespace):
     NAMESPACE = "aie2"
     families = ("aie2_object_fifo_depth", "aie2_buffer_descriptors", "aie2_memory_reuse", "aie2_dma_channels")
     pairs_by_spatial_index = True
+    accumulates_across_cores = False
     circuit_switched = True
 
     def __init__(self, *, reconfiguration: Mapping[str, float] | None = None) -> None:

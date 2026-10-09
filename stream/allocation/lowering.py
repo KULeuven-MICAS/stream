@@ -176,11 +176,13 @@ class _Lowering:
         source = tensor
         if staged:
             transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
-            hop, (source,) = self.generate_transfer_node([src], tensor, transfer_type_1, f"{tensor.name}_1")
+            hop, (source,) = self.generate_transfer_node(
+                [src], tensor, transfer_type_1, self._fresh(f"{tensor.name}_1")
+            )
             new_nodes[hop.name] = hop
         for i, group in enumerate(groups):
             tag = f" for {group[0].name}" if i else ""
-            out_name = f"{tensor.name}_{group[0].name}" if i else f"{tensor.name}_{2 if staged else 1}"
+            out_name = self._fresh(f"{tensor.name}_{group[0].name}" if i else f"{tensor.name}_{2 if staged else 1}")
             transfer_type = (
                 self.determine_transfer_type(src, group, src_type="memory")
                 if staged
@@ -275,7 +277,7 @@ class _Lowering:
         # First transfer node from source to on-chip buffer
         transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
         new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
-        out_name_1 = f"{tensor.name}_2"
+        out_name_1 = self._fresh(f"{tensor.name}_2")
         transfer_node_1, updated_tensors_1 = self.generate_transfer_node([src], new_tensor, transfer_type_1, out_name_1)
         new_nodes[transfer_node_1.name] = transfer_node_1
         new_src = self.update_source_tensor(tensor, src, new_nodes, new_tensor)
@@ -333,6 +335,13 @@ class _Lowering:
             self.update_mapping_for_transfer(node, src, dsts)
         return self.mapping.with_updated_workload(self.ssw, self.workload)  # updates FusedGroups
 
+    def _fresh(self, name: str) -> str:
+        """``name``, suffixed until no tensor of the workload has it, so a copy cannot be taken for another tensor."""
+        taken = {t.name for t in self.workload.tensors}
+        while name in taken:
+            name += "_"
+        return name
+
     def generate_transfer_node(
         self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType, out_name: str = "", tag: str = ""
     ) -> tuple[TransferNode, list[Tensor]]:
@@ -350,7 +359,7 @@ class _Lowering:
     def generate_transfer_input_tensor(self, tensor: Tensor, src: HasOutputs, name_suffix: str = "") -> Tensor:
         assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below."
         input_tensor = Tensor(
-            name=f"{tensor.name}{name_suffix}",
+            name=self._fresh(f"{tensor.name}{name_suffix}") if name_suffix else tensor.name,
             operand_type=tensor.operand_type,
             shape=tensor.shape,
             subview=tensor.subview,
