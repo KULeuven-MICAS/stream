@@ -353,3 +353,30 @@ def test_a_strided_residual_block_solves():
     with tempfile.TemporaryDirectory() as out:
         estimate = evaluate_mapping(HARDWARE.format("tpu_like_quad_core"), onnx_graph(nodes, shapes, ["o"]), out)
     assert estimate.cycles > 0
+
+
+def test_the_producers_of_a_strided_pool_take_the_loop_fused_along_its_rows(tmp_path):
+    """A conv and its ReLU reach a stride-2 max pool's rows only through ``2*o + r``; fused along those rows they still
+    loop with the pool, so their outputs stream instead of staying whole on chip."""
+    shapes = {"input": [1, 8, 32, 32], "w1": [16, 8, 3, 3]}
+    nodes = [
+        conv("Conv1", "input", "w1", "a"),
+        helper.make_node("Relu", ["a"], ["r"], name="Relu"),
+        helper.make_node("MaxPool", ["r"], ["o"], name="Pool", kernel_shape=[3, 3], strides=[2, 2], pads=[1, 1, 1, 1]),
+    ]
+    (tmp_path / "mapping.yaml").write_text(
+        "layers:\n"
+        + "".join(f"- {{name: {n}, core_allocation: [[0]]}}\n" for n in ("Conv1", "Relu", "Pool"))
+        + "fused_groups:\n- {name: g, layers: [Conv1, Relu, Pool], intra_core_tiling: [{dim: Pool.D2, tile: 2}]}\n"
+    )
+    allocation = evaluate_mapping(
+        HARDWARE.format("eyeriss_like_quad_core"),
+        onnx_graph(nodes, shapes, ["o"]),
+        str(tmp_path),
+        str(tmp_path / "mapping.yaml"),
+        SolveOptions(artifacts=False),
+    ).context.get("allocation")
+    lowered, ssis = allocation.problem.workload, allocation.problem.ssis
+    for name in ("Conv1", "Relu"):
+        node = next(n for n in lowered.get_computation_nodes() if n.name == name)
+        assert [v.size for v in ssis[node].get_temporal_variables() if v.relevant] == [8], name
