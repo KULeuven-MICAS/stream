@@ -10,6 +10,11 @@ import yaml
 from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.inputs.testing.workload.make_resnet_subgraph import (
+    ResNetPattern,
+    ResNetSubgraphConfig,
+    make_resnet_subgraph,
+)
 from stream.mapping.capacity_tiler import CapacityTiler
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.stages.context import StageContext
@@ -117,3 +122,16 @@ def test_a_graph_input_no_node_reads_is_left_out_and_copies_take_fresh_names(tmp
     _, parsed = _parse(TPU_V7, str(path))
     assert "unused" not in {node.name for node in parsed.nodes}
     assert evaluate_mapping(TPU_V7, str(path), str(tmp_path), options=SolveOptions(artifacts=False)).cycles > 0
+
+
+def test_a_one_input_op_is_costed_on_the_vector_unit_through_its_registers_and_vmem(tmp_path):
+    """The VPU's registers and VMEM hold any operand; a ReLU or a max pool reads one of them, and ZigZag costs it
+    streaming through those memories rather than leaving it to an ideal-cycle estimate."""
+    workload = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    estimate = evaluate_mapping(TPU_V7, workload, str(tmp_path), options=SolveOptions(artifacts=False))
+    entries = {
+        node.type: entry for node, costs in estimate.context.get("cost_lut").lut.items() for entry in costs.values()
+    }
+    assert {"Relu", "MaxPool"} <= entries.keys()
+    assert all(entry.metadata["backend"] == "zigzag" for entry in entries.values())
+    assert entries["Relu"].latency_total >= entries["Relu"].ideal_cycle > 0
