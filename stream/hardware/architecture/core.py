@@ -113,7 +113,8 @@ class Core:
             return False
         if isinstance(self._backend, ZigZagCoreBackend):
             return (
-                self._backend.operational_array == other._backend.operational_array
+                getattr(self, "operand_precision", {}) == getattr(other, "operand_precision", {})
+                and self._backend.operational_array == other._backend.operational_array
                 and self._backend.memory_hierarchy.has_same_performance(other._backend.memory_hierarchy)
                 and self._backend.dataflows == other._backend.dataflows
             )
@@ -178,6 +179,7 @@ class Core:
             "col_id": self.col_id,
             "utilization": self.utilization,
             "operator_types": getattr(self, "operator_types", None),
+            "operand_precision": getattr(self, "operand_precision", {}),
         }
 
         # Merge backend-specific fields (uniform protocol)

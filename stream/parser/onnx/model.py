@@ -7,7 +7,7 @@ from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 from stream.parser.onnx.batch_norm import BatchNormParser
 from stream.parser.onnx.conv import ConvParser
-from stream.parser.onnx.elementwise import ElementwiseParser
+from stream.parser.onnx.elementwise import CastParser, ElementwiseParser
 from stream.parser.onnx.fusion_edge import FusionEdgeParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.global_average_pool import GlobalAveragePoolParser
@@ -93,6 +93,9 @@ class ONNXModelParser:
         "Gelu": ElementwiseParser,
         "Sigmoid": ElementwiseParser,
         "Tanh": ElementwiseParser,
+        "Cast": CastParser,
+        "QuantizeLinear": CastParser,
+        "DequantizeLinear": CastParser,
     }
 
     def __init__(self, onnx_model_path: str) -> None:
@@ -102,6 +105,7 @@ class ONNXModelParser:
         """Parse the ONNX model at ``onnx_model_path`` into a ``Workload``."""
         self.onnx_model = parse_onnx_model_from_path(self.onnx_model_path)
         self.onnx_model = onnx.shape_inference.infer_shapes(self.onnx_model)
+        fold_quantize_dequantize(self.onnx_model)
         self.workload = self.parse_workload()
 
     def get_parser_class(self, node: NodeProto):
@@ -130,8 +134,9 @@ class ONNXModelParser:
             tensor = onnx_tensor_to_tensor(input)
             workload_nodes.append(InEdge(name=input.name, outputs=(tensor,)))
             name_to_tensor_dict[input.name] = tensor
+        # Shapes and axes are int64 tensors: an int32 initializer is data, such as a quantized bias
         for initializer in self.onnx_model.graph.initializer:
-            if initializer.data_type in (TensorProto.INT64, TensorProto.INT32) or initializer.name not in read:
+            if initializer.data_type == TensorProto.INT64 or initializer.name not in read:
                 continue
             tensor = onnx_tensor_to_tensor(initializer)
             workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,)))
@@ -161,6 +166,10 @@ class ONNXModelParser:
                     name_to_tensor_dict[output.name] = output
                 workload_nodes.append(node_obj)
 
+        # Drop the InEdges no node reads as a tensor, such as an index or a bias its parser takes from the graph
+        consumed = {tensor.name for node in workload_nodes for tensor in getattr(node, "inputs", ())}
+        workload_nodes = [n for n in workload_nodes if not isinstance(n, InEdge) or n.outputs[0].name in consumed]
+
         # Add OutEdge
         workload_nodes.append(
             OutEdge(
@@ -176,3 +185,38 @@ class ONNXModelParser:
             workload.number_of_edges(),  # type: ignore
         )
         return workload
+
+
+def fold_quantize_dequantize(model: onnx.ModelProto) -> None:
+    """Fold QuantizeLinear and DequantizeLinear into the nodes next to them, as the backends running a quantized
+    (QDQ) model do: they mark the element type a tensor has, not a computation. A DequantizeLinear's readers read its
+    quantized input instead, and a QuantizeLinear's output is written by the one node producing its input, in place
+    of that input, when nothing else reads it: the requantization a node does as it writes its result. One that
+    cannot fold, quantizing a graph input or a layout-only node's output, dequantizing a graph output or a tensor
+    others read too, stays a cast,
+    its scale and zero point part of the conversion rather than tensors it reads."""
+    graph = model.graph
+    outputs = {output.name for output in graph.output}
+    for node in [n for n in graph.node if n.op_type == "DequantizeLinear" and n.output[0] not in outputs]:
+        for reader in graph.node:
+            for i, name in enumerate(reader.input):
+                if name == node.output[0]:
+                    reader.input[i] = node.input[0]
+        graph.node.remove(node)
+    for node in [n for n in graph.node if n.op_type == "QuantizeLinear"]:
+        source = node.input[0]
+        producers = [n for n in graph.node if source in n.output]
+        readers = [n for n in graph.node if source in n.input]
+        if (
+            source in outputs
+            or len(producers) != 1
+            or readers != [node]
+            or producers[0].op_type in ONNXModelParser.FUSION_EDGE_OPS
+        ):
+            continue
+        producer = producers[0]
+        producer.output[list(producer.output).index(source)] = node.output[0]
+        graph.node.remove(node)
+    for node in graph.node:
+        if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
+            del node.input[1:]

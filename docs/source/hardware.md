@@ -206,6 +206,21 @@ operator_types: [MaxPool, AveragePool, GlobalAveragePool]
 
 If `operator_types` is omitted, the core accepts **any** operator. The auto-mapper (see [Mapping](mapping.md)) uses this field to decide which nodes a core is eligible for - e.g. SiLU/Mul go to the SIMD core, pooling to the pooling core, and Conv/Gemm to the general compute cores.
 
+### Operand precision
+
+A compute core can declare the element types it computes in:
+
+```yaml
+operand_precision:
+  input: bf16
+  accumulator: fp32
+```
+
+The `accumulator` sets how wide a matmul's or convolution's partial sums are while the core accumulates them; the
+result is written out at its output tensor's type. A core without an `accumulator` keeps partial sums at the output's
+type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
+`int8`, `uint8`, `int16`, `bf16`, `fp16`, `int32` and `fp32`.
+
 ### AIE cores
 
 AIE tiles use the `aie2` namespace and a lighter schema describing tile-local memory and the object-FIFO depth, rather than a full ZigZag hierarchy. These are used by the AIE codegen entry points and live under `stream/inputs/aie/hardware/`.

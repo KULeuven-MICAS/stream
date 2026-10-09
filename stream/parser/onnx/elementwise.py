@@ -32,6 +32,9 @@ class ElementwiseParser(OnnxOperatorParser):
 
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
         inputs = tuple(name_to_tensor_dict[inp] for inp in self.node.input)
+        return self.elementwise(inputs, self.node.op_type)
+
+    def elementwise(self, inputs: tuple[Tensor, ...], node_type: str) -> ComputationNode:
         outputs = self.get_output_tensors()
         assert len(outputs) == 1, f"{self.node.op_type} must have exactly 1 output."
         out_shape = outputs[0].shape
@@ -39,9 +42,17 @@ class ElementwiseParser(OnnxOperatorParser):
         out_map = AffineMap.identity(len(out_shape))
 
         return ComputationNode(
-            type=self.node.op_type,
+            type=node_type,
             name=self.node.name,
             inputs=inputs,
             outputs=outputs,
             operand_mapping=(*in_maps, out_map),
         )
+
+
+class CastParser(ElementwiseParser):
+    """Parses a conversion of a tensor to another element type, a Cast or a QuantizeLinear or DequantizeLinear that
+    did not fold into the node next to it, as a ``Cast``."""
+
+    def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
+        return self.elementwise((name_to_tensor_dict[self.node.input[0]],), "Cast")

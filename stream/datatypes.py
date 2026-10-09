@@ -17,3 +17,15 @@ class LayerDim(AffineDimExpr):
 
 
 InterCoreTiling = tuple[tuple[LayerDim, int], ...]
+
+ELEMENT_BITS: dict[str, int] = {
+    "int4": 4,
+    "int8": 8,
+    "uint8": 8,
+    "int16": 16,
+    "bf16": 16,
+    "fp16": 16,
+    "int32": 32,
+    "fp32": 32,
+}
+"""Bits of each element type a core's ``operand_precision`` can name."""

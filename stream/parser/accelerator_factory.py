@@ -122,6 +122,7 @@ class AcceleratorFactory:
                 row_id=row_id,
             )
             core.operator_types = operator_types
+            core.operand_precision = core_data.get("operand_precision") or {}
             return core
 
         if namespace == "zigzag":
@@ -143,6 +144,7 @@ class AcceleratorFactory:
                 row_id=row_id,
             )
             core.operator_types = operator_types
+            core.operand_precision = core_data.get("operand_precision") or {}
             return core
 
         raise ValueError(
