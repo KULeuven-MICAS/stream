@@ -148,7 +148,7 @@ class DecisionSpace:
                 self.link_set.update(self.links_in_choice[key])
                 self.choice_src_cores[key] = set(choice.sources)
                 self.choice_dst_cores[key] = set(choice.targets)
-                self.choice_has_empty_path[key] = len(choice.links_used) == 0
+                self.choice_has_empty_path[key] = not choice.links_used and not self.in_one_memory(choice)
 
     def is_fixed(self, t: Tensor) -> bool:
         return t in self._fixed
@@ -271,7 +271,13 @@ class DecisionSpace:
         off = self.offchip_core_id
         if off is None:
             return 0.0
-        return float(sum(link.bandwidth for link in self.link_set if core_id(link.receiver) == off))
+        return float(
+            sum(
+                link.bandwidth
+                for link in self.link_set
+                if core_id(link.receiver) == off or any(core.id == off for core in link.members)
+            )
+        )
 
     def placement_width(self, tensors: Iterable[Tensor]) -> int:
         """How many cores one side of a transfer occupies."""
@@ -375,12 +381,28 @@ class DecisionSpace:
         return self.moved_bits(tr, self.path_choices[tr][0])
 
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
-        """The sources and targets of ``choice`` that hand ``tr``'s data to each other."""
+        """The sources and targets of ``choice`` that hand ``tr``'s data to each other: those its route pairs up."""
+        if choice.pairs:
+            return tuple((choice.sources[i], choice.targets[j]) for i, j in choice.pairs)
         return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
 
+    def link_load(self, tr: TransferNode, choice: MulticastPathPlan) -> dict[CommunicationLink, float]:
+        """Per link of ``choice``, the share of one firing's latency it is busy: the bottleneck link 1."""
+        if not (links := self.links_in_choice[(tr, choice)]):
+            return {}
+        if not choice.link_shares:
+            return dict.fromkeys(links, 1.0)
+        cycles = {link: share / link.bandwidth for link, share in choice.link_shares if link in links and share}
+        slowest = max(cycles.values(), default=0.0)
+        return {link: c / slowest for link, c in cycles.items()}
+
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
-        """Whether every core of this choice uses one memory, so the data it hands over never moves."""
-        return len({self.accelerator.memory_of(c) for c in (*choice.sources, *choice.targets)}) == 1
+        """Whether each source of this choice hands its targets data already in their memory, so none of it moves:
+        every pair its route makes shares a memory, or, without pairs, every core of it does."""
+        memory_of = self.accelerator.memory_of
+        if choice.pairs:
+            return all(memory_of(choice.sources[i]) == memory_of(choice.targets[j]) for i, j in choice.pairs)
+        return len({memory_of(c) for c in (*choice.sources, *choice.targets)}) == 1
 
     def within_one_memory(self, tr: TransferNode) -> bool:
         """Whether every placement of this transfer stays in one memory."""

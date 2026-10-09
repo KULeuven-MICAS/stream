@@ -43,15 +43,26 @@ class CommunicationLink:
         bandwidth: int | float,
         unit_energy_cost: float,
         bidirectional: bool = False,
+        members: tuple["Core", ...] = (),
     ) -> None:
         self.sender = sender
         self.receiver = receiver
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
         self.bidirectional = bidirectional  # TODO this property is not in use?
-        self._hash = hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
+        self.members = members
+        self._hash = hash(
+            (self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional, self.members)
+        )
+
+    @property
+    def cores(self) -> tuple["Core", ...]:
+        """The cores the link connects: a bus's members, else its two ends."""
+        return self.members or tuple(end for end in (self.sender, self.receiver) if not isinstance(end, str))
 
     def __str__(self) -> str:
+        if self.members:
+            return f"Bus({','.join(str(core.id) for core in self.members)}, bw={self.bandwidth})"
         return f"CL({self.sender}, {self.receiver}, bw={self.bandwidth})"
 
     def __repr__(self) -> str:
@@ -61,10 +72,11 @@ class CommunicationLink:
         return self._hash
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (
+        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth, self.members) == (
             other.sender,
             other.receiver,
             other.bandwidth,
+            other.members,
         )
 
     def __lt__(self, other: object) -> bool:

@@ -39,6 +39,11 @@ class HardwareNamespace:
 
     NAMESPACE: str = ""
     families: tuple[str, ...] = ()
+    pairs_by_spatial_index: bool = False
+    """Whether its code generator matches the target at ``j`` with the sources at ``j``, ``j + m``, ... (``m`` the
+    narrower side) whatever the tilings place where, instead of each side holding its tiles in core order."""
+    circuit_switched: bool = False
+    """Whether a transfer holds every link it crosses to itself for its slot, instead of sharing their bandwidth."""
 
     @classmethod
     def from_config(cls, config: NamespaceConfig) -> HardwareNamespace:
@@ -70,6 +75,8 @@ class AIE2Namespace(HardwareNamespace):
 
     NAMESPACE = "aie2"
     families = ("aie2_object_fifo_depth", "aie2_buffer_descriptors", "aie2_memory_reuse", "aie2_dma_channels")
+    pairs_by_spatial_index = True
+    circuit_switched = True
 
     def __init__(self, *, reconfiguration: Mapping[str, float] | None = None) -> None:
         reconfiguration = reconfiguration or {}
@@ -123,6 +130,14 @@ class HardwareFacts:
         if self.accelerator.memory_of(one) == self.accelerator.memory_of(other):
             return True
         return any(ns.shares_memory(one, other) for ns in self.namespaces)
+
+    def pairs_by_spatial_index(self, cores: Sequence[Core]) -> bool:
+        """Whether a namespace of these cores pairs a transfer's sources and targets by spatial index."""
+        return any(ns.pairs_by_spatial_index and ns.applies_to(core) for ns in self.namespaces for core in cores)
+
+    def circuit_switched(self, cores: Sequence[Core]) -> bool:
+        """Whether a namespace of these cores gives a transfer each link it crosses to itself for its slot."""
+        return any(ns.circuit_switched and ns.applies_to(core) for ns in self.namespaces for core in cores)
 
     def reserved_memory_bits(self, core: Core) -> int:
         """Bits the toolchain claims on this core, summed over the namespaces that own it."""

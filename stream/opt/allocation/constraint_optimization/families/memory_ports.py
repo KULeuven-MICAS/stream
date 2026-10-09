@@ -182,8 +182,9 @@ def _link_rows(
 ) -> list[dict[str, Any]]:
     bits: dict[Any, float] = defaultdict(float)
     for stream, stream_bits in streams:
+        shares = dict(stream.choice.link_shares) or dict.fromkeys(stream.choice.links_used, 1.0)
         for link in stream.choice.links_used:
-            bits[link] += stream_bits
+            bits[link] += stream_bits * shares.get(link, 0.0)
     return [
         _activity_row(ctx, "link", _link_name(link), _link_cores(link), link.bandwidth, b, interval)
         for link, b in bits.items()
@@ -192,8 +193,10 @@ def _link_rows(
 
 
 def _link_name(link: Any) -> str:
+    if link.members:
+        return "bus " + ",".join(str(core.id) for core in link.members)
     return "->".join(str(getattr(end, "id", end)) for end in (link.sender, link.receiver))
 
 
 def _link_cores(link: Any) -> tuple[int, ...]:
-    return tuple(end.id for end in (link.sender, link.receiver) if hasattr(end, "id"))
+    return tuple(core.id for core in link.cores)

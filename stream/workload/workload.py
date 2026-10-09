@@ -16,7 +16,7 @@ from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload._svg import write_svg as _write_svg
 from stream.workload.affine_access import footprint, map_dim_positions
 from stream.workload.affine_transform import AffineTransform
-from stream.workload.iterator_type import is_state_operand, sequential_dims
+from stream.workload.iterator_type import IteratorType, derive_iterator_types, is_state_operand, sequential_dims
 from stream.workload.node import (
     ComputationNode,
     FusionEdge,
@@ -33,7 +33,7 @@ from stream.workload.tensor import Tensor
 from stream.workload.utils import affine_bounds, affine_coefficients, sympy_to_xdsl
 
 if TYPE_CHECKING:
-    from stream.cost_model.communication_manager import MulticastPathPlan
+    from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan
     from stream.hardware.architecture.core import Core
     from stream.mapping.mapping import Mapping
 
@@ -704,7 +704,20 @@ class Workload(DiGraphWrapper[Node]):
     ) -> dict[tuple[int, int], int]:
         """Elements per firing the source at position i hands the target at position j, where the windows of the nodes
         the copies reach overlap neighbouring sources' tiles; empty where none does, the positions then pairing up."""
-        source, tiling, src = transfer.inputs[0], self._tiling(transfer, mapping), next(self.predecessors(transfer))
+        boxes = self._window_boxes(transfer, mapping, self._tiling(transfer, mapping), ssis)
+        overlaps = {pair: _union(found) for pair, found in boxes.items()}
+        return {pair: n for pair, n in overlaps.items() if n}
+
+    def _window_boxes(
+        self,
+        transfer: TransferNode,
+        mapping: "Mapping",
+        tiling: InterCoreTiling,
+        ssis: SteadyStateIterationSpace | None = None,
+    ) -> dict[tuple[int, int], list[list[tuple[int, int]]]]:
+        """The boxes of its tensor the source at position i hands the target at position j, for the copies whose
+        reader slides an overlapping window over them."""
+        source, src = transfer.inputs[0], next(self.predecessors(transfer))
         src_tiling = self._tiling(src, mapping) if isinstance(src, ComputationNode) else ()
         placed = {d for d, _ in (*tiling, *src_tiling)}
 
@@ -730,8 +743,94 @@ class Workload(DiGraphWrapper[Node]):
                         for h, w, m in zip(have, want, moved.shape, strict=True)
                     ]
                     boxes.setdefault((i, j), []).append(box)
-        overlaps = {pair: _union(found) for pair, found in boxes.items()}
-        return {pair: n for pair, n in overlaps.items() if n}
+        return boxes
+
+    def get_transfer_demand(  # noqa: PLR0913
+        self,
+        transfer: TransferNode,
+        mapping: "Mapping",
+        tiling: InterCoreTiling,
+        n_sources: int,
+        n_targets: int,
+        by_spatial_index: bool = False,
+        targets: Sequence[object] = (),
+    ) -> tuple["DemandItem", ...]:
+        """What each target of ``transfer`` reads and the sources holding it, placed on ``n_sources`` and ``n_targets``
+        cores with the targets split by ``tiling``, or, given the ``targets`` the copies' readers run on, each target
+        reading what those readers read there under their own splits. A window overlapping neighbouring tiles of a
+        computation is handed by the sources whose tiles it overlaps. Otherwise each side holds the tiles of its split,
+        contiguously in core order, a copy of the same tile on several cores being served by whichever is nearest, or,
+        where the sources split a dimension they reduce over, a partial sum on each that the target needs all of;
+        ``by_spatial_index`` instead keeps the pairing of a code generator that matches the target at ``j`` with the
+        sources at ``j``, ``j + m``, ..."""
+        from stream.cost_model.communication_manager import DemandItem  # noqa: PLC0415
+
+        source, src = transfer.inputs[0], next(self.predecessors(transfer))
+        readers = [] if by_spatial_index else self._readers_on(transfer, mapping, targets)
+        if not readers and (windows := self._window_boxes(transfer, mapping, tiling)):
+            return tuple(
+                DemandItem(j, (i,), tuple(tuple(axis) for axis in box))
+                for (i, j), found in sorted(windows.items())
+                for box in found
+                if all(lo <= hi for lo, hi in box)
+            )
+        found = next((f for t in transfer.outputs if (f := self._reader(t, transfer))), None)
+        src_tiling = self._tiling(src, mapping) if isinstance(src, ComputationNode | TransferNode) else ()
+        placed = {d for d, _ in (*tiling, *src_tiling)}
+
+        def box(tensor: Tensor, node: Node, split: InterCoreTiling, core: int, cores: int) -> list[tuple[int, int]]:
+            if not isinstance(node, HasIterationSpace):
+                return [(0, n - 1) for n in tensor.shape]
+            at = dict.fromkeys(placed | {d for d, _ in split}, 0) | self._position(
+                split, position_of(core, cores, split)
+            )
+            return [(lo, hi) for lo, hi, _ in self._bounds(tensor, [node], self._tile_sizes(split), at)]
+
+        read, reader = found or (source, src)
+        held = (source, src) if isinstance(src, ComputationNode) else (read, reader)
+        partial = isinstance(src, ComputationNode) and self.splits_reduction(src, src_tiling)
+        items: list[DemandItem] = []
+        for t in range(n_targets):
+            wants = [
+                box(r_read, r_node, r_split, r_cores.index(targets[t]), len(r_cores))
+                for r_read, r_node, r_split, r_cores in readers
+                if targets[t] in r_cores
+            ]
+            for want in wants or [box(read, reader, tiling, t, n_targets)]:
+                if by_spatial_index:
+                    narrow = min(n_sources, n_targets)
+                    feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
+                    parts = zip(feeding, _split(want, len(feeding)), strict=True)
+                    items += [DemandItem(t, (s,), part) for s, part in parts if all(lo <= hi for lo, hi in part)]
+                    continue
+                holders: dict[tuple[tuple[int, int], ...], list[int]] = {}
+                for s in range(n_sources):
+                    have = box(held[0], held[1], src_tiling, s, n_sources)
+                    part = tuple((max(h[0], w[0]), min(h[1], w[1])) for h, w in zip(have, want, strict=True))
+                    if all(lo <= hi for lo, hi in part):
+                        holders.setdefault(part, []).append(s)
+                items += [DemandItem(t, tuple(sources), part, partial) for part, sources in holders.items()]
+        return tuple(items)
+
+    def _readers_on(
+        self, transfer: TransferNode, mapping: "Mapping", targets: Sequence[object]
+    ) -> list[tuple[Tensor, ComputationNode, InterCoreTiling, tuple]]:
+        """Each computation node reading a copy of ``transfer`` straight from it, with the copy, its split and its
+        cores, where all of them run on ``targets``; empty otherwise."""
+        readers = []
+        for tensor in transfer.outputs:
+            node = next(n for n in self.successors(transfer) if isinstance(n, HasInputs) and tensor in n.inputs)
+            allocation = mapping.get(node).resource_allocation if isinstance(node, ComputationNode) else ()
+            if not allocation or not set(allocation[0]) <= set(targets):
+                return []
+            readers.append((tensor, node, self._tiling(node, mapping), tuple(allocation[0])))
+        return readers
+
+    def splits_reduction(self, node: HasIterationSpace, tiling: InterCoreTiling) -> bool:
+        """Whether ``tiling`` splits a dimension ``node`` reduces over, leaving each core a partial sum."""
+        split = {dim for dim, factor in tiling if factor > 1}
+        types = derive_iterator_types(node)
+        return any(dim in split and types[p] is IteratorType.REDUCTION for p, dim in enumerate(self.get_dims(node)))
 
     def get_sliding_work(self, dim: LayerDim, splits: int) -> dict[HasIterationSpace, tuple[int, ...]]:
         """How far each node whose loops ``dim`` slides gets along its output in each of the ``splits`` tiles of
@@ -1231,6 +1330,23 @@ class Workload(DiGraphWrapper[Node]):
             "tensors": tensor_dim_relations,
             "generations": timeslots,
         }
+
+
+def position_of(core: int, cores: int, tiling: InterCoreTiling) -> int:
+    """The tile of ``tiling`` the core at position ``core`` of ``cores`` holds: its own where each holds one, else
+    the cores holding one tile each lie next to each other in core order."""
+    tiles = prod(f for _, f in tiling)
+    if cores <= tiles:
+        return core
+    return core // (cores // tiles) if cores % tiles == 0 else core * tiles // cores
+
+
+def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int], ...]]:
+    """``box`` cut into ``parts`` near-equal boxes along its longest axis."""
+    axis = max(range(len(box)), key=lambda a: box[a][1] - box[a][0])
+    lo, hi = box[axis]
+    edges = [lo + (hi - lo + 1) * k // parts for k in range(parts + 1)]
+    return [tuple(box[:axis] + [(edges[k], edges[k + 1] - 1)] + box[axis + 1 :]) for k in range(parts)]
 
 
 def _union(boxes: list[list[tuple[int, int]]]) -> int:

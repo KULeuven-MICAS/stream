@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from math import ceil
 from typing import TYPE_CHECKING, ClassVar
 
@@ -58,11 +59,20 @@ def _active_transfer_latency(
 
 
 def _longest_step(space: DecisionSpace) -> int:
-    """The most cycles any node or transfer takes in a slot, on any core or path."""
+    """The most cycles any node or transfer takes in a slot, on any core or path, or the transfers of a slot keep a link
+    they share busy."""
     longest = 0
     for n in space.ssc_nodes:
         longest = max(longest, space.runtime(n))
+    busy: dict[tuple[object, int], float] = defaultdict(float)
     for tr in space.transfer_nodes:
+        most: dict[object, float] = defaultdict(float)
         for choice in space.path_choices[tr]:
-            longest = max(longest, ceil(space.transfer_latency_for_path(tr, choice)))
-    return longest
+            cycles = space.transfer_latency_for_path(tr, choice)
+            longest = max(longest, ceil(cycles))
+            for link, share in space.link_load(tr, choice).items():
+                if not space.hardware.circuit_switched(link.cores):
+                    most[link] = max(most[link], share * cycles)
+        for link, cycles in most.items():
+            busy[(link, space.slot_of[tr])] += cycles
+    return max([longest, *(ceil(cycles) for cycles in busy.values())])
