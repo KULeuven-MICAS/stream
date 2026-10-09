@@ -123,7 +123,7 @@ QUAD = ("s1", "s2", "s3", "s4", "s5", "pool", "valid", "s5_named", "s6")
 RUNS = [
     *((s, hw) for s in QUAD for hw in ("eyeriss_like_quad_core", "tpu_like_quad_core")),
     *((s, "simba_small") for s in ("s1", "s2", "s3", "s4", "s5", "pool", "s6")),
-    *((s, "fusemax") for s in ("s1", "s2", "s5", "s3_shared", "s4_shared")),
+    *((s, "fusemax") for s in ("s1", "s2", "s5", "pool_shared")),
 ]
 FUSED = [run for run in RUNS if SCENARIOS[run[0]].rows and run[1] != "simba_small"]
 

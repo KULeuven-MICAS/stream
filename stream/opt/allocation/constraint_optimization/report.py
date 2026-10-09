@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
 from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
@@ -85,6 +86,23 @@ def _performance(
     return performance
 
 
+def node_utilization(entry: Any, n_cores: int, runtime: int, active: int) -> dict[str, Any]:
+    """A compute node's report row: ``active`` cycles per iteration, efficiency per call over its ``runtime``, and
+    whether a matmul or conv fell back to an ideal-cycle estimate."""
+    ideal = getattr(entry, "ideal_cycle", None)
+    node_type = getattr(getattr(entry, "layer", None), "type", "")
+    return {
+        "kind": "compute",
+        "n_cores": n_cores,
+        "latency_cycles": int(active),
+        "ideal_compute_cycles": _json_scalar(ideal),
+        "mac_spatial_utilization": _json_scalar(getattr(entry, "mac_spatial_utilization", None)),
+        "compute_efficiency": _json_scalar(float(ideal) / runtime if ideal and runtime else None),
+        "fallback": (getattr(entry, "metadata", None) or {}).get("backend") == IDEAL_CYCLE_BACKEND
+        and is_mac_operator_type(node_type),
+    }
+
+
 def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_latency: int) -> dict[str, Any]:
     """Per compute node its cores, latency, MAC utilization and whether it fell back to a scalar estimate; the
     per-iteration latency split into compute- and transfer-bound slots; and the aggregate utilization."""
@@ -99,19 +117,7 @@ def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_laten
         compute_by_slot[s] = max(compute_by_slot.get(s, 0.0), float(active))
         if not cores:
             continue
-        entry = lut.get_cost(n, cores[0])
-        ideal = getattr(entry, "ideal_cycle", None)
-        mac_util = getattr(entry, "mac_spatial_utilization", None)
-        node_type = getattr(getattr(entry, "layer", None), "type", "")
-        per_node[n.name] = {
-            "kind": "compute",
-            "n_cores": len(cores),
-            "latency_cycles": int(active),
-            "ideal_compute_cycles": _json_scalar(ideal),
-            "mac_spatial_utilization": _json_scalar(mac_util),
-            "compute_efficiency": _json_scalar(float(ideal) / active if ideal and active else None),
-            "fallback": getattr(entry, "cme", None) is None and is_mac_operator_type(node_type),
-        }
+        per_node[n.name] = node_utilization(lut.get_cost(n, cores[0]), len(cores), space.runtime(n), active)
 
     compute_cycles = transfer_cycles = 0.0
     for s, latency in ctx.vars.slot_latency.items():

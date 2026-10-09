@@ -39,7 +39,7 @@ class MappingFactory:
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
             mapping_data = self.get_mapping_data_for_node(cn)
-            resource_allocation = self.get_resource_allocation(mapping_data)
+            resource_allocation = self.get_resource_allocation(mapping_data, cn)
             inter_core_tiling = self.convert_inter_core_tiling(mapping_data, node=cn)
             kernel = self.create_kernel(mapping_data)
             mapping.set(
@@ -58,7 +58,9 @@ class MappingFactory:
                 return mapping_data
         raise ValueError(f"No mapping data found for node with name {node.name}")
 
-    def get_resource_allocation(self, mapping_data: dict[str, Any]) -> tuple[tuple[Core, ...], ...]:
+    def get_resource_allocation(
+        self, mapping_data: dict[str, Any], node: ComputationNode
+    ) -> tuple[tuple[Core, ...], ...]:
         cores = []
         for core_ids in mapping_data["core_allocation"]:
             core_group = []
@@ -66,6 +68,11 @@ class MappingFactory:
                 core = self.accelerator.get_core(core_id)
                 if core is None:
                     raise ValueError(f"Core with id {core_id} not found in accelerator.")
+                served = getattr(core, "operator_types", None)
+                if served is not None and node.type not in served:
+                    raise ValueError(
+                        f"{node.name} is a {node.type}, but core {core_id} only executes {', '.join(served)}."
+                    )
                 core_group.append(core)
             cores.append(tuple(core_group))
         return tuple(cores)

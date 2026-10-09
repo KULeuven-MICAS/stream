@@ -5,6 +5,7 @@ The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics.
 """
 
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -21,6 +22,7 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
     make_resnet_subgraph,
 )
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
@@ -29,6 +31,7 @@ from stream.stages.stage import LeafStage, MainStage
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 _TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
+_FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
 _WORKLOAD_CONFIG = TwoConvWorkloadConfig(
     batch_size=1,
     in_channels=8,
@@ -233,3 +236,54 @@ def test_pool_ops_saturate_the_vpus_on_tpu_v7():
             assert cores_used == len(vpu_ids), (
                 f"{layer['name']} inter-core split {split} uses {cores_used} cores, expected {len(vpu_ids)}"
             )
+
+
+def test_fusemax_runs_convs_on_its_array_and_the_rest_on_its_vector_unit():
+    """FuseMax's 256x1 vector unit serves the elementwise and pooling ops; the 256x256 array takes the convs."""
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_FUSEMAX)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        paths, _ = GenericMappingGenerator(accelerator, workload, tmpdir).generate_all_groups()
+        layers = []
+        for path in paths:
+            with open(path) as f:
+                layers += yaml.safe_load(f)["layers"]
+
+    cores = {layer["name"]: {core for slot in layer["core_allocation"] for core in slot} for layer in layers}
+    assert {name: ids for name, ids in cores.items() if "Conv" in name} == {
+        name: {0} for name in cores if "Conv" in name
+    }
+    assert all(ids == {1} for name, ids in cores.items() if "Conv" not in name)
+
+
+@pytest.mark.parametrize(
+    ("units", "kept"),
+    [
+        ([65536, 256], [65536]),
+        ([1024, 1024, 1024, 1024], [1024, 1024, 1024, 1024]),
+        ([1024, 1024, 1024, 600], [1024, 1024, 1024]),
+        ([1024, 1024, 900], [1024, 1024, 900]),
+    ],
+)
+def test_an_even_split_keeps_the_cores_that_finish_it_first(units, kept):
+    """An even split runs at the pace of its smallest array, so a small core joins only when it adds MACs."""
+    cores = [SimpleNamespace(operational_array=SimpleNamespace(total_unit_count=u)) for u in units]
+    chosen = GenericMappingGenerator._fastest_even_split(cores)
+    assert [core.operational_array.total_unit_count for core in chosen] == kept
+
+
+def test_cores_without_an_operational_array_split_a_node_evenly():
+    """A core that declares no MAC array, such as an AIE tile, gives no ground to prefer one over another."""
+    cores = [SimpleNamespace(), SimpleNamespace()]
+    assert GenericMappingGenerator._fastest_even_split(cores) == cores
+
+
+def test_a_mapping_cannot_place_an_operator_on_a_core_that_does_not_execute_it():
+    """A conv pinned to FuseMax's vector unit is rejected when the mapping is read, not priced."""
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_FUSEMAX)
+    layers = [{"name": node.type, "core_allocation": [[1]]} for node in workload.get_computation_nodes()]
+
+    with pytest.raises(ValueError, match="only executes"):
+        MappingFactory({"layers": layers}, workload, accelerator).create()

@@ -5,6 +5,8 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 
+IDEAL_CYCLE_BACKEND = "ideal-cycle"
+
 
 @dataclass
 class CoreCostEntry:

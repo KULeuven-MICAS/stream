@@ -232,13 +232,14 @@ class NodePerformanceIR(BaseModel):
         default=None, description="Fraction of the core's MAC array used spatially (1.0 = full PE array)"
     )
     compute_efficiency: float | None = Field(
-        default=None, description="ideal_compute_cycles / latency_cycles; how close to the compute-ideal this node runs"
+        default=None,
+        description="ideal_compute_cycles over the cycles of one call; how close to its ideal this node runs",
     )
     fallback: bool = Field(
         default=False,
         description=(
-            "True when a matmul/conv node's ZigZag estimate fell back to the 1-MAC/cycle scalar cost "
-            "(no CME): the spatial array was not modelled, so this node's latency is untrustworthy"
+            "True when a matmul/conv node's cost estimate fell back to ideal cycles: the spatial array was "
+            "not modelled, so this node's latency is untrustworthy"
         ),
     )
 
