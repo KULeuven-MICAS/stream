@@ -173,3 +173,15 @@ def test_edges_name_the_unique_dims_of_each_tensor_axis():
     tensors = {(e.source, e.target): e.tensors for e in view.edges}
     assert [t.dims for t in tensors["Conv1", "Conv2"]] == [["z3", "z8", "z5", "z4"]]
     assert [t.dims for t in tensors["input", "Conv1"]] == [["z3", "z2", "(z5 + z1) - 1", "(z4 + z0) - 1"]]
+
+
+def test_a_node_names_each_operand_axis_in_the_unique_dims_it_indexes():
+    """The second conv reads the first one's output through its own window, which the edge, read through the
+    producer, does not show."""
+    config = TwoConvWorkloadConfig(1, 32, 32, 8, 16, 32, 3, "bf16", "bf16")
+    conv2 = next(n for n in _view(load_workload(make_2_conv_workload(config))).nodes if n.name == "Conv2")
+    assert [(t.role, t.name, t.dims) for t in conv2.tensors] == [
+        ("input", "conv1_out", ["z3", "z8", "(z5 + z7) - 1", "(z4 + z6) - 1"]),
+        ("input", "weights_2", ["z9", "z8", "z7", "z6"]),
+        ("output", "output", ["z3", "z9", "z5", "z4"]),
+    ]

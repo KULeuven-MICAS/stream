@@ -56,6 +56,12 @@ class TensorRefIR(BaseModel):
     )
 
 
+class OperandIR(TensorRefIR):
+    """A tensor a node reads or writes, each axis written in the unique dims it spans as the node indexes it."""
+
+    role: Literal["input", "output"]
+
+
 class OperandReuseIR(BaseModel):
     operand: str = Field(description="Input tensor reused across an output axis")
     axes: list[AxisRefIR] = Field(description="Output axes this input is INVARIANT over (reused across)")
@@ -109,6 +115,9 @@ class GraphNodeIR(BaseModel):
     proposed_region: int | None = Field(default=None, description="Auto-proposed fusion-region id")
     tensor: TensorRefIR | None = Field(
         default=None, description="For input/output boundary nodes: the tensor (name + shape) they carry"
+    )
+    tensors: list[OperandIR] = Field(
+        default_factory=list, description="The tensors a node iterating over its dims reads and writes, in order"
     )
     reuse: list[OperandReuseIR] = Field(default_factory=list)
     reduction_axes: list[AxisRefIR] | None = None
@@ -359,6 +368,11 @@ def _node_ir(
     iterator_types = derive_iterator_types(node)
     ir.dims = [
         GraphDimIR(name=str(d), size=resolver.size(d), iterator_type=iterator_types[p].name) for p, d in enumerate(dims)
+    ]
+    ir.tensors = [
+        OperandIR(**_tensor_ref(t, resolver, node).model_dump(), role=role)
+        for role, tensors in (("input", node.inputs), ("output", node.outputs))
+        for t in tensors
     ]
     ir.is_recurrence = bool(sequential_dims(node))
     ir.reuse = _reuse(node, ir.dims)
