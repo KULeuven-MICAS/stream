@@ -80,14 +80,14 @@ def _source_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[
 
 
 def destination_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]) -> None:
-    """A chosen route's targets hold the tensors it moves, and a tensor sits only where its chosen route delivers
-    it."""
+    """A chosen route's targets hold the copies it moves there (each copy lives with the node it reaches), and a
+    tensor sits only where its chosen route delivers it."""
     space, model = ctx.space, ctx.model
     for dst_tensor in tr.outputs:
         assert isinstance(dst_tensor, Tensor), f"Expected {dst_tensor} to be a Tensor."
         for i, choice in enumerate(choices):
             y = ctx.vars.y[(tr, choice)]
-            for dst_core in space.choice_dst_cores[(tr, choice)]:
+            for dst_core in space.choice_dst_cores[(tr, choice)] & space.candidate_cores(dst_tensor):
                 ctx.add_constr(
                     y <= ctx.tensor_on_core_expr(dst_tensor, dst_core),
                     name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{resource_key(dst_core)}_choice_{i}",

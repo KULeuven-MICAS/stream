@@ -634,9 +634,15 @@ class Workload(DiGraphWrapper[Node]):
         self, tensor: Tensor, node: HasOutputs, mapping: "Mapping", core: int | None = None
     ) -> Tensor:
         """The tile of ``tensor`` ``node`` holds on one core, interior or the one at position ``core``; a transfer's
-        copy holds the window of the computation node it reaches."""
+        copy holds the window of the computation node it reaches, under that node's split where it feeds the node
+        directly, under the transfer's own where it is staged for another transfer."""
         read, accessor = self._reader(tensor, node) or (tensor, cast(HasIterationSpace, node))
-        shape = self.get_tensor_shape_with_tiling(read, self._tiling(node, mapping), accessor, core)
+        tiling = (
+            self.get_unique_dims_inter_core_tiling(accessor, mapping)
+            if isinstance(accessor, ComputationNode) and accessor in self.successors(node)
+            else self._tiling(node, mapping)
+        )
+        shape = self.get_tensor_shape_with_tiling(read, tiling, accessor, core)
         return tensor if shape == tensor.shape else self._tile(tensor, shape)
 
     def get_windows(
@@ -687,10 +693,10 @@ class Workload(DiGraphWrapper[Node]):
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", ssis: SteadyStateIterationSpace | None
     ) -> tuple[int, int] | None:
         """The axis the innermost sliding loop of ``ssis`` slides the window of a transfer's copy along, and the halo
-        it keeps resident there; None where no loop slides it."""
+        it keeps resident there; None where no loop slides it, or the copy's reader reads it with no window."""
         temporal = ssis.get_temporal_variables() if ssis else []
         if sliding := next((v for v in temporal if v.relevant and v.halo and v.size > 1), None):
-            return self.get_windows(tensor, transfer, mapping, [sliding.dimension])[sliding.dimension]
+            return self.get_windows(tensor, transfer, mapping, [sliding.dimension]).get(sliding.dimension)
         return None
 
     def get_transfer_overlaps(
