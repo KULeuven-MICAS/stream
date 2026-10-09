@@ -23,6 +23,7 @@ ELEMENT_BITS: dict[str, int] = {
     "int8": 8,
     "uint8": 8,
     "int16": 16,
+    "int24": 24,
     "bf16": 16,
     "fp16": 16,
     "int32": 32,

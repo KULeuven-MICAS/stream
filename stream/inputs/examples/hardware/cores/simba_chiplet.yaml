@@ -133,3 +133,8 @@ operational_array:
 # A fixed dataflow here yielded an EMPTY spatial mapping (near-zero MAC utilization) in
 # the generic-mapping pipeline; letting ZigZag generate adapts the unrolling to each
 # workload and actually fills the array.
+
+# Simba multiplies 8-bit weights and activations and accumulates in 24 bits (Shao et al., MICRO 2019).
+operand_precision:
+  input: int8
+  accumulator: int24

@@ -63,6 +63,8 @@ onnx.save(shape_inference.infer_shapes(model), "my_model_inferred.onnx")
 Every tensor keeps the element type the model gives it (`float32`, `float16`, `bfloat16`, `int8`, `uint8`, `int16`,
 `int32`), and nodes read and write at those widths. A model exported at deployment precision is therefore costed at
 that precision; an fp32 model is costed in fp32, so cast it first if the hardware computes in narrower types.
+The example workloads are at the precision these models are deployed in: the CNNs (ResNet-18, FSRCNN) in int8,
+ResNet-18 with int32 biases, and the LLM blocks (SwiGLU, attention) in bf16.
 
 A quantized model in QDQ form marks its int8 tensors with `QuantizeLinear` and `DequantizeLinear` pairs. These
 describe element types rather than computations, and Stream folds them the way a deployment compiler does:

@@ -46,8 +46,9 @@ memories:
           - I2, fh
     served_dimensions: []
 
+  # One fp32 partial sum per PE: the array is output stationary and accumulates in fp32, as TPU v2/v3 do
   rf_O:
-    size: 16
+    size: 32
     r_cost: 0.4
     w_cost: 0.4
     area: 0
@@ -56,26 +57,26 @@ memories:
     ports:
       - name: r_port_1
         type: read
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, tl
       - name: r_port_2
         type: read
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, th
       - name: w_port_1
         type: write
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, fh
       - name: w_port_2
         type: write
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, fl
     served_dimensions: []
@@ -118,3 +119,8 @@ operational_array:
 # A fixed dataflow here yielded an EMPTY spatial mapping (near-zero MAC utilization) in
 # the generic-mapping pipeline; letting ZigZag generate adapts the unrolling to each
 # workload and actually fills the array.
+
+# FuseMax builds on TPU v2/v3 (Nayak et al., MICRO 2024): bf16 multiplies, fp32 accumulation.
+operand_precision:
+  input: bf16
+  accumulator: fp32
