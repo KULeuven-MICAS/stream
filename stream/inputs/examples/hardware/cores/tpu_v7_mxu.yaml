@@ -112,6 +112,8 @@ operational_array:
   unit_area: 1
   dimensions: [D1, D2, D3]
   sizes: [256, 256, 2]
+  # Systolic over the array: activations move across D1, partial sums down D2; D3's two rows share weights
+  systolic_dimensions: [D1, D2]
 
 operand_precision:
   input: bf16

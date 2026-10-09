@@ -221,6 +221,22 @@ result is written out at its output tensor's type. A core without an `accumulato
 type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
 `int8`, `uint8`, `int16`, `int24`, `bf16`, `fp16`, `int32` and `fp32`.
 
+### Systolic arrays
+
+An operational array whose operands move from one unit to the next, one unit per cycle, rather than being broadcast,
+lists the dimensions they move along:
+
+```yaml
+operational_array:
+  dimensions: [D1, D2]
+  sizes: [256, 256]
+  systolic_dimensions: [D1, D2]
+```
+
+ZigZag then adds the cycles the last results take to leave the array, one per unit in use along each such dimension
+(510 on a full 256 x 256 array). A run's tiles follow each other through the array, so Stream charges this drain once
+per run, in its fill, rather than on every tile. The TPU-like, TPU7x MXU and FuseMax arrays are systolic.
+
 ### AIE cores
 
 AIE tiles use the `aie2` namespace and a lighter schema describing tile-local memory and the object-FIFO depth, rather than a full ZigZag hierarchy. These are used by the AIE codegen entry points and live under `stream/inputs/aie/hardware/`.
