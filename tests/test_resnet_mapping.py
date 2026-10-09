@@ -43,6 +43,8 @@ def test_every_conv_group_streams_the_innermost_axis_of_its_activation(part):
         cns = tuple(group.get_computation_nodes())
         if not any(cn.type == "Conv" for cn in cns) or len(cns) == 1:
             continue
+        if not generator._sliding_dims(group, cns) - set(generator._inter_core_unrolling(group, cns)):
+            continue  # its cores split every axis a window slides along, so it streams its channels
         _, indexed = generator._indexed_by_intermediates(group, cns)
         axis = generator._streaming_axis(group, cns, set(indexed))
         assert generator._output_axis(group, cns, axis) == 3, _short(group)
@@ -67,10 +69,13 @@ def test_a_block_whose_weights_overflow_is_cut_between_its_convs():
     assert ["layer4.1/conv2/Conv", "layer4.1/Add", "layer4.1/relu_1/Relu"] in blocks
 
 
-@pytest.mark.parametrize(("part", "dim"), [("tpu_like_quad_core", "D2"), ("simba_small", "D6")])
-def test_layer1_splits_rows_where_its_weights_fit_and_channels_where_they_do_not(part, dim):
+@pytest.mark.parametrize(
+    ("part", "block", "dim"),
+    [("tpu_like_quad_core", "layer1.0", "D2"), ("simba_small", "layer1.0", "D2"), ("simba_small", "layer2.0", "D6")],
+)
+def test_a_block_splits_rows_where_its_weights_fit_and_channels_where_they_do_not(part, block, dim):
     generator, groups = _plan(part)
-    group = next(g for g in groups if _short(g)[0] == "layer1.0/conv1/Conv")
+    group = next(g for g in groups if _short(g)[0] == f"{block}/conv1/Conv")
     conv = group.get_computation_nodes()[0]
     cores = generator._select_cores_for_node(conv)
     split = generator._factor_split_across_dims(group, conv, len(cores), generator._protected_dims(group, (conv,)))

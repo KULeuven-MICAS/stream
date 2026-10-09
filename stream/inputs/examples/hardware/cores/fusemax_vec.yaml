@@ -114,4 +114,4 @@ operational_array:
   unit_area: 0.01 # unit
   dimensions: [D1, D2]
   sizes: [256, 1]
-operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Softmax, ReduceMax, ReduceSum, ReduceMean, MaxPool, AveragePool, GlobalAveragePool, GlobalMaxPool]
+operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Cast, Softmax, ReduceMax, ReduceSum, ReduceMean, MaxPool, AveragePool, GlobalAveragePool, GlobalMaxPool]

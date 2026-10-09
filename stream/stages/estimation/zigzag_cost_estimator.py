@@ -20,7 +20,7 @@ from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappi
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
 
 from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND, CoreCostEntry
-from stream.datatypes import LayerDim
+from stream.datatypes import ELEMENT_BITS, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
@@ -177,15 +177,18 @@ class ZigZagCostEstimator:
         bounds = (affine_bounds(dim, sizes) for dim in self.workload.get_dims(node))
         return ZigZagLayerDimSizes({ZigZagLayerDim(f"D{i}"): high - low + 1 for i, (low, high) in enumerate(bounds)})
 
-    def create_operand_precision(self, node: ComputationNode) -> ZigZagLayerOperandPrecision:
+    def create_operand_precision(self, node: ComputationNode, core: Core | None = None) -> ZigZagLayerOperandPrecision:
+        """Each operand at its tensor's element type; a matmul's or convolution's partial sums at the accumulator
+        precision its core declares, cast to the output's type as they are written out."""
         precisions: dict[str, int] = {
             self.input_operand_names[i]: tensor.operand_type.bitwidth for i, tensor in enumerate(self._operands(node))
         }
         assert len(node.outputs) == 1, "Only single output nodes are supported."
-        precisions["O"] = node.outputs[0].operand_type.bitwidth
-        precisions["O_final"] = node.outputs[
-            0
-        ].operand_type.bitwidth  # Assume final output has same precision as output
+        precisions["O_final"] = node.outputs[0].operand_type.bitwidth
+        accumulator = (getattr(core, "operand_precision", None) or {}).get("accumulator")
+        precisions["O"] = (
+            ELEMENT_BITS[accumulator] if accumulator and is_mac_operator_type(node.type) else precisions["O_final"]
+        )
         data: dict[ZigZagLayerOperand, int] = {
             ZigZagLayerOperand(operand_str): size for operand_str, size in precisions.items()
         }
@@ -206,11 +209,11 @@ class ZigZagCostEstimator:
             operand_source[ZigZagLayerOperand(self.input_operand_names[i])] = 0
         return operand_source
 
-    def get_layer_node_attributes(self, node: ComputationNode) -> ZigZagLayerNodeAttributes:
+    def get_layer_node_attributes(self, node: ComputationNode, core: Core | None = None) -> ZigZagLayerNodeAttributes:
         layer_type: str = node.type
         equation, dimension_relations, pr_sizes = self.create_equation_and_dimension_relations_and_pr_sizes(node)
         layer_dim_sizes = self.create_layer_dim_sizes(node)
-        operand_precision = self.create_operand_precision(node)
+        operand_precision = self.create_operand_precision(node, core)
         constant_operands = self.create_constant_operands(node)
         input_operand_source = self.create_operand_source(node)
         return ZigZagLayerNodeAttributes(
@@ -263,7 +266,7 @@ class ZigZagCostEstimator:
         )
 
     def get_layer_node(self, node: ComputationNode, core: Core) -> ZigZagLayerNode:
-        node_attr = self.get_layer_node_attributes(node)
+        node_attr = self.get_layer_node_attributes(node, core)
         mapping_attr = self.get_mapping_attributes(node, core)
         return ZigZagLayerNode(
             layer_id=0,

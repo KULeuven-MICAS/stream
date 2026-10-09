@@ -9,6 +9,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
+from stream.datatypes import ELEMENT_BITS
 from stream.hardware.ports import MemoryRef, PortRef
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
@@ -345,6 +346,12 @@ class AcceleratorValidator:
         if not validate_success:
             self.invalidate(f"User-given core {label} cannot be validated.")
             self.errors.extend(core_validator.errors)
+
+        precision = extension_fields.get("operand_precision") or {}
+        if not isinstance(precision, dict) or not set(precision) <= {"input", "accumulator"}:
+            self.invalidate(f"Core {label}: `operand_precision` takes only `input` and `accumulator`.")
+        elif unknown := {str(v) for v in precision.values()} - ELEMENT_BITS.keys():
+            self.invalidate(f"Core {label}: unknown element types {sorted(unknown)} in `operand_precision`.")
 
         # Fill in default values and re-inject Stream-level extension fields.
         normalized_core_data = core_validator.normalized_data

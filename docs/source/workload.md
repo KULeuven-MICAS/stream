@@ -29,6 +29,8 @@ The dispatch table (`ONNXModelParser.OP_TYPE_TO_PARSER`) recognises:
 | `Softmax`, `LayerNormalization`, `LpNormalization` | NormalizationNode | Reduce-then-broadcast; the reduced axis is a fusion barrier, the other axes stay parallel. |
 | `Slice`, `Gather` | ComputationNode | Data movement / indexing (e.g. a KV cache), carrying the moved region. |
 | `Add`, `Sub`, `Mul`, `Div`, `Pow`, `Relu`, `Silu`, `Gelu`, `Sigmoid`, `Tanh` | ComputationNode | Element-wise (unary and binary, NumPy broadcast). |
+| `Cast` | ComputationNode | Element-wise conversion to another element type. |
+| `QuantizeLinear`, `DequantizeLinear` | folded, or ComputationNode | See [Element types and quantized models](#element-types-and-quantized-models). |
 | `Flatten`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze` | FusionEdge | Layout-only fusion boundary. |
 
 To support a new operator, register a parser (see [Extending ingestion](#extending-ingestion)).
@@ -55,6 +57,26 @@ from onnx import shape_inference
 model = onnx.load("my_model.onnx")
 onnx.save(shape_inference.infer_shapes(model), "my_model_inferred.onnx")
 ```
+
+### Element types and quantized models
+
+Every tensor keeps the element type the model gives it (`float32`, `float16`, `bfloat16`, `int8`, `uint8`, `int16`,
+`int32`), and nodes read and write at those widths. A model exported at deployment precision is therefore costed at
+that precision; an fp32 model is costed in fp32, so cast it first if the hardware computes in narrower types.
+The example workloads are at the precision these models are deployed in: the CNNs (ResNet-18, FSRCNN) in int8,
+ResNet-18 with int32 biases, and the LLM blocks (SwiGLU, attention) in bf16.
+
+A quantized model in QDQ form marks its int8 tensors with `QuantizeLinear` and `DequantizeLinear` pairs. These
+describe element types rather than computations, and Stream folds them the way a deployment compiler does:
+
+- a `DequantizeLinear`'s readers read its quantized input directly, so a convolution or matmul runs on int8;
+- a `QuantizeLinear` folds into the node producing its input when nothing else reads that input, so the producer
+  writes the quantized tensor itself (the requantization at the end of its computation).
+
+A conversion with nothing to fold into, such as quantizing the model's fp32 input or dequantizing its output, stays in
+the graph as a `Cast` node and is costed like any element-wise op, on a core whose `operator_types` include `Cast`.
+Partial sums are kept at the accumulator precision of the core computing them (see
+[Hardware](hardware.md#operand-precision)).
 
 ### Weights are not needed — clear them
 
