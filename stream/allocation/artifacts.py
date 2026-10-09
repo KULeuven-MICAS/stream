@@ -10,7 +10,6 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import matplotlib.pyplot as plt
 import yaml
 
 try:
@@ -176,6 +175,9 @@ def plot_optimization_progress(trace: list[dict[str, Any]], save_path: str) -> N
                 current[key] = point[key]
             values.append(current[key])
     times = [point["time_s"] for point in trace]
+    # matplotlib takes a third of a second to import, which a run that plots nothing should not pay
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
     fig, ax1 = plt.subplots(figsize=(10.0, 6))
     ax2 = ax1.twinx()
     lines = ax1.step(times, series["incumbent_objective"], where="post", label="Best incumbent")

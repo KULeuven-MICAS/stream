@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from functools import cache
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
@@ -30,12 +31,15 @@ def _distribution_of(ep: EntryPoint) -> str:
     return getattr(dist, "name", "") or ""
 
 
-def _entry_points(group: str) -> list[EntryPoint]:
+@cache
+def _entry_points(group: str) -> tuple[EntryPoint, ...]:
+    """The entry points installed in ``group``, scanned once: scanning reads every installed distribution's
+    metadata, and what is installed does not change while a process runs."""
     try:
-        return list(entry_points(group=group))
+        return tuple(entry_points(group=group))
     except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
         logger.debug("entry-point discovery failed for %r: %s", group, exc)
-        return []
+        return ()
 
 
 def overlay_allowlist() -> frozenset[str] | None:
