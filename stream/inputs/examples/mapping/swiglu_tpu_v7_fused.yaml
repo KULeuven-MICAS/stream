@@ -1,14 +1,8 @@
-# SwiGLU on TPU7x, fused, weights streamed from HBM -- and a genuine INFEASIBILITY demonstration.
+# SwiGLU on TPU7x, fused, weights streamed from HBM.
 #
-# The memory wall is real. A Llama-3 SwiGLU carries 336 MiB of weights (gate + up + down, each 112 MiB
-# at bf16). The chip's four TensorCores hold 4 x 64 = 256 MiB of VMEM, so the weights CANNOT all be
-# resident: on real Ironwood they stream from HBM once and flow through VMEM into the arrays. Streaming
-# the weights (below) does fix the per-core capacity -- but the fully-fused chain is still infeasible
-# for a deeper reason: the AIE code-gen cannot spill a fused group's partials to HBM and back, so each
-# intermediate is pinned resident (force_intermediate_reuse). That pin has no reuse schedule consistent
-# with the streamed (K-tiled) weights, so the solve reports a STRUCTURAL conflict, not a capacity one.
-# Kept as the worked example behind the infeasibility diagnosis; a feasible fused SwiGLU needs either a
-# code-gen that spills partials or a non-fused (layer-by-layer) split.
+# A Llama-3 SwiGLU carries 336 MiB of weights (gate + up + down, each 112 MiB at bf16). The chip's four
+# TensorCores hold 4 x 64 = 256 MiB of VMEM, so the weights cannot all be resident: on real Ironwood
+# they stream from HBM once and flow through VMEM into the arrays.
 #
 # The mapping keeps the *activations* on-chip and streams the *weights*:
 #  * All 32 MXU cores (eight per TensorCore) run the three Gemms, splitting the output columns (D2)
@@ -21,8 +15,9 @@
 #    than staying resident. gate/up contract over d_model (D1 = 4096, not a fused dim) so tile 512 is
 #    literal (eight K-blocks). down contracts over the hidden dim (D1 = 14336), which is the same
 #    fused axis already split 32 ways as the Gemms' output, so its tile is scaled by that split: 16 x
-#    32 = a 512-wide effective K-block (28 blocks). The result fits the 64 MiB VMEM with room to
-#    spare, and the schedule is weight-bandwidth-bound at low batch, exactly as the silicon is.
+#    32 = a 512-wide effective K-block (28 blocks). Every Gemm fills its 256 x 256 array, the tiles fit
+#    each core's 2 MiB operand buffer, and the schedule is weight-bandwidth-bound at low batch, as the
+#    silicon is.
 layers:
 - name: Gemm_Left
   core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]

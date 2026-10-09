@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from stream.allocation.allocation import Allocation
-from stream.api import evaluate_mapping
+from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_conv_relu_flatten_gemm import (
     make_conv_relu_flatten_gemm_workload,
@@ -287,3 +287,16 @@ def test_a_mapping_cannot_place_an_operator_on_a_core_that_does_not_execute_it()
 
     with pytest.raises(ValueError, match="only executes"):
         MappingFactory({"layers": layers}, workload, accelerator).create()
+
+
+@pytest.mark.parametrize("mapping", ["swiglu_tpu_v7_fused", "swiglu_tpu_v7_layer_by_layer"])
+def test_swiglu_example_mappings_solve_on_tpu_v7(mapping, tmp_path):
+    """Both SwiGLU example mappings for TPU7x allocate, every fused group included."""
+    estimate = evaluate_mapping(
+        _TPU_V7,
+        "stream/inputs/examples/workload/swiglu_256_4096_14336.onnx",
+        str(tmp_path),
+        f"stream/inputs/examples/mapping/{mapping}.yaml",
+        SolveOptions(artifacts=False),
+    )
+    assert estimate.group_cycles and all(cycles > 0 for cycles in estimate.group_cycles)
