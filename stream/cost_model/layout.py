@@ -52,17 +52,24 @@ class Layout:
         return span * element_bits / 8
 
 
-def shared_run_bytes(
-    block: tuple[int, ...], full: tuple[int, ...], element_bits: int, one: Layout, other: Layout
+def shared_run_bytes(  # noqa: PLR0913
+    block: tuple[int, ...],
+    full: tuple[int, ...],
+    element_bits: int,
+    one: Layout,
+    other: Layout,
+    extents: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
 ) -> float:
     """Bytes of ``block`` contiguous in both layouts at once: the innermost axes they order alike, up to and including
-    the first the block does not span whole; one element where their innermost axes differ."""
+    the first the block does not span whole in either buffer (``extents``, the whole tensor where not given); one
+    element where their innermost axes differ."""
+    first, second = extents or (full, full)
     span = 1
     for axis, same in zip(reversed(one.data_order(full)), reversed(other.data_order(full)), strict=True):
         if axis != same:
             break
         span *= block[axis]
-        if block[axis] != full[axis]:
+        if block[axis] != first[axis] or block[axis] != second[axis]:
             break
     return span * element_bits / 8
 
@@ -72,7 +79,7 @@ Rate = Callable[[float], float]
 it."""
 
 
-def transfer_runs(
+def transfer_runs(  # noqa: PLR0913
     block: tuple[int, ...],
     full: tuple[int, ...],
     element_bits: int,
@@ -80,15 +87,18 @@ def transfer_runs(
     target: Layout,
     read_rate: Rate,
     write_rate: Rate,
+    extents: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
 ) -> tuple[float, float]:
-    """Contiguous bytes per run a transfer reads ``block`` in and writes it in, from a ``source`` layout to a
-    ``target`` one. Between two layouts the data streams in one of them: the DMA gathers it in the target's order,
-    reading runs only as long as the layouts share, or scatters it in the source's order, writing such runs, whichever
-    the slower of its two sides moves faster."""
-    read = source.contiguous_bytes(block, full, element_bits)
-    write = target.contiguous_bytes(block, full, element_bits)
+    """Contiguous bytes per run a transfer reads ``block`` of a ``full`` tensor in and writes it in, from a ``source``
+    layout to a ``target`` one, each in the buffer that side holds (``extents``: the source's and the target's, the
+    whole tensor where not given). Between two layouts the data streams in one of them: the DMA gathers it in the
+    target's order, reading runs only as long as the layouts share, or scatters it in the source's order, writing such
+    runs, whichever the slower of its two sides moves faster."""
+    source_extent, target_extent = extents or (full, full)
+    read = source.contiguous_bytes(block, source_extent, element_bits)
+    write = target.contiguous_bytes(block, target_extent, element_bits)
     if source.same_data_order(target, full):
         return read, write
-    shared = shared_run_bytes(block, full, element_bits, source, target)
+    shared = shared_run_bytes(block, full, element_bits, source, target, (source_extent, target_extent))
     gather, scatter = (shared, write), (read, shared)
     return max(gather, scatter, key=lambda runs: min(read_rate(runs[0]), write_rate(runs[1])))
