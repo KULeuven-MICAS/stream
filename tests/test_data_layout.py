@@ -53,6 +53,21 @@ def test_a_transfer_converts_on_the_side_that_loses_least():
     assert transfer_runs(block, full, BF16, source, source, bursty, bursty) == (256 * 128 * 2,) * 2
 
 
+def test_each_side_runs_in_the_buffer_it_holds():
+    """A [64, 512] tile of a [1024, 4096] tensor is 64 runs of 1 KiB in HBM, but one run in a VMEM buffer of its own."""
+    block, full = (64, 512), (1024, 4096)
+
+    def rate(_):
+        return 1.0
+
+    row_major = Layout.row_major(2)
+    whole = transfer_runs(block, full, BF16, row_major, row_major, rate, rate)
+    assert whole == (512 * 2, 512 * 2)
+    assert transfer_runs(block, full, BF16, row_major, row_major, rate, rate, (full, block)) == (512 * 2, 64 * 512 * 2)
+    assert transfer_runs(block, full, BF16, row_major, row_major, rate, rate, (block, block)) == (64 * 512 * 2,) * 2
+    assert shared_run_bytes(block, full, BF16, row_major, Layout((1, 0)), (block, block)) == 2
+
+
 def test_a_burst_memory_uses_only_the_part_of_each_access_a_short_run_fills():
     model = BandwidthModel.from_description({"ceiling": 100, "contiguous": 100, "burst": 32})
     assert model.efficiency(2, "read") == pytest.approx(2 / 32)

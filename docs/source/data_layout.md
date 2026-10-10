@@ -43,8 +43,9 @@ nowhere, so moving it is no conversion.
 A memory's efficiency for a contiguous run comes from the `bandwidth` model of its core or port (see
 [Hardware](hardware.md)): a table of measured rates per run length, or, where nothing is measured, its `burst`, the
 bytes it moves per access, of which a shorter run uses only its share; a direction's measured rates take precedence
-over the burst. A memory with neither moves every run at its full rate, and its layouts cost nothing. The run a
-transfer writes is measured in the whole tensor, also where its target holds only a tile of it.
+over the burst. A memory with neither moves every run at its full rate, and its layouts cost nothing. Each side's runs
+are measured in the buffer it holds: the whole tensor for a workload input or output off chip, the tile itself on chip,
+so a tile written into a buffer of its own size is one run in any layout both sides share.
 
 ## In the results
 

@@ -134,7 +134,16 @@ class CopyLayouts:
         full = tuple(tensor.subview.source.type.get_shape())
         bits = tensor.operand_type.bitwidth
         read, write = self._rate(tr, choice, READ), self._rate(tr, choice, WRITE)
-        return transfer_runs(tuple(tensor.shape), full, bits, source, target, read, write)
+        extents = (self._extent(tr.inputs[0], full), self._extent(tr.outputs[0], full))
+        return transfer_runs(tuple(tensor.shape), full, bits, source, target, read, write, extents)
+
+    def _extent(self, copy: Tensor, full: tuple[int, ...]) -> tuple[int, ...]:
+        """The buffer ``copy`` lives in: the whole tensor off chip, where a workload input or output is, else the tile
+        it holds on chip."""
+        off_chip = isinstance(self._producer.get(copy), InEdge) or any(
+            isinstance(reader, OutEdge) for reader in self._readers.get(copy, [])
+        )
+        return full if off_chip else tuple(copy.shape)
 
     def _rate(self, tr: TransferNode, choice: MulticastPathPlan, direction: str) -> Rate:
         """The rate of the slowest core on one side of ``choice``."""
