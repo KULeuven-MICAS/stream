@@ -403,6 +403,8 @@ class AcceleratorValidator:
         """Every ``bandwidth:`` key names an existing core; the accelerator factory checks that a port key
         names a modelled port."""
         keys = self.data.get("bandwidth", {})
+        for key, model in keys.items():
+            self._validate_bandwidth_model(key, model)
         measured_cores = {key for key in keys if isinstance(key, int)}
         for core_id in measured_cores - set(self.data["cores"]):
             self.invalidate(f"`bandwidth` names unknown core {core_id}.")
@@ -412,6 +414,21 @@ class AcceleratorValidator:
                 self.invalidate(f"`bandwidth.{ref}`: unknown core {core_id}.")
             elif core_id in measured_cores:
                 self.invalidate(f"`bandwidth.{ref}`: core {core_id} already has a measured core bandwidth.")
+
+    def _validate_bandwidth_model(self, key: object, model: object) -> None:
+        """A bandwidth model: positive ``ceiling`` and ``contiguous`` rates, measured ``strided`` rates per direction,
+        and a positive whole number of bytes per access as ``burst``, which a direction's measured rates override."""
+        if not isinstance(model, dict):
+            self.invalidate(f"`bandwidth.{key}` must be a mapping.")
+            return
+        for rate in ("ceiling", "contiguous"):
+            if not isinstance(model.get(rate), int | float) or model[rate] <= 0:
+                self.invalidate(f"`bandwidth.{key}.{rate}` must be a positive number.")
+        for direction, table in (model.get("strided") or {}).items():
+            if direction not in ("read", "write") or not isinstance(table, dict):
+                self.invalidate(f"`bandwidth.{key}.strided` maps `read` and `write` to rates per span in bytes.")
+        if "burst" in model and (type(model["burst"]) is not int or model["burst"] <= 0):
+            self.invalidate(f"`bandwidth.{key}.burst` must be a positive whole number of bytes.")
 
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints

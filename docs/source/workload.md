@@ -77,8 +77,8 @@ instead, through the composed map.
 The three ways frameworks write multi-head attention (PyTorch's reshapes and transposes, JAX's einsums, a per-head
 projection summed over the heads) therefore parse to the same nodes. A layout operator that regroups elements across
 axes (`[6, 4]` viewed as `[4, 6]`), or whose merged axis its reader walks other than with one loop, is materialized as
-a `FusionEdge`: the tensor crosses memory between two fusion groups. How tensors are laid out in memory, and what
-relayouts cost, is not modeled yet.
+a `FusionEdge`: the tensor crosses memory between two fusion groups. How the folded tensors are laid out in memory, and what
+converting between layouts costs, is decided afterwards (see [Data layout](data_layout.md)).
 
 ### Element types and quantized models
 

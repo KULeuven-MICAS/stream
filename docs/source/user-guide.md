@@ -9,6 +9,7 @@ Stream's mapping flow is built from a few well-defined inputs and a modular pipe
 - [Workload](workload.md) - how Stream reads an ONNX model and turns it into a computation graph (supported operators, shape inference, weight handling).
 - [Hardware](hardware.md) - how an accelerator is described as a system of heterogeneous cores: the accelerator file, core files, memory hierarchy, and interconnect.
 - [Mapping](mapping.md) - how operators are matched to cores and split across them, either auto-generated or hand-written.
+- [Data layout](data_layout.md) - how each tensor copy is laid out in memory, what layout kernels need, and how transfers convert between layouts on the fly.
 
 ## Pipeline & outputs
 

@@ -77,6 +77,15 @@ core_memory_sharing:
   - 11, 8, 9, 10
   - 15, 12, 13, 14
 
+# HBM3E is read and written 32 bytes at a time (a 32-bit pseudo-channel, burst length 8), so a
+# transfer whose contiguous runs are shorter, a tile of a tensor laid out another way, uses only part
+# of each access.
+bandwidth:
+  16.hbm3e.rw_port_1:
+    ceiling: 53600
+    contiguous: 53600
+    burst: 32
+
 # ── Physical cost ──
 # `area: 0` in the core files is not "free": area and access energy are computed from the declared
 # capacities, widths, port counts and array dimensions by `stream.hardware.cost`.

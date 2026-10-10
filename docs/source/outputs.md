@@ -163,4 +163,4 @@ allocation_ir  = AllocationIR.from_internal(ctx.get("allocation"))
 allocation_data = allocation_ir.model_dump()      # JSON-compatible dict
 ```
 
-`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization. See [Using Stream with an AI agent](ai-agents.md) for details.
+`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization, and, under `layouts`, every transfer that lays its tile out anew on its chosen route: the axis orders it reads and writes (`source_order`, `target_order`, outermost first) and its contiguous bytes per run on each side (see [Data layout](data_layout.md)). See [Using Stream with an AI agent](ai-agents.md) for details.

@@ -38,6 +38,7 @@ class AtenTensor:
     name: str
     shape: tuple[int, ...]
     dtype: FixedBitwidthType = bf16
+    parameter: bool = False  # a lifted parameter or buffer of the model, not an input the caller passes
 
 
 @dataclass(frozen=True)
@@ -179,7 +180,7 @@ def convert_aten_calls(
     for graph_input in graph_inputs:
         tensor = Tensor.create(graph_input.name, graph_input.dtype, graph_input.shape)
         tensors[graph_input.name] = tensor
-        nodes.append(InEdge(name=graph_input.name, outputs=(tensor,)))
+        nodes.append(InEdge(name=graph_input.name, outputs=(tensor,), parameter=graph_input.parameter))
 
     for call in calls:
         builder = ATEN_OP_TABLE.get(call.target)
@@ -226,10 +227,13 @@ def _lower_exported_program(exported_program: Any) -> tuple[list[AtenTensor], li
     except ImportError as exc:  # pragma: no cover - exercised only in the torch-absent job
         raise RuntimeError("the torch.export frontend requires torch; install the 'stream[torch]' extra") from exc
 
+    signature = exported_program.graph_signature
+    parameters = {*signature.inputs_to_parameters, *signature.inputs_to_buffers}
+
     def as_tensor(node: Any) -> AtenTensor:
         val = node.meta.get("val")
         shape = tuple(int(s) for s in val.shape) if val is not None else ()
-        return AtenTensor(name=str(node.name), shape=shape)
+        return AtenTensor(name=str(node.name), shape=shape, parameter=str(node.name) in parameters)
 
     graph_inputs: list[AtenTensor] = []
     calls: list[AtenCall] = []
