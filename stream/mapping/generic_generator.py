@@ -321,6 +321,7 @@ class GenericMappingGenerator:
         # A dim a node of the group reduces over is not one all of them split, so their tiles do not line up along
         # it: it is preferred only for the weights it fits.
         group = self._group_footprints(sub_workload, n_cores)
+        held = self._group_footprints(sub_workload, n_cores, sliding_only=False)
         for reducer in sub_workload.get_computation_nodes():
             reducer_dims = sub_workload.get_dims(reducer)
             for p, kind in derive_iterator_types(reducer).items():
@@ -333,6 +334,7 @@ class GenericMappingGenerator:
                 ranks_as_parallel(pair[0]),
                 tuple(-x for x in group.get(sub_workload.leading_dim(dims[pair[0]])[0], (math.inf, math.inf))),
                 -footprint(*pair),
+                -held.get(sub_workload.leading_dim(dims[pair[0]])[0], (0.0, 0.0))[1],
                 pair[1],
                 outer(pair[0]),
             ),
@@ -352,15 +354,20 @@ class GenericMappingGenerator:
         return split_factors
 
     def _group_footprints(
-        self, sub_workload: Workload, n_cores: int, cns: tuple[ComputationNode, ...] | None = None
+        self,
+        sub_workload: Workload,
+        n_cores: int,
+        cns: tuple[ComputationNode, ...] | None = None,
+        sliding_only: bool = True,
     ) -> dict[LayerDim, tuple[float, float]]:
         """Per unique dim of a group a window slides through, what its multi-core nodes hold per core when each splits
         along it: first how far the operands no sliding window streams (the weights) overflow half a core, then
         everything held, so every node splits along the dim that suits the whole group and their tiles line up.
-        ``cns`` narrows the group to some of its nodes."""
+        ``cns`` narrows the group to some of its nodes. Without ``sliding_only``, a group no window slides through
+        has them too."""
         cns = cns or tuple(sub_workload.get_computation_nodes())
         sliding = {sub_workload.leading_dim(d)[0] for d in self._sliding_dims(sub_workload, cns)}
-        if not sliding:
+        if not sliding and sliding_only:
             return {}
         operands: list[tuple[int, frozenset[LayerDim]]] = []
         capacity = math.inf

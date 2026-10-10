@@ -150,3 +150,35 @@ def test_a_convolution_spreads_its_contraction_over_the_mxu_rows(tmp_path):
         for entry in costs.values()
     )
     assert conv.cme.ideal_temporal_cycle < 4 * conv.cme.ideal_cycle
+
+
+def test_multi_head_attention_splits_the_heads_its_matrix_units_split(tmp_path):
+    """The scores and context split the heads over the eight MXUs, their operands indexed by the heads alone; the
+    softmax could split heads or query rows, which shrink it alike, and takes the heads too, so each vector unit
+    normalizes the heads of its own TensorCore and no score crosses a chip. Splitting its rows instead sends every
+    score to every vector unit and makes the fused attention slower than writing the scores out."""
+    seq, d_model, heads = 128, 512, 8
+    d_head = d_model // heads
+    value = lambda name, shape: helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape)  # noqa: E731
+    nodes = [helper.make_node("MatMul", ["x", f"w{p}"], [p], name=f"proj_{p}") for p in "QKV"]
+    nodes += [
+        helper.make_node("Transpose", ["K"], ["Kt"], perm=[0, 2, 1], name="transpose_K"),
+        helper.make_node("MatMul", ["Q", "Kt"], ["scores"], name="scores"),
+        helper.make_node("Softmax", ["scores"], ["attn"], axis=-1, name="softmax"),
+        helper.make_node("MatMul", ["attn", "V"], ["ctx"], name="context"),
+    ]
+    weights = [value(f"w{p}", [heads, d_model, d_head]) for p in "QKV"]
+    graph = helper.make_graph(
+        nodes, "mha", [value("x", [seq, d_model]), *weights], [value("ctx", [heads, seq, d_head])]
+    )
+    path = str(tmp_path / "mha.onnx")
+    onnx.save(onnx.shape_inference.infer_shapes(helper.make_model(graph)), path)
+
+    estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+    mapping, workload = estimate.context.get("mapping"), estimate.context.get("workload")
+    splits = {
+        n.name: {str(d) for d, _ in mapping.get(n).inter_core_tiling[0]}
+        for n in workload.get_computation_nodes()
+        if n.name in ("scores", "context") or n.name.startswith("softmax")
+    }
+    assert len(set(map(frozenset, splits.values()))) == 1, splits
