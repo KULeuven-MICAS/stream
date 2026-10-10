@@ -17,10 +17,12 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
 )
 from stream.mapping.capacity_tiler import CapacityTiler
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.opt.allocation.constraint_optimization.utils import active_fraction
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
 from stream.stages.stage import LeafStage, MainStage
+from stream.workload.steady_state.iteration_space import LoopEffect
 
 TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
 AIE2_STRIX = "stream/inputs/aie/hardware/whole_array_strix.yaml"
@@ -225,3 +227,29 @@ def test_a_copy_in_memory_holds_what_every_reader_of_it_needs(tmp_path):
     )
     hbm = problem.accelerator.offchip_core_id
     assert {link.sender.id for link in allocation.solution.transfer_routes[into_vmem].links_used} == {hbm}
+
+
+def test_the_key_projection_sits_out_the_query_tiles(tmp_path):
+    """Attention cut along its queries, its VMEM holding one copy of the input for every projection: the key and value
+    projections do not depend on the queries, so they run in half the steady-state iterations rather than in each, and
+    no node of the steady state has two loops along one dim."""
+    path = _attention(tmp_path / "mha.onnx", seq=256, d_model=1024, heads=8)
+    accelerator, workload = _parse(TPU_V7, path)
+    generated, _ = GenericMappingGenerator(accelerator, workload, tempfile.mkdtemp()).generate_all_groups()
+    mapping = yaml.safe_load(open(generated[0]))
+    mapping["fused_groups"][0]["intra_core_tiling"] = [{"dim": "proj_Q.D1", "tile": 128}]
+    mapping_path = tmp_path / "queries_cut.yaml"
+    mapping_path.write_text(yaml.safe_dump(mapping, sort_keys=False))
+    estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), str(mapping_path), SolveOptions(artifacts=False))
+    problem = estimate.context.get("allocation").problem
+    steady = problem.workload
+    for node in steady.get_iteration_space_nodes():
+        loops = [steady.leading_dim(d)[0] for d in steady.get_dims(node)]
+        assert len(set(loops)) == len(loops), node.name
+    nodes = {n.name: n for n in steady.get_computation_nodes()}
+    (queries,) = problem.ssis[nodes["proj_Q"]].get_temporal_variables()
+    assert queries.effect is LoopEffect.VARYING
+    for name in ("proj_K", "proj_V"):
+        (loop,) = problem.ssis[nodes[name]].get_temporal_variables()
+        assert (loop.dimension, loop.effect) == (queries.dimension, LoopEffect.ABSENT)
+        assert active_fraction(nodes[name], problem.ssis) == 0.5

@@ -38,6 +38,10 @@ if TYPE_CHECKING:
     from stream.mapping.mapping import Mapping
 
 
+_SharedAxis = tuple[Node, int]
+"""An axis of a tensor several nodes read: its producer, and the axis."""
+
+
 def _order_inputs_by_use(nodes: list[Node]) -> None:
     """Put a group's InEdges first, ordered by when the group first reads them.
 
@@ -148,11 +152,12 @@ class Workload(DiGraphWrapper[Node]):
         return sorted(int(c) for c in row if c != 0) == [-1, 1]
 
     def _coupling(
-        self, consumer: HasIterationSpace, produced: AffineExpr, read: AffineExpr, extent: int, column: int
+        self, consumer: HasIterationSpace, produced: AffineExpr, read: AffineExpr, extent: int
     ) -> tuple[AffineExpr, int] | None:
         """The relation a producer->consumer axis of whole ``extent`` adds, and its stride: the identity, or for a read
-        ``s*d + windows + c`` of a producer dim spanning ``s`` times ``d``, ``produced - s*d - r``, ``r`` the remainder
-        at ``column`` of size ``s``; none where the whole extents differ, as under an unpadded window."""
+        ``s*d + windows + c`` of a producer dim spanning ``s`` times ``d``, ``produced - s*d``, to which
+        :attr:`_couplings` adds a remainder dim of size ``s``; none where the whole extents differ, as under an
+        unpadded window."""
         if self._is_identity_relation(relation := produced - read):
             return relation, 1
         rows = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (produced, read)))
@@ -174,8 +179,7 @@ class Workload(DiGraphWrapper[Node]):
         )
         if stride * next(spans, 0) != extent:
             return None
-        relation = AffineDimExpr(int(np.flatnonzero(rows.A[0])[0])) - AffineDimExpr(indexed[0]) * stride
-        return (relation, 1) if stride == 1 else (relation - AffineDimExpr(column), stride)
+        return AffineDimExpr(int(np.flatnonzero(rows.A[0])[0])) - AffineDimExpr(indexed[0]) * stride, stride
 
     def dimension_relations(self) -> tuple[AffineExpr, ...]:
         return tuple(relation for relation, _ in self._couplings)
@@ -187,9 +191,24 @@ class Workload(DiGraphWrapper[Node]):
 
     @cached_property
     def _couplings(self) -> tuple[tuple[AffineExpr, int], ...]:
-        """Every dimension relation, and the stride of the windowed read it couples (1 for an identity)."""
+        """Every dimension relation, and the stride of the windowed read it couples (1 for an identity), each strided
+        read adding a remainder dim as a column after the node dims. An axis of a tensor several nodes read couples
+        none of them where it would make two loops of one node one dim (:meth:`_held_axes`)."""
+        candidates = self._candidate_couplings()
+        held = self._held_axes(candidates)
         result: list[tuple[AffineExpr, int]] = []
-        # Relations between shared intermediate tensors:
+        for relation, stride, shared in candidates:
+            if shared in held:
+                continue
+            remainder = AffineDimExpr(self.num_dims + sum(s > 1 for _, s in result))
+            result.append((relation - remainder if stride > 1 else relation, stride))
+        return tuple(result)
+
+    def _candidate_couplings(self) -> list[tuple[AffineExpr, int, _SharedAxis | None]]:
+        """Each relation the dataflow suggests, its stride, and the axis of a tensor several nodes read it couples
+        through, as its producer and axis (None for a tensor one node reads): a producer couples to each reader, and
+        the readers of a workload input to each other."""
+        candidates: list[tuple[AffineExpr, int, _SharedAxis | None]] = []
         for src, dst in self.edges:
             if isinstance(src, HasIterationSpace) and isinstance(dst, HasIterationSpace):
                 try:
@@ -199,11 +218,11 @@ class Workload(DiGraphWrapper[Node]):
                 mapping_out = self.global_mapping(src, src.get_mapping(output))
                 mapping_in = self.global_mapping(dst, dst.get_mapping(output))
                 full = output.subview.source.type.get_shape()
-                for expr_out, expr_in, extent in zip(mapping_out.results, mapping_in.results, full, strict=True):
-                    column = self.num_dims + sum(stride > 1 for _, stride in result)
-                    if (coupled := self._coupling(dst, expr_out, expr_in, extent, column)) is not None:
-                        result.append(coupled)
-        # Relations between shared inputs:
+                shared = sum(isinstance(n, HasIterationSpace) for n in self.successors(src)) > 1
+                axes = zip(mapping_out.results, mapping_in.results, full, strict=True)
+                for axis, (expr_out, expr_in, extent) in enumerate(axes):
+                    if (coupled := self._coupling(dst, expr_out, expr_in, extent)) is not None:
+                        candidates.append((*coupled, (src, axis) if shared else None))
         for node in self.nodes:
             if isinstance(node, InEdge):
                 assert len(node.outputs) == 1, "Only single output InEdge supported for now."
@@ -212,13 +231,62 @@ class Workload(DiGraphWrapper[Node]):
                 for a, b in combinations(all_users, 2):
                     mapping_a = self.global_mapping(a, a.get_mapping(output))
                     mapping_b = self.global_mapping(b, b.get_mapping(output))
-                    for expr_a, expr_b in zip(mapping_a.results, mapping_b.results, strict=True):
+                    for axis, (expr_a, expr_b) in enumerate(zip(mapping_a.results, mapping_b.results, strict=True)):
                         relation = expr_a - expr_b
                         if self._is_identity_relation(relation) and not self._both_parallel_outputs(
                             a, b, expr_a, expr_b
                         ):
-                            result.append((relation, 1))
-        return tuple(result)
+                            candidates.append((relation, 1, (node, axis)))
+        return candidates
+
+    def _held_axes(self, candidates: list[tuple[AffineExpr, int, _SharedAxis | None]]) -> set[_SharedAxis]:
+        """The axes of tensors several nodes read that couple none of their readers, because they play two roles: one
+        coupling through them would make two loops of a node one dim, as the rows of attention's input reach its scores
+        once as queries and once as keys. Such an axis is held whole, as the copy every reader slices. Tensors one node
+        reads couple first, then the shared ones from the latest produced back, so the axis found is the one where the
+        roles part rather than one a single role reaches further on."""
+        position = {node: i for i, node in enumerate(self.dataflow_sort())}
+        owner = {g: node for node, idxs in self.global_idxs.items() for g in idxs}
+        links = sorted(
+            ((self._joined_dims(relation), shared) for relation, _, shared in candidates),
+            key=lambda link: (link[1] is not None, -position[link[1][0]] if link[1] else 0),
+        )
+        held: set[_SharedAxis] = set()
+        while (conflict := self._role_conflict(links, held, owner)) is not None:
+            held.add(conflict)
+        return held
+
+    def _joined_dims(self, relation: AffineExpr) -> list[int]:
+        """The global dims ``relation`` joins."""
+        row = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (relation,))).A[0]
+        return [int(g) for g in np.flatnonzero(row)]
+
+    def _role_conflict(
+        self, links: list[tuple[list[int], _SharedAxis | None]], held: set[_SharedAxis], owner: dict[int, Node]
+    ) -> _SharedAxis | None:
+        """The first shared axis in ``links`` (the global dims each coupling joins, and its shared axis) not ``held``
+        whose coupling joins two dims of one node, the dims each other coupling joins being one."""
+        parent = list(range(self.num_dims))
+        nodes = [{owner[g]} for g in range(self.num_dims)]
+
+        def find(g: int) -> int:
+            while parent[g] != g:
+                parent[g] = parent[parent[g]]
+                g = parent[g]
+            return g
+
+        for dims, shared in links:
+            if shared in held:
+                continue
+            for a, b in pairwise(dims):
+                ra, rb = find(a), find(b)
+                if ra == rb:
+                    continue
+                if shared is not None and nodes[ra] & nodes[rb]:
+                    return shared
+                parent[rb] = ra
+                nodes[ra] |= nodes[rb]
+        return None
 
     def _both_parallel_outputs(
         self, a: "HasIterationSpace", b: "HasIterationSpace", expr_a: AffineExpr, expr_b: AffineExpr
