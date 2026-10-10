@@ -32,7 +32,11 @@ class HasInputs(Node, ABC):
 
 
 @dataclass(frozen=True, repr=False)
-class InEdge(HasOutputs): ...
+class InEdge(HasOutputs):
+    """A tensor the workload takes in. A ``parameter`` (a weight) is the model's own, laid out in memory however its
+    readers need, as a compiler packs weights ahead of time; any other comes from the host, row-major."""
+
+    parameter: bool = False
 
 
 @dataclass(frozen=True, repr=False)

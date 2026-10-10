@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from xdsl.ir.affine import AffineDimExpr
 from zigzag.hardware.architecture.memory_port import DataDirection
 
 from stream.hardware.architecture.backends.zigzag import ZIGZAG_DIRECTION_NAMES, operand_role
@@ -26,6 +27,7 @@ CORE_COST_BACKENDS_GROUP = "stream.core_cost_backends"
 CONTRACT_VERSION = 1
 
 PortTraffic = tuple[tuple[str, str, float], ...]
+ContiguousAxes = tuple[frozenset[int], ...]
 
 
 class CoreEstimator(Protocol):
@@ -76,6 +78,21 @@ def port_traffic(backend: object, entry: CoreCostEntry) -> PortTraffic:
     return backend.port_traffic(entry) if isinstance(backend, PortTrafficSource) else ()
 
 
+@runtime_checkable
+class OperandLayoutSource(Protocol):
+    """Optional backend capability: what layout a costed node's kernel needs its operands in."""
+
+    def contiguous_axes(self, entry: CoreCostEntry) -> ContiguousAxes:
+        """Per tensor of ``entry``'s node (its inputs, then its outputs), the axes its core reads or writes together
+        in one access, which a copy of the tensor feeding it at full rate has innermost, in any order."""
+        ...
+
+
+def contiguous_axes(backend: object, entry: CoreCostEntry) -> ContiguousAxes:
+    """``backend``'s operand layout needs for ``entry``; none from a backend without the capability."""
+    return backend.contiguous_axes(entry) if isinstance(backend, OperandLayoutSource) else ()
+
+
 class AIEBackend:
     """AIE compute tiles: the kernel-library-priced estimator."""
 
@@ -109,6 +126,29 @@ class ZigZagBackend:
             loma_lpf_limit=context.loma_lpf_limit,
             nb_spatial_mappings_generated=context.nb_spatial_mappings_generated,
         )
+
+    def contiguous_axes(self, entry: CoreCostEntry) -> ContiguousAxes:
+        """Per operand, the axes its spatial mapping unrolls widest over the array: one memory word feeds the units
+        along them, so they are laid out innermost (the channels of a convolution on an array unrolling them, a
+        matmul's contraction along the rows of a systolic array, and both axes of the block a stationary operand
+        loads). An axis unrolled less, such as one shared by a pair of rows, is fed word by word and needs nothing."""
+        cme, node = entry.cme, entry.layer
+        if cme is None or node is None:
+            return ()
+        unrolled: dict[str, float] = {}
+        for single in cme.layer.spatial_mapping.values():
+            for layer_dim, factor in single.items():
+                unrolled[layer_dim.name] = unrolled.get(layer_dim.name, 1) * factor
+        needs: list[frozenset[int]] = []
+        for access in node.operand_mapping:
+            factors = {
+                axis: unrolled.get(f"D{result.position}", 1)
+                for axis, result in enumerate(access.results)
+                if isinstance(result, AffineDimExpr)
+            }
+            widest = max(factors.values(), default=1)
+            needs.append(frozenset(axis for axis, f in factors.items() if f == widest and f > 1))
+        return tuple(needs)
 
     def port_traffic(self, entry: CoreCostEntry) -> PortTraffic:
         """Words each operand's top level moves to and from the datapath, times the evaluated port's width."""
