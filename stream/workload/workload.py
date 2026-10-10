@@ -941,10 +941,7 @@ class Workload(DiGraphWrapper[Node]):
                 assert new_output is not None, (
                     f"InEdge tensor {node.name} (output: {out_tensor_name}) must have been inferred"
                 )
-                new_node = InEdge(
-                    name=node.name,
-                    outputs=(new_output,),
-                )
+                new_node = replace(node, outputs=(new_output,))
             elif isinstance(node, ComputationNode):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
                 new_output = tensor_map.get(node.outputs[0].name)

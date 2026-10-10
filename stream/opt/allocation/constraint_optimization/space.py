@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
-from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
+from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.hardware.ports import OUTPUT, READ, input_role
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
+from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
@@ -23,6 +25,7 @@ from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge,
 
 if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
+    from stream.cost_model.layout import Rate
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
 
@@ -261,10 +264,35 @@ class DecisionSpace:
         direction = self.direction(core_id, path)
         if direction is None:
             return 0
-        tensor = tr.inputs[0]
-        full = tuple(tensor.subview.source.type.get_shape())
-        span = contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
+        span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
         return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
+
+    @cached_property
+    def layouts(self) -> CopyLayouts:
+        """The layout of every tensor copy, and the contiguous runs each transfer moves them in."""
+        return CopyLayouts(self)
+
+    def side_rate(self, tr: TransferNode, core: Core, direction: str) -> Rate:
+        """Bits per cycle ``core`` moves one side of ``tr`` at per contiguous run length: its measured shared
+        bandwidth, else that of the port the transfer's operand passes, else unbounded."""
+        if (model := self.shared_bandwidth.get(core.id)) is not None:
+            return lambda span: model.contiguous * model.efficiency(span, direction)
+        port = self.accelerator.ports.port_for(core, direction, self.operand_role(tr, read_side=direction == READ))
+        if port is None:
+            return lambda span: float("inf")
+        return lambda span: port.bandwidth.contiguous * port.bandwidth.efficiency(span, direction)
+
+    def operand_role(self, tr: TransferNode, read_side: bool) -> str:
+        """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
+        producer = next(iter(self.workload.predecessors(tr)), None)
+        if read_side and isinstance(producer, ComputationNode):
+            return OUTPUT
+        for consumer in self.workload.successors(tr):
+            if isinstance(consumer, ComputationNode):
+                for tensor in tr.outputs:
+                    if tensor in consumer.inputs:
+                        return input_role(consumer.inputs.index(tensor) + 1)
+        return OUTPUT
 
     def offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""
