@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 #: Operator-type substrings that denote multiply-accumulate work (matched case-insensitively as a substring).
-MAC_OPERATOR_TYPES: tuple[str, ...] = ("conv", "gemm", "matmul", "linear")
+MAC_OPERATOR_TYPES: tuple[str, ...] = ("conv", "gemm", "matmul", "linear", "einsum")
 
 
 def is_mac_operator_type(op_type: object) -> bool:
