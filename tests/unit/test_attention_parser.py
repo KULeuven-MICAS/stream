@@ -1,10 +1,10 @@
-"""End-to-end parse of the attention head ONNX fixture: affine MatMuls, a layout barrier, and a
+"""End-to-end parse of the attention head ONNX fixture: affine MatMuls, a folded transpose, and a
 fusible normalization.
 
 The fixture (``attention_head.onnx``) is single-head attention exported from a 2-operand-MatMul
 frontend: Q/K/V projections, a Transpose to form Kᵀ, the QKᵀ scores, a row-wise Softmax over the key
 axis, and the context matmul. It exercises the parser additions: MatMul as an affine
-ComputationNode, Transpose as a layout FusionEdge, and Softmax as a schedulable
+ComputationNode, the Transpose folded into the scores reading K, and Softmax as a schedulable
 NormalizationNode that fuses (rather than splitting the graph).
 """
 
@@ -23,13 +23,16 @@ def _workload():
     return parser.workload
 
 
-def test_attention_parses_matmuls_layout_barrier_and_normalization():
+def test_attention_parses_matmuls_folded_transpose_and_normalization():
     wl = _workload()
     matmuls = [n for n in wl.get_computation_nodes() if n.type == "MatMul"]
     barriers = [n for n in wl.nodes if isinstance(n, FusionEdge)]
     norms = [n for n in wl.get_computation_nodes() if isinstance(n, NormalizationNode)]
     assert len(matmuls) == 5  # Q, K, V projections + scores + context
-    assert {b.op_type for b in barriers} == {"Transpose"}  # only the layout op is a barrier
+    assert not barriers  # the transpose is read in place, nothing splits the graph
+    projection_k, scores = matmuls[1], next(n for n in matmuls if any(t.name == "Q" for t in n.inputs))
+    assert scores.inputs[1] is projection_k.outputs[0]  # the scores read K itself, transposed by their map
+    assert str(scores.operand_mapping[1]) == "(d0, d1, d2) -> (d1, d2)"
     assert [n.type for n in norms] == ["Softmax"]  # the normalization is a compute node
 
 

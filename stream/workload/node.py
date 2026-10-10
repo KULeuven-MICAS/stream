@@ -41,15 +41,15 @@ class OutEdge(HasInputs): ...
 
 @dataclass(frozen=True, repr=False)
 class FusionEdge(HasInputs, HasOutputs):
-    """A graph boundary node for layout-only ops (Flatten, Reshape, Transpose, Squeeze, Unsqueeze):
-    pure re-indexing with no compute, which splits the fusion group (see
-    ``Workload.split_fusion_groups``).
+    """A graph boundary node for a layout-only op (Flatten, Reshape, Transpose, Squeeze, Unsqueeze) that its
+    readers cannot fold into their access maps (see ``stream.parser.onnx.layout``): pure re-indexing with no
+    compute, which splits the fusion group (see ``Workload.split_fusion_groups``).
 
     A FusionEdge is NOT ``HasIterationSpace`` -- it has no ``operand_mapping``. It is the escape hatch
-    the affine IR reserves for operators that cannot be expressed as one affine node: rather than
-    force a lossy affine map, the operator becomes an explicit fusion boundary, its tensors passing
-    through unchanged during dimension resizing. (Normalizations like Softmax are NOT FusionEdges --
-    they parse to schedulable ``NormalizationNode``s that decompose for fusion analysis.)
+    the affine IR reserves for a re-indexing no affine map expresses: rather than force a lossy affine map,
+    the operator becomes an explicit fusion boundary, its tensor crossing memory between the groups.
+    (Normalizations like Softmax are NOT FusionEdges -- they parse to schedulable ``NormalizationNode``s
+    that decompose for fusion analysis.)
     """
 
     op_type: str  # original ONNX op type, e.g. "Transpose" or "Reshape"

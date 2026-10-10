@@ -142,6 +142,8 @@ class ZigZagCostEstimator:
                         )
                         # Set pr dim sizes
                         pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
+                elif isinstance(expr, AffineConstantExpr):
+                    continue  # one fixed index along this axis, which no loop walks
                 else:
                     raise NotImplementedError(f"Unsupported affine expr type {type(expr)} in mapping.")
             # Create equation string part for this operand
