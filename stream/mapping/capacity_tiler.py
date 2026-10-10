@@ -131,7 +131,7 @@ class CapacityTiler:
         self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned)
         if resident == seed:
             return []
-        return self._emit(cns, resident, per_core)
+        return self._emit(cns, resident, per_core, indexed)
 
     def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned) -> None:  # noqa: PLR0913
         """Cut ``resident`` into at least :attr:`PIPELINE_TILES` steady-state tiles, each cut the least that keeps the
@@ -324,11 +324,15 @@ class CapacityTiler:
         cns: tuple[ComputationNode, ...],
         resident: dict[LayerDim, int],
         per_core: dict[LayerDim, int],
+        indexed: dict[LayerDim, float],
     ) -> list[dict[str, Any]]:
         """One entry per tiled dim (resident tile < the per-core slice), naming a node that has the dim, else a node dim
-        stepping along it, its tile scaled by the stride."""
+        stepping along it, its tile scaled by the stride. The first entry is the innermost steady-state loop, so the
+        dims go from the one indexing the least data (``indexed``) to the most: what an inner loop does not index stays
+        put while it runs, as a matmul's weights do over the rows of its activations, rather than being fetched again
+        every iteration."""
         entries: list[dict[str, Any]] = []
-        for dim, tile in resident.items():
+        for dim, tile in sorted(resident.items(), key=lambda item: indexed.get(item[0], 0.0)):
             if tile >= per_core.get(dim, tile):
                 continue
             steps = [
