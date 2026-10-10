@@ -9,13 +9,12 @@ _RESNET18_PATH = "stream/inputs/examples/workload/resnet18.onnx"
 
 
 def test_resnet18_full_parse():
-    """All 49 ResNet18 ONNX nodes parse into valid ComputationNode or FusionEdge.
+    """All 49 ResNet18 ONNX nodes parse: 48 into ComputationNodes, the Flatten folded into the Gemm reading it.
 
     Verifies:
     - No exceptions during parsing
-    - All 49 nodes accounted for (as ComputationNode, FusionEdge, InEdge, or OutEdge)
     - Expected op type distribution: Conv x20, Relu x17, Add x8, MaxPool x1,
-      GlobalAveragePool x1, Flatten x1 (FusionEdge), Gemm x1
+      GlobalAveragePool x1, Gemm x1, and no FusionEdge
     - AffineMap rank consistency: each AffineMap result count matches its tensor's dimensionality
       (validates that e.g. no 2D map was used on a 4D tensor, which would crash downstream)
     """
@@ -28,12 +27,8 @@ def test_resnet18_full_parse():
     fusion_edges = [n for n in workload.nodes if isinstance(n, FusionEdge)]
 
     # 48 ComputationNodes (Conv x20 + Relu x17 + Add x8 + MaxPool x1 + GlobalAveragePool x1 + Gemm x1)
-    # 1 FusionEdge (Flatten)
     assert len(computation_nodes) == 48, f"Expected 48 ComputationNodes, got {len(computation_nodes)}"
-    assert len(fusion_edges) == 1, f"Expected 1 FusionEdge (Flatten), got {len(fusion_edges)}"
-    assert fusion_edges[0].op_type == "Flatten", (
-        f"Expected FusionEdge op_type='Flatten', got '{fusion_edges[0].op_type}'"
-    )
+    assert not fusion_edges, f"Expected the Flatten folded into the Gemm, got {fusion_edges}"
 
     # Verify op type distribution among ComputationNodes
     op_types: dict[str, int] = {}
@@ -73,22 +68,19 @@ def test_resnet18_shape_inference():
     assert len(inferred.graph.value_info) > 0, "Shape inference should populate value_info"
 
 
-def test_resnet18_split_fusion_groups():
-    """Verify split_fusion_groups produces 2 sub-workloads for ResNet18 (split at Flatten)."""
+def test_resnet18_flatten_folds_into_the_classifier():
+    """The classifier reads the pooled [1, 512, 1, 1] activations in place, so nothing splits the graph, and cutting
+    before the Gemm gives it a group of its own whose dimensions resolve."""
     parser = ONNXModelParser(_RESNET18_PATH)
     parser.run()
     workload = parser.workload
 
-    groups = workload.split_fusion_groups()
-    assert len(groups) == 2, f"Expected 2 fusion groups (split at Flatten), got {len(groups)}"
-    # First group: all conv/relu/add/maxpool/globalavgpool nodes
-    # Second group: Gemm node
-    group_0_comp = [n for n in groups[0].nodes if isinstance(n, ComputationNode)]
-    group_1_comp = [n for n in groups[1].nodes if isinstance(n, ComputationNode)]
-    assert len(group_0_comp) == 47, f"Expected 47 ComputationNodes in group 0, got {len(group_0_comp)}"
-    assert len(group_1_comp) == 1, f"Expected 1 ComputationNode in group 1 (Gemm), got {len(group_1_comp)}"
+    gemm = next(n for n in workload.get_computation_nodes() if n.type == "Gemm")
+    pool = next(n for n in workload.get_computation_nodes() if n.type == "GlobalAveragePool")
+    assert gemm.inputs[0] is pool.outputs[0]
+    assert str(gemm.operand_mapping[0]) == "(d0, d1, d2) -> (0, d1, 0, 0)"
+    assert len(workload.split_fusion_groups()) == 1
 
-    # Validate group 1 (Gemm) dimension sizes -- this group has a simple linear topology
-    # and get_dimension_sizes() should succeed for it
-    dim_sizes = groups[1].get_dimension_sizes()
-    assert len(dim_sizes) > 0, "get_dimension_sizes() on Gemm group should return non-empty tuple"
+    groups = workload.split_fusion_groups(cut_points=[pool.name])
+    assert [len([n for n in g.nodes if isinstance(n, ComputationNode)]) for g in groups] == [47, 1]
+    assert groups[1].get_dimension_sizes(), "get_dimension_sizes() on the Gemm group should be non-empty"
