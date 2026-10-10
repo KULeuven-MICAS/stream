@@ -496,15 +496,20 @@ class _Lowering:
         ]
         node_dims = set(self.ssw.get_dims(node))
         largest = get_node_with_largest_resource_allocation(compute_dsts, self.mapping) if compute_dsts else None
+        # A copy in memory holds what every consumer reading it needs: it is split only as all of them split the
+        # tensor, and held whole where one reads it whole or they split it differently.
+        splits = {
+            frozenset(
+                (dim, factor)
+                for dim, factor in self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping)
+                if dim in node_dims
+            )
+            for dst in compute_dsts
+        }
         replicated = (
             node.transfer_type is TransferType.MEM_TO_MEM
             and largest is not None
-            and (
-                not any(
-                    dim in node_dims for dim, _ in self.ssw.get_unique_dims_inter_core_tiling(largest, self.mapping)
-                )
-                or self._each_column_reads_whole(largest, node)
-            )
+            and (frozenset() in splits or len(splits) > 1 or self._each_column_reads_whole(largest, node))
         )
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
