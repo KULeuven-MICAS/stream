@@ -31,7 +31,7 @@ SWIGLU_TILING = [
 def _assert_sound_dataflow(ctx, node_count: int) -> None:
     """Every node runs on a compute core, and each group's allocation is consistent: utilizations are fractions,
     no memory holds more than it has, energy is spent, and each transfer's layout orders all dims of a tile that fits
-    its tensor, read and written in runs no longer than the tile."""
+    its tensor, read and written in runs no longer than the tile by loops that visit the whole tile."""
     accelerator, mapping, workload = ctx.get("accelerator"), ctx.get("mapping"), ctx.get("workload")
     nodes = [n for n in workload.nodes if isinstance(n, ComputationNode)]
     assert len(nodes) == node_count
@@ -56,6 +56,8 @@ def _assert_sound_dataflow(ctx, node_count: int) -> None:
             tile_bytes = math.prod(layout["tile_shape"]) * layout["element_bits"] / 8
             assert 0 < min(layout["read_run_bytes"], layout["write_run_bytes"]), layout
             assert max(layout["read_run_bytes"], layout["write_run_bytes"]) <= tile_bytes, layout
+            for side in (layout["read"], layout["write"]):
+                assert math.prod(size for size, _ in side["access"]) == math.prod(layout["tile_shape"]), layout
 
 
 def _caption(values: dict) -> str:

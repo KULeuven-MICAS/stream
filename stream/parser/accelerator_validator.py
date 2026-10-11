@@ -312,7 +312,7 @@ class AcceleratorValidator:
 
     # Stream-level extension fields that are not known to namespace validators
     # (e.g. ZigZag) and must be stripped before validation then re-injected.
-    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision")
+    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision", "banks")
 
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
@@ -352,6 +352,16 @@ class AcceleratorValidator:
             self.invalidate(f"Core {label}: `operand_precision` takes only `input` and `accumulator`.")
         elif unknown := {str(v) for v in precision.values()} - ELEMENT_BITS.keys():
             self.invalidate(f"Core {label}: unknown element types {sorted(unknown)} in `operand_precision`.")
+
+        banks = extension_fields.get("banks")
+        if banks is not None and (
+            not isinstance(banks, dict)
+            or not {"count", "width"} <= set(banks) <= {"count", "width", "stripe"}
+            or any(type(v) is not int or v <= 0 for v in banks.values())
+        ):
+            self.invalidate(
+                f"Core {label}: `banks` takes whole positive `count`, `width` in bytes and optional `stripe` in words."
+            )
 
         # Fill in default values and re-inject Stream-level extension fields.
         normalized_core_data = core_validator.normalized_data

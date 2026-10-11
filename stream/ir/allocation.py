@@ -378,6 +378,36 @@ class ResourceActivityIR(BaseModel):
     burst_slot: int | None = Field(description="Slot where burst_utilization occurs")
 
 
+class MemoryBanksIR(BaseModel):
+    """A memory split into banks: byte address ``a`` sits in bank ``a // width // stripe % count``."""
+
+    count: int
+    width: int = Field(description="Bytes per bank word")
+    stripe: int = Field(description="Words a bank holds before the next: 1 interleaves words, its depth blocks them")
+
+
+class LayoutSideIR(BaseModel):
+    """One side of a transfer: the buffer its copy sits in, how the DMA walks it, and what it passes through."""
+
+    extent: list[int] = Field(description="The buffer the copy sits in, per axis: tensor off chip, tile on chip")
+    strides: list[int] = Field(description="Elements between neighbours along each axis of that buffer")
+    access: list[list[int]] = Field(
+        description="The [size, stride] loops, outermost first, in elements, the DMA walks the tile in on this side"
+    )
+    memory: str | None = Field(description="The memory instance whose port it passes, None for a measured bandwidth")
+    port: str | None = Field(description="That port, `measured` for a core's measured shared bandwidth")
+    bits_per_cycle: float | None = Field(description="Its contiguous rate")
+    burst_bytes: int | None = Field(description="Bytes it moves per access, where declared")
+    banks: MemoryBanksIR | None = Field(description="The banks of the core's memory, where declared")
+
+
+class AxisDimsIR(BaseModel):
+    """The tile's axes in the dims of a node that touches it."""
+
+    node: str
+    dims: list[str] = Field(description="Per axis, the node's dims it spans, as a mapping writes them (`D3 + D5`)")
+
+
 class TransferLayoutIR(BaseModel):
     """One transfer on its chosen route: the tile it moves, where from and to, and how both copies are laid out."""
 
@@ -393,6 +423,12 @@ class TransferLayoutIR(BaseModel):
     converts: bool = Field(description="Whether it lays its tile out anew, as a DMA does on the fly")
     read_run_bytes: float = Field(description="Contiguous bytes per run it reads")
     write_run_bytes: float = Field(description="Contiguous bytes per run it writes")
+    streams_in: Literal["source", "target"] = Field(
+        description="The layout the data streams in: the target's when the DMA gathers, else the source's"
+    )
+    axes: AxisDimsIR | None = Field(description="The tile's axes in a node's dims, None where no node touches it")
+    read: LayoutSideIR
+    write: LayoutSideIR
 
 
 class EnergyIR(BaseModel):

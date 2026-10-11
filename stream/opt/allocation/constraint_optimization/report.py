@@ -4,22 +4,27 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.hardware.architecture.core import Core
+from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
 from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.workload.utils import is_mac_operator_type
-from stream.workload.workload import Tensor
+from stream.workload.workload import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
+    from stream.cost_model.layout import Layout
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.opt.allocation.constraint_optimization.families import FamilySelection
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
+    from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.opt.solver import SolveStats
 
 logger = logging.getLogger(__name__)
@@ -87,11 +92,58 @@ def _performance(
     return performance
 
 
+def _axis_dims(space: DecisionSpace, tr: TransferNode) -> dict[str, Any] | None:
+    """Each axis of ``tr``'s tile in the dims of the nearest node that reads or writes the chain of copies it belongs
+    to, as a mapping names them (``D2 + D4 - 1`` for a window), so a layout reads in the workload's terms; None where
+    no computation node touches it. Copies along a chain keep their axes, so any node on it names them."""
+    seen, frontier = {tr}, [tr]
+    while frontier:
+        hop = frontier.pop(0)
+        for node in (*space.workload.successors(hop), *space.workload.predecessors(hop)):
+            tensor = next((t for t in (*hop.outputs, *hop.inputs) if t in getattr(node, "tensors", ())), None)
+            if isinstance(node, ComputationNode) and tensor is not None:
+                results = node.get_mapping(tensor).results
+                dims = [re.sub(r"d(\d+)", r"D\1", str(e)).replace("+ -", "- ").translate(_NO_PARENS) for e in results]
+                return {"node": node.name, "dims": dims}
+            if isinstance(node, TransferNode) and node not in seen:
+                seen.add(node)
+                frontier.append(node)
+    return None
+
+
+_NO_PARENS = str.maketrans("", "", "()")
+
+
+def _layout_side(
+    space: DecisionSpace, tr: TransferNode, cores: Sequence[Core], direction: str, layout: Layout, walk: Layout
+) -> dict[str, Any]:
+    """One side of a transfer: the buffer its copy sits in and that buffer's strides, the loops the DMA walks it in,
+    and the memory, port, rate, burst and banks it goes through on its first core."""
+    copy = tr.inputs[0] if direction == READ else tr.outputs[0]
+    full = tuple(copy.subview.source.type.get_shape())
+    extent = space.layouts.extent(copy, full)
+    core = cores[0]
+    port = None if core.id in space.shared_bandwidth else space.side_port(tr, core, direction)
+    model = space.side_bandwidth(tr, core, direction)
+    banks = getattr(core, "banks", None)
+    return {
+        "extent": list(extent),
+        "strides": list(layout.strides(extent)),
+        "access": [list(loop) for loop in layout.access(tuple(copy.shape), extent, walk)],
+        "memory": port.key.memory if port is not None else None,
+        "port": "measured" if core.id in space.shared_bandwidth else port.key.port if port is not None else None,
+        "bits_per_cycle": _json_scalar(model.contiguous) if model is not None else None,
+        "burst_bytes": model.burst if model is not None else None,
+        "banks": asdict(banks) if banks is not None else None,
+    }
+
+
 def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
     """Each transfer on its chosen route: the tile it moves of which tensor, the cores it reads and writes, the axis
     orders, outermost first, of the copies it reads and writes, and the contiguous bytes per run on each side; one
-    that ``converts`` lays its tile out anew, as a DMA does on the fly."""
-    layouts = ctx.space.layouts
+    that ``converts`` lays its tile out anew, as a DMA does on the fly. Each side also gives its buffer's strides, the
+    loops the DMA walks it in, in the layout it ``streams_in``, and the memory, port and banks it passes."""
+    space, layouts = ctx.space, ctx.space.layouts
     rows = []
     for (tr, choice), y in ctx.vars.y.items():
         if y.X < VAR_THRESHOLD:
@@ -99,7 +151,7 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
         tensor = tr.inputs[0]
         full = tuple(tensor.subview.source.type.get_shape())
         source, target = layouts.of(tensor), layouts.of(tr.outputs[0])
-        read, write = layouts.runs(tr, choice)
+        walk, read, write = layouts.stream(tr, choice)
         rows.append(
             {
                 "transfer": tr.name,
@@ -114,6 +166,10 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
                 "converts": not source.same_data_order(target, full),
                 "read_run_bytes": _json_scalar(read),
                 "write_run_bytes": _json_scalar(write),
+                "streams_in": "source" if walk == source else "target",
+                "axes": _axis_dims(space, tr),
+                "read": _layout_side(space, tr, choice.sources, READ, source, walk),
+                "write": _layout_side(space, tr, choice.targets, WRITE, target, walk),
             }
         )
     return rows

@@ -7,6 +7,13 @@ memory:
   bandwidth_min: 512  # bits/cc
   bandwidth_max: 512  # bits/cc
 
+# Eight single-port banks of 512 words x 128 bits (AM020); the compiler places each buffer in a bank, so a bank is
+# one contiguous 8 KB range of the tile's address space.
+banks:
+  count: 8
+  width: 16
+  stripe: 512
+
 dma:  # tile DMA channels, each moving 64 bits a cycle as traced on NPU2, the width of the links
   mm2s: 2
   s2mm: 2

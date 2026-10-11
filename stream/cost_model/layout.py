@@ -41,6 +41,29 @@ class Layout:
     def same_data_order(self, other: Layout, full: tuple[int, ...]) -> bool:
         return self.data_order(full) == other.data_order(full)
 
+    def strides(self, extent: tuple[int, ...]) -> tuple[int, ...]:
+        """Elements between neighbours along each axis of a buffer of ``extent`` laid out so."""
+        strides, step = [0] * len(extent), 1
+        for axis in reversed(self.order):
+            strides[axis], step = step, step * extent[axis]
+        return tuple(strides)
+
+    def access(self, block: tuple[int, ...], extent: tuple[int, ...], walk: Layout) -> list[tuple[int, int]]:
+        """The (size, stride) loops, outermost first, in elements, that visit ``block`` of a buffer of ``extent`` laid
+        out so in ``walk``'s axis order: loops of one element dropped and a loop continuing the one inside it merged
+        into it, as a DMA descriptor writes them."""
+        strides = self.strides(extent)
+        loops: list[tuple[int, int]] = []
+        for axis in reversed(walk.order):
+            size, stride = block[axis], strides[axis]
+            if size == 1:
+                continue
+            if loops and stride == loops[0][0] * loops[0][1]:
+                loops[0] = (loops[0][0] * size, loops[0][1])
+            else:
+                loops.insert(0, (size, stride))
+        return loops or [(1, 1)]
+
     def contiguous_bytes(self, block: tuple[int, ...], full: tuple[int, ...], element_bits: int) -> float:
         """Bytes a ``block`` of a ``full`` tensor laid out so covers in one contiguous run: its innermost axes up to
         and including the first it does not span whole."""
@@ -79,7 +102,13 @@ Rate = Callable[[float], float]
 it."""
 
 
-def transfer_runs(  # noqa: PLR0913
+def transfer_runs(*args, **kwargs) -> tuple[float, float]:
+    """The contiguous bytes per run a transfer reads and writes (see :func:`transfer_stream`)."""
+    _, read, write = transfer_stream(*args, **kwargs)
+    return read, write
+
+
+def transfer_stream(  # noqa: PLR0913
     block: tuple[int, ...],
     full: tuple[int, ...],
     element_bits: int,
@@ -88,17 +117,17 @@ def transfer_runs(  # noqa: PLR0913
     read_rate: Rate,
     write_rate: Rate,
     extents: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
-) -> tuple[float, float]:
-    """Contiguous bytes per run a transfer reads ``block`` of a ``full`` tensor in and writes it in, from a ``source``
-    layout to a ``target`` one, each in the buffer that side holds (``extents``: the source's and the target's, the
-    whole tensor where not given). Between two layouts the data streams in one of them: the DMA gathers it in the
-    target's order, reading runs only as long as the layouts share, or scatters it in the source's order, writing such
-    runs, whichever the slower of its two sides moves faster."""
+) -> tuple[Layout, float, float]:
+    """The layout a transfer streams ``block`` of a ``full`` tensor in, and the contiguous bytes per run it reads and
+    writes, from a ``source`` layout to a ``target`` one, each in the buffer that side holds (``extents``: the
+    source's and the target's, the whole tensor where not given). Between two layouts the DMA gathers in the target's
+    order, reading runs only as long as the layouts share, or scatters in the source's order, writing such runs,
+    whichever the slower of its two sides moves faster."""
     source_extent, target_extent = extents or (full, full)
     read = source.contiguous_bytes(block, source_extent, element_bits)
     write = target.contiguous_bytes(block, target_extent, element_bits)
     if source.same_data_order(target, full):
-        return read, write
+        return source, read, write
     shared = shared_run_bytes(block, full, element_bits, source, target, (source_extent, target_extent))
-    gather, scatter = (shared, write), (read, shared)
-    return max(gather, scatter, key=lambda runs: min(read_rate(runs[0]), write_rate(runs[1])))
+    gather, scatter = (target, shared, write), (source, read, shared)
+    return max(gather, scatter, key=lambda runs: min(read_rate(runs[1]), write_rate(runs[2])))

@@ -10,7 +10,7 @@ from onnx import TensorProto, helper, numpy_helper
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.cost_model.bandwidth import BandwidthModel
-from stream.cost_model.layout import Layout, shared_run_bytes, transfer_runs
+from stream.cost_model.layout import Layout, shared_run_bytes, transfer_runs, transfer_stream
 from stream.opt.allocation.constraint_optimization import layouts as copy_layouts
 
 TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
@@ -51,6 +51,37 @@ def test_a_transfer_converts_on_the_side_that_loses_least():
     assert transfer_runs(block, full, BF16, source, target, bursty, flat) == (256 * 128 * 2, 2)
     assert transfer_runs(block, full, BF16, source, target, flat, bursty) == (2, 256 * 128 * 2)
     assert transfer_runs(block, full, BF16, source, source, bursty, bursty) == (256 * 128 * 2,) * 2
+
+
+def test_a_layout_gives_each_axis_its_stride_in_the_buffer_it_holds():
+    assert Layout((0, 1)).strides((512, 64)) == (64, 1)
+    assert Layout((1, 0)).strides((64, 64)) == (1, 64)
+    assert Layout((0, 2, 3, 1)).strides((1, 8, 3, 3)) == (72, 1, 24, 8)
+
+
+def test_a_dma_walks_a_tile_in_merged_size_stride_loops():
+    """A 64x64 tile of a 512x64 row-major tensor walked column by column reads one element at a stride of 64 per
+    step; walked in its own order the tile is one contiguous run, and a tile spanning whole rows merges into one."""
+    tensor = Layout((0, 1))
+    assert tensor.access((64, 64), (512, 64), Layout((1, 0))) == [(64, 1), (64, 64)]
+    assert tensor.access((64, 64), (512, 64), tensor) == [(4096, 1)]
+    assert tensor.access((128, 64), (128, 512), tensor) == [(128, 512), (64, 1)]
+    assert tensor.access((1, 1), (4, 4), tensor) == [(1, 1)]
+
+
+def test_a_conversion_streams_in_the_layout_of_the_side_it_keeps_contiguous():
+    block = full = (256, 128)
+    source, target = Layout((0, 1)), Layout((1, 0))
+
+    def short_reads_hurt(span):
+        return 1.0 if span >= 64 else span / 64
+
+    def flat(_):
+        return 1.0
+
+    assert transfer_stream(block, full, BF16, source, target, short_reads_hurt, flat)[0] == source
+    assert transfer_stream(block, full, BF16, source, target, flat, short_reads_hurt)[0] == target
+    assert transfer_stream(block, full, BF16, source, source, flat, flat)[0] == source
 
 
 def test_each_side_runs_in_the_buffer_it_holds():
@@ -227,3 +258,34 @@ def test_a_burst_is_a_positive_whole_number_of_bytes(burst):
     validator = AcceleratorValidator(data, accelerator_path=TPU_V7)
     assert not validator.validate()
     assert any("burst" in error for error in validator.errors)
+
+
+@pytest.mark.parametrize(
+    "banks",
+    [{"count": 8}, {"count": 0, "width": 16}, {"count": 8, "width": 16, "stripe": 0}, {"count": 8, "width": 1.5}],
+)
+def test_banks_are_a_whole_count_width_and_stripe(banks):
+    from zigzag.utils import open_yaml  # noqa: PLC0415
+
+    from stream.parser.accelerator_validator import AcceleratorValidator  # noqa: PLC0415
+
+    validator = AcceleratorValidator(open_yaml(TPU_V7), accelerator_path=TPU_V7)
+    core = open_yaml("stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml")
+    validator.validate_core_data({**core, "banks": banks}, "vmem")
+    assert any("banks" in error for error in validator.errors)
+
+
+def test_a_layout_reports_each_side_the_dma_walks_and_the_banks_it_lands_in(tmp_path):
+    """A Simba chiplet declares its global buffer's four banks; the layout report carries them, with each side's
+    strides and the loops the DMA walks the tile in, which visit every element of the tile once."""
+    from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload  # noqa: PLC0415
+
+    workload = make_2_conv_workload(TwoConvWorkloadConfig(1, 8, 32, 32, 16, 32, 3, "bf16", "bf16"))
+    estimate = evaluate_mapping("stream/inputs/examples/hardware/simba_small.yaml", workload, str(tmp_path))
+    layouts = [t for g in estimate.context.get("group_allocations").values() for t in g["performance"]["layouts"]]
+    assert any(t["write"]["banks"] == {"count": 4, "width": 32, "stripe": 1} for t in layouts)
+    for t in layouts:
+        assert t["axes"] and len(t["axes"]["dims"]) == len(t["tile_shape"])
+        for side in (t["read"], t["write"]):
+            assert np.prod([size for size, _ in side["access"]]) == np.prod(t["tile_shape"])
+            assert len(side["strides"]) == len(side["extent"]) == len(t["tile_shape"])

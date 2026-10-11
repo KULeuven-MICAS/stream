@@ -54,3 +54,19 @@ The performance report of an allocation lists, under `layouts`, every transfer o
 the axis orders of both copies (`source_order`, `target_order`, outermost first), whether it lays its tile out anew
 (`converts`), and the contiguous bytes per run on each side (`read_run_bytes`, `write_run_bytes`); the typed
 `AllocationIR` carries them in `performance.layouts`.
+
+Each transfer also says which layout the data streams in (`streams_in`: the target's when the DMA gathers, else the
+source's), names the tile's axes in the dims of a node that touches it (`axes`, as a mapping writes them, `D3 + D5` for
+a window), and describes both sides (`read`, `write`):
+
+| Field | Meaning |
+|-------|---------|
+| `extent` | The buffer the copy sits in, per axis: the whole tensor off chip, the tile on chip |
+| `strides` | Elements between neighbours along each axis of that buffer, from its axis order |
+| `access` | The `[size, stride]` loops, outermost first, in elements, the DMA walks the tile in on that side, in the order it streams; loops of one element dropped and a loop continuing the one inside it merged, as a DMA descriptor writes them |
+| `memory`, `port` | The memory and port the side passes (`measured` for a core's measured bandwidth) |
+| `bits_per_cycle`, `burst_bytes` | That port's contiguous rate and the bytes it moves per access, where declared |
+| `banks` | The banks of the core's memory, where it declares them (see [Hardware](hardware.md)) |
+
+A 64x64 weight tile of a 512x64 row-major tensor transposed into a core reads `[[64, 1], [64, 64]]`, one element
+at a stride of 64 per step, and writes `[[4096, 1]]`, one contiguous run.

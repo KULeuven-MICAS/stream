@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from stream.cost_model.layout import Layout, Rate, transfer_runs
+from stream.cost_model.layout import Layout, Rate, transfer_stream
 from stream.hardware.ports import READ, WRITE
 from stream.stages.estimation.core_cost_backends import contiguous_axes, select_backend
 from stream.workload.workload import ComputationNode, InEdge, OutEdge, Tensor, TransferNode
@@ -42,7 +42,7 @@ class CopyLayouts:
                 self._readers.setdefault(tensor, []).append(node)
         self._layouts: dict[Tensor, Layout] = {}
         self._needs: dict[tuple[ComputationNode, int], frozenset[int]] = {}
-        self._runs: dict[tuple[TransferNode, MulticastPathPlan], tuple[float, float]] = {}
+        self._runs: dict[tuple[TransferNode, MulticastPathPlan], tuple[Layout, float, float]] = {}
 
     def of(self, tensor: Tensor) -> Layout:
         """The layout of the copy ``tensor``."""
@@ -52,8 +52,13 @@ class CopyLayouts:
 
     def runs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[float, float]:
         """Contiguous bytes per run ``tr`` reads its tile in and writes it in on ``choice``."""
+        _, read, write = self.stream(tr, choice)
+        return read, write
+
+    def stream(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[Layout, float, float]:
+        """The layout ``tr`` streams its tile in on ``choice``, and the contiguous bytes per run it reads and writes."""
         if (found := self._runs.get((tr, choice))) is None:
-            found = self._runs[(tr, choice)] = self._transfer_runs(
+            found = self._runs[(tr, choice)] = self._transfer_stream(
                 tr, choice, self.of(tr.inputs[0]), self.of(tr.outputs[0])
             )
         return found
@@ -123,21 +128,21 @@ class CopyLayouts:
         choice = self.space.path_choices[tr][0] if self.space.path_choices.get(tr) else None
         if choice is None:
             return 0.0
-        read, write = self._transfer_runs(tr, choice, source, target)
+        _, read, write = self._transfer_stream(tr, choice, source, target)
         rate = min(self._rate(tr, choice, READ)(read), self._rate(tr, choice, WRITE)(write))
         return self.space.moved_bits(tr, choice) / rate if rate > 0 else float("inf")
 
-    def _transfer_runs(
+    def _transfer_stream(
         self, tr: TransferNode, choice: MulticastPathPlan, source: Layout, target: Layout
-    ) -> tuple[float, float]:
+    ) -> tuple[Layout, float, float]:
         tensor = tr.inputs[0]
         full = tuple(tensor.subview.source.type.get_shape())
         bits = tensor.operand_type.bitwidth
         read, write = self._rate(tr, choice, READ), self._rate(tr, choice, WRITE)
-        extents = (self._extent(tr.inputs[0], full), self._extent(tr.outputs[0], full))
-        return transfer_runs(tuple(tensor.shape), full, bits, source, target, read, write, extents)
+        extents = (self.extent(tr.inputs[0], full), self.extent(tr.outputs[0], full))
+        return transfer_stream(tuple(tensor.shape), full, bits, source, target, read, write, extents)
 
-    def _extent(self, copy: Tensor, full: tuple[int, ...]) -> tuple[int, ...]:
+    def extent(self, copy: Tensor, full: tuple[int, ...]) -> tuple[int, ...]:
         """The buffer ``copy`` lives in: the whole tensor off chip, where a workload input or output is, else the tile
         it holds on chip."""
         off_chip = isinstance(self._producer.get(copy), InEdge) or any(
