@@ -1,5 +1,6 @@
 """A systolic array drains once per run: its tiles follow each other through the array, so a tile keeps its core busy
-for its steady-state cycles only, and the results of the run's last tiles leaving the array add to its fill."""
+for its steady-state cycles only, and the results of the run's last tiles leaving the array add to its fill, along the
+longest chain of nodes that read each other's results."""
 
 import shutil
 
@@ -48,5 +49,8 @@ def test_a_systolic_array_drains_once_per_run(tmp_path):
         assert broadcast_entries[key].metadata["drain_cycles"] == 0
 
     added = [s - b for s, b in zip(systolic_fills, broadcast_fills, strict=True)]
-    assert all(a > 0 for a in added)
     assert systolic.cycles - broadcast.cycles == sum(added)
+    # The gate and up projections do not read each other's results, so one streams into the arrays behind the other
+    # and their drains overlap; the down projection reads both, so it waits for them and then drains itself
+    drain = {name: systolic_entries[(name, core)].metadata["drain_cycles"] for name, core in gemms}
+    assert added == [max(drain["Gemm_Left"], drain["Gemm_Right"]) + drain["Gemm_Down"]]

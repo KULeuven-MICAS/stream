@@ -330,13 +330,16 @@ def _active_shared_latency(
 
 def _drain(space: DecisionSpace) -> int:
     """Cycles the last iteration's results take to leave the systolic arrays computing them, which no later tile
-    overlaps: each slot of it waits for the slowest array in it to drain."""
-    drains: dict[int, int] = defaultdict(int)
-    for n in space.ssc_nodes:
-        for core in space.cost_lut.get_cores(n):
-            drain = (space.cost_lut.get_cost(n, core).metadata or {}).get("drain_cycles", 0)
-            drains[space.slot_of[n]] = max(drains[space.slot_of[n]], ceil(drain))
-    return sum(drains.values())
+    overlaps: a node reading another's results waits for them to drain, while one that does not streams into its
+    array behind it, so the run waits for the drains along its longest chain of dependent nodes."""
+    drained: dict[object, int] = {}
+    for n in space.workload.dataflow_sort():
+        own = 0
+        if isinstance(n, ComputationNode):
+            entries = (space.cost_lut.get_cost(n, core) for core in space.cost_lut.get_cores(n))
+            own = max((ceil((entry.metadata or {}).get("drain_cycles", 0)) for entry in entries), default=0)
+        drained[n] = max((drained[p] for p in space.workload.predecessors(n)), default=0) + own
+    return max(drained.values(), default=0)
 
 
 def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:

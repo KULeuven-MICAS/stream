@@ -235,7 +235,10 @@ operational_array:
 
 ZigZag then adds the cycles the last results take to leave the array, one per unit in use along each such dimension
 (510 on a full 256 x 256 array). A run's tiles follow each other through the array, so Stream charges this drain once
-per run, in its fill, rather than on every tile. The TPU-like, TPU7x MXU and FuseMax arrays are systolic.
+per run, in its fill, rather than on every tile. A node that reads another's results waits for them to drain, while
+one that does not streams into its array behind it, so the fill adds the drains along the run's longest chain of
+dependent nodes: a SwiGLU's gate and up projections drain together, then its down projection. The TPU-like, TPU7x MXU
+and FuseMax arrays are systolic.
 
 ### AIE cores
 
