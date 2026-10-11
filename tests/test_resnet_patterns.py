@@ -1,7 +1,7 @@
 """Integration tests for ResNet18 sub-graph patterns through the CO pipeline.
 
 Tests basic residual, stride-2 downsample, and front-end + pooling core patterns.
-Also tests dual-residual multi-group split via identity Reshape FusionEdge.
+Also tests that an identity Reshape between two residual blocks folds rather than splitting them.
 Full ResNet18 E2E test with fixed spatial tiling across 11 fusion groups.
 
 Dedicated test file separate from test_generic_mapping.py.
@@ -130,8 +130,8 @@ def test_frontend_path():
 
 @pytest.mark.timeout(120)
 def test_dual_residual():
-    """Dual-residual (two blocks + Reshape FusionEdge) produces 2 fusion groups,
-    both with positive latency."""
+    """Two residual blocks joined by an identity Reshape fuse into one group: the Reshape only re-indexes, so it
+    folds into the nodes reading its output instead of cutting the graph."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.DUAL_RESIDUAL)
     onnx_path = make_resnet_subgraph(config)
 
@@ -142,7 +142,7 @@ def test_dual_residual():
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
         group_latencies = ctx.get("group_latencies")
         assert group_latencies is not None, "group_latencies not set in context"
-        assert len(group_latencies) == 2, f"Dual-residual should have 2 groups, got {len(group_latencies)}"
+        assert len(group_latencies) == 1, f"Dual-residual should have 1 group, got {len(group_latencies)}"
         assert all(lat > 0 for lat in group_latencies.values()), (
             f"All group latencies must be positive, got {group_latencies}"
         )
@@ -180,10 +180,8 @@ def test_fusion_cut_points_heuristic():
 
 @pytest.mark.timeout(60)
 def test_resnet18_split_with_cut_points():
-    """split_fusion_groups(cut_points=...) produces 11 groups for ResNet18.
-
-    9 cut points + 1 FusionEdge (Flatten) = 10 boundaries -> 11 groups.
-    """
+    """split_fusion_groups(cut_points=...) produces 10 groups for ResNet18: 9 cut points, the Flatten folding into
+    the Gemm."""
     from stream.parser.onnx.model import ONNXModelParser
     from stream.workload.workload import determine_fusion_cut_points
 
@@ -194,7 +192,7 @@ def test_resnet18_split_with_cut_points():
     cut_points = determine_fusion_cut_points(workload)
     groups = workload.split_fusion_groups(cut_points=cut_points)
 
-    assert len(groups) == 11, f"Expected 11 groups, got {len(groups)}"
+    assert len(groups) == 10, f"Expected 10 groups, got {len(groups)}"
 
     # Verify each group has at least 1 ComputationNode
     for i, group in enumerate(groups):
@@ -207,14 +205,14 @@ def test_resnet18_split_with_cut_points():
     g0_comp = [n for n in groups[0].nodes if isinstance(n, ComputationNode)]
     assert len(g0_comp) == 3, f"Front-end group should have 3 nodes, got {len(g0_comp)}"
 
-    # Last group (post-Flatten): just Gemm = 1 ComputationNode
-    g_last_comp = [n for n in groups[-1].nodes if isinstance(n, ComputationNode)]
-    assert len(g_last_comp) == 1, f"Last group should have 1 node (Gemm), got {len(g_last_comp)}"
+    # Last group: the GlobalAveragePool and the Gemm, its Flatten folded
+    g_last_comp = [n.type for n in groups[-1].nodes if isinstance(n, ComputationNode)]
+    assert g_last_comp == ["GlobalAveragePool", "Gemm"], f"Last group should pool and project, got {g_last_comp}"
 
 
 @pytest.mark.timeout(120)
 def test_resnet18_cut_point_groups():
-    """Per-group mappings for ResNet18 (11 groups) all pass MappingValidator."""
+    """Per-group mappings for ResNet18 (10 groups) all pass MappingValidator."""
     from zigzag.utils import open_yaml
 
     from stream.mapping.generic_generator import GenericMappingGenerator
@@ -249,9 +247,8 @@ def test_resnet18_cut_point_groups():
         )
         paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
 
-        # 11 groups = 11 YAML paths
-        assert len(paths) == 11, f"Expected 11 group mapping paths, got {len(paths)}"
-        assert len(sub_workloads) == 11, f"Expected 11 sub-workloads, got {len(sub_workloads)}"
+        assert len(paths) == 10, f"Expected 10 group mapping paths, got {len(paths)}"
+        assert len(sub_workloads) == 10, f"Expected 10 sub-workloads, got {len(sub_workloads)}"
 
         # Each YAML must pass MappingValidator
         for i, path in enumerate(paths):
