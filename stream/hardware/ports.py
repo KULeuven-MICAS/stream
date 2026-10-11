@@ -49,6 +49,18 @@ def input_role(k: int) -> str:
 
 
 @dataclass(frozen=True)
+class MemoryBanks:
+    """A memory split into ``count`` banks of ``width``-byte words, each holding ``stripe`` consecutive words before
+    the next bank does: byte address ``a`` sits in bank ``a // width // stripe % count``, so a stripe of 1 interleaves
+    words and a bank's depth gives each bank one contiguous range. Declared per core (``banks:``) and reported with each
+    layout; the allocation does not price bank conflicts."""
+
+    count: int
+    width: int
+    stripe: int = 1
+
+
+@dataclass(frozen=True)
 class PortSpec:
     """One port of a core's top-level memory as its backend declares it. ``serves`` holds (operand role,
     direction), ``bits_per_cycle`` is the declared peak rate and the energies are in pJ per bit."""

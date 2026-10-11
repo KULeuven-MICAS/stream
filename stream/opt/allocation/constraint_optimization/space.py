@@ -26,6 +26,7 @@ from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge,
 if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.cost_model.layout import Rate
+    from stream.hardware.ports import Port
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
 
@@ -275,12 +276,21 @@ class DecisionSpace:
     def side_rate(self, tr: TransferNode, core: Core, direction: str) -> Rate:
         """Bits per cycle ``core`` moves one side of ``tr`` at per contiguous run length: its measured shared
         bandwidth, else that of the port the transfer's operand passes, else unbounded."""
-        if (model := self.shared_bandwidth.get(core.id)) is not None:
-            return lambda span: model.contiguous * model.efficiency(span, direction)
-        port = self.accelerator.ports.port_for(core, direction, self.operand_role(tr, read_side=direction == READ))
-        if port is None:
+        model = self.side_bandwidth(tr, core, direction)
+        if model is None:
             return lambda span: float("inf")
-        return lambda span: port.bandwidth.contiguous * port.bandwidth.efficiency(span, direction)
+        return lambda span: model.contiguous * model.efficiency(span, direction)
+
+    def side_port(self, tr: TransferNode, core: Core, direction: str) -> Port | None:
+        """The port of ``core``'s top memory the operand of ``tr`` passes in ``direction``, None where none is."""
+        return self.accelerator.ports.port_for(core, direction, self.operand_role(tr, read_side=direction == READ))
+
+    def side_bandwidth(self, tr: TransferNode, core: Core, direction: str) -> BandwidthModel | None:
+        """What bounds ``core``'s side of ``tr``: its measured shared bandwidth, else its port's, else nothing."""
+        if (model := self.shared_bandwidth.get(core.id)) is not None:
+            return model
+        port = self.side_port(tr, core, direction)
+        return port.bandwidth if port is not None else None
 
     def operand_role(self, tr: TransferNode, read_side: bool) -> str:
         """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""

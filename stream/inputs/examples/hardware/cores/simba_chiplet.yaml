@@ -1,6 +1,12 @@
 name: simba_chiplet
 type: compute
 
+# The global buffer is four banks of 2048 x 256-bit words, each bank its own contiguous range.
+banks:
+  count: 4
+  width: 32
+  stripe: 2048
+
 memories:
 
   weight_registers:

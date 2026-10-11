@@ -221,6 +221,21 @@ result is written out at its output tensor's type. A core without an `accumulato
 type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
 `int8`, `uint8`, `int16`, `int24`, `bf16`, `fp16`, `int32` and `fp32`.
 
+### Memory banks
+
+A core can declare how its memory is banked, for the layout report to place each tile's bytes in banks:
+
+```yaml
+banks:
+  count: 8     # banks
+  width: 16    # bytes per bank word
+  stripe: 512  # words a bank holds before the next one does; 1 (the default) interleaves words
+```
+
+Byte address `a` sits in bank `a // width // stripe % count`. An AIE-ML tile's eight banks are each one contiguous
+8 KB range (`stripe: 512`); a memory that interleaves words across its banks takes the default. The allocation does
+not price bank conflicts: the banks only describe where data lands.
+
 ### Systolic arrays
 
 An operational array whose operands move from one unit to the next, one unit per cycle, rather than being broadcast,

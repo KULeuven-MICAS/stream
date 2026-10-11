@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
@@ -180,6 +181,7 @@ class Core:
             "utilization": self.utilization,
             "operator_types": getattr(self, "operator_types", None),
             "operand_precision": getattr(self, "operand_precision", {}),
+            "banks": asdict(self.banks) if getattr(self, "banks", None) else None,
         }
 
         # Merge backend-specific fields (uniform protocol)

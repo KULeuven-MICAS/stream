@@ -8,6 +8,7 @@ from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
+from stream.hardware.ports import MemoryBanks
 from stream.parser.accelerator_validator import parse_memory_ref, parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
@@ -121,9 +122,7 @@ class AcceleratorFactory:
                 col_id=col_id,
                 row_id=row_id,
             )
-            core.operator_types = operator_types
-            core.operand_precision = core_data.get("operand_precision") or {}
-            return core
+            return _with_stream_fields(core, core_data, operator_types)
 
         if namespace == "zigzag":
             # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
@@ -143,9 +142,7 @@ class AcceleratorFactory:
                 col_id=col_id,
                 row_id=row_id,
             )
-            core.operator_types = operator_types
-            core.operand_precision = core_data.get("operand_precision") or {}
-            return core
+            return _with_stream_fields(core, core_data, operator_types)
 
         raise ValueError(
             f"Unknown core namespace '{namespace}' in core type '{core_type}'. "
@@ -230,3 +227,12 @@ class AcceleratorFactory:
         # A core that shares another's memory is reached through it, so it needs no link of its own.
         graph.add_nodes_from(cores[i] for group in self.data["core_memory_sharing"] for i in group)
         return graph
+
+
+def _with_stream_fields(core: Core, core_data: dict[str, Any], operator_types: list[str] | None) -> Core:
+    """``core`` with the fields Stream reads beside any backend's: the operators it runs, its operand precision and
+    the banks of its memory."""
+    core.operator_types = operator_types
+    core.operand_precision = core_data.get("operand_precision") or {}
+    core.banks = MemoryBanks(**core_data["banks"]) if core_data.get("banks") else None
+    return core
