@@ -25,7 +25,7 @@ def test_resnet18_unique_dimension_inference():
     unique_dims, _ = workload.unique_dimensions()
     sizes = workload.get_dimension_sizes()
 
-    assert len(unique_dims) == 71, f"Expected 71 unique loop dimensions, got {len(unique_dims)}"
+    assert len(unique_dims) == 70, f"Expected 70 unique loop dimensions, got {len(unique_dims)}"
     unique_sizes = [workload.get_dimension_size(z) for z in unique_dims]
     for node in workload.get_computation_nodes():
         for dim in workload.get_dims(node):

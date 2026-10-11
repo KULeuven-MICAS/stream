@@ -6,6 +6,10 @@ and derived affine metadata per node — the single serialization a viewer consu
 
 from __future__ import annotations
 
+import numpy as np
+import onnx
+from onnx import TensorProto, helper, numpy_helper
+
 from stream.frontends import load_workload
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_scan import make_scan_workload
@@ -85,11 +89,26 @@ def test_node_kinds_and_regions():
     assert all(n.region is not None for n in view.nodes if n.kind in {"compute", "normalization", "data_movement"})
 
 
-def test_barrier_kind_from_onnx():
-    parser = ONNXModelParser("stream/inputs/testing/workload/attention_head.onnx")
+def test_barrier_kind_from_onnx(tmp_path):
+    """A reshape regrouping elements across axes ([6, 4] as [4, 6]) cannot be read in place, so it is a barrier."""
+    nodes = [
+        helper.make_node("Relu", ["x"], ["a"], name="relu_a"),
+        helper.make_node("Reshape", ["a", "shape"], ["b"], name="regroup"),
+        helper.make_node("Relu", ["b"], ["y"], name="relu_b"),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "regroup",
+        [helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [6, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.BFLOAT16, [4, 6])],
+        [numpy_helper.from_array(np.array([4, 6], np.int64), "shape")],
+    )
+    path = str(tmp_path / "regroup.onnx")
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), path)
+    parser = ONNXModelParser(path)
     parser.run()
     view = _view(parser.workload)
-    assert any(n.kind == "barrier" and n.op == "Transpose" for n in view.nodes)
+    assert any(n.kind == "barrier" and n.op == "Reshape" for n in view.nodes)
     assert len(view.regions) >= 2  # the layout barrier cuts the graph
 
 

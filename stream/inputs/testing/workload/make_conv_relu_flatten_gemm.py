@@ -8,12 +8,8 @@ from onnx import TensorProto, helper, shape_inference
 
 @dataclass
 class ConvReluFlattenGemmConfig:
-    """Configuration for a Conv -> Relu -> Flatten -> Gemm workload.
-
-    The Flatten node triggers FusionEdge parsing, splitting the workload into
-    2 fusion groups: (Conv, Relu) and (Gemm). This provides a fast multi-group
-    test without the overhead of a full ResNet18 pipeline.
-    """
+    """Configuration for a Conv -> Relu -> Flatten -> Gemm workload, a small CNN head whose Flatten folds into the
+    Gemm's access map."""
 
     batch_size: int = 1
     in_channels: int = 8
@@ -28,11 +24,6 @@ class ConvReluFlattenGemmConfig:
 
 def make_conv_relu_flatten_gemm_workload(config: ConvReluFlattenGemmConfig | None = None) -> str:
     """Build an ONNX model: Conv -> Relu -> Flatten -> Gemm.
-
-    The Flatten node is parsed as a FusionEdge by the ONNX parser, which triggers
-    split_fusion_groups() to produce 2 sub-workloads:
-      - Group 0: Conv + Relu
-      - Group 1: Gemm
 
     Args:
         config: Workload dimensions. Uses defaults if None.

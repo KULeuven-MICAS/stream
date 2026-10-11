@@ -11,7 +11,7 @@ The ONNX frontend lives in `stream/parser/onnx/` (`stream/parser/onnx/model.py` 
 Stream loads an ONNX model, runs **shape inference** on it, and converts each node:
 
 - A **supported operator** becomes a `ComputationNode` — it has a real cost and is placed on a core.
-- A **layout-only operator** (`Reshape`, `Transpose`, …) becomes a `FusionEdge` — no compute, it only marks a boundary between fusion groups.
+- A **layout-only operator** (`Reshape`, `Transpose`, …) is folded into the nodes reading its output (see [Layout operators](#layout-operators)); only one that cannot be folded becomes a `FusionEdge`, a boundary between fusion groups.
 - An **unrecognised operator** raises `NotImplementedError`. Stream does *not* silently drop unknown ops; you either register a parser for it or remove it from the model.
 
 ### Supported operators
@@ -31,7 +31,9 @@ The dispatch table (`ONNXModelParser.OP_TYPE_TO_PARSER`) recognises:
 | `Add`, `Sub`, `Mul`, `Div`, `Pow`, `Relu`, `Silu`, `Gelu`, `Sigmoid`, `Tanh` | ComputationNode | Element-wise (unary and binary, NumPy broadcast). |
 | `Cast` | ComputationNode | Element-wise conversion to another element type. |
 | `QuantizeLinear`, `DequantizeLinear` | folded, or ComputationNode | See [Element types and quantized models](#element-types-and-quantized-models). |
-| `Flatten`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze` | FusionEdge | Layout-only fusion boundary. |
+| `Einsum` | ComputationNode | One loop per index letter. Two operands contract; one operand summing letters away is a `ReduceSum`; one only reordering its axes is a transpose. |
+| `ReduceSum`, `ReduceMean`, `ReduceMax` | ComputationNode | Reduces the axes its output drops (`axes` as input or attribute, `keepdims`). A `ReduceSum` of a matmul's or einsum's output folds into it as a contraction. |
+| `Flatten`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze` | folded, or FusionEdge | See [Layout operators](#layout-operators). |
 
 To support a new operator, register a parser (see [Extending ingestion](#extending-ingestion)).
 
@@ -57,6 +59,26 @@ from onnx import shape_inference
 model = onnx.load("my_model.onnx")
 onnx.save(shape_inference.infer_shapes(model), "my_model_inferred.onnx")
 ```
+
+### Layout operators
+
+A transpose or reshape moves no data an accelerator has to compute: a compiler lays the tensor out so its reader can
+index the original (a reshape is another view of the same buffer, a transpose an operand layout or a DMA access
+pattern). Stream does the same with the access maps: the node reading a layout operator's output reads its input
+instead, through the composed map.
+
+- A **transpose** permutes the reader's indices.
+- A **reshape that splits an axis** (`[S, D]` as `[S, H, D/H]`) indexes it with the row-major combination of the new
+  axes, and the axis is then refined into those axes in every node and tensor that has it, so each node indexes each
+  axis with one loop.
+- A **reshape that merges axes** (`[H, S, D/H]` to `[S, D]`) splits the reader's loop over the merged axis into one
+  loop per original axis: an output projection reading merged heads contracts heads and head dimension.
+
+The three ways frameworks write multi-head attention (PyTorch's reshapes and transposes, JAX's einsums, a per-head
+projection summed over the heads) therefore parse to the same nodes. A layout operator that regroups elements across
+axes (`[6, 4]` viewed as `[4, 6]`), or whose merged axis its reader walks other than with one loop, is materialized as
+a `FusionEdge`: the tensor crosses memory between two fusion groups. How tensors are laid out in memory, and what
+relayouts cost, is not modeled yet.
 
 ### Element types and quantized models
 

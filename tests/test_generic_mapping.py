@@ -157,14 +157,14 @@ def test_pipeline_end_to_end():
 def test_pipeline_multi_group():
     """A generated mapping of a multi-group workload solves end-to-end.
 
-    Uses a synthetic Conv->Relu->Flatten->Gemm workload that splits into 2 fusion groups
-    via FusionEdge parsing. Tests the same multi-group pipeline mechanics as ResNet18
-    (FusionEdge splitting, per-group iteration, latency aggregation) in seconds.
+    Uses a synthetic Conv->Relu->Flatten->Gemm workload cut after its Relu into 2 fusion groups. Tests the same
+    multi-group pipeline mechanics as ResNet18 (cut points, per-group iteration, latency aggregation) in seconds.
     """
     workload_path = make_conv_relu_flatten_gemm_workload()
+    options = SolveOptions(stage_options={"fusion_cut_points": ["Relu1"]})
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir).context
+        ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir, options=options).context
 
     allocation: Allocation = ctx.get("allocation")
     assert allocation is not None, "No allocation in context"
