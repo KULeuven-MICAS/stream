@@ -49,6 +49,8 @@ so a tile written into a buffer of its own size is one run in any layout both si
 
 ## In the results
 
-The performance report of an allocation lists, under `layouts`, every transfer that lays its tile out anew on its chosen
-route (`source_order`, `target_order`, outermost first) and the contiguous bytes per run on each side
-(`read_run_bytes`, `write_run_bytes`); the typed `AllocationIR` carries them in `performance.layouts`.
+The performance report of an allocation lists, under `layouts`, every transfer on its chosen route: the tile it moves
+(`tensor`, `tile_shape`, `full_shape`, `element_bits`), the cores it reads and writes (`source_cores`, `target_cores`),
+the axis orders of both copies (`source_order`, `target_order`, outermost first), whether it lays its tile out anew
+(`converts`), and the contiguous bytes per run on each side (`read_run_bytes`, `write_run_bytes`); the typed
+`AllocationIR` carries them in `performance.layouts`.

@@ -88,20 +88,30 @@ def _performance(
 
 
 def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
-    """Each transfer on its chosen route that lays its tile out anew, as a DMA does on the fly: the axis orders,
-    outermost first, it reads and writes, and the contiguous bytes per run on each side."""
+    """Each transfer on its chosen route: the tile it moves of which tensor, the cores it reads and writes, the axis
+    orders, outermost first, of the copies it reads and writes, and the contiguous bytes per run on each side; one
+    that ``converts`` lays its tile out anew, as a DMA does on the fly."""
     layouts = ctx.space.layouts
     rows = []
     for (tr, choice), y in ctx.vars.y.items():
-        source, target = layouts.of(tr.inputs[0]), layouts.of(tr.outputs[0])
-        if y.X < VAR_THRESHOLD or source.same_data_order(target, tuple(tr.inputs[0].subview.source.type.get_shape())):
+        if y.X < VAR_THRESHOLD:
             continue
+        tensor = tr.inputs[0]
+        full = tuple(tensor.subview.source.type.get_shape())
+        source, target = layouts.of(tensor), layouts.of(tr.outputs[0])
         read, write = layouts.runs(tr, choice)
         rows.append(
             {
                 "transfer": tr.name,
+                "tensor": tensor.name,
+                "tile_shape": list(tensor.shape),
+                "full_shape": list(full),
+                "element_bits": tensor.operand_type.bitwidth,
+                "source_cores": [core.id for core in choice.sources],
+                "target_cores": [core.id for core in choice.targets],
                 "source_order": list(source.order),
                 "target_order": list(target.order),
+                "converts": not source.same_data_order(target, full),
                 "read_run_bytes": _json_scalar(read),
                 "write_run_bytes": _json_scalar(write),
             }

@@ -378,12 +378,19 @@ class ResourceActivityIR(BaseModel):
     burst_slot: int | None = Field(description="Slot where burst_utilization occurs")
 
 
-class LayoutConversionIR(BaseModel):
-    """One transfer that lays its tile out anew on its chosen route, as a DMA does on the fly."""
+class TransferLayoutIR(BaseModel):
+    """One transfer on its chosen route: the tile it moves, where from and to, and how both copies are laid out."""
 
     transfer: str
+    tensor: str = Field(description="The copy it reads")
+    tile_shape: list[int] = Field(description="The tile it moves per firing, per axis")
+    full_shape: list[int] = Field(description="The whole tensor the tile belongs to, per axis")
+    element_bits: int = Field(description="Bits per element")
+    source_cores: list[int] = Field(description="The cores it reads from")
+    target_cores: list[int] = Field(description="The cores it writes to")
     source_order: list[int] = Field(description="Axis order it reads, outermost first")
     target_order: list[int] = Field(description="Axis order it writes, outermost first")
+    converts: bool = Field(description="Whether it lays its tile out anew, as a DMA does on the fly")
     read_run_bytes: float = Field(description="Contiguous bytes per run it reads")
     write_run_bytes: float = Field(description="Contiguous bytes per run it writes")
 
@@ -430,8 +437,8 @@ class AllocationPerformanceView(BaseModel):
         description="Activity of each memory port, shared-bandwidth core and link, busiest first; empty unless "
         "memory_ports is on",
     )
-    layouts: list[LayoutConversionIR] = Field(
-        default_factory=list, description="Transfers that convert their tile's layout on their chosen route"
+    layouts: list[TransferLayoutIR] = Field(
+        default_factory=list, description="Each transfer's tile and the layouts it reads and writes on its chosen route"
     )
 
     energy: EnergyIR | None = Field(default=None, description="The run's energy; None unless energy is on")
@@ -533,7 +540,7 @@ class AllocationIR(BaseModel):
                 tensor_reuse=[TensorReuseIR(**d) for d in perf_raw.get("tensor_reuse") or []],
                 memory_occupancy=[MemoryOccupancyIR(**d) for d in perf_raw.get("memory_occupancy") or []],
                 memory_ports=[ResourceActivityIR(**d) for d in perf_raw.get("memory_ports") or []],
-                layouts=[LayoutConversionIR(**d) for d in perf_raw.get("layouts") or []],
+                layouts=[TransferLayoutIR(**d) for d in perf_raw.get("layouts") or []],
                 energy=EnergyIR(**perf_raw["energy"]) if perf_raw.get("energy") else None,
             )
             if perf_raw

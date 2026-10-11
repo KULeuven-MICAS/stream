@@ -128,7 +128,8 @@ def test_a_parameter_is_packed_for_its_kernel_and_crosses_no_conversion(tmp_path
     for tr in weights:
         assert space.layouts.of(tr.inputs[0]) == space.layouts.of(tr.outputs[0]) == Layout((1, 0))
     rows = estimate.context.get("allocation").get_ir()["performance"]["layouts"]
-    assert [r["transfer"] for r in rows] == ["Transfer(y_2)"]
+    assert {r["transfer"] for r in rows} == set(transfers)
+    assert [r["transfer"] for r in rows if r["converts"]] == ["Transfer(y_2)"]
 
 
 def test_a_host_input_is_converted_by_the_last_dma_that_can_and_in_the_memory_that_costs_nothing(tmp_path):
@@ -141,7 +142,7 @@ def test_a_host_input_is_converted_by_the_last_dma_that_can_and_in_the_memory_th
     read, write = space.layouts.runs(into_vmem, space.path_choices[into_vmem][0])
     assert read >= 32 and write == BF16 / 8
     rows = estimate.context.get("allocation").get_ir()["performance"]["layouts"]
-    assert [(r["transfer"], r["source_order"], r["target_order"]) for r in rows] == [
+    assert [(r["transfer"], r["source_order"], r["target_order"]) for r in rows if r["converts"]] == [
         ("Transfer(w)", [0, 1], [1, 0]),
         ("Transfer(y_2)", [1, 0], [0, 1]),  # written with its rows innermost, handed back to the host row-major
     ]
