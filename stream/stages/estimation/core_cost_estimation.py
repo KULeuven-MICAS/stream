@@ -1,8 +1,8 @@
+import dataclasses
 import logging
 import os
 
 from zigzag.mapping.temporal_mapping import TemporalMappingType
-from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
@@ -12,9 +12,6 @@ from stream.mapping.work_share import interchangeable, split_steps
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_backends import CoreEstimator, select_backend
 from stream.stages.stage import Stage, StageCallable
-from stream.visualization.cost_model_evaluation_lut import (
-    visualize_cost_lut_pickle,
-)
 from stream.workload.workload import ComputationNode, Workload
 
 logger = logging.getLogger(__name__)
@@ -50,7 +47,6 @@ class CoreCostEstimationStage(Stage):
         self.fusion_splits: dict = self.ctx.get("fusion_splits", {}) or {}
         self.loma_show_progress_bar: bool = self.ctx.get("loma_show_progress_bar", False)
         self.cost_lut_path: str = os.path.join(self.output_path, "core_cost_lut.pickle")
-        self.visualize_cost_lut_path: str = os.path.splitext(self.cost_lut_path)[0] + ".png"
 
         self.valid_allocations: dict[ComputationNode, list[Core]] = {}
         for node in self.workload.get_computation_nodes():
@@ -67,7 +63,6 @@ class CoreCostEstimationStage(Stage):
     def run(self):
         logger.info("Start CoreCostEstimationStage.")
         self.update_cost_lut()
-        # self.visualize_cost_lut()
         logger.info("Finished CoreCostEstimationStage.")
 
         self.ctx.set(cost_lut=self.cost_lut)
@@ -75,8 +70,8 @@ class CoreCostEstimationStage(Stage):
         yield from sub_stage.run()
 
     def update_cost_lut(self):
+        seen_new = False
         for node in self.workload.get_computation_nodes():
-            seen_new = False
             cores = self.valid_allocations[node]
             for core in cores:
                 if self.cost_lut.has_cost(node, core):
@@ -94,7 +89,9 @@ class CoreCostEstimationStage(Stage):
                     equal_core = None
                 equal_mapping = self.check_equal_mapping(node, equal_node) if equal_node else None
                 if equal_node and equal_core and equal_mapping:
-                    cost = pickle_deepcopy(self.cost_lut.get_cost(equal_node, equal_core))
+                    # Entries are not changed once added, so the copy shares the estimate and owns its metadata
+                    equal_cost = self.cost_lut.get_cost(equal_node, equal_core)
+                    cost = dataclasses.replace(equal_cost, metadata=dict(equal_cost.metadata))
                     allow_overwrite = node.name == equal_node.name  # e.g. previous run with same mapping
                     self.cost_lut.add_cost(node, core, cost, allow_overwrite=allow_overwrite)
                     continue
@@ -103,8 +100,8 @@ class CoreCostEstimationStage(Stage):
                 self.cost_lut.add_cost(node, core, cost_entry, allow_overwrite=False)
                 seen_new = True
             self.remove_old_entries(node)
-            if seen_new:
-                self.cost_lut.save()
+        if seen_new:
+            self.cost_lut.save()
 
     def check_equal_mapping(self, node1: ComputationNode, node2: ComputationNode) -> bool:
         if node2 is None:
@@ -128,10 +125,3 @@ class CoreCostEstimationStage(Stage):
         # The AIE-vs-ZigZag choice moved into the backends' `claims`; this stage resolves through the
         # registry only, so an out-of-tree hardware namespace ships its own backend without editing here.
         return select_backend(core).make(self)
-
-    def visualize_cost_lut(self):
-        scale_factors = {
-            n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
-            for n in self.cost_lut.get_nodes()
-        }
-        visualize_cost_lut_pickle(self.cost_lut, scale_factors, self.visualize_cost_lut_path)
