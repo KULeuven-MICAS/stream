@@ -8,6 +8,10 @@
 #
 # `vregs` are the 64 vector registers of 8 x 128 x 32 bits, loaded from and stored to the TensorCore's
 # VMEM, the VPU's top memory. Bandwidths are bits per cycle at 2.2 GHz.
+#
+# Energies are a 3 nm estimate: about 4 pJ/bit for HBM3E, 0.24 pJ/bit to read the 64 MiB VMEM, 0.05 pJ/bit for a
+# vector register and 0.015 pJ/bit for a PE register, 0.076 pJ per bf16 multiply-accumulate and 0.52 pJ per fp32
+# vector op. A memory's r_cost and w_cost are its energy per bit times its port width, the bits one access moves.
 name: tpu_v7_vpu
 type: zigzag.compute
 
@@ -15,8 +19,8 @@ memories:
   # 64 vector registers of (8, 128) x 32 bits, 256 KiB; four reads a cycle, one per ALU slot.
   vregs:
     size: 2097152
-    r_cost: 0.05
-    w_cost: 0.05
+    r_cost: 6970
+    w_cost: 6970
     area: 0
     latency: 1
     operands: [I1, I2, O]
@@ -46,8 +50,8 @@ memories:
   # three 8 x 128 x 32-bit loads and two stores a cycle.
   vmem:
     size: 536870912
-    r_cost: 200
-    w_cost: 220
+    r_cost: 23340
+    w_cost: 25680
     area: 0
     latency: 1
     operands: [I1, I2, O]
@@ -73,7 +77,7 @@ memories:
     served_dimensions: [D1, D2, D3]
 
 operational_array:
-  unit_energy: 0.06 # pJ per vector op
+  unit_energy: 0.52 # pJ per vector op
   unit_area: 0.05
   dimensions: [D1, D2, D3]
   sizes: [8, 128, 4]
