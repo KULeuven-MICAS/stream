@@ -47,7 +47,6 @@ class CoreCostEstimationStage(Stage):
         self.fusion_splits: dict = self.ctx.get("fusion_splits", {}) or {}
         self.loma_show_progress_bar: bool = self.ctx.get("loma_show_progress_bar", False)
         self.cost_lut_path: str = os.path.join(self.output_path, "core_cost_lut.pickle")
-        self.visualize_cost_lut_path: str = os.path.splitext(self.cost_lut_path)[0] + ".png"
 
         self.valid_allocations: dict[ComputationNode, list[Core]] = {}
         for node in self.workload.get_computation_nodes():
@@ -64,7 +63,6 @@ class CoreCostEstimationStage(Stage):
     def run(self):
         logger.info("Start CoreCostEstimationStage.")
         self.update_cost_lut()
-        # self.visualize_cost_lut()
         logger.info("Finished CoreCostEstimationStage.")
 
         self.ctx.set(cost_lut=self.cost_lut)
@@ -127,13 +125,3 @@ class CoreCostEstimationStage(Stage):
         # The AIE-vs-ZigZag choice moved into the backends' `claims`; this stage resolves through the
         # registry only, so an out-of-tree hardware namespace ships its own backend without editing here.
         return select_backend(core).make(self)
-
-    def visualize_cost_lut(self):
-        # matplotlib takes a third of a second to import, which a run that plots nothing should not pay
-        from stream.visualization.cost_model_evaluation_lut import visualize_cost_lut_pickle  # noqa: PLC0415
-
-        scale_factors = {
-            n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
-            for n in self.cost_lut.get_nodes()
-        }
-        visualize_cost_lut_pickle(self.cost_lut, scale_factors, self.visualize_cost_lut_path)
