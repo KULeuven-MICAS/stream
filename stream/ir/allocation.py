@@ -388,6 +388,17 @@ class LayoutConversionIR(BaseModel):
     write_run_bytes: float = Field(description="Contiguous bytes per run it writes")
 
 
+class EnergyIR(BaseModel):
+    """Energy of the solved allocation under the energy family, in pJ."""
+
+    node_pj_per_iteration: float = Field(description="Every node on the cores it runs on, in one iteration")
+    transfer_pj_per_iteration: float = Field(
+        description="Every DMA stream's bits times the energy per bit of the ports and links it uses, in one iteration"
+    )
+    per_iteration_pj: float = Field(description="node_pj_per_iteration + transfer_pj_per_iteration")
+    total_pj: float = Field(description="per_iteration_pj over every iteration of the run")
+
+
 class AllocationPerformanceView(BaseModel):
     """Performance-persona projection of AllocationIR.
 
@@ -422,6 +433,8 @@ class AllocationPerformanceView(BaseModel):
     layouts: list[LayoutConversionIR] = Field(
         default_factory=list, description="Transfers that convert their tile's layout on their chosen route"
     )
+
+    energy: EnergyIR | None = Field(default=None, description="The run's energy; None unless energy is on")
 
 
 class AllocationIR(BaseModel):
@@ -521,6 +534,7 @@ class AllocationIR(BaseModel):
                 memory_occupancy=[MemoryOccupancyIR(**d) for d in perf_raw.get("memory_occupancy") or []],
                 memory_ports=[ResourceActivityIR(**d) for d in perf_raw.get("memory_ports") or []],
                 layouts=[LayoutConversionIR(**d) for d in perf_raw.get("layouts") or []],
+                energy=EnergyIR(**perf_raw["energy"]) if perf_raw.get("energy") else None,
             )
             if perf_raw
             else None
