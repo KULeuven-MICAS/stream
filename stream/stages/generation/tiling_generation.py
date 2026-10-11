@@ -6,12 +6,11 @@ from stream.datatypes import LayerDim
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.utils import (
     determine_fusion_splits,
     is_mac_operator_type,
 )
-from stream.workload.workload import ComputationNode, Workload
+from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +38,6 @@ class TilingGenerationStage(Stage):
         self.output_path: str = self.ctx.get("output_path")
         self.fusion_splits: dict[LayerDim, int] = {}
         self.tiled_sizes: dict[int, int] = {}
-        self.steady_state_iteration_spaces: dict[ComputationNode, SteadyStateIterationSpace] = {}
-        self.unique_dims, self.dim_expressions = self.workload.unique_dimensions()
-        pass
 
     def run(self):
         self.fusion_splits = determine_fusion_splits(self.workload, self.mapping)
@@ -95,11 +91,3 @@ class TilingGenerationStage(Stage):
             size = self.workload.get_dimension_size(dim)
             result[dim] = size
         return result
-
-    def _get_total_spatial_unrolling_for_dim(
-        self,
-        dim: LayerDim,
-        spatial_unrollings: set[tuple[LayerDim, int]],
-    ) -> int:
-        total_unrolling = prod(su[1] for su in spatial_unrollings if su[0] == dim)
-        return total_unrolling

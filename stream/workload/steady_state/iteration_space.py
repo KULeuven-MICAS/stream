@@ -3,12 +3,8 @@
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
 
-from collections.abc import Iterable
 from enum import Enum, auto
 from math import prod
-
-from zigzag.datatypes import LayerOperand
-from zigzag.workload.layer_node import LoopRelevancyInfo
 
 from stream.datatypes import LayerDim
 
@@ -215,121 +211,16 @@ class SteadyStateIterationSpace:
     # ..................................................................... #
     # ── CLASS FACTORY ── #
     # ..................................................................... #
-    @classmethod
-    def from_loop_info(
-        cls,
-        *,
-        loop_relevancy: LoopRelevancyInfo,
-        intra_core_tiling: Iterable[tuple[LayerDim, int]],
-        operand: LayerOperand,
-        # inter_core_tiling: TILING_T | None = None,
-    ) -> SteadyStateIterationSpace:
-        """
-        Build the SSIS for **one operand** of a computation node.
-
-        Parameters
-        ----------
-        loop_relevancy : zigzag.workload.layer_node.LoopRelevancyInfo
-            Contains *R* / *PR* loop information for the operand.
-        intra_core_tiling : list[tuple[LayerDim, int]]
-            Ordered (innermost→outermost) tiling definition: `(dimension, size)`.
-        operand : LayerOperand
-            Which operand we are analysing (needed for relevancy lookup).
-        inter_core_tiling : Iterable[tuple[LayerDim, int]], optional
-            Ordered (innermost→outermost) tiling definition for inter-core tiling.
-            Defaults to empty iterable. Is used for transfer nodes as innermost iteration variable.
-        """
-        # if inter_core_tiling is None:
-        #     inter_core_tiling = []
-        # collect all R  +  PR descendants
-        relevant_dims = set(loop_relevancy.get_r_or_pr_layer_dims(operand))
-        # add PR loops
-        for dim in list(relevant_dims):
-            relevant_dims.update(loop_relevancy.pr_dims[operand].get(dim, []))
-
-        # Spatial inter_core_tiling loop variables
-        variables: list[IterationVariable] = []
-        # for dim, size in inter_core_tiling:
-        #     is_rel = dim in relevant_dims
-        #     variables.append(IterationVariable(dim, size, is_rel, spatial=True))
-
-        # Temporal intra_core_tiling loop variables
-        seen_ir = False
-        for dim, size in intra_core_tiling:
-            is_rel = dim in relevant_dims
-            iter_var = IterationVariable(dim, size, is_rel)
-            if not is_rel:
-                seen_ir = True
-            elif seen_ir and is_rel:
-                # once we have seen an IR loop, subsequent R loops can't have mem reuse
-                iter_var.reuse = Reuse.NO_REUSE
-            variables.append(iter_var)
-
-        return cls(variables)
 
     # ..................................................................... #
     # ── Convenience helpers                                                 #
     # ..................................................................... #
-    @property
-    def slices_per_full(self) -> int:
-        """
-        *How many* steady-state slices constitute one **full tensor**.
-
-        Equals the product of loop sizes that are *relevant* (vary between
-        iterations).  Falls back to **1** if nothing varies.
-        """
-        sizes = [v.size for v in self.variables if v.relevant]
-        return prod(sizes) if sizes else 1
-
-    @property
-    def slice_volume(self) -> int:
-        """Total elements/bits in *one* slice (product of *all* loop sizes)."""
-        return prod(v.size for v in self.variables) if self.variables else 1
-
-    def shape_mem(self, num_memtiles: int = 1) -> tuple[int, ...]:
-        """
-        Returns the shape of the relevant iteration space kept local in a memtile.
-        Kernel dimensions may be misordered.
-        """
-        # start with kernel shape
-        # (ordering may be a bit off here)
-        shape = tuple(var.size for var in self.get_kernel_variables() if var.relevant)
-
-        # add relevant spatial shape
-        spatial_shape = tuple(
-            var.size for var in self.get_spatial_variables() if var.relevant and var.size != num_memtiles
-        )
-        shape = spatial_shape + shape
-
-        # add dims reused in memtile
-        local_tensors = self.nb_local_tensors_mem()
-        if local_tensors > 1:
-            shape = (local_tensors,) + shape
-
-        return shape
 
     def reuse_factor(self) -> int:
         """
         Returns the number of time a tensor is reused.
         """
         return prod(iv.size for iv in self.get_temporal_variables() if not iv.relevant and iv.reuse == Reuse.REUSE)
-
-    def nb_local_tensors(self) -> int:
-        """
-        Returns the number of tensors tiles that are kept local.
-        """
-        last_reuse = None
-        for var in reversed(self.get_temporal_variables()):
-            if var.reuse == Reuse.REUSE:
-                last_reuse = var
-                break
-        if last_reuse:
-            last_reuse_index = self.get_temporal_variables().index(last_reuse)
-            reuse_iters = self.get_temporal_variables()[: last_reuse_index + 1]
-        else:
-            reuse_iters = []
-
-        return prod(iv.size for iv in reuse_iters if iv.relevant)
 
     def reuse_summary(self) -> dict:
         """
@@ -391,12 +282,6 @@ class SteadyStateIterationSpace:
         """
         return [iv for iv in self.variables if iv.type == IterationVariableType.TEMPORAL]
 
-    def get_temporal_dimensions(self) -> list[LayerDim]:
-        """
-        Returns the list of temporal loop dimensions (i.e. those that are not spatial).
-        """
-        return [iv.dimension for iv in self.get_temporal_variables()]
-
     def get_temporal_sizes(self) -> list[int]:
         """
         Returns the list of sizes of temporal iteration variables.
@@ -414,12 +299,6 @@ class SteadyStateIterationSpace:
         Returns the list of temporal iteration variables that are applicable to the operand.
         """
         return [iv for iv in self.get_temporal_variables() if iv.applicable]
-
-    def get_applicable_temporal_dimensions(self) -> list[LayerDim]:
-        """
-        Returns the list of temporal loop dimensions that are applicable to the operand.
-        """
-        return [iv.dimension for iv in self.get_temporal_variables() if iv.applicable]
 
     def get_applicable_temporal_sizes(self) -> list[int]:
         """

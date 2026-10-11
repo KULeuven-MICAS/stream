@@ -242,10 +242,6 @@ class StrensorType(
             buffers = IntAttr(buffers)
         super().__init__([element_type, ssis, ArrayAttr(core_allocation), reuse_index, buffers])
 
-    @property
-    def num_reuse_vars(self) -> int:
-        return len(self.ssis.data.vars) - self.reuse_index.data
-
     # def get_num_dims(self) -> int:
     #     return len(self.shape.data)
     #

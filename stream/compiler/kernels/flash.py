@@ -202,17 +202,6 @@ def _partners(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str
     return [tile for _, tile in found]
 
 
-def _partner(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str, ...]) -> TileOp:
-    """The single tile this step's other half runs on."""
-    found = _partners(device, op, function)
-    if len(found) != 1:
-        raise ValueError(
-            f"the core at {_position(_tile(op))} shares its scale buffer with "
-            f"{len(found)} cores running {function}, and this half expects one"
-        )
-    return found[0]
-
-
 def _named(device: DeviceOp, kind: type, name: str):
     for candidate in device.walk():
         if isinstance(candidate, kind) and candidate.sym_name.data == name:

@@ -1,7 +1,6 @@
 from functools import cached_property
 from typing import Any
 
-from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.kernels.library import KernelLibrary
@@ -71,22 +70,6 @@ class Accelerator:
     def memory_of(self, core: Core) -> Core:
         """The core owning the top-level memory ``core`` uses: the first of its `core_memory_sharing` group."""
         return self.get_core(self.shared_mem_group_ids.get(core.id, core.id))
-
-    def get_offchip_core(self) -> Core:
-        """Return the offchip core."""
-        assert self.offchip_core_id, "This accelerator has no offchip core id."
-        return self.get_core(self.offchip_core_id)
-
-    def get_spatial_mapping_from_core(self, core_allocation: list[int]) -> SpatialMapping:
-        """Iff the dataflows of all given cores is the same, return that dataflow. Otherwise, throw an error"""
-        all_dataflows = [self.get_core(core_id).dataflows for core_id in core_allocation]
-        some_dataflow = all_dataflows.pop()
-
-        # All cores have same dataflow
-        if some_dataflow is not None and all(some_dataflow == dataflow for dataflow in all_dataflows):
-            return some_dataflow
-
-        raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
 
     @cached_property
     def ports(self) -> PortRegistry:
