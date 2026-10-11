@@ -78,7 +78,7 @@ class Overlap:
         for res, v in idle_lat.items():
             q.add("idle_latency", v._raw, index=res)
         self._define_overlap_var(ctx, idle_lat, latency)
-        _resident_fill(ctx)
+        _resident_fill(ctx, _drain(ctx.space))
         if self.offchip_contention:
             q.add(OFFCHIP_TIMED, 1)
 
@@ -328,10 +328,25 @@ def _active_shared_latency(
     )
 
 
-def _resident_fill(ctx: FormulationContext) -> None:
+def _drain(space: DecisionSpace) -> int:
+    """Cycles the last iteration's results take to leave the systolic arrays computing them, which no later tile
+    overlaps: a node reading another's results waits for them to drain, while one that does not streams into its
+    array behind it, so the run waits for the drains along its longest chain of dependent nodes."""
+    drained: dict[object, int] = {}
+    for n in space.workload.dataflow_sort():
+        own = 0
+        if isinstance(n, ComputationNode):
+            entries = (space.cost_lut.get_cost(n, core) for core in space.cost_lut.get_cores(n))
+            own = max((ceil((entry.metadata or {}).get("drain_cycles", 0)) for entry in entries), default=0)
+        drained[n] = max((drained[p] for p in space.workload.predecessors(n)), default=0) + own
+    return max(drained.values(), default=0)
+
+
+def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:
     """Cycles each run waits for the off-chip windows it holds in one buffer to fill: such a window fills
     before the iteration that reads it, overlapping none. The fills share each path and shared-bandwidth core
-    as one iteration's transfers do."""
+    as one iteration's transfers do. ``drain`` adds the cycles the last iteration's results take to leave the
+    systolic arrays."""
     q = ctx.quantities
     space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
     fill = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
@@ -371,7 +386,8 @@ def _resident_fill(ctx: FormulationContext) -> None:
             shared[core] += [tiles * share * w._raw for tiles, w in held]
     for core, terms in shared.items():
         model.add_constr(fill >= model.quicksum(terms), name=f"fill_shared_{core}")
-    q.add("fill", fill._raw + warmup if (warmup := _warmup(ctx)) is not None else fill._raw)
+    fill_cycles = fill._raw + drain
+    q.add("fill", fill_cycles + warmup if (warmup := _warmup(ctx)) is not None else fill_cycles)
 
 
 def _warmup(ctx: FormulationContext) -> Any:

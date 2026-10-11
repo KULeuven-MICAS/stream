@@ -93,6 +93,8 @@ operational_array:
   unit_area: 1 # unit
   dimensions: [D1, D2]
   sizes: [32, 32]
+  # A weight-stationary systolic array, as in TPU v1: inputs move across it, partial sums down it
+  systolic_dimensions: [D1, D2]
 
 # TPU v1 multiplies 8-bit operands and accumulates in 32 bits (Jouppi et al., ISCA 2017).
 operand_precision:
