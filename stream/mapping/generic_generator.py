@@ -34,6 +34,7 @@ from stream.workload.iterator_type import (
     sequential_dims,
 )
 from stream.workload.node import ComputationNode
+from stream.workload.normalization import source_operator
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload, determine_fusion_cut_points
 
@@ -91,14 +92,22 @@ class GenericMappingGenerator:
         Args:
             cut_points: Node names to split at, in addition to FusionEdge boundaries. Defaults to the
                 affine barriers ``determine_fusion_cut_points`` derives, cut again where a group's weights
-                cannot stay on its cores (see ``_cut_points``).
+                cannot stay on its cores (see ``_cut_points``), and, unless ``intra_core_tiling`` is given, at every
+                node of a group no tiling fits (see ``_unfit_nodes``).
 
         Returns:
             A tuple ``(paths, sub_workloads)`` where *paths* is a list of
             absolute file paths to the written YAML files and *sub_workloads*
             is the list of sub-workloads returned by ``split_fusion_groups()``.
         """
-        sub_workloads = self.workload.split_fusion_groups(cut_points=self._cut_points(cut_points))
+        cuts = self._cut_points(cut_points)
+        sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
+        if (
+            cut_points is None
+            and self.intra_core_tiling is None
+            and (unfit := [n for sub in sub_workloads for n in self._unfit_nodes(sub)])
+        ):
+            sub_workloads = self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         paths: list[str] = []
         for i, sub_workload in enumerate(sub_workloads):
             path = self._generate_group_yaml(sub_workload, i)
@@ -508,6 +517,16 @@ class GenericMappingGenerator:
                 segment = (*segment, cn)
         return cuts
 
+    def _unfit_nodes(self, sub_workload: Workload) -> list[str]:
+        """The operators of a fused group no tiling fits on its cores, each to be a group of its own: an operator alone
+        has the memories to itself and the whole tile budget, as a layer-by-layer mapping gives it; the sub-ops of an
+        expanded normalization stay together. [] for a group that fits."""
+        cns = tuple(sub_workload.get_computation_nodes())
+        seed = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
+        if len(cns) == 1 or self._capacity_refine(sub_workload, cns, seed) is not None:
+            return []
+        return [source_operator(cn) for cn in cns]
+
     def _weight_overflow(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> float:
         """How far ``cns``' weights overflow half their cores under the split that suits them best (0 when they fit)."""
         n_cores = max(len(self._select_cores_for_node(cn)) for cn in cns)
@@ -523,12 +542,13 @@ class GenericMappingGenerator:
             selected = [dict(e) for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in names]
             return selected or self._whole_layer_tiling(sub_workload, cns)
         automatic = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
-        return self._capacity_refine(sub_workload, cns, automatic)
+        return self._capacity_refine(sub_workload, cns, automatic) or automatic
 
     def _capacity_refine(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], seed_tiling: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Stream extra axes (e.g. a matmul contraction) when ``seed_tiling`` still overflows the operand buffer."""
+    ) -> list[dict[str, Any]] | None:
+        """Stream extra axes (e.g. a matmul contraction) when ``seed_tiling`` still overflows the operand buffer; None
+        when no tiling fits."""
         cores_per_node = {cn: self._select_cores_for_node(cn) for cn in cns}
         if not any(cores_per_node.values()):
             return seed_tiling
@@ -547,7 +567,7 @@ class GenericMappingGenerator:
         refined = CapacityTiler(sub_workload, self.accelerator).plan(
             cns, cores_per_node, unroll, protected, seed_tiling, node_unroll
         )
-        return refined or seed_tiling
+        return refined if refined is None else refined or seed_tiling
 
     def _whole_layer_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
         """Tile the first node's first dimension so the group is one steady-state tile (nb_splits=1)."""

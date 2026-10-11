@@ -10,6 +10,7 @@ import yaml
 from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetPattern,
     ResNetSubgraphConfig,
@@ -186,29 +187,10 @@ def test_multi_head_attention_splits_the_heads_its_matrix_units_split(tmp_path):
     assert len(set(map(frozenset, splits.values()))) == 1, splits
 
 
-def _attention(path, seq: int, d_model: int = 4096, heads: int = 32) -> str:
-    """Multi-head attention with heads as a batch axis: per-head projections, scores, softmax and context."""
-    d_head = d_model // heads
-    value = lambda name, shape: helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape)  # noqa: E731
-    nodes = [helper.make_node("MatMul", ["x", f"w{p}"], [p], name=f"proj_{p}") for p in "QKV"]
-    nodes += [
-        helper.make_node("Transpose", ["K"], ["Kt"], perm=[0, 2, 1], name="transpose_K"),
-        helper.make_node("MatMul", ["Q", "Kt"], ["scores"], name="scores"),
-        helper.make_node("Softmax", ["scores"], ["attn"], axis=-1, name="softmax"),
-        helper.make_node("MatMul", ["attn", "V"], ["ctx"], name="context"),
-    ]
-    weights = [value(f"w{p}", [heads, d_model, d_head]) for p in "QKV"]
-    graph = helper.make_graph(
-        nodes, "mha", [value("x", [seq, d_model]), *weights], [value("ctx", [heads, seq, d_head])]
-    )
-    onnx.save(onnx.shape_inference.infer_shapes(helper.make_model(graph)), path)
-    return str(path)
-
-
 def test_the_innermost_steady_state_loop_indexes_the_least_data(tmp_path):
     """At 2048 tokens a head's scores do not fit whole, so the group is cut along the queries too; the heads, which
     index the weights, are the outermost loop, so each head's weights stay put while its query tiles run."""
-    _, groups = _layers(TPU_V7, _attention(tmp_path / "mha.onnx", seq=2048))
+    _, groups = _layers(TPU_V7, make_multi_head_attention(tmp_path / "mha.onnx", seq=2048))
     tiled = [entry["dim"] for entry in groups[0]["intra_core_tiling"]]
     assert tiled[-1] == "proj_Q.D0"
 
@@ -233,7 +215,7 @@ def test_the_key_projection_sits_out_the_query_tiles(tmp_path):
     """Attention cut along its queries, its VMEM holding one copy of the input for every projection: the key and value
     projections do not depend on the queries, so they run in half the steady-state iterations rather than in each, and
     no node of the steady state has two loops along one dim."""
-    path = _attention(tmp_path / "mha.onnx", seq=256, d_model=1024, heads=8)
+    path = make_multi_head_attention(tmp_path / "mha.onnx", seq=256, d_model=1024, heads=8)
     accelerator, workload = _parse(TPU_V7, path)
     generated, _ = GenericMappingGenerator(accelerator, workload, tempfile.mkdtemp()).generate_all_groups()
     mapping = yaml.safe_load(open(generated[0]))
