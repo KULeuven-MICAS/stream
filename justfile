@@ -25,7 +25,7 @@ co-2conv hw="tpu_like_quad_core":
 co-swiglu hw="tpu_like_quad_core":
     python -m pytest tests/test_hardware_combinations.py -k "swiglu and {{hw}}"
 
-# Run the full hardware x workload test matrix (parse + 2-conv + swiglu over all 8 non-AIE architectures).
+# Run the full hardware x workload test matrix (parse + 2-conv + swiglu over every example architecture).
 matrix:
     python -m pytest tests/test_hardware_combinations.py
 

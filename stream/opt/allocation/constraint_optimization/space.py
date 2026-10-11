@@ -172,7 +172,7 @@ class DecisionSpace:
         latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
         return ceil(max(latencies)) if latencies else 0
 
-    def active_runtime(self, n: ComputationNode) -> int:
+    def active_runtime(self, n: ComputationNode) -> float:
         """Cycles ``n`` takes per iteration: its runtime over the iterations it is not idle on an absent loop."""
         return get_active_latency(n, self.runtime(n), self.ssis)
 

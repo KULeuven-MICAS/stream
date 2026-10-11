@@ -48,5 +48,11 @@ def active_fraction(n: Node, ssis: dict[ComputationNode, SteadyStateIterationSpa
     return prod(v.size for v in temporal if v.effect != LoopEffect.ABSENT) / total if total else 1.0
 
 
-def get_active_latency(n: Node, runtime_constant: float, ssis: dict[ComputationNode, SteadyStateIterationSpace]) -> int:
-    return int(round(runtime_constant * active_fraction(n, ssis)))
+def get_active_latency(
+    n: Node,
+    runtime_constant: float,
+    ssis: dict[ComputationNode, SteadyStateIterationSpace],
+) -> float:
+    """Cycles ``n`` takes per iteration, amortized over the iterations it idles on an absent loop; not rounded, so a
+    node that runs a few cycles once every many iterations still costs its share."""
+    return runtime_constant * active_fraction(n, ssis)

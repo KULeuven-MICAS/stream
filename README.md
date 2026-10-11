@@ -95,7 +95,7 @@ A mapping can be generated (as in Quick Start above) or hand-written and passed 
 
 ## 📊 Workload × Hardware Matrix
 
-The generic CO pipeline runs any ONNX workload on any of the example hardware systems. The repo ships two small workloads and exercises them across all eight non-AIE example architectures, through the pytest suite (`tests/test_hardware_combinations.py`).
+The generic CO pipeline runs any ONNX workload on any of the example hardware systems. The repo ships two small workloads and runs them on every architecture in `stream/inputs/examples/hardware/` through `tests/test_hardware_combinations.py`, which checks that each solve describes a sound dataflow: every node on a compute core, utilizations within [0, 1], no memory over capacity, energy spent, and every transfer's layout a valid order of a tile that fits its tensor. A new hardware yaml in that directory joins the matrix on its own.
 
 **Workloads** - committed test fixtures under `stream/inputs/testing/workload/` (weight values are cleared, only tensor shapes matter for cost estimation, so the ONNX stay tiny; `just gen-workloads` regenerates them via the builders):
 
@@ -112,6 +112,7 @@ The generic CO pipeline runs any ONNX workload on any of the example hardware sy
 | `simba` | 36-core Simba chiplet mesh | ✓ | ✓ |
 | `fusemax` | FuseMax array + vector + DRAM | ✓ | ✓ |
 | `meta_prototype_dual_core_simd_offchip` | two Meta-prototype compute cores (+ pooling, SIMD, DRAM) | ✓ | ✓ |
+| `tpu_v7_ironwood` | two-chip TPU7x slice: four TensorCores of two MXUs, a VPU and VMEM each, plus HBM | ✓ | ✓ |
 
 ✓ = completes through the generic CO pipeline. All combinations run in the default fast suite; on these small single-fusion-group workloads even the 36-core `simba` mesh finishes in seconds.
 
@@ -122,10 +123,10 @@ just co-2conv fusemax           # 2-conv on an architecture
 just co-swiglu simba_small      # swiglu on an architecture
 ```
 
-**Run the whole matrix** - the `justfile` wraps `pytest tests/test_hardware_combinations.py`, which runs 2-conv + swiglu over all eight architectures plus a parse-only check confirming every hardware definition loads:
+**Run the whole matrix** - the `justfile` wraps `pytest tests/test_hardware_combinations.py`, which runs 2-conv + swiglu over every architecture plus a parse-only check confirming every hardware definition loads:
 
 ```bash
-just matrix          # parse + 2-conv + swiglu over all 8 architectures (incl. simba)
+just matrix          # parse + 2-conv + swiglu over every example architecture
 ```
 
 ---

@@ -30,7 +30,7 @@ class PortShare:
 @dataclass(frozen=True)
 class DmaStream:
     """``bits_per_cycle * active_cycles`` is the stream's bits per iteration; ``active_cycles``, at most
-    ``latency_ub``, is the transfer's latency on its chosen path, or that path's choice when the latency rounds to 0."""
+    ``latency_ub``, is the transfer's latency on its chosen path."""
 
     choice: MulticastPathPlan
     active_cycles: Any
@@ -91,13 +91,7 @@ def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
         latency = get_active_latency(tr, link_latency, ctx.space.ssis)
         bits = ctx.space.moved_bits(tr, choice) * active_fraction(tr, ctx.space.ssis)
         sides = tuple(_sides(ctx, tr, choice))
-        if latency > 0:
-            stream = DmaStream(choice, quantity.expr, bits / latency, latency, ctx.space.slot_of[tr], sides)
-        else:
-            # Charged at a reuse factor of 1, an upper bound, since y / R needs a variable of its own.
-            gate = ctx.vars.y[(tr, choice)]._raw
-            stream = DmaStream(choice, gate, bits, 1.0, ctx.space.slot_of[tr], sides)
-        streams.append(stream)
+        streams.append(DmaStream(choice, quantity.expr, bits / latency, latency, ctx.space.slot_of[tr], sides))
     return streams
 
 

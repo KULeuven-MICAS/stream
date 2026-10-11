@@ -119,7 +119,7 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
     return rows
 
 
-def node_utilization(entry: Any, n_cores: int, runtime: int, active: int) -> dict[str, Any]:
+def node_utilization(entry: Any, n_cores: int, runtime: int, active: float) -> dict[str, Any]:
     """A compute node's report row: ``active`` cycles per iteration, efficiency per call over its ``runtime``, and
     whether a matmul or conv fell back to an ideal-cycle estimate."""
     ideal = getattr(entry, "ideal_cycle", None)
@@ -127,7 +127,7 @@ def node_utilization(entry: Any, n_cores: int, runtime: int, active: int) -> dic
     return {
         "kind": "compute",
         "n_cores": n_cores,
-        "latency_cycles": int(active),
+        "latency_cycles": active,
         "ideal_compute_cycles": _json_scalar(ideal),
         "mac_spatial_utilization": _json_scalar(getattr(entry, "mac_spatial_utilization", None)),
         "compute_efficiency": _json_scalar(float(ideal) / runtime if ideal and runtime else None),
@@ -374,7 +374,7 @@ def slot_latency_breakdown(
                     int(min(link.bandwidth for link in choice.links_used)) if choice.links_used else None
                 ),
                 "path_cycles": raw,
-                "active_latency_cycles": int(get_active_latency(tr, float(raw), space.ssis)),
+                "active_latency_cycles": round(get_active_latency(tr, float(raw), space.ssis)),
                 "reuse_factor": _json_scalar(value(q.get("reuse_factor", tr).expr)),
                 "latency_contribution_cycles": _json_scalar(value(q.get("transfer_latency", (tr, choice)).expr)),
             }
