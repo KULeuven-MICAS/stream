@@ -217,9 +217,11 @@ def test_a_copy_in_memory_holds_what_every_reader_of_it_needs(tmp_path):
     than a quarter the others gather across the chips."""
     path = "stream/inputs/testing/workload/attention_head.onnx"
     estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
-    problem = estimate.context.get("allocation").problem
+    allocation = estimate.context.get("allocation")
+    problem = allocation.problem
     into_vmem = next(n for n in problem.workload.get_transfer_nodes() if n.name == "Transfer(I)")
     assert problem.mapping.get(into_vmem).inter_core_tiling == ((),) * len(
         problem.mapping.get(into_vmem).inter_core_tiling
     )
-    assert estimate.cycles < 500
+    hbm = problem.accelerator.offchip_core_id
+    assert {link.sender.id for link in allocation.solution.transfer_routes[into_vmem].links_used} == {hbm}
