@@ -283,7 +283,7 @@ def test_a_layout_reports_each_side_the_dma_walks_and_the_banks_it_lands_in(tmp_
     workload = make_2_conv_workload(TwoConvWorkloadConfig(1, 8, 32, 32, 16, 32, 3, "bf16", "bf16"))
     estimate = evaluate_mapping("stream/inputs/examples/hardware/simba_small.yaml", workload, str(tmp_path))
     layouts = [t for g in estimate.context.get("group_allocations").values() for t in g["performance"]["layouts"]]
-    assert any(t["write"]["banks"] == {"count": 4, "width": 32, "stripe": 2048} for t in layouts)
+    assert any(t["write"]["banks"] == {"count": 4, "width": 32, "stripe": 1} for t in layouts)
     for t in layouts:
         assert t["axes"] and len(t["axes"]["dims"]) == len(t["tile_shape"])
         for side in (t["read"], t["write"]):
