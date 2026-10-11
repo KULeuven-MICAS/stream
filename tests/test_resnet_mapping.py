@@ -96,6 +96,6 @@ def test_the_stem_tiles_its_strided_window_in_whole_strides():
 @pytest.mark.parametrize("part", _PARTS)
 def test_resnet18_solves_end_to_end(part):
     estimate = evaluate_mapping(
-        _HARDWARE.format(part), _RESNET18, tempfile.mkdtemp(), None, SolveOptions(nb_cols_to_use=4, backend="gurobi")
+        _HARDWARE.format(part), _RESNET18, tempfile.mkdtemp(), None, SolveOptions(nb_cols_to_use=4)
     )
     assert estimate.group_cycles and all(cycles > 0 for cycles in estimate.group_cycles)

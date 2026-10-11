@@ -11,6 +11,7 @@ import pytest
 from ortools.math_opt.python import mathopt
 
 from stream.opt.solver import (
+    GurobiBackend,
     LinExpr,
     ORToolsBackend,
     SolverBackend,
@@ -19,6 +20,7 @@ from stream.opt.solver import (
     SolverVar,
     SolverVarType,
     create_solver,
+    solver,
 )
 
 # ---------------------------------------------------------------------------
@@ -257,6 +259,13 @@ def test_factory_ortools_gurobi():
     """create_solver(ORTOOLS_GUROBI) returns ORToolsBackend with Gurobi solver."""
     solver = create_solver(SolverBackend.ORTOOLS_GUROBI, "gurobi_ort_test")
     assert isinstance(solver, ORToolsBackend), f"ORTOOLS_GUROBI should route to ORToolsBackend, got {type(solver)}"
+
+
+@pytest.mark.parametrize("call", [lambda: create_solver(SolverBackend.GUROBI), GurobiBackend.check_license])
+def test_the_gurobi_backend_without_gurobipy_says_to_install_it(monkeypatch, call):
+    monkeypatch.setattr(solver, "gp", None)
+    with pytest.raises(ImportError, match="stream-dse\\[gurobi\\]"):
+        call()
 
 
 # ---------------------------------------------------------------------------

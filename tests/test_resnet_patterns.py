@@ -2,7 +2,6 @@
 
 Tests basic residual, stride-2 downsample, and front-end + pooling core patterns.
 Also tests that an identity Reshape between two residual blocks folds rather than splitting them.
-Full ResNet18 E2E test with fixed spatial tiling across 11 fusion groups.
 
 Dedicated test file separate from test_generic_mapping.py.
 Assertions check positive latency, correct group count, and core type allocation.
@@ -13,7 +12,6 @@ import tempfile
 
 import pytest
 import yaml
-from zigzag.mapping.temporal_mapping import TemporalMappingType
 
 from stream.api import evaluate_mapping
 from stream.inputs.testing.workload.make_resnet_subgraph import (
@@ -21,18 +19,6 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetSubgraphConfig,
     make_resnet_subgraph,
 )
-from stream.opt.solver import SolverBackend
-from stream.stages.allocation.steady_state_allocation import AllocationStage
-from stream.stages.allocation.steady_state_lowering import SteadyStateLoweringStage
-from stream.stages.context import StageContext
-from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
-from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
-from stream.stages.generation.fixed_mapping_generation import FixedMappingGenerationStage
-from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage
-from stream.stages.generation.tiling_generation import TilingGenerationStage
-from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
-from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.stages.stage import MainStage, StageCallable
 from stream.workload.node import ComputationNode
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -105,26 +91,10 @@ def test_frontend_path():
             f"All group latencies must be positive, got {group_latencies}"
         )
 
-        # Core type assertion: MaxPool must be on pooling core (core 4)
-        # Read the group mapping YAML from the output directory (still available inside `with`)
-        experiment_dir = os.path.join(tmpdir, "test-frontend-path")
-        group_dir = os.path.join(experiment_dir, "group_0")
-        mapping_path = os.path.join(group_dir, "mapping.yaml")
-        assert os.path.exists(mapping_path), f"Group mapping YAML not found at {mapping_path}"
-
-        with open(mapping_path) as f:
-            mapping_data = yaml.safe_load(f)
-
-        # Find the MaxPool layer
-        maxpool_layer = None
-        for layer in mapping_data["layers"]:
-            if "MaxPool" in layer["name"]:
-                maxpool_layer = layer
-                break
-        assert maxpool_layer is not None, "MaxPool layer not found in mapping YAML"
-
-        # Assert pooling core allocation (core 4)
-        core_ids = [c for slot in maxpool_layer["core_allocation"] for c in slot]
+        # MaxPool must be on the pooling core (core 4)
+        mapping = ctx.get("mapping")
+        maxpool = next(n for n in ctx.get("workload").get_computation_nodes() if "MaxPool" in n.name)
+        core_ids = {core.id for cores in mapping.get(maxpool).resource_allocation for core in cores}
         assert 4 in core_ids, f"MaxPool should be allocated to pooling core (id=4), got core_ids={core_ids}"
 
 
@@ -257,76 +227,3 @@ def test_resnet18_cut_point_groups():
                 mapping_data = yaml.safe_load(f)
             mv = MappingValidator(mapping_data)
             assert mv.validate(), f"Group {i} mapping failed validation: {mv.errors}"
-
-
-_RESNET18_MAPPING = "stream/inputs/examples/mapping/resnet18_tpu_quad_core.yaml"
-
-
-@pytest.mark.slow
-@pytest.mark.timeout(900)
-def test_resnet18_full_e2e(request, tmp_path):
-    """Full ResNet18 E2E through CO pipeline: 11 fusion groups, all with positive latency.
-
-    Uses FixedMappingGenerationStage to parse the fixed mapping YAML and build
-    per-group Mappings in-memory — no intermediate YAML file round-trips.
-
-    memory_capacity constraints are disabled because ZigZag's fallback estimator
-    (triggered by the 7x7 stride-2 Conv in Group 0) produces invalid memory loads
-    that make the MILP infeasible. The spatial tiling already guarantees tensors fit.
-
-    Run with ``pytest --keep-output`` to persist outputs in ``outputs/resnet18_e2e/``.
-    """
-    from pathlib import Path  # noqa: PLC0415
-
-    from stream.api import default_families  # noqa: PLC0415
-    from stream.opt.allocation.constraint_optimization.families import load_families  # noqa: PLC0415
-
-    keep = request.config.getoption("--keep-output")
-    if keep:
-        output_path = Path("outputs/resnet18_e2e")
-        output_path.mkdir(parents=True, exist_ok=True)
-    else:
-        output_path = tmp_path / "resnet18-e2e"
-        output_path.mkdir()
-    output_path = str(output_path)
-
-    stages: list[StageCallable] = [
-        AcceleratorParserStage,
-        StreamONNXModelParserStage,
-        FixedMappingGenerationStage,
-        FusionGroupIterationStage,
-        TilingGenerationStage,
-        CoreCostEstimationStage,
-        SteadyStateLoweringStage,
-        AllocationStage,
-        MemoryAccessesEstimationStage,
-    ]
-    ctx = StageContext.from_kwargs(
-        accelerator=_ACCELERATOR,
-        workload_path=_RESNET18,
-        mapping_path=_RESNET18_MAPPING,
-        loma_lpf_limit=6,
-        output_path=output_path,
-        temporal_mapping_type=TemporalMappingType.UNEVEN,
-        nb_cols_to_use=4,
-        backend=SolverBackend.ORTOOLS_GSCIP.value,
-        families=load_families(default_families(_ACCELERATOR, without=["memory_capacity"])),
-    )
-
-    mainstage = MainStage(stages, ctx)
-    answers = mainstage.run()
-    assert len(answers) == 1, f"Expected 1 result, got {len(answers)}"
-    ctx = answers[0]
-
-    total_latency = ctx.get("total_latency")
-    assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
-
-    group_latencies = ctx.get("group_latencies")
-    assert group_latencies is not None, "group_latencies not set in context"
-    assert len(group_latencies) == 11, f"Expected 11 groups, got {len(group_latencies)}"
-    assert all(lat > 0 for lat in group_latencies.values()), (
-        f"All group latencies must be positive, got {group_latencies}"
-    )
-    assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
-        f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
-    )

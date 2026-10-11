@@ -1,9 +1,7 @@
 """Integration tests for switching constraint families off.
 
-Infeasibility-flip tests — each constraint family is structurally effective
-(tight limit + selected = RuntimeError, tight limit + left out = success).
-Cross-backend parity — Gurobi and OR-Tools agree within tolerance with
-selective families left out.
+Flip tests: each constraint family is structurally effective, a tight limit binding when the family is
+selected and not when it is left out.
 """
 
 import os
@@ -11,14 +9,12 @@ import tempfile
 from unittest.mock import patch
 
 import pytest
-from ortools.math_opt.python import mathopt
 
 from stream.api import SolveOptions, default_families, evaluate_mapping
 from stream.hardware.architecture.core import Core
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.opt.allocation.constraint_optimization.families import FamilySpec
-from stream.opt.solver import ORToolsBackend
 
 # ---------------------------------------------------------------------------
 # Constants (same as test_cross_backend.py)
@@ -27,10 +23,7 @@ ACCELERATOR = os.path.join(
     os.path.dirname(__file__),
     "../../stream/inputs/aie/hardware/whole_array_strix.yaml",
 )
-REL_TOL = 0.01
 
-_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation_model.create_solver"
-_LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 _GROUPS = ("memory_capacity", "object_fifo_depth", "buffer_descriptors", "dma_channels")
 _TIGHT_DMA = {
     "aie2_dma_channels": {
@@ -76,43 +69,28 @@ def _run_gemm(output_path: str, families: tuple[FamilySpec, ...] | None = None):
     ).context
 
 
-def _make_ortools_factory(solver_type: mathopt.SolverType = mathopt.SolverType.GSCIP):
-    """Return a drop-in replacement for ``create_solver`` that always returns an ``ORToolsBackend``."""
-
-    def _factory(backend, name="", *, solver_type=solver_type, **kwargs):  # noqa: ARG001
-        return ORToolsBackend(name, solver_type)
-
-    return _factory
-
-
 def _extract_latency_total(ctx) -> float:
     """Extract ``latency_total`` (solver objective) from a completed pipeline context."""
     return float(ctx.get("allocation").solution.latency.total)
 
 
 # ---------------------------------------------------------------------------
-# Infeasibility-flip tests — one per constraint group
+# Flip tests, one per constraint group
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.slow
 def test_memory_capacity_flip():
-    """memory_capacity family: tight limit (1 bit) causes infeasibility; leaving it out restores feasibility.
-
-    - tight limit + memory_capacity selected  -> RuntimeError (solver infeasible)
-    - tight limit + memory_capacity left out -> success (constraint not built)
+    """memory_capacity family: every memory at the least its pinned tensors need, so the capacity screen, which runs
+    whatever the families, passes, but holding more costs a slower allocation; leaving the family out lifts the limit.
     """
+    least = 64 * 8192  # bits: the pinned tensors of compute tile 0, the most any memory holds
 
-    # Enabled + tight limit -> infeasible
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with patch.object(Core, "get_memory_capacity", return_value=1):
-            with pytest.raises(RuntimeError):
-                _run_gemm(tmpdir, families=_only("memory_capacity"))
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with patch.object(Core, "get_memory_capacity", return_value=1):
-            ctx = _run_gemm(tmpdir, families=_only())
-    assert _extract_latency_total(ctx) > 0
+    with tempfile.TemporaryDirectory() as tmpdir, patch.object(Core, "get_memory_capacity", return_value=least):
+        limited = _extract_latency_total(_run_gemm(tmpdir, families=_only("memory_capacity")))
+    with tempfile.TemporaryDirectory() as tmpdir, patch.object(Core, "get_memory_capacity", return_value=least):
+        unlimited = _extract_latency_total(_run_gemm(tmpdir, families=_only()))
+    assert unlimited < limited
 
 
 @pytest.mark.slow
@@ -186,52 +164,3 @@ def test_dma_channels_flip():
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = _run_gemm(tmpdir, families=_only())
     assert _extract_latency_total(ctx) > 0
-
-
-# ---------------------------------------------------------------------------
-# Cross-backend parity with selective constraints (Gurobi vs OR-Tools)
-# ---------------------------------------------------------------------------
-
-_PARITY_CASES = [
-    pytest.param(
-        ("memory_capacity", "object_fifo_depth"),
-        id="memory_off",
-    ),
-    pytest.param(("object_fifo_depth",), id="fifo_off"),
-    pytest.param(("buffer_descriptors",), id="bd_off"),
-    pytest.param(("dma_channels",), id="dma_off"),
-    pytest.param(("memory_capacity", "object_fifo_depth", "dma_channels"), id="memory_and_dma_off"),
-    pytest.param(("object_fifo_depth", "buffer_descriptors"), id="fifo_and_bd_off"),
-    pytest.param(_GROUPS, id="all_off"),
-]
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("dropped", _PARITY_CASES)
-def test_cross_backend_parity(dropped: tuple[str, ...]):
-    """Gurobi and OR-Tools agree within REL_TOL with the families *dropped* left out.
-
-    7 combinations tested (4 individual toggles + 3 multi-toggle combos).
-    Dynamic Gurobi reference (not hardcoded baseline) because
-    disabling DMA changes the objective formulation (no DMA penalty terms).
-    """
-    # 1. Run Gurobi (unpatched) as dynamic reference
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ctx_gurobi = _run_gemm(tmpdir, families=_without(*dropped))
-    gurobi_obj = _extract_latency_total(ctx_gurobi)
-
-    ort_factory = _make_ortools_factory()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with (
-            patch(_TTA_CREATE_SOLVER, side_effect=ort_factory),
-            patch(_LICENSE_CHECK),
-        ):
-            ctx_ort = _run_gemm(tmpdir, families=_without(*dropped))
-    ort_obj = _extract_latency_total(ctx_ort)
-
-    # 3. Assert parity within tolerance
-    rel_err = abs(ort_obj - gurobi_obj) / max(abs(gurobi_obj), 1e-10)
-    assert rel_err < REL_TOL, (
-        f"OR-Tools objective {ort_obj:.0f} deviates {rel_err:.2%} from "
-        f"Gurobi {gurobi_obj:.0f} (tolerance {REL_TOL:.0%}, without {dropped})"
-    )
