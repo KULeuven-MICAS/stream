@@ -56,8 +56,9 @@ class CapacityTiler:
         protected: set[LayerDim],
         seed_tiling: list[dict[str, Any]] | None = None,
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Intra-core tiling for the group, or ``[]`` when it already fits (caller keeps its own tiling).
+    ) -> list[dict[str, Any]] | None:
+        """Intra-core tiling for the group, ``[]`` when it already fits (caller keeps its own tiling), or None when no
+        tiling within :attr:`MAX_STEADY_STATE_TILES` fits.
 
         Dims are taken by the unique dim they step along fastest, so a strided reader's ``s*d + r`` is tiled as ``d``,
         in whole strides. What a memory holds is :meth:`memory_bits`."""
@@ -97,13 +98,16 @@ class CapacityTiler:
         # keeps as an output axis are tried alone first, so a contraction is streamed only when they cannot make it fit.
         # Shrinking starts both from the seed and from whole per-core slices, since a seed that tiles one dim small can
         # leave no room to keep the arrays filled along the others.
-        reductions = {
-            lead(dims[p])[0]
+        reduced_by = {
+            cn: {
+                lead(dims[p])[0]
+                for p, kind in derive_iterator_types(cn).items()
+                if kind != IteratorType.PARALLEL and p < len(dims)
+            }
             for cn in cns
             for dims in [self.sub_workload.get_dims(cn)]
-            for p, kind in derive_iterator_types(cn).items()
-            if kind != IteratorType.PARALLEL and p < len(dims)
         }
+        reductions = set().union(*reduced_by.values())
         fitted: list[tuple[float, dict[LayerDim, int]]] = []
         if overflow() <= 0 and fill() >= self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll):
             fitted.append((fill(), dict(seed)))
@@ -117,7 +121,7 @@ class CapacityTiler:
                 if overflow() <= 0:
                     fitted.append((fill(), dict(resident)))
         if not fitted:
-            return []
+            return None
         resident.update(max(fitted, key=lambda found: found[0])[1])
         indexed = {
             dim: sum(
@@ -131,7 +135,19 @@ class CapacityTiler:
         self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned)
         if resident == seed:
             return []
-        return self._emit(cns, resident, per_core, indexed)
+        # A tiled reduction around tiled output dims keeps the outputs of every tile inside it resident while they
+        # accumulate; where those alone do not fit, the reductions go innermost, finishing each output tile first.
+        order = sorted((d for d in per_core if resident[d] < per_core[d]), key=lambda d: indexed.get(d, 0.0))
+        outer = max((i for i, d in enumerate(order) if d in reductions), default=0)
+        inside = frozenset(d for d in order[:outer] if d not in reductions)
+        accumulators = tuple(cn for cn in cns if inside and order[outer] in reduced_by[cn])
+        held = (
+            self.memory_bits(accumulators, cores_per_node, unroll, resident, node_unroll, inside)
+            if accumulators
+            else {}
+        )
+        accumulating = any(bits > budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
+        return self._emit(cns, resident, per_core, indexed, reductions if accumulating else set())
 
     def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned) -> None:  # noqa: PLR0913
         """Cut ``resident`` into at least :attr:`PIPELINE_TILES` steady-state tiles, each cut the least that keeps the
@@ -253,13 +269,15 @@ class CapacityTiler:
         unroll: dict[LayerDim, int],
         resident: dict[LayerDim, int],
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
+        accumulated_over: frozenset[LayerDim] = frozenset(),
     ) -> dict[int, float]:
         """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: per node a core
         runs, the tile of each operand the node touches under its own split (``node_unroll``, else the group's
         ``unroll`` on a multi-core node), windows included, a tensor the group produces once and one it reads from
         outside once per node reading it (the allocation gives each reader its own copy, but holds a copy in the memory
         of its source in place), twice where a temporal loop steps it (double buffered); cores sharing a memory fill it
-        together."""
+        together. With ``accumulated_over``, only the outputs, held once, each spanning its whole per-core slice along
+        those dims: what a reduction around them keeps resident while they accumulate."""
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         unique, _ = self.sub_workload.unique_dimensions()
@@ -271,11 +289,14 @@ class CapacityTiler:
             sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
             stepped = {d for d, r in resident.items() if r * unroll.get(d, 1) < full[d]}
             dims = self.sub_workload.get_dims(cn)
-            for t in dict.fromkeys(cn.tensors):
+            if whole := {d: full[d] // unroll.get(d, 1) for d in accumulated_over}:
+                sizes = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll)
+            for t in dict.fromkeys(cn.outputs if whole else cn.tensors):
                 key = (t.name, cn.name, tuple(sizes[z] for z in unique))
                 if (shape := self._shapes.get(key)) is None:
                     shape = self._shapes[key] = self.sub_workload.get_tensor_shape_with_dimension_sizes(t, sizes, cn)
-                buffers = 2 if any(lead(dims[p])[0] in stepped for p in map_dim_positions(cn.get_mapping(t))) else 1
+                stepping = any(lead(dims[p])[0] in stepped for p in map_dim_positions(cn.get_mapping(t)))
+                buffers = 2 if stepping and not whole else 1  # an accumulating output stays put
                 tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
                 for core in cores:
                     held.setdefault(core.id, {})[tile] = buffers * math.prod(shape) * t.operand_type.bitwidth
@@ -325,14 +346,16 @@ class CapacityTiler:
         resident: dict[LayerDim, int],
         per_core: dict[LayerDim, int],
         indexed: dict[LayerDim, float],
+        reductions: set[LayerDim],
     ) -> list[dict[str, Any]]:
         """One entry per tiled dim (resident tile < the per-core slice), naming a node that has the dim, else a node dim
-        stepping along it, its tile scaled by the stride. The first entry is the innermost steady-state loop, so the
+        stepping along it, its tile scaled by the stride. The first entry is the innermost steady-state loop. The
         dims go from the one indexing the least data (``indexed``) to the most: what an inner loop does not index stays
         put while it runs, as a matmul's weights do over the rows of its activations, rather than being fetched again
-        every iteration."""
+        every iteration; ``reductions`` go innermost before them, so each output tile is complete before the next."""
         entries: list[dict[str, Any]] = []
-        for dim, tile in sorted(resident.items(), key=lambda item: indexed.get(item[0], 0.0)):
+        order = sorted(resident.items(), key=lambda item: (item[0] not in reductions, indexed.get(item[0], 0.0)))
+        for dim, tile in order:
             if tile >= per_core.get(dim, tile):
                 continue
             steps = [

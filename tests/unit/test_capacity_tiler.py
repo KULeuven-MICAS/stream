@@ -9,6 +9,7 @@ import tempfile
 import pytest
 
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
+from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.parser.mapping_validator import MappingValidator
@@ -16,6 +17,7 @@ from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
 from stream.stages.stage import LeafStage, MainStage
+from stream.workload.normalization import expand_normalizations, source_operator
 
 _TPU_QUAD = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 # A single large Gemm (K=8192) whose weight slice overflows the 2 MB matmul core when kept resident.
@@ -163,3 +165,43 @@ def test_a_node_left_on_one_core_holds_its_tensors_whole():
         {"dim": "Gemm.D0", "tile": 16},
         {"dim": "Gemm.D2", "tile": 8},
     ]
+
+
+def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
+    """A 4096-wide attention fused on four Eyeriss-like cores cannot hold its projections' weights next to the softmax
+    of every head: no tiling fits, so each operator is a group of its own, the softmax with all the sub-ops it expands
+    into."""
+    acc, parsed = _parse(
+        "stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml",
+        make_multi_head_attention(tmp_path / "mha.onnx", seq=512),
+    )
+    w = expand_normalizations(parsed)
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    (fused,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
+    assert gen._unfit_nodes(fused)
+    _, groups = gen.generate_all_groups()
+    operators = [{source_operator(n) for n in g.get_computation_nodes()} for g in groups]
+    assert sorted(operators, key=min) == [{n.name} for n in sorted(parsed.get_computation_nodes(), key=str)]
+    assert len(groups[operators.index({"softmax"})].get_computation_nodes()) > 1
+
+
+@pytest.mark.parametrize(
+    ("hardware", "workload", "node", "layer_by_layer", "innermost"),
+    [
+        # The key projection alone: its 2 MiB of outputs per core cannot stay resident over its 4096-wide contraction
+        ("meta_prototype_dual_core_simd_offchip", "mha", "proj_K", True, "proj_K.D3"),
+        # The fused SwiGLU's down projection keeps its outputs while the d_ff its weights stream along goes past them
+        ("eyeriss_like_quad_core", _SWIGLU_FITS, "Gemm_Down", False, "Gemm_Left.D0"),
+    ],
+)
+def test_a_reduction_runs_innermost_only_where_its_outputs_cannot_stay_while_it_accumulates(
+    tmp_path, hardware, workload, node, layer_by_layer, innermost
+):
+    path = make_multi_head_attention(tmp_path / "mha.onnx", seq=512) if workload == "mha" else workload
+    acc, w = _parse(f"stream/inputs/examples/hardware/{hardware}.yaml", path)
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    cuts = [n.name for n in w.get_computation_nodes()] if layer_by_layer else gen._cut_points(None)
+    group = next(
+        g for g in w.split_fusion_groups(cut_points=cuts) if node in {n.name for n in g.get_computation_nodes()}
+    )
+    assert gen._build_intra_core_tiling(group, tuple(group.get_computation_nodes()))[0]["dim"] == innermost

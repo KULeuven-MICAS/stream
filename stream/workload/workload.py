@@ -349,6 +349,8 @@ class Workload(DiGraphWrapper[Node]):
             A list of Workloads. If there are no FusionEdge nodes and no cut
             points, returns ``[self]`` (single group).
         """
+        from stream.workload.normalization import source_operator  # noqa: PLC0415 -- it imports this module
+
         fusion_edges = [n for n in self.nodes if isinstance(n, FusionEdge)]
         cut_point_set: set[str] = set(cut_points) if cut_points else set()
         if not fusion_edges and not cut_point_set:
@@ -357,6 +359,9 @@ class Workload(DiGraphWrapper[Node]):
         # Assign each non-FusionEdge, non-InEdge node to a group index.
         # Group boundaries are defined by FusionEdge nodes.
         topo_order = self.dataflow_sort()
+        # A cut at a normalization expanded into sub-ops falls after the last of them
+        last_sub_op = {source_operator(n): n.name for n in topo_order}
+        cut_point_set = {last_sub_op.get(name, name) for name in cut_point_set}
 
         # Map each non-InEdge node to its group index
         node_to_group: dict[Node, int] = {}
