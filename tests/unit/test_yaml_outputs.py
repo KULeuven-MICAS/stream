@@ -58,7 +58,7 @@ def solved(tmp_path_factory: pytest.TempPathFactory, two_conv: TwoConvWorkloadCo
     try:
         GurobiBackend.check_license()
         backend = "gurobi"
-    except (AttributeError, ValueError):
+    except (ImportError, ValueError):
         backend = "ortools_gscip"
     root = tmp_path_factory.mktemp("yaml_outputs")
     workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)

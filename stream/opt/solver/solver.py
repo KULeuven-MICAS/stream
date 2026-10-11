@@ -596,6 +596,15 @@ _PARAM_MAP: dict[SolverParams, str] = {
 }
 
 
+def _require_gurobipy() -> None:
+    if gp is None:
+        raise ImportError(
+            "The Gurobi backend requires gurobipy, which is not installed. Install it with "
+            "`pip install 'stream-dse[gurobi]'` (a valid Gurobi license is also required at solve "
+            "time). The default OR-Tools GSCIP backend needs no extra install."
+        )
+
+
 class GurobiBackend(SolverModel):
     """Gurobipy-backed SolverModel implementation.
 
@@ -606,12 +615,7 @@ class GurobiBackend(SolverModel):
     INFINITY: float = float("inf")  # Maps to GRB.INFINITY (also float('inf'))
 
     def __init__(self, name: str = "") -> None:
-        if gp is None:
-            raise ImportError(
-                "The Gurobi backend requires gurobipy, which is not installed. Install it with "
-                "`pip install 'stream-dse[gurobi]'` (a valid Gurobi license is also required at solve "
-                "time). The default OR-Tools GSCIP backend needs no extra install."
-            )
+        _require_gurobipy()
         self._model = gp.Model(name)
 
     def add_var(
@@ -767,6 +771,7 @@ class GurobiBackend(SolverModel):
     @staticmethod
     def check_license() -> None:
         """Verify Gurobi license is available. Raises ValueError on failure."""
+        _require_gurobipy()
         try:
             tmp = gp.Model("_license_check")
             tmp.setParam("OutputFlag", 0)

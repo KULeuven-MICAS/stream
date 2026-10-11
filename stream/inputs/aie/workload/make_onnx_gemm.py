@@ -74,7 +74,7 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     )
 
     # Create the model
-    model = helper.make_model(graph, producer_name="stream")
+    model = helper.make_model(graph, producer_name="stream", opset_imports=[helper.make_opsetid("", 17)])
 
     # Run shape inference to automatically infer the shapes of all tensors
     inferred_model = onnx.shape_inference.infer_shapes(model)
@@ -85,13 +85,3 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     print(f"{name} exported to {onnx_path}.")
 
     return onnx_path
-
-
-if __name__ == "__main__":
-    # Example usage
-    M = 128
-    N = 128
-    K = 64
-    model = make_gemm_workload(M, N, K)
-    onnx.save(model, f"gemm_{M}_{K}_{N}.onnx")
-    print(f"Model exported to gemm_{M}_{K}_{N}.onnx with shape inference.")

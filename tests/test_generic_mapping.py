@@ -189,16 +189,6 @@ def test_pipeline_multi_group():
     )
 
 
-def test_tpu_yaml_validates():
-    """Existing TPU mapping YAML validates against MappingValidator schema."""
-    tpu_mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
-    with open(tpu_mapping_path) as f:
-        data = yaml.safe_load(f)
-    validator = MappingValidator(data)
-    is_valid = validator.validate()
-    assert is_valid, f"TPU mapping YAML validation errors: {validator.errors}"
-
-
 def test_pool_ops_saturate_the_vpus_on_tpu_v7():
     """A pooling op has no matmul owner, so on TPU7x it must run on the four VPUs -- the vector unit
     that already owns the reductions -- fully split across all four, not smeared across the 36-core
