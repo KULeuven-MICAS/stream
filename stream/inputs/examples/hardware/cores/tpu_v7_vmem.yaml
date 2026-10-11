@@ -6,14 +6,18 @@
 # shared with them (core_memory_sharing), so its 64 MiB is the TensorCore's one residency limit and its
 # ports, at the vector load/store rate, are what all three read and write through. This core is where
 # the chiplet's HBM, die-to-die and ICI links land. Bits per cycle at 2.2 GHz.
+#
+# Energies are a 3 nm estimate: about 4 pJ/bit for HBM3E, 0.24 pJ/bit to read the 64 MiB VMEM, 0.05 pJ/bit for a
+# vector register and 0.015 pJ/bit for a PE register, 0.076 pJ per bf16 multiply-accumulate and 0.52 pJ per fp32
+# vector op. A memory's r_cost and w_cost are its energy per bit times its port width, the bits one access moves.
 name: tpu_v7_vmem
 type: zigzag.memory
 
 memories:
   vmem:
     size: 536870912
-    r_cost: 200
-    w_cost: 220
+    r_cost: 23340
+    w_cost: 25680
     area: 0
     latency: 1
     operands: [I1, I2, O]
