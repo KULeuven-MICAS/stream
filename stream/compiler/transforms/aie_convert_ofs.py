@@ -192,9 +192,6 @@ class StrideSet:
     def size(self) -> int:
         return prod(var.size for var in self.strides if var.stride)
 
-    def total_size(self) -> int:
-        return self.repeats() * self.size()
-
     def split(self, into: int = 1) -> list[tuple[int, Self]]:
         """One (offset, strides) pair per destination fifo, replicas included."""
         spatial_strides = [s for s in self.strides if s.spatial]

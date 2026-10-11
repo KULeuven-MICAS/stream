@@ -90,9 +90,3 @@ class CommunicationLink:
         receiver_self_id = self.receiver.id
         receiver_other_id = other.receiver.id
         return receiver_self_id < receiver_other_id
-
-    def get_name_for_schedule_plot(self) -> str:
-        if self.bidirectional:
-            return f"{self.sender} <-> {self.receiver}"
-        else:
-            return f"{self.sender} -> {self.receiver}"

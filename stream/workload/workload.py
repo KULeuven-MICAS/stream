@@ -323,9 +323,6 @@ class Workload(DiGraphWrapper[Node]):
     def get_out_edges(self) -> tuple[OutEdge, ...]:
         return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))
 
-    def get_fusion_edges(self) -> tuple[FusionEdge, ...]:
-        return tuple(cast(FusionEdge, node) for node in self.nodes if isinstance(node, FusionEdge))
-
     def split_fusion_groups(self, cut_points: list[str] | None = None) -> list["Workload"]:  # noqa: PLR0912
         """Split the workload at FusionEdge boundaries and explicit cut points.
 
@@ -1179,13 +1176,6 @@ class Workload(DiGraphWrapper[Node]):
         target = filepath[: filepath.rfind(".")] + ".svg" if "." in filepath else filepath + ".svg"
         _write_svg(target, boxes, edges, graph, self._PALETTE)
 
-    def _get_mem_alloc_label(self, node: TransferNode, mapping: "Mapping | None") -> str:
-        if mapping is not None:
-            node_mapping = mapping.get(node)
-            if node_mapping.memory_allocation is not None:
-                return f"\nMemAlloc: {node_mapping.memory_allocation}"
-        return ""
-
     def _get_for_loop_label(self, ssis: SteadyStateIterationSpace | None) -> str:
         if ssis is not None:
             temporal_loop_dims = reversed(ssis.get_temporal_variables())
@@ -1199,19 +1189,6 @@ class Workload(DiGraphWrapper[Node]):
             label += "\n"
             return f"{label}"
         return ""
-
-    def get_timeslots_simple(self) -> dict[Node, int]:
-        """Original baseline: walk topological generations and give every node its own
-        unique slot (slot increments per node, not per generation). Kept for A/B-comparison
-        against the resource-aware ``get_timeslots``.
-        """
-        timeslots: dict[Node, int] = {}
-        slot = 0
-        for generation in nx.topological_generations(self):
-            for node in generation:
-                timeslots[node] = slot
-                slot += 1
-        return timeslots
 
     def get_timeslots(self, mapping: "Mapping | None" = None) -> dict[Node, int]:
         """Assign each node a timeslot using a depthwise priority topological sort (drain a

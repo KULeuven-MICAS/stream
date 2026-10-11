@@ -101,13 +101,6 @@ class CoreCostLUT:
             view.replace_node(next(n for n in view.get_nodes() if n.name == new_node.name), new_node)
         return view
 
-    def remove_cores_with_same_id(self, node: ComputationNode, core: Core):
-        if node not in self.lut:
-            return
-        for c in list(self.lut[node].keys()):
-            if c.id == core.id:
-                self.lut[node].pop(c)
-
     def remove_node(self, node: ComputationNode):
         if node in self.lut:
             self.lut.pop(node)
