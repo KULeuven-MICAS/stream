@@ -284,6 +284,16 @@ def test_a_layout_reports_each_side_the_dma_walks_and_the_banks_it_lands_in(tmp_
     estimate = evaluate_mapping("stream/inputs/examples/hardware/simba_small.yaml", workload, str(tmp_path))
     layouts = [t for g in estimate.context.get("group_allocations").values() for t in g["performance"]["layouts"]]
     assert any(t["write"]["banks"] == {"count": 4, "width": 32, "stripe": 1} for t in layouts)
+    # The input splits along its columns over the chiplets, 8 a core; the weights step through output channels in
+    # time, every core holding the same ones.
+    load = next(t for t in layouts if t["transfer"] == "Transfer(input)")
+    (split,) = [loop for loop in load["iterations"] if loop["type"] == "spatial"]
+    assert (split["axis"], split["step"], split["effect"]) == (3, 8, "varying")
+    weights = next(t for t in layouts if t["transfer"] == "Transfer(weights_1)")
+    assert [(loop["type"], loop["axis"]) for loop in weights["iterations"] if loop["effect"] != "absent"] == [
+        ("temporal", 0),
+        ("spatial", None),
+    ]
     for t in layouts:
         assert t["axes"] and len(t["axes"]["dims"]) == len(t["tile_shape"])
         for side in (t["read"], t["write"]):

@@ -16,6 +16,7 @@ from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
 from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
+from stream.workload.steady_state.iteration_space import IterationVariableType
 from stream.workload.utils import is_mac_operator_type
 from stream.workload.workload import ComputationNode, Tensor, TransferNode
 
@@ -92,23 +93,74 @@ def _performance(
     return performance
 
 
-def _axis_dims(space: DecisionSpace, tr: TransferNode) -> dict[str, Any] | None:
-    """Each axis of ``tr``'s tile in the dims of the nearest node that reads or writes the chain of copies it belongs
-    to, as a mapping names them (``D2 + D4 - 1`` for a window), so a layout reads in the workload's terms; None where
-    no computation node touches it. Copies along a chain keep their axes, so any node on it names them."""
+def _touching_node(space: DecisionSpace, tr: TransferNode) -> tuple[ComputationNode, Tensor] | None:
+    """The nearest computation node that reads or writes the chain of copies ``tr`` belongs to, and the copy it
+    touches; None where none does. Copies along a chain keep their axes, so any node on it names them."""
     seen, frontier = {tr}, [tr]
     while frontier:
         hop = frontier.pop(0)
         for node in (*space.workload.successors(hop), *space.workload.predecessors(hop)):
             tensor = next((t for t in (*hop.outputs, *hop.inputs) if t in getattr(node, "tensors", ())), None)
             if isinstance(node, ComputationNode) and tensor is not None:
-                results = node.get_mapping(tensor).results
-                dims = [re.sub(r"d(\d+)", r"D\1", str(e)).replace("+ -", "- ").translate(_NO_PARENS) for e in results]
-                return {"node": node.name, "dims": dims}
+                return node, tensor
             if isinstance(node, TransferNode) and node not in seen:
                 seen.add(node)
                 frontier.append(node)
     return None
+
+
+def _axis_dims(touch: tuple[ComputationNode, Tensor] | None) -> dict[str, Any] | None:
+    """Each axis of a tile in the dims of the node that touches it, as a mapping names them (``D2 + D4 - 1`` for a
+    window), so a layout reads in the workload's terms."""
+    if touch is None:
+        return None
+    node, tensor = touch
+    results = node.get_mapping(tensor).results
+    dims = [re.sub(r"d(\d+)", r"D\1", str(e)).replace("+ -", "- ").translate(_NO_PARENS) for e in results]
+    return {"node": node.name, "dims": dims}
+
+
+def _iterations(
+    space: DecisionSpace, tr: TransferNode, touch: tuple[ComputationNode, Tensor] | None
+) -> list[dict[str, Any]]:
+    """The steady-state loops the copy ``tr`` writes goes through, outermost first, below the core: each one's dim,
+    trip count, kind, effect on the copy, reuse and halo, and the tensor axis it advances by ``step`` elements per
+    trip (its coefficient in that axis times the extent its inner loops cover); None for a loop the copy does not
+    index."""
+    ssis = space.ssis.get(tr.outputs[0])
+    if ssis is None:
+        return []
+    advances: dict[Any, tuple[int, int]] = {}
+    if touch is not None:
+        node, tensor = touch
+        mapping = node.get_mapping(tensor)
+        origin = mapping.eval([0] * mapping.num_dims, [])
+        for k, dim in enumerate(space.workload.get_dims(node)):
+            unit = [int(j == k) for j in range(mapping.num_dims)]
+            moved = mapping.eval(unit, [])
+            axis = next((axis for axis, (a, b) in enumerate(zip(moved, origin, strict=True)) if a != b), None)
+            if axis is not None:
+                advances[dim] = (axis, moved[axis] - origin[axis])
+    loops = list(reversed(ssis.variables))
+    rows = []
+    for i, loop in enumerate(loops):
+        if loop.type == IterationVariableType.KERNEL:
+            continue
+        inner = math.prod(v.size for v in loops[i + 1 :] if v.dimension == loop.dimension)
+        axis, delta = advances.get(loop.dimension, (None, 0))
+        rows.append(
+            {
+                "dim": str(loop.dimension),
+                "size": loop.size,
+                "type": loop.type.name.lower(),
+                "effect": loop.effect.name.lower(),
+                "reuse": loop.reuse.name.lower(),
+                "halo": loop.halo,
+                "axis": axis,
+                "step": delta * inner if axis is not None else None,
+            }
+        )
+    return rows
 
 
 _NO_PARENS = str.maketrans("", "", "()")
@@ -149,6 +201,7 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
         if y.X < VAR_THRESHOLD:
             continue
         tensor = tr.inputs[0]
+        touch = _touching_node(space, tr)
         full = tuple(tensor.subview.source.type.get_shape())
         source, target = layouts.of(tensor), layouts.of(tr.outputs[0])
         walk, read, write = layouts.stream(tr, choice)
@@ -167,7 +220,8 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
                 "read_run_bytes": _json_scalar(read),
                 "write_run_bytes": _json_scalar(write),
                 "streams_in": "source" if walk == source else "target",
-                "axes": _axis_dims(space, tr),
+                "axes": _axis_dims(touch),
+                "iterations": _iterations(space, tr, touch),
                 "read": _layout_side(space, tr, choice.sources, READ, source, walk),
                 "write": _layout_side(space, tr, choice.targets, WRITE, target, walk),
             }

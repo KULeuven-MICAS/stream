@@ -408,6 +408,19 @@ class AxisDimsIR(BaseModel):
     dims: list[str] = Field(description="Per axis, the node's dims it spans, as a mapping writes them (`D3 + D5`)")
 
 
+class LayoutIterationIR(BaseModel):
+    """A steady-state loop a transferred copy goes through, below the core level."""
+
+    dim: str = Field(description="The unique dim it iterates")
+    size: int = Field(description="Its trip count")
+    type: str = Field(description="temporal, spatial or spatiotemporal")
+    effect: str = Field(description="varying, invariant or absent: whether the copy changes across its trips")
+    reuse: str = Field(description="Whether the copy is reused across its trips")
+    halo: int = Field(description="Elements consecutive trips share along its axis")
+    axis: int | None = Field(description="The tile axis it advances, None where the copy does not index it")
+    step: int | None = Field(description="Elements it advances that axis by per trip")
+
+
 class TransferLayoutIR(BaseModel):
     """One transfer on its chosen route: the tile it moves, where from and to, and how both copies are laid out."""
 
@@ -427,6 +440,9 @@ class TransferLayoutIR(BaseModel):
         description="The layout the data streams in: the target's when the DMA gathers, else the source's"
     )
     axes: AxisDimsIR | None = Field(description="The tile's axes in a node's dims, None where no node touches it")
+    iterations: list[LayoutIterationIR] = Field(
+        default_factory=list, description="The steady-state loops the copy goes through, outermost first"
+    )
     read: LayoutSideIR
     write: LayoutSideIR
 

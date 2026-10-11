@@ -57,7 +57,9 @@ the axis orders of both copies (`source_order`, `target_order`, outermost first)
 
 Each transfer also says which layout the data streams in (`streams_in`: the target's when the DMA gathers, else the
 source's), names the tile's axes in the dims of a node that touches it (`axes`, as a mapping writes them, `D3 + D5` for
-a window), and describes both sides (`read`, `write`):
+a window), lists the steady-state loops the copy goes through (`iterations`, outermost first: each one's dim, trip
+count, kind, effect on the copy, reuse and halo, and the tile axis it advances by `step` elements per trip, None for a
+loop the copy does not index), and describes both sides (`read`, `write`):
 
 | Field | Meaning |
 |-------|---------|
