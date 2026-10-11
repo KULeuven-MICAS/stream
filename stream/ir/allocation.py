@@ -224,7 +224,7 @@ class NodePerformanceIR(BaseModel):
 
     kind: str = Field(description="Node kind, e.g. 'compute'")
     n_cores: int = Field(description="Number of cores the node is inter-core-tiled across")
-    latency_cycles: int = Field(description="The node's latency contribution to one steady-state iteration")
+    latency_cycles: float = Field(description="The node's latency contribution to one steady-state iteration")
     ideal_compute_cycles: float | None = Field(
         default=None, description="Cycles at perfect MAC spatial utilization (the compute-ideal floor)"
     )

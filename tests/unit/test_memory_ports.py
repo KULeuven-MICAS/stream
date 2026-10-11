@@ -143,7 +143,7 @@ def test_interval_off_keeps_only_the_burst_bound() -> None:
     assert constraint_names(ctx) == ["port_burst_6_dram_rw_port_1_0"]
 
 
-def test_a_stream_whose_active_latency_rounds_to_zero_keeps_its_bits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_stream_active_for_less_than_a_cycle_keeps_its_bits(monkeypatch: pytest.MonkeyPatch) -> None:
     tr, choice, ctx = MagicMock(), MagicMock(), MagicMock()
     ctx.space.moved_bits.return_value = 4096
     ctx.quantities = QuantityRegistry()
@@ -151,12 +151,11 @@ def test_a_stream_whose_active_latency_rounds_to_zero_keeps_its_bits(monkeypatch
     ctx.space.transfer_latency_for_path.return_value = 1
     loops = [SimpleNamespace(size=2, effect=LoopEffect.INVARIANT), SimpleNamespace(size=8, effect=LoopEffect.ABSENT)]
     ctx.space.ssis.get.return_value.get_temporal_variables.return_value = loops
-    ctx.vars.y = {(tr, choice): SimpleNamespace(_raw="y")}
     ctx.space.slot_of = {tr: 0}
     monkeypatch.setattr(traffic, "_sides", lambda *_: [])
     (stream,) = traffic.dma_streams(ctx)
-    # Active for 1 of 8 iterations: 1 cycle rounds to 0, while 4096 / 8 bits still move.
-    assert (stream.active_cycles, stream.bits_per_cycle * stream.latency_ub) == ("y", 512)
+    # Active for 1 of 8 iterations: 1/8 cycle, in which 4096 / 8 bits move.
+    assert (stream.active_cycles, stream.latency_ub, stream.bits_per_cycle * stream.latency_ub) == ("gated", 0.125, 512)
 
 
 def zigzag_stall(real_cycles: list[int], window: int, periods: int) -> float:
