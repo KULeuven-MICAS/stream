@@ -88,7 +88,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
     for name in ("q", "k", "v"):
         w = Tensor.create(f"W{name}", dt, (dm, h, dh))
         proj = Tensor.create(name, dt, (b, h, s, dh))
-        nodes.append(InEdge(name=f"W{name}", outputs=(w,)))
+        nodes.append(InEdge(name=f"W{name}", outputs=(w,), parameter=True))
         nodes.append(
             ComputationNode(
                 type="MatMul", name=f"proj_{name}", inputs=(x, w), outputs=(proj,), operand_mapping=proj_maps
@@ -123,7 +123,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, s_, o, h_, e: (h_, e, o)),  # Wo[h,e,o]
         AffineMap.from_callable(lambda b_, s_, o, h_, e: (b_, s_, o)),  # Y[b,s,o]
     )
-    nodes.append(InEdge(name="Wo", outputs=(wo,)))
+    nodes.append(InEdge(name="Wo", outputs=(wo,), parameter=True))
     nodes.append(
         ComputationNode(type="MatMul", name="out_proj", inputs=(ctx, wo), outputs=(y,), operand_mapping=out_maps)
     )
@@ -176,11 +176,11 @@ def build_mamba_block(config: MambaConfig | None = None) -> Workload:
 
     nodes = [
         InEdge(name="delta", outputs=(delta,)),
-        InEdge(name="A", outputs=(a_mat,)),
+        InEdge(name="A", outputs=(a_mat,), parameter=True),
         InEdge(name="B", outputs=(b_mat,)),
         InEdge(name="C", outputs=(c_mat,)),
         InEdge(name="x", outputs=(x,)),
-        InEdge(name="D_skip", outputs=(d_skip,)),
+        InEdge(name="D_skip", outputs=(d_skip,), parameter=True),
         InEdge(name="h_prev", outputs=(h_prev,)),
         # discretization precompute (parallel over all timesteps)
         ComputationNode(

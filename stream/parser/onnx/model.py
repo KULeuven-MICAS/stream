@@ -137,7 +137,7 @@ class ONNXModelParser:
             if initializer.data_type == TensorProto.INT64 or initializer.name not in read:
                 continue
             tensor = onnx_tensor_to_tensor(initializer)
-            workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,)))
+            workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,), parameter=True))
             name_to_tensor_dict[initializer.name] = tensor
 
         # Layout-only ops, by the name of the tensor they output, until a reader folds or materializes them

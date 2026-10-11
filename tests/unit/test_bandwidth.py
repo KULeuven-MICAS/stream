@@ -1,6 +1,7 @@
 import pytest
 
-from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
+from stream.cost_model.bandwidth import BandwidthModel
+from stream.cost_model.layout import Layout
 
 STRIX = {
     "ceiling": 296.6,
@@ -28,6 +29,6 @@ def test_efficiency_rises_with_span_and_saturates_at_contiguous():
 
 
 def test_span_is_the_inner_extent_until_a_dimension_is_whole():
-    assert contiguous_span_bytes((64, 512), (1024, 4096), 16) == 1024
-    assert contiguous_span_bytes((8, 4096), (2048, 4096), 16) == 8 * 4096 * 2
-    assert contiguous_span_bytes((256, 64), (256, 64), 16) == 256 * 64 * 2
+    assert Layout.row_major(2).contiguous_bytes((64, 512), (1024, 4096), 16) == 1024
+    assert Layout.row_major(2).contiguous_bytes((8, 4096), (2048, 4096), 16) == 8 * 4096 * 2
+    assert Layout.row_major(2).contiguous_bytes((256, 64), (256, 64), 16) == 256 * 64 * 2

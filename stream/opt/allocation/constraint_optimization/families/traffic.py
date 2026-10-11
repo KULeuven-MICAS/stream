@@ -5,11 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from stream.cost_model.bandwidth import contiguous_span_bytes
-from stream.hardware.ports import OUTPUT, READ, WRITE, Port, input_role
+from stream.hardware.ports import READ, WRITE, Port
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
-from stream.workload.workload import ComputationNode, TransferNode
+from stream.workload.workload import TransferNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
@@ -50,25 +49,6 @@ class NodeTraffic:
     slot: int
 
 
-def transfer_operand_role(ctx: FormulationContext, tr: TransferNode, read_side: bool) -> str:
-    """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
-    producer = next(iter(ctx.space.workload.predecessors(tr)), None)
-    if read_side and isinstance(producer, ComputationNode):
-        return OUTPUT
-    for consumer in ctx.space.workload.successors(tr):
-        if isinstance(consumer, ComputationNode):
-            for tensor in tr.outputs:
-                if tensor in consumer.inputs:
-                    return input_role(consumer.inputs.index(tensor) + 1)
-    return OUTPUT
-
-
-def _span_bytes(tr: TransferNode) -> float:
-    tensor = tr.inputs[0]
-    full = tuple(tensor.subview.source.type.get_shape())
-    return contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
-
-
 def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None) -> float:
     """Share of the bits a transfer moves one target receives, on average over the targets of ``choice`` (its first
     route by default): 1 for a broadcast, every target receiving the whole tensor."""
@@ -80,11 +60,11 @@ def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None)
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
     ports = ctx.space.accelerator.ports
     sides: list[PortShare] = []
-    span = _span_bytes(tr)
+    runs = dict(zip((READ, WRITE), ctx.space.layouts.runs(tr, choice), strict=True))
     moved = ctx.space.moved_bits(tr, choice)
     broadcast = _target_share(ctx, tr, choice) == 1.0
     for cores, direction in ((choice.sources, READ), (choice.targets, WRITE)):
-        operand = transfer_operand_role(ctx, tr, read_side=direction == READ)
+        operand = ctx.space.operand_role(tr, read_side=direction == READ)
         for core in cores:
             side = {"source": core} if direction == READ else {"target": core}
             share = ctx.space.moved_bits(tr, choice, **side) / moved
@@ -95,7 +75,7 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortS
             broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
             if direction == WRITE and broadcast and broadcast_again:
                 continue
-            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, direction)))
+            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(runs[direction], direction)))
     return sides
 
 
