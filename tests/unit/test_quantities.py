@@ -6,7 +6,9 @@ import pytest
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
+from stream.opt.allocation.constraint_optimization.families.energy import Energy
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
+from stream.opt.allocation.constraint_optimization.utils import active_fraction
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 
@@ -46,3 +48,17 @@ def test_the_model_registers_what_it_builds(alloc: AllocationModel) -> None:
     slots = alloc.quantities.indexed("slot_latency")
     iteration = alloc.model.value(alloc.quantities.get("iteration").expr)
     assert iteration == sum(alloc.model.value(q.expr) for q in slots.values())
+
+
+def test_energy_adds_each_nodes_energy_on_its_cores_and_every_transfers(alloc: AllocationModel) -> None:
+    q, space, value = alloc.quantities, alloc.space, alloc.model.value
+    nodes = sum(
+        space.cost_lut.get_cost(n, core).energy_total * active_fraction(n, space.ssis)
+        for n in space.ssc_nodes
+        for core in {c for cores in space.mapping.get(n).resource_allocation for c in cores}
+    )
+    assert value(q.get("node_energy").expr) == pytest.approx(nodes)
+    assert value(q.get("transfer_energy").expr) > 0  # the TPU-like memories charge for every access
+    assert value(q.get("energy").expr) == pytest.approx(nodes + value(q.get("transfer_energy").expr))
+    report = Energy().report(alloc.context)["energy"]
+    assert report["total_pj"] == pytest.approx(report["per_iteration_pj"] * space.iterations)

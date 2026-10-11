@@ -51,24 +51,31 @@ def input_role(k: int) -> str:
 @dataclass(frozen=True)
 class PortSpec:
     """One port of a core's top-level memory as its backend declares it. ``serves`` holds (operand role,
-    direction) and ``bits_per_cycle`` is the declared peak rate."""
+    direction), ``bits_per_cycle`` is the declared peak rate and the energies are in pJ per bit."""
 
     share_group: int
     memory: str
     name: str
     bits_per_cycle: float
     serves: frozenset[Service]
+    read_energy_per_bit: float = 0.0
+    write_energy_per_bit: float = 0.0
 
 
 @dataclass(frozen=True)
 class Port:
     """One port of a top-level memory, keyed by (share group, memory, port name), with the cores that reach it.
-    ``serves`` holds (operand role, direction)."""
+    ``serves`` holds (operand role, direction) and the energies are in pJ per bit."""
 
     key: PortKey
     core_ids: tuple[int, ...]
     bandwidth: BandwidthModel = field(hash=False)
     serves: frozenset[Service]
+    read_energy_per_bit: float = 0.0
+    write_energy_per_bit: float = 0.0
+
+    def energy_per_bit(self, direction: str) -> float:
+        return self.read_energy_per_bit if direction == READ else self.write_energy_per_bit
 
     @property
     def bits_per_cycle(self) -> float:
@@ -114,6 +121,8 @@ class PortRegistry:
                 core_ids=tuple(sorted(core_ids[key])),
                 bandwidth=overrides.get(key, BandwidthModel.flat(spec.bits_per_cycle)),
                 serves=frozenset(serves[key]),
+                read_energy_per_bit=spec.read_energy_per_bit,
+                write_energy_per_bit=spec.write_energy_per_bit,
             )
             for key, spec in sorted(found.items())
         }

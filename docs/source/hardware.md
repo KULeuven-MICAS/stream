@@ -72,7 +72,7 @@ A `bandwidth` key `<core id>.<memory>.<port>` (e.g. `2.dram.rw_port_1`) gives th
 
 A port belongs to a physical memory: cores in one `core_memory_sharing` group share it, and memories listed in one `memory_aliases` group share the ports of the group's first memory.
 
-The `memory_ports` [constraint family](stages.md#constraint-families) (`SolveOptions(families=[*default_families(hardware), "memory_ports"])`) uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
+The `memory_ports` [constraint family](stages.md#constraint-families), in the default set, uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
 ### Connections: `link` vs `bus`
 

@@ -44,6 +44,7 @@ DEFAULT_FAMILIES: tuple[str, ...] = (
     "memory_ports",
     "dma_channels",
     "offchip_traffic",
+    "energy",
 )
 """Stream's own families, in every default set and built in this order where their requirements allow."""
 
@@ -68,6 +69,7 @@ BUILTIN_FAMILIES: dict[str, str] = {
     "aie2_memory_reuse": "aie2:AIE2MemoryReuse",
     "aie2_dma_channels": "aie2:AIE2DmaChannels",
     "memory_ports": "memory_ports:MemoryPorts",
+    "energy": "energy:Energy",
 }
 """Stream's own families by name, as ``module:factory`` within this package."""
 

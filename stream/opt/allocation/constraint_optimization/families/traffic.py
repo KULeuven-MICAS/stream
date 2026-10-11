@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from stream.hardware.ports import READ, WRITE, Port
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
-from stream.workload.workload import TransferNode
+from stream.workload.workload import ComputationNode, TransferNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
@@ -101,16 +101,19 @@ def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
     return streams
 
 
+def placed_cores(ctx: FormulationContext, node: ComputationNode) -> list[Core]:
+    """The cores ``node`` runs on, of those it has a cost on."""
+    placed = {core for group in ctx.space.mapping.get(node).resource_allocation for core in group}
+    return [core for core in ctx.space.cost_lut.get_cores(node) if core in placed]
+
+
 def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
     """The top-level port traffic of each node from its cost backend, on the physical core it runs on."""
     traffic: list[NodeTraffic] = []
     backends: dict[Core, CoreCostBackend] = {}
     for node in ctx.space.ssc_nodes:
-        placed = {core for group in ctx.space.mapping.get(node).resource_allocation for core in group}
         fraction = active_fraction(node, ctx.space.ssis)
-        for core in ctx.space.cost_lut.get_cores(node):
-            if core not in placed:
-                continue
+        for core in placed_cores(ctx, node):
             backend = backends.setdefault(core, select_backend(core))
             for operand, direction, bits in port_traffic(backend, ctx.space.cost_lut.get_cost(node, core)):
                 port = ctx.space.accelerator.ports.port_for(core, direction, operand)

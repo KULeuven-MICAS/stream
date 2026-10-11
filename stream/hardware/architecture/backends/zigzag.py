@@ -93,6 +93,8 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
                 name=port.name,
                 bits_per_cycle=float(port.bw_max),
                 serves=frozenset(serves[key]),
+                read_energy_per_bit=level.memory_instance.r_cost / port.bw_max,
+                write_energy_per_bit=level.memory_instance.w_cost / port.bw_max,
             )
             for key, (level, port) in found.items()
         )
