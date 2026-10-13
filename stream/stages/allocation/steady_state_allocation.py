@@ -41,6 +41,7 @@ class AllocationStage(Stage):
                 backend=backend,
                 families=families.specs(),
                 solution=solution,
+                space=model.space,
             )
         if progress is not None:
             write_artifacts(output_path, allocation, progress)

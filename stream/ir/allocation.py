@@ -160,14 +160,55 @@ class SteadyStateLoopIR(BaseModel):
     )
 
 
+class SteadyStateAxisIR(BaseModel):
+    """One unique dim of the steady state."""
+
+    dim: str
+    size: int = Field(description="Its extent in the workload")
+    split: int = Field(description="The fused tiles it is split into")
+    sliding: bool = Field(description="Whether a window slides along it, consecutive tiles sharing a halo")
+
+
+class SteadyStateIterationIR(BaseModel):
+    """One loop of a solved steady-state iteration space."""
+
+    dim: str
+    size: int = Field(description="Its trip count")
+    type: str = Field(description="temporal, spatial, spatiotemporal or kernel")
+    effect: str = Field(description="varying, invariant or absent: whether what it iterates changes across its trips")
+    reuse: str = Field(description="Whether the solution reuses it across its trips")
+    halo: int = Field(description="Elements consecutive trips share")
+
+
+class SteadyStateTensorIR(BaseModel):
+    """A tensor of the steady state as the solution placed and buffered it."""
+
+    name: str
+    shape: list[int]
+    bits: int
+    loops: list[SteadyStateIterationIR] = Field(description="Its solved loop nest, outermost first")
+    placement: list[int] = Field(description="The cores it is placed on")
+    reuse_level: int | None = Field(description="The temporal loop it is reused up to")
+    depth: int | None = Field(description="The buffers it is kept in")
+    single_buffered: bool
+
+
 class SteadyStateIR(BaseModel):
     """Tiled/steady-state view of a fused group: operators + tensor sizes, loop nest, and tiled transfer graph."""
 
     operators: list[SteadyStateOperatorIR] = Field(description="Original operators + tensor sizes")
     loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space for-loop nest")
     tiled_graph: dict[str, Any] = Field(
-        description="The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}"
+        description=(
+            "The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}. With the "
+            "per-core detail, a computation node also carries its dims, loops, cores, output tile per core position "
+            "and whether a reader waits on it; a transfer its sources, targets and links, the window and moved tile "
+            "per target, its halos, what each source hands each target, and its moved bits and route cycles"
+        )
     )
+    iterations: int | None = Field(default=None, description="Steady-state iterations of the group")
+    axes: list[SteadyStateAxisIR] = Field(default_factory=list)
+    tensors: list[SteadyStateTensorIR] = Field(default_factory=list)
 
 
 class AllocationAlgorithmicView(BaseModel):
