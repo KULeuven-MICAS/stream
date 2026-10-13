@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from math import prod
 from typing import TYPE_CHECKING, Any
 
+from stream.cost_model.roofline import group_point, hardware_roofline
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.workload.node import Tensor
@@ -57,7 +58,8 @@ class Allocation:
 
     def get_ir(self) -> dict:
         """The allocation as a plain dict: latencies, solve configuration, statistics and families, fusion splits,
-        mapping, performance report and the steady-state inspection view, None when it cannot be built."""
+        mapping, performance report, the steady-state inspection view and the group's point on the roofline, each of
+        the last two None when it cannot be built."""
         stats = self.solution.solve_stats
         latency = self.solution.latency
         return {
@@ -82,7 +84,12 @@ class Allocation:
             "mapping": self.mapping.get_ir(),
             "performance": self.solution.performance,
             "steady_state": guarded("steady-state IR view", self._steady_state_ir),
+            "roofline": guarded("roofline point", self.roofline_point),
         }
+
+    def roofline_point(self) -> dict[str, Any]:
+        """Where this group sits on its accelerator's roofline."""
+        return group_point(self, hardware_roofline(self.problem.accelerator))
 
     def _core_loops(self, cn: ComputationNode) -> list[dict]:
         """The loop nest inside one core (ZigZag mapping), as ``core_*`` loops; empty for a non-ZigZag core."""

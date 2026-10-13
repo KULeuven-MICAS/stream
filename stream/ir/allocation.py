@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from stream.ir.roofline import RooflinePointIR
 from stream.plugins import loaded_overlays
 
 if TYPE_CHECKING:
@@ -537,6 +538,9 @@ class AllocationIR(BaseModel):
         default=None,
         description="Tiled/steady-state inspection view (operators+tensor sizes, loop nest, transfer graph)",
     )
+    roofline: RooflinePointIR | None = Field(
+        default=None, description="Where the group sits on the accelerator's roofline, and what holds it down"
+    )
     fusion: FusionIR | None = Field(
         default=None,
         description="Stage-2 (Fuse) typed artifact: which layers share on-chip residency",
@@ -640,6 +644,7 @@ class AllocationIR(BaseModel):
             runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
             performance=performance,
             steady_state=steady_state,
+            roofline=RooflinePointIR(**raw["roofline"]) if raw.get("roofline") else None,
             fusion=fusion,
             tiling=tiling,
         )
