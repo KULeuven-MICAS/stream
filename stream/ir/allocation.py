@@ -447,6 +447,15 @@ class TransferLayoutIR(BaseModel):
     write: LayoutSideIR
 
 
+class EnergyComponentIR(BaseModel):
+    """Where part of one iteration's energy is spent."""
+
+    kind: str = Field(description="'mac', 'memory' (a core's memory level), 'port', 'link', or 'node' when unsplit")
+    resource: str = Field(description="'MAC', the memory's name, '<memory>.<port>', or the link's name")
+    core_ids: list[int] = Field(description="The cores it belongs to")
+    pj_per_iteration: float
+
+
 class EnergyIR(BaseModel):
     """Energy of the solved allocation under the energy family, in pJ."""
 
@@ -456,6 +465,9 @@ class EnergyIR(BaseModel):
     )
     per_iteration_pj: float = Field(description="node_pj_per_iteration + transfer_pj_per_iteration")
     total_pj: float = Field(description="per_iteration_pj over every iteration of the run")
+    components: list[EnergyComponentIR] = Field(
+        default_factory=list, description="per_iteration_pj by where it is spent, largest first"
+    )
 
 
 class AllocationPerformanceView(BaseModel):
