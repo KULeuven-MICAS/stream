@@ -3,13 +3,25 @@ ports it reads and writes and of the links it crosses."""
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from stream.opt.allocation.constraint_optimization.families.traffic import DmaStream, dma_streams, placed_cores
+from stream.opt.allocation.constraint_optimization.families.traffic import (
+    DmaStream,
+    dma_streams,
+    link_cores,
+    link_name,
+    placed_cores,
+    port_name,
+)
 from stream.opt.allocation.constraint_optimization.utils import active_fraction
 
 if TYPE_CHECKING:
+    from stream.cost_model.core_cost import CoreCostEntry
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
+
+# (kind, resource, core ids): one row of the energy breakdown
+Component = tuple[str, str, tuple[int, ...]]
 
 
 def _energy_per_bit(stream: DmaStream) -> float:
@@ -39,7 +51,8 @@ class Energy:
         q.add("energy", q.get("node_energy").expr + q.get("transfer_energy").expr)
 
     def report(self, ctx: FormulationContext) -> dict[str, Any]:
-        """Per iteration, split into the nodes and the transfers, and over every iteration of the run."""
+        """Per iteration, split into the nodes and the transfers and into the components it is spent in, and over
+        every iteration of the run."""
         q, value = ctx.quantities, ctx.model.value
         nodes, transfers = value(q.get("node_energy").expr), value(q.get("transfer_energy").expr)
         return {
@@ -48,5 +61,45 @@ class Energy:
                 "transfer_pj_per_iteration": transfers,
                 "per_iteration_pj": nodes + transfers,
                 "total_pj": (nodes + transfers) * ctx.space.iterations,
+                "components": _components(ctx),
             }
         }
+
+
+def _components(ctx: FormulationContext) -> list[dict[str, Any]]:
+    """The energy of one iteration by where it is spent, largest first: each node's MAC array and memory levels on
+    the cores it runs on, and each transfer's memory ports and links."""
+    pj: dict[Component, float] = defaultdict(float)
+    for node in ctx.space.ssc_nodes:
+        fraction = active_fraction(node, ctx.space.ssis)
+        for core in placed_cores(ctx, node):
+            for kind, resource, energy in _node_split(ctx.space.cost_lut.get_cost(node, core)):
+                pj[(kind, resource, (core.id,))] += energy * fraction
+    for stream in dma_streams(ctx):
+        bits = ctx.model.value(stream.bits_per_cycle * stream.active_cycles)
+        for side in stream.sides:
+            component = ("port", port_name(side.port.key), side.port.core_ids)
+            pj[component] += bits * side.share * side.port.energy_per_bit(side.direction)
+        for link in stream.choice.links_used:
+            pj[("link", link_name(link), link_cores(link))] += bits * link.unit_energy_cost / link.bandwidth
+    rows = [
+        {"kind": kind, "resource": resource, "core_ids": list(cores), "pj_per_iteration": energy}
+        for (kind, resource, cores), energy in pj.items()
+        if energy > 0
+    ]
+    return sorted(rows, key=lambda row: -row["pj_per_iteration"])
+
+
+def _node_split(cost: CoreCostEntry) -> list[tuple[str, str, float]]:
+    """A node's energy on one core: its MAC energy and each memory level's, when its cost model splits them."""
+    cme = cost.cme
+    if cme is None:
+        return [("node", "node", cost.energy_total)]
+    split = [("mac", "MAC", float(cme.mac_energy))]
+    links = cme.layer.memory_operand_links
+    for layer_op, per_level in cme.mem_energy_breakdown.items():
+        levels = cme.accelerator.memory_hierarchy.get_memory_levels(links.layer_to_mem_op(layer_op))
+        split += [
+            ("memory", level.memory_instance.name, float(pj)) for level, pj in zip(levels, per_level, strict=True)
+        ]
+    return split

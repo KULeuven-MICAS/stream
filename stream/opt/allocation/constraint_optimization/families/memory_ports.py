@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.hardware.ports import PortKey
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE
-from stream.opt.allocation.constraint_optimization.families.traffic import DmaStream, dma_streams, node_traffic
+from stream.opt.allocation.constraint_optimization.families.traffic import (
+    DmaStream,
+    dma_streams,
+    link_cores,
+    link_name,
+    node_traffic,
+    port_name,
+)
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
@@ -112,9 +119,7 @@ class MemoryPorts:
                 if k == key and ctx.vars.slot_latency[slot].X > 0
             }
             busiest = max(bursts, key=bursts.__getitem__, default=None)
-            row = _activity_row(
-                ctx, "memory_port", f"{key.memory}.{key.port}", cores[key], rate, value(demand.expr), interval
-            )
+            row = _activity_row(ctx, "memory_port", port_name(key), cores[key], rate, value(demand.expr), interval)
             rows.append(
                 row | {"burst_utilization": bursts.get(busiest) if busiest is not None else None, "burst_slot": busiest}
             )
@@ -186,17 +191,7 @@ def _link_rows(
         for link in stream.choice.links_used:
             bits[link] += stream_bits * shares.get(link, 0.0)
     return [
-        _activity_row(ctx, "link", _link_name(link), _link_cores(link), link.bandwidth, b, interval)
+        _activity_row(ctx, "link", link_name(link), link_cores(link), link.bandwidth, b, interval)
         for link, b in bits.items()
         if b > 0
     ]
-
-
-def _link_name(link: Any) -> str:
-    if link.members:
-        return "bus " + ",".join(str(core.id) for core in link.members)
-    return "->".join(str(getattr(end, "id", end)) for end in (link.sender, link.receiver))
-
-
-def _link_cores(link: Any) -> tuple[int, ...]:
-    return tuple(core.id for core in link.cores)

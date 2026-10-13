@@ -62,3 +62,16 @@ def test_energy_adds_each_nodes_energy_on_its_cores_and_every_transfers(alloc: A
     assert value(q.get("energy").expr) == pytest.approx(nodes + value(q.get("transfer_energy").expr))
     report = Energy().report(alloc.context)["energy"]
     assert report["total_pj"] == pytest.approx(report["per_iteration_pj"] * space.iterations)
+
+
+def test_energy_components_split_the_iterations_energy(alloc: AllocationModel) -> None:
+    report = Energy().report(alloc.context)["energy"]
+    components = report["components"]
+    by_kind = {kind: sum(c["pj_per_iteration"] for c in components if c["kind"] == kind) for kind in ("mac", "memory")}
+    transfers = sum(c["pj_per_iteration"] for c in components if c["kind"] in ("port", "link"))
+    assert by_kind["mac"] > 0 and by_kind["memory"] > 0
+    assert by_kind["mac"] + by_kind["memory"] == pytest.approx(report["node_pj_per_iteration"])
+    assert transfers == pytest.approx(report["transfer_pj_per_iteration"])
+    assert [c["pj_per_iteration"] for c in components] == sorted(
+        (c["pj_per_iteration"] for c in components), reverse=True
+    )
