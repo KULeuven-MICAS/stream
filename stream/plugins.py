@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from functools import cache
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
@@ -30,12 +31,15 @@ def _distribution_of(ep: EntryPoint) -> str:
     return getattr(dist, "name", "") or ""
 
 
-def _entry_points(group: str) -> list[EntryPoint]:
+@cache
+def _entry_points(group: str) -> tuple[EntryPoint, ...]:
+    """The entry points installed in ``group``, scanned once: scanning reads every installed distribution's
+    metadata, and what is installed does not change while a process runs."""
     try:
-        return list(entry_points(group=group))
+        return tuple(entry_points(group=group))
     except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
         logger.debug("entry-point discovery failed for %r: %s", group, exc)
-        return []
+        return ()
 
 
 def overlay_allowlist() -> frozenset[str] | None:
@@ -107,3 +111,19 @@ def _warn_on_conflicts(group: str, loaded: list[LoadedPlugin]) -> None:
                 winner.priority,
                 others,
             )
+
+
+def claimant(group: str, subject: Any) -> Any:
+    """The plugin in ``group`` with the highest ``priority`` whose ``claims(subject)`` is true.
+
+    A plugin is an object, or a class instantiated without arguments, with a ``priority`` int and a
+    ``claims`` predicate. A tie goes to the later registration, so an overlay outranks a built-in.
+    """
+    chosen = None
+    for plugin in load_group(group):
+        candidate = plugin.obj() if isinstance(plugin.obj, type) else plugin.obj
+        if candidate.claims(subject) and (chosen is None or candidate.priority >= chosen.priority):
+            chosen = candidate
+    if chosen is None:
+        raise LookupError(f"no {group!r} plugin claims {subject!r}")
+    return chosen

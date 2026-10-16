@@ -13,7 +13,7 @@ class ResNetPattern(Enum):
     BASIC_RESIDUAL = auto()  # Conv->Relu->Conv->Add with skip
     STRIDE2_DOWNSAMPLE = auto()  # Conv(s=2)->Relu->Conv + Conv(1x1,s=2)->Add
     FRONTEND = auto()  # Conv(7x7,s=2)->Relu->MaxPool(s=2)
-    DUAL_RESIDUAL = auto()  # Two residual blocks + Reshape FusionEdge between
+    DUAL_RESIDUAL = auto()  # Two residual blocks + identity Reshape between
 
 
 @dataclass
@@ -278,7 +278,7 @@ def _build_dual_residual(
     """Build DUAL_RESIDUAL: Two residual blocks with identity Reshape between.
 
     Block 1: Conv1->Relu1->Conv2->Add1 (skip from input)
-    Reshape: identity reshape (FusionEdge trigger for split_fusion_groups)
+    Reshape: identity reshape, folded into the readers of its output
     Block 2: Conv3->Relu2->Conv4->Add2 (skip from reshape_out)
 
     The Reshape shape tensor is an initializer (not a graph input) to avoid
@@ -329,7 +329,7 @@ def _build_dual_residual(
         name="Add1",
     )
 
-    # FusionEdge boundary: identity Reshape
+    # Identity Reshape
     reshape_node = helper.make_node(
         "Reshape",
         inputs=["add1_out", "reshape_shape"],

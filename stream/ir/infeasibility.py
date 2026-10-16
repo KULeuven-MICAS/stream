@@ -3,6 +3,9 @@ mapped back to the physical cores/links it over-constrains) rather than a crash.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -116,3 +119,16 @@ class InfeasibleAllocationError(RuntimeError):
     def __init__(self, report: InfeasibilityReportIR) -> None:
         self.report = report
         super().__init__(report.summary)
+
+
+# Written beside a candidate's other outputs when its allocation does not fit.
+INFEASIBILITY_REPORT_FILENAME = "infeasibility_report.json"
+
+
+def save_infeasibility_report(output_dir: str, report: InfeasibilityReportIR) -> None:
+    """Persist a candidate's typed infeasibility diagnosis in its output directory."""
+    try:
+        with open(os.path.join(output_dir, INFEASIBILITY_REPORT_FILENAME), "w") as f:
+            json.dump(report.model_dump(), f)
+    except OSError as exc:
+        logging.getLogger(__name__).warning("could not write infeasibility report to %s: %s", output_dir, exc)

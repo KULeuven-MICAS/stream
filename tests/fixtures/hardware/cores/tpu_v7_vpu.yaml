@@ -87,4 +87,4 @@ operand_precision:
 # reductions; without it, core selection finds no owner and smears the op across all 36 compute cores
 # (an MXU cannot price a pool). Core selection matches on the node's op type, so listing a superset is
 # harmless -- only the types actually present in a workload can match.
-operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Softmax, ReduceMax, ReduceSum, ReduceMean, MaxPool, AveragePool, GlobalAveragePool, GlobalMaxPool]
+operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Cast, Softmax, ReduceMax, ReduceSum, ReduceMean, MaxPool, AveragePool, GlobalAveragePool, GlobalMaxPool]

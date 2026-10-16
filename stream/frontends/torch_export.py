@@ -14,8 +14,10 @@ from xdsl.dialects.builtin import FixedBitwidthType, bf16
 from xdsl.ir.affine import AffineExpr, AffineMap
 
 from stream.frontends import FrontendConfig, register_frontend
+from stream.parser.onnx.conv import conv_maps
 from stream.workload.node import ComputationNode, InEdge, Node, NormalizationNode, OutEdge
 from stream.workload.tensor import Tensor
+from stream.workload.utils import sliding_window
 from stream.workload.workload import Workload
 
 __all__ = [
@@ -36,6 +38,7 @@ class AtenTensor:
     name: str
     shape: tuple[int, ...]
     dtype: FixedBitwidthType = bf16
+    parameter: bool = False  # a lifted parameter or buffer of the model, not an input the caller passes
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,21 @@ def _linear(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> Compu
     )
 
 
+def _conv2d(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> ComputationNode:
+    """``aten::conv2d``: the access maps of an ONNX Conv with the same strides, dilations, padding and groups, the
+    bias, where given, a third input read per output channel."""
+    stride, dilation, padding = (
+        [value] * 2 if isinstance(value := call.attrs.get(key, default), int) else value
+        for key, default in (("stride", 1), ("dilation", 1), ("padding", 0))
+    )
+    named = isinstance(padding, str)
+    auto_pad = {"same": "SAME_UPPER", "valid": "VALID"}[padding] if named else "NOTSET"
+    shapes = inputs[0].shape[2:], inputs[1].shape[2:]
+    window = sliding_window(*shapes, stride, dilation, None if named else padding, auto_pad)
+    maps = conv_maps(inputs[0], inputs[1], len(inputs) > 2, window, int(call.attrs.get("groups", 1)))  # noqa: PLR2004
+    return ComputationNode(type="Conv", name=call.output.name, inputs=inputs, outputs=(output,), operand_mapping=maps)
+
+
 def _softmax(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> ComputationNode:
     """``aten::softmax``: a NormalizationNode reducing over ``attrs['dim']`` (default the last axis)."""
     rank = len(output.shape)
@@ -147,6 +165,7 @@ register_aten_op("aten::mm", _matmul_2d)
 register_aten_op("aten::matmul", _matmul_2d)
 register_aten_op("aten::linear", _linear)
 register_aten_op("aten::softmax", _softmax)
+register_aten_op("aten::conv2d", _conv2d)
 
 
 def convert_aten_calls(
@@ -161,7 +180,7 @@ def convert_aten_calls(
     for graph_input in graph_inputs:
         tensor = Tensor.create(graph_input.name, graph_input.dtype, graph_input.shape)
         tensors[graph_input.name] = tensor
-        nodes.append(InEdge(name=graph_input.name, outputs=(tensor,)))
+        nodes.append(InEdge(name=graph_input.name, outputs=(tensor,), parameter=graph_input.parameter))
 
     for call in calls:
         builder = ATEN_OP_TABLE.get(call.target)
@@ -208,10 +227,13 @@ def _lower_exported_program(exported_program: Any) -> tuple[list[AtenTensor], li
     except ImportError as exc:  # pragma: no cover - exercised only in the torch-absent job
         raise RuntimeError("the torch.export frontend requires torch; install the 'stream[torch]' extra") from exc
 
+    signature = exported_program.graph_signature
+    parameters = {*signature.inputs_to_parameters, *signature.inputs_to_buffers}
+
     def as_tensor(node: Any) -> AtenTensor:
         val = node.meta.get("val")
         shape = tuple(int(s) for s in val.shape) if val is not None else ()
-        return AtenTensor(name=str(node.name), shape=shape)
+        return AtenTensor(name=str(node.name), shape=shape, parameter=str(node.name) in parameters)
 
     graph_inputs: list[AtenTensor] = []
     calls: list[AtenCall] = []
@@ -223,7 +245,10 @@ def _lower_exported_program(exported_program: Any) -> tuple[list[AtenTensor], li
         elif node.op == "call_function":
             target = f"aten::{getattr(node.target, '_opname', str(node.target))}"
             inputs = tuple(str(a.name) for a in node.args if hasattr(a, "name"))
-            calls.append(AtenCall(target=target, inputs=inputs, output=as_tensor(node), attrs=dict(node.kwargs)))
+            schema = getattr(node.target, "_schema", None)
+            names = [argument.name for argument in schema.arguments] if schema else []
+            attrs = {name: a for name, a in zip(names, node.args, strict=False) if not hasattr(a, "name")}
+            calls.append(AtenCall(target=target, inputs=inputs, output=as_tensor(node), attrs=attrs | node.kwargs))
         elif node.op == "output":
             args = node.args[0] if node.args else ()
             first = args[0] if isinstance(args, (tuple, list)) and args else None

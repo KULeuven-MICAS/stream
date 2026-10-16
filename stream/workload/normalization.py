@@ -10,7 +10,7 @@ import numpy as np
 from xdsl.dialects.builtin import FixedBitwidthType
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 
-from stream.workload.node import ComputationNode, InEdge, NormalizationNode, OutEdge
+from stream.workload.node import ComputationNode, InEdge, Node, NormalizationNode, OutEdge
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
 
@@ -125,6 +125,12 @@ def decompose_normalization(node: NormalizationNode) -> Workload:
 def fused_kernel_tag(node: NormalizationNode) -> str:
     """The ``fused_kernel`` label carried by every sub-op of ``node`` once expanded (``"<type>:<name>"``)."""
     return f"{node.type}{FUSED_KERNEL_SEP}{node.name}"
+
+
+def source_operator(node: Node) -> str:
+    """The name of the operator ``node`` was expanded from, or its own name when it was not."""
+    tag = getattr(node, "fused_kernel", None)
+    return tag.partition(FUSED_KERNEL_SEP)[2] if tag else node.name
 
 
 def _splice_decomposition(node: NormalizationNode, sub: Workload) -> list[ComputationNode]:

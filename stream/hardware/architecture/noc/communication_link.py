@@ -3,8 +3,6 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
 
-ENABLE_BROADCASTING = False
-
 
 def get_bidirectional_edges(
     core_a: "Core",
@@ -18,10 +16,6 @@ def get_bidirectional_edges(
     bus = bus_instance or CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bidirectional=True)
     link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
     link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
-
-    # if have_shared_memory(core_a, core_b):
-    #     # No edge if the cores have a shared memory
-    #     return []
 
     return [
         #  A -> B
@@ -49,15 +43,26 @@ class CommunicationLink:
         bandwidth: int | float,
         unit_energy_cost: float,
         bidirectional: bool = False,
+        members: tuple["Core", ...] = (),
     ) -> None:
         self.sender = sender
         self.receiver = receiver
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
         self.bidirectional = bidirectional  # TODO this property is not in use?
-        self._hash = hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
+        self.members = members
+        self._hash = hash(
+            (self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional, self.members)
+        )
+
+    @property
+    def cores(self) -> tuple["Core", ...]:
+        """The cores the link connects: a bus's members, else its two ends."""
+        return self.members or tuple(end for end in (self.sender, self.receiver) if not isinstance(end, str))
 
     def __str__(self) -> str:
+        if self.members:
+            return f"Bus({','.join(str(core.id) for core in self.members)}, bw={self.bandwidth})"
         return f"CL({self.sender}, {self.receiver}, bw={self.bandwidth})"
 
     def __repr__(self) -> str:
@@ -67,10 +72,11 @@ class CommunicationLink:
         return self._hash
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (
+        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth, self.members) == (
             other.sender,
             other.receiver,
             other.bandwidth,
+            other.members,
         )
 
     def __lt__(self, other: object) -> bool:
@@ -84,9 +90,3 @@ class CommunicationLink:
         receiver_self_id = self.receiver.id
         receiver_other_id = other.receiver.id
         return receiver_self_id < receiver_other_id
-
-    def get_name_for_schedule_plot(self) -> str:
-        if self.bidirectional:
-            return f"{self.sender} <-> {self.receiver}"
-        else:
-            return f"{self.sender} -> {self.receiver}"

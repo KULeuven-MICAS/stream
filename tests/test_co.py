@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from stream.api import optimize_allocation_co
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+from stream.allocation.allocation import Allocation
+from stream.api import evaluate_mapping
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import (
     TwoConvWorkloadConfig,
@@ -64,7 +64,7 @@ def test_co_tpu_two_conv(output_dir: Path):
     """Run the two-conv TPU CO pipeline and verify structural properties.
 
     Asserts:
-    - positive scheduler metrics
+    - positive allocation metrics
     - exactly two computation nodes
     - each computation node has a resource allocation
     """
@@ -74,30 +74,25 @@ def test_co_tpu_two_conv(output_dir: Path):
     print(f"Workload path: {workload_path}")
     print(f"Mapping path: {mapping_path}")
 
-    ctx = optimize_allocation_co(
-        hardware=_ACCELERATOR,
-        workload=workload_path,
-        mapping=mapping_path,
-        experiment_id="test-tpu-two-conv",
-        output_path=str(output_dir),
-        skip_if_exists=False,
-    )
+    ctx = evaluate_mapping(_ACCELERATOR, workload_path, str(output_dir), mapping_path).context
 
-    scheduler: SteadyStateScheduler = ctx.get("scheduler")
+    allocation: Allocation = ctx.get("allocation")
+    latency = allocation.solution.latency
 
-    print(f"latency_total: {scheduler.latency_total}")
-    print(f"latency_per_iteration: {scheduler.latency_per_iteration}")
-    print(f"iterations: {scheduler.iterations}")
+    print(f"latency_total: {latency.total}")
+    print(f"latency_per_iteration: {latency.per_iteration}")
+    print(f"iterations: {allocation.problem.iterations}")
 
-    assert scheduler.latency_total > 0, "Expected positive latency_total"
-    assert scheduler.latency_per_iteration > 0, "Expected positive latency_per_iteration"
-    assert scheduler.iterations > 0, "Expected positive iterations"
+    assert latency.total > 0, "Expected positive latency_total"
+    assert latency.per_iteration > 0, "Expected positive latency_per_iteration"
+    assert allocation.problem.iterations > 0, "Expected positive iterations"
+    # OR-Tools solves the objective levels in turn and ends on a tiebreaker; the rank is the first level.
+    assert allocation.solution.primary_cost >= latency.total
 
-    # The solved scheduler must yield a JSON-serializable AllocationIR (runtime_args carry AffineMaps).
-    allocation = AllocationIR.from_internal(scheduler)
-    allocation.model_dump_json()
-    assert allocation.latency.total == scheduler.latency_total
-    assert allocation.mapping_nodes
+    ir = AllocationIR.from_internal(allocation)
+    ir.model_dump_json()
+    assert ir.latency.total == latency.total
+    assert ir.mapping_nodes
 
     mapping = ctx.get("mapping")
     workload = ctx.get("workload")

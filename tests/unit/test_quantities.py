@@ -1,0 +1,64 @@
+from collections.abc import Callable
+from typing import Any
+
+import pytest
+
+from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
+from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
+from stream.opt.allocation.constraint_optimization.families.energy import Energy
+from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
+from stream.opt.allocation.constraint_optimization.utils import active_fraction
+
+ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+
+
+@pytest.fixture(scope="module")
+def alloc(
+    tmp_path_factory: pytest.TempPathFactory, solved_model: Callable[..., Any], two_conv: TwoConvWorkloadConfig
+) -> AllocationModel:
+    out = str(tmp_path_factory.mktemp("two_conv"))
+    return solved_model(ACCELERATOR, make_2_conv_workload(two_conv), out, make_2_conv_mapping(two_conv))
+
+
+def test_registry_returns_scalar_and_indexed_quantities() -> None:
+    registry = QuantityRegistry()
+    registry.add("overlap", 3, upper_bound=10)
+    registry.add("slot_latency", 1, index=0)
+    registry.add("slot_latency", 2, index=1)
+    assert registry.get("overlap").upper_bound == 10
+    assert registry.get("slot_latency", 1).expr == 2
+    assert set(registry.indexed("slot_latency")) == {0, 1}
+    assert registry.names() == ["overlap", "slot_latency"]
+
+
+def test_registry_rejects_duplicates_and_names_the_available_quantities() -> None:
+    registry = QuantityRegistry()
+    registry.add("overlap", 3)
+    with pytest.raises(ValueError, match="already registered"):
+        registry.add("overlap", 4)
+    with pytest.raises(KeyError, match="available: overlap"):
+        registry.get("buffering")
+
+
+@pytest.mark.slow
+def test_the_model_registers_what_it_builds(alloc: AllocationModel) -> None:
+    expected = {"slot_latency", "overlap", "iteration", "transfer_latency", "total_latency"}
+    assert expected <= set(alloc.quantities.names())
+    slots = alloc.quantities.indexed("slot_latency")
+    iteration = alloc.model.value(alloc.quantities.get("iteration").expr)
+    assert iteration == sum(alloc.model.value(q.expr) for q in slots.values())
+
+
+def test_energy_adds_each_nodes_energy_on_its_cores_and_every_transfers(alloc: AllocationModel) -> None:
+    q, space, value = alloc.quantities, alloc.space, alloc.model.value
+    nodes = sum(
+        space.cost_lut.get_cost(n, core).energy_total * active_fraction(n, space.ssis)
+        for n in space.ssc_nodes
+        for core in {c for cores in space.mapping.get(n).resource_allocation for c in cores}
+    )
+    assert value(q.get("node_energy").expr) == pytest.approx(nodes)
+    assert value(q.get("transfer_energy").expr) > 0  # the TPU-like memories charge for every access
+    assert value(q.get("energy").expr) == pytest.approx(nodes + value(q.get("transfer_energy").expr))
+    report = Energy().report(alloc.context)["energy"]
+    assert report["total_pj"] == pytest.approx(report["per_iteration_pj"] * space.iterations)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 
-from stream.api import optimize_allocation_co_generic
+from stream.api import evaluate_mapping
 from stream.hardware.architecture.core import Core
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.plugins import LoadedPlugin
@@ -160,12 +160,7 @@ def test_produced_entries_carry_ideal_cycle_and_a_backend_tag() -> None:
     workload_path = make_2_conv_workload(_2CONV)
     registered_names = {b.name for b in discover_backends()} | {"ideal-cycle"}
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ZIGZAG_HARDWARE,
-            workload=workload_path,
-            experiment_id="conformance_core_cost_backends",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ZIGZAG_HARDWARE, workload_path, tmpdir).context
         cost_lut = ctx.get("cost_lut")
         entries = [entry for core_dict in cost_lut.lut.values() for entry in core_dict.values()]
         assert entries, "expected the CO run to populate the cost LUT"

@@ -5,6 +5,8 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 
+IDEAL_CYCLE_BACKEND = "ideal-cycle"
+
 
 @dataclass
 class CoreCostEntry:
@@ -19,11 +21,6 @@ class CoreCostEntry:
     mapping: Any = None
     layer: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-    def get_cycles_scaled(self, utilization: float) -> float:
-        if utilization <= 0:
-            return self.latency_total
-        return self.latency_total * 100.0 / utilization
 
     def __getattr__(self, name: str):
         """Delegate attribute access to the underlying CME when present to preserve compatibility."""

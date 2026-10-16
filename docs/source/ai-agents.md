@@ -6,7 +6,7 @@ Stream is built to be driven by an AI coding agent (such as Claude Code) as well
 
 ## The MCP server
 
-Stream ships an MCP (Model Context Protocol) server so an agent can submit and inspect TETRA constraint-optimization jobs as tool calls. It needs the `[mcp]` extra:
+Stream ships an MCP (Model Context Protocol) server so an agent can submit and inspect constraint-optimization jobs as tool calls. It needs the `[mcp]` extra:
 
 ```bash
 pip install -e ".[mcp]"
@@ -40,10 +40,10 @@ When an agent (or any tool) needs machine-readable output instead of console tex
 ```python
 from stream.ir import WorkloadIR, AcceleratorIR, AllocationIR
 
-# after running optimize_allocation_co_generic(...) -> ctx
+# ctx = evaluate_mapping(...).context
 workload_ir    = WorkloadIR.from_internal(ctx.get("workload"))
 accelerator_ir = AcceleratorIR.from_internal(ctx.get("accelerator"))
-allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))
+allocation_ir  = AllocationIR.from_internal(ctx.get("allocation"))
 
 allocation_data = allocation_ir.model_dump()   # JSON-compatible dict
 ```

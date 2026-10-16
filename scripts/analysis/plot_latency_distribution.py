@@ -242,9 +242,9 @@ def _load_incumbent_series(trace_path: str) -> list[tuple[float, float]] | None:
     Load an optimization trace YAML and return a list of (time_s, incumbent)
     pairs representing the incumbent progression.
 
-    Between explicit incumbent events the value stays constant (carried forward),
-    so every trace entry that has or inherits an incumbent produces a point.
-    Returns None if the file cannot be read or has no incumbent data.
+    Every trace entry carries the incumbent after it, so each one that has an
+    incumbent produces a point. Returns None if the file cannot be read or has
+    no incumbent data.
     """
     try:
         with open(trace_path) as f:
@@ -257,16 +257,10 @@ def _load_incumbent_series(trace_path: str) -> list[tuple[float, float]] | None:
         return None
 
     points: list[tuple[float, float]] = []
-    current_incumbent: float | None = None
-
     for entry in entries:
-        t = entry.get("time_s")
-        if t is None:
-            continue
-        if "incumbent" in entry:
-            current_incumbent = float(entry["incumbent"])
-        if current_incumbent is not None:
-            points.append((float(t), current_incumbent))
+        t, incumbent = entry.get("time_s"), entry.get("incumbent_objective")
+        if t is not None and incumbent is not None:
+            points.append((float(t), float(incumbent)))
 
     return points if points else None
 

@@ -12,6 +12,7 @@ from xdsl.parser import StringAttr
 
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
+    DOUBLE_BUFFERED,
     ComputationNodeOp,
     FusionGroupOp,
     InEdgeOp,
@@ -25,6 +26,7 @@ from stream.compiler.dialects.stream import (
     YieldOp,
 )
 from stream.compiler.fifo_depths import FifoDepths, TileBudget
+from stream.compiler.kernels.binding import Bindings
 from stream.compiler.transforms.aie_add_tracing_script import MAX_TRACED_TILES, AIEAddTracingScript
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
@@ -51,6 +53,7 @@ from stream.workload.steady_state.iteration_space import (
     SteadyStateIterationSpace,
 )
 from stream.workload.tensor import Tensor
+from stream.workload.utils import generate_tensor_ssis
 from stream.workload.workload import (
     ComputationNode,
     HasInputs,
@@ -65,7 +68,9 @@ from stream.workload.workload import (
 
 
 class AIECodeGenerationStage(Stage):
-    REQUIRED_FIELDS = tuple()
+    optional_reads = ("trace_size", "trace_max_tiles", "trace_tiles", "trace_group", "npu", "group_index")
+    result_reads = ("allocation", "workload", "accelerator", "output_path")
+    result_writes = ("module",)
 
     def __init__(
         self,
@@ -94,7 +99,6 @@ class AIECodeGenerationStage(Stage):
         # group traced without one leaves its runtime sequence expecting an argument nobody passes.
         self.trace_group = self.ctx.get("trace_group")
         self.npu = self.ctx.get("npu", "npu2")
-        self.runtime_args = self.ctx.get("runtime_args", [])
         self.module = None
 
     def run(self):
@@ -152,17 +156,20 @@ class AIECodeGenerationStage(Stage):
             result_types = [result_type] * len(node.outputs)
         elif len(node.outputs) > 1:
             result_types = []
-            for (index, space), reader in zip(spaces, self._readers(node, workload), strict=True):
+            for (index, space), reader, output in zip(spaces, self._readers(node, workload), node.outputs, strict=True):
                 allocation = full_mapping.get(reader).resource_allocation[0]
                 reader_cores = allocation.sources if isinstance(allocation, MulticastPathPlan) else allocation
                 cores_attr = [StringAttr(f"tile_{c.col_id}_{c.row_id}") for c in reader_cores]
-                result_types.append(StrensorType(input_type.element_type, space, cores_attr, index))
+                result_types.append(
+                    StrensorType(input_type.element_type, space, cores_attr, index, self._buffers(output))
+                )
         else:
             result_type = StrensorType(
                 input_type.element_type,
                 ss,
                 cores,
                 reuse_index,
+                self._buffers(node.outputs[0]),
             )
             result_types = [result_type]
         op = TransferOp(
@@ -178,6 +185,10 @@ class AIECodeGenerationStage(Stage):
         )
 
         return op
+
+    def _buffers(self, tensor: Tensor) -> int:
+        """The buffers the solve holds a moving window of ``tensor`` in."""
+        return 1 if tensor in self.ctx.get("allocation").solution.single_buffered else DOUBLE_BUFFERED
 
     @staticmethod
     def _readers(node: TransferNode, workload: Workload) -> list[HasInputs]:
@@ -263,7 +274,6 @@ class AIECodeGenerationStage(Stage):
         ssis_dict: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
     ) -> ModuleOp:
         ops: dict[Node, Operation] = {}
-        scheduler = self.ctx.get("scheduler")
 
         def get_layer_dims(tensor: Tensor) -> Iterable[LayerDim]:
             strides = workload.strides_for_tensor(tensor)
@@ -321,7 +331,8 @@ class AIECodeGenerationStage(Stage):
                         yield ops[other_node].results[other_node.outputs.index(inp)]
 
         # Ensure nodes are emitted in the same order as the scheduler reasoned about them.
-        for node in sorted(workload, key=lambda n: scheduler.timeslots[n]):
+        timeslots = self.ctx.get("allocation").problem.timeslots
+        for node in sorted(workload, key=lambda n: timeslots[n]):
             if isinstance(node, InEdge):
                 shape = cast(ShapedType, node.output.subview.source.type).get_shape()
                 # A tensor consumed by more than one node is multicast: its transfer has
@@ -353,9 +364,7 @@ class AIECodeGenerationStage(Stage):
                     spaces = [ssis_to_strensorspace(node.outputs[0])]
                 else:
                     spaces = [
-                        ssis_to_strensorspace(
-                            output, scheduler.generate_tensor_ssis(workload, output, reader, ssis_dict)
-                        )
+                        ssis_to_strensorspace(output, generate_tensor_ssis(workload, output, reader, ssis_dict))
                         for output, reader in zip(node.outputs, self._readers(node, workload), strict=True)
                     ]
                 ops[node] = self.create_transfer_op(
@@ -408,14 +417,23 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
+    def _shim_limits(self) -> tuple[int, int]:
+        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates,
+        as the accelerator declares them; 0 where it does not. A trace writes its buffer out through
+        one descriptor."""
+        shims = [core for core in self.ctx.get("accelerator").core_list if core.type == "shim"]
+        descriptors = min((core.dma_buffer_descriptors for core in shims), default=0)
+        iterations = min((core.dma_iterations for core in shims), default=0)
+        return descriptors - 1 if descriptors and self.trace_size else descriptors, iterations
+
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused."""
-        scheduler = self.ctx.get("scheduler")
-        slack = getattr(scheduler, "capacity_slack", None)
+        allocation = self.ctx.get("allocation")
+        slack = allocation.solution.capacity_slack
         if not slack:
             return None
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in scheduler.accelerator.core_list:
+        for core in allocation.problem.accelerator.core_list:
             per_core = slack.get(core.id)
             if per_core is None or core.col_id is None or core.row_id is None:
                 continue
@@ -432,13 +450,14 @@ class AIECodeGenerationStage(Stage):
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
         assert workload is not None
-        mapping = self.ctx.get("scheduler").mapping
+        mapping = self.ctx.get("allocation").mapping
+        self.context.bindings = Bindings(self.npu)
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
             self.context.registered_kernels[kernel.unique_name] = kernel
 
         assert isinstance(mapping, Mapping)
 
-        ssis_dict: dict[Tensor, SteadyStateIterationSpace] = self.ctx.get("scheduler").ssis
+        ssis_dict: dict[Tensor, SteadyStateIterationSpace] = self.ctx.get("allocation").ssis
 
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 
@@ -447,7 +466,7 @@ class AIECodeGenerationStage(Stage):
         # with open("test1.mlir", "w") as f:
         #     f.write(str(module))
 
-        output_path = self.ctx.data["output_path"]
+        output_path = self.ctx.get("output_path")
         output_path += "/codegen/"
         os.makedirs(output_path, exist_ok=True)
 
@@ -464,10 +483,14 @@ class AIECodeGenerationStage(Stage):
         IterationSpaceToFor().apply(self.context, module)
         with open(output_path + "/with_for.mlir", "w") as f:
             f.write(str(module))
-        AIEConvertOfs(depths=self._fifo_depths()).apply(self.context, module)
+        descriptors, iterations = self._shim_limits()
+        AIEConvertOfs(depths=self._fifo_depths(), shim_descriptors=descriptors, shim_iterations=iterations).apply(
+            self.context, module
+        )
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
+        self.context.bindings.write(output_path + "/kernels.json")
         HoistFlashScaleAcquires().apply(self.context, module)
         with open(output_path + "/to_aie.mlir", "w") as f:
             f.write(str(module))

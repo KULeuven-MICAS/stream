@@ -1,0 +1,27 @@
+layers:
+- name: Conv1
+  core_allocation: [[0, 1, 2, 3]]
+  inter_core_tiling:
+  - - dim: D1
+      split: 4
+- name: Conv2
+  core_allocation: [[0, 1, 2, 3]]
+  inter_core_tiling:
+  - - dim: D1
+      split: 4
+- name: Conv3
+  core_allocation: [[0, 1, 2, 3]]
+  inter_core_tiling:
+  - - dim: D1
+      split: 4
+- name: Add
+  core_allocation: [[0, 1, 2, 3]]
+  inter_core_tiling:
+  - - dim: D3
+      split: 4
+fused_groups:
+- name: branch
+  layers: [Conv1, Conv2, Conv3, Add]
+  intra_core_tiling:
+  - dim: Conv2.D0
+    tile: 1

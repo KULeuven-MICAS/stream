@@ -27,6 +27,8 @@ def _gemm(name: str, m: int, k: int, n: int, op_type: str = "Gemm") -> Computati
 
 
 class _FakeCore:
+    core_type = "zigzag.compute"
+
     def __init__(self, core_id: int):
         self.id = core_id
 

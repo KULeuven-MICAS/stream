@@ -8,14 +8,16 @@ from xdsl.pattern_rewriter import (
 
 from stream.compiler.dialects.stream import ComputationNodeOp
 from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.compiler.kernels.binding import Bindings
 
 
 @dataclass
 class ConvertAIEKernels(RewritePattern):
     kernels: dict[str, AIEKernel]
+    bindings: Bindings
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         aie_kernel = self.kernels.get(op.kernel.data)
         if aie_kernel is not None:
-            aie_kernel.rewrite(op, rewriter)
+            aie_kernel.rewrite(op, rewriter, self.bindings)

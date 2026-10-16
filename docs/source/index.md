@@ -2,7 +2,7 @@
 
 **Stream** is a design-space-exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators** - systems built by combining cores that each have their own dataflow and performance model. **AIE** and **TPU-like** cores are two example core types among others.
 
-Given a neural-network workload (ONNX) and a hardware description (YAML), Stream schedules the workload **layer-fused** across the cores and uses **MILP (Mixed-Integer Linear Programming)** - the *TETRA* constraint optimization - to decide tensor placement and the transfer paths between cores. Stream builds on the [ZigZag framework](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
+Given a neural-network workload (ONNX) and a hardware description (YAML), Stream schedules the workload **layer-fused** across the cores and uses **MILP (Mixed-Integer Linear Programming)** to decide tensor placement and the transfer paths between cores. Stream builds on the [ZigZag framework](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
 ---
 
@@ -10,7 +10,7 @@ Given a neural-network workload (ONNX) and a hardware description (YAML), Stream
 
 - **Heterogeneous multi-core modelling** - accelerators are described as a system of cores with different compute/memory capabilities, connected by links and buses.
 - **Layer-fused scheduling** - parts of layers can be split and co-scheduled across cores for higher utilization and lower memory traffic.
-- **Constraint-optimization allocation (TETRA)** - a MILP `TransferAndTensorAllocator` decides where each tensor lives and how it is routed.
+- **Constraint-optimization allocation** - a MILP `AllocationModel` decides where each tensor lives and how it is routed.
 - **Pluggable solvers** - OR-Tools **GSCIP** (default, license-free), OR-Tools **HiGHS**, and **Gurobi** (commercial license), all behind one API.
 - **Memory- and communication-aware cost model** - captures data reuse, memory hierarchy, and interconnect cost.
 - **Modular pipeline** - the mapping process is a sequence of stages you can configure or extend.
@@ -26,12 +26,17 @@ cd stream
 pip install -e .
 ```
 
-Then run the CO pipeline on a bundled workload, with an auto-generated mapping:
+Then price a bundled workload, with a generated mapping:
 
-```bash
-python scripts/main_stream_co.py \
-  --hardware stream/inputs/examples/hardware/tpu_like_quad_core.yaml \
-  --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
+```python
+from stream.api import evaluate_mapping
+
+estimate = evaluate_mapping(
+    "stream/inputs/examples/hardware/tpu_like_quad_core.yaml",
+    "stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx",
+    "outputs/first-run",
+)
+print(estimate.cycles)
 ```
 
 See [Installation](installation.md) and [Getting Started](getting-started.md) for details, and the [User Guide](user-guide.md) for the workload, hardware, and mapping input formats.

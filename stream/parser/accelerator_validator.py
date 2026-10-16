@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+import re
 from functools import reduce
 from itertools import combinations
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
+from stream.datatypes import ELEMENT_BITS
+from stream.hardware.ports import MemoryRef, PortRef
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
@@ -20,6 +23,21 @@ FILENAME_REGEX = (
     r"[A-Za-z0-9_\-]+"  # file name
     r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
 )
+
+# "<core id>.<memory instance name>.<port name>", e.g. "2.dram.rw_port_1"
+PORT_REF_REGEX = r"^\d+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$"
+
+
+def parse_port_ref(ref: str) -> PortRef:
+    """Split a ``bandwidth:`` port key into (core id, memory instance name, port name)."""
+    core, memory, port = ref.split(".")
+    return PortRef(int(core), memory, port)
+
+
+def parse_memory_ref(ref: str) -> MemoryRef:
+    """Split a ``memory_aliases`` entry ``<core id>.<memory name>``."""
+    core, _, memory = ref.partition(".")
+    return int(core), memory
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
@@ -79,6 +97,15 @@ class AcceleratorValidator:
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
+        # Core id -> measured bandwidth every transfer through that core shares, or a port key ->
+        # measured bandwidth replacing that top-level port's declared width
+        "bandwidth": {
+            "type": "dict",
+            "required": False,
+            "keysrules": {"anyof": [{"type": "integer"}, {"type": "string", "regex": PORT_REF_REGEX}]},
+        },
+        # What reconfiguring the array between designs costs, read by the namespace constraints
+        "reconfiguration": {"type": "dict", "required": False},
         # Optional unit_energy_cost used for connections that don't specify their own
         "unit_energy_cost": {
             "type": "float",
@@ -173,6 +200,7 @@ class AcceleratorValidator:
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
         self.validate_memory_aliases()
+        self.validate_bandwidth()
 
         if not self.is_valid and self.errors:
             logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
@@ -284,7 +312,7 @@ class AcceleratorValidator:
 
     # Stream-level extension fields that are not known to namespace validators
     # (e.g. ZigZag) and must be stripped before validation then re-injected.
-    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision")
+    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision", "banks")
 
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
@@ -318,6 +346,22 @@ class AcceleratorValidator:
         if not validate_success:
             self.invalidate(f"User-given core {label} cannot be validated.")
             self.errors.extend(core_validator.errors)
+
+        precision = extension_fields.get("operand_precision") or {}
+        if not isinstance(precision, dict) or not set(precision) <= {"input", "accumulator"}:
+            self.invalidate(f"Core {label}: `operand_precision` takes only `input` and `accumulator`.")
+        elif unknown := {str(v) for v in precision.values()} - ELEMENT_BITS.keys():
+            self.invalidate(f"Core {label}: unknown element types {sorted(unknown)} in `operand_precision`.")
+
+        banks = extension_fields.get("banks")
+        if banks is not None and (
+            not isinstance(banks, dict)
+            or not {"count", "width"} <= set(banks) <= {"count", "width", "stripe"}
+            or any(type(v) is not int or v <= 0 for v in banks.values())
+        ):
+            self.invalidate(
+                f"Core {label}: `banks` takes whole positive `count`, `width` in bytes and optional `stripe` in words."
+            )
 
         # Fill in default values and re-inject Stream-level extension fields.
         normalized_core_data = core_validator.normalized_data
@@ -365,6 +409,37 @@ class AcceleratorValidator:
             conn.setdefault("type", "link")
             conn.setdefault("unit_energy_cost", self.data.get("unit_energy_cost", 0))
 
+    def validate_bandwidth(self) -> None:
+        """Every ``bandwidth:`` key names an existing core; the accelerator factory checks that a port key
+        names a modelled port."""
+        keys = self.data.get("bandwidth", {})
+        for key, model in keys.items():
+            self._validate_bandwidth_model(key, model)
+        measured_cores = {key for key in keys if isinstance(key, int)}
+        for core_id in measured_cores - set(self.data["cores"]):
+            self.invalidate(f"`bandwidth` names unknown core {core_id}.")
+        for ref in (key for key in keys if isinstance(key, str) and re.match(PORT_REF_REGEX, key)):
+            core_id, _, _ = parse_port_ref(ref)
+            if core_id not in self.data["cores"]:
+                self.invalidate(f"`bandwidth.{ref}`: unknown core {core_id}.")
+            elif core_id in measured_cores:
+                self.invalidate(f"`bandwidth.{ref}`: core {core_id} already has a measured core bandwidth.")
+
+    def _validate_bandwidth_model(self, key: object, model: object) -> None:
+        """A bandwidth model: positive ``ceiling`` and ``contiguous`` rates, measured ``strided`` rates per direction,
+        and a positive whole number of bytes per access as ``burst``, which a direction's measured rates override."""
+        if not isinstance(model, dict):
+            self.invalidate(f"`bandwidth.{key}` must be a mapping.")
+            return
+        for rate in ("ceiling", "contiguous"):
+            if not isinstance(model.get(rate), int | float) or model[rate] <= 0:
+                self.invalidate(f"`bandwidth.{key}.{rate}` must be a positive number.")
+        for direction, table in (model.get("strided") or {}).items():
+            if direction not in ("read", "write") or not isinstance(table, dict):
+                self.invalidate(f"`bandwidth.{key}.strided` maps `read` and `write` to rates per span in bytes.")
+        if "burst" in model and (type(model["burst"]) is not int or model["burst"] <= 0):
+            self.invalidate(f"`bandwidth.{key}.burst` must be a positive whole number of bytes.")
+
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints
         mem_sharing_data = self.data["core_memory_sharing"]
@@ -398,8 +473,7 @@ class AcceleratorValidator:
         """Every ``<core id>.<memory name>`` in `memory_aliases` must name a memory that exists."""
         for group in self.data.get("memory_aliases", []):
             for ref in group:
-                core_id_str, _, mem_name = ref.partition(".")
-                core_id = int(core_id_str)
+                core_id, mem_name = parse_memory_ref(ref)
                 core_data = self.data["cores"].get(core_id)
                 if core_data is None:
                     self.invalidate(f"`memory_aliases` entry '{ref}' names unknown core id {core_id}.")

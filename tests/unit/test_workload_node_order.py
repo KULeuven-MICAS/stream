@@ -87,10 +87,11 @@ def test_group_split_keeps_the_input_order(renamed_fixture):
         ]
 
 
-def test_order_is_cached_until_the_graph_changes():
+def test_derived_values_are_computed_once_and_a_change_is_a_new_workload():
     workload = _parse(_FIXTURE)
     assert workload.dataflow_sort() is workload.dataflow_sort()
     assert workload.global_idxs is workload.global_idxs
+    assert workload.unique_dimensions() is workload.unique_dimensions()
 
     old = workload.get_computation_nodes()[0]
     new = ComputationNode(
@@ -100,8 +101,10 @@ def test_order_is_cached_until_the_graph_changes():
         outputs=old.outputs,
         operand_mapping=old.operand_mapping,
     )
-    workload.replace_node(old, new)
+    with pytest.raises(nx.NetworkXError):
+        workload.add_node(new)
 
-    assert "replacement" in _names(workload)
-    assert old.name not in _names(workload)
-    assert new in workload.global_idxs
+    changed = Workload([new if node is old else node for node in workload.nodes])
+    assert "replacement" in _names(changed)
+    assert old.name not in _names(changed)
+    assert new in changed.global_idxs

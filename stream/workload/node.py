@@ -32,7 +32,11 @@ class HasInputs(Node, ABC):
 
 
 @dataclass(frozen=True, repr=False)
-class InEdge(HasOutputs): ...
+class InEdge(HasOutputs):
+    """A tensor the workload takes in. A ``parameter`` (a weight) is the model's own, laid out in memory however its
+    readers need, as a compiler packs weights ahead of time; any other comes from the host, row-major."""
+
+    parameter: bool = False
 
 
 @dataclass(frozen=True, repr=False)
@@ -41,15 +45,15 @@ class OutEdge(HasInputs): ...
 
 @dataclass(frozen=True, repr=False)
 class FusionEdge(HasInputs, HasOutputs):
-    """A graph boundary node for layout-only ops (Flatten, Reshape, Transpose, Squeeze, Unsqueeze):
-    pure re-indexing with no compute, which splits the fusion group (see
-    ``Workload.split_fusion_groups``).
+    """A graph boundary node for a layout-only op (Flatten, Reshape, Transpose, Squeeze, Unsqueeze) that its
+    readers cannot fold into their access maps (see ``stream.parser.onnx.layout``): pure re-indexing with no
+    compute, which splits the fusion group (see ``Workload.split_fusion_groups``).
 
     A FusionEdge is NOT ``HasIterationSpace`` -- it has no ``operand_mapping``. It is the escape hatch
-    the affine IR reserves for operators that cannot be expressed as one affine node: rather than
-    force a lossy affine map, the operator becomes an explicit fusion boundary, its tensors passing
-    through unchanged during dimension resizing. (Normalizations like Softmax are NOT FusionEdges --
-    they parse to schedulable ``NormalizationNode``s that decompose for fusion analysis.)
+    the affine IR reserves for a re-indexing no affine map expresses: rather than force a lossy affine map,
+    the operator becomes an explicit fusion boundary, its tensor crossing memory between the groups.
+    (Normalizations like Softmax are NOT FusionEdges -- they parse to schedulable ``NormalizationNode``s
+    that decompose for fusion analysis.)
     """
 
     op_type: str  # original ONNX op type, e.g. "Transpose" or "Reshape"
@@ -94,11 +98,15 @@ class TransferNode(HasIterationSpace):
 
 @dataclass(frozen=True, repr=False)
 class ComputationNode(HasIterationSpace):
+    """An operation over its iteration space; ``window_extents`` gives, as ``(dim, extent)``, the extent of each
+    window dim that no operand axis indexes alone, such as a pool's kernel."""
+
     type: str  # e.g., "Conv", "Gemm", etc.
     # When this node is a sub-operator of a decomposed fused kernel (e.g. a softmax expanded into
     # ReduceMax/Exp/ReduceSum/Div), this tags the origin kernel as ``"<OpType>:<name>"`` so the sub-ops
     # can be re-collapsed into that single native kernel for codegen. ``None`` for an ordinary node.
     fused_kernel: str | None = None
+    window_extents: tuple[tuple[int, int], ...] = ()
 
     def has_same_performance(self, other: "ComputationNode") -> bool:
         """Whether two nodes cost the same: identical op type, operand precisions/shapes, and affine

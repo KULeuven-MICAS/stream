@@ -1,6 +1,6 @@
 """AllocationIR Pydantic model with per-persona view methods.
 
-Wraps the output of SteadyStateScheduler.get_ir() in a typed, versioned Pydantic model.
+Wraps the output of Allocation.get_ir() in a typed, versioned Pydantic model.
 Construction is always via the from_internal() classmethod.
 """
 
@@ -13,16 +13,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from stream.plugins import loaded_overlays
 
 if TYPE_CHECKING:
-    from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+    from stream.allocation.allocation import Allocation
 
 
 class LatencyInfo(BaseModel):
-    """Latency metrics from a solved SteadyStateScheduler."""
+    """Latency metrics from a solved Allocation."""
 
     total: int = Field(description="Total schedule latency in cycles across all iterations")
     per_iteration: int = Field(description="Latency of a single steady-state iteration in cycles")
     overlap_between_iterations: int = Field(
         description="Overlap cycles between consecutive iterations (pipeline depth)"
+    )
+    fill: int = Field(
+        default=0,
+        description="Cycles each run waits before its first iteration for the tensors it holds in one buffer",
     )
 
 
@@ -31,14 +35,14 @@ class CostModelsIR(BaseModel):
     modelled, not just the final number."""
 
     intra_core: str = Field(description="Per-core compute/energy cost model (the intra-core estimator)")
-    scheduler: str = Field(description="Inter-core latency/schedule model")
+    scheduler: str = Field(description="Inter-core latency model: the allocation model that solves the steady state")
     solver: str = Field(description="MILP solver backend used for tensor/transfer allocation")
 
     @classmethod
     def for_backend(cls, backend: str) -> CostModelsIR:
         return cls(
             intra_core="ZigZag analytical (per-node latency & energy, MAC-array spatial utilization)",
-            scheduler="SteadyStateScheduler (steady-state pipeline latency, compute vs transfer bottleneck)",
+            scheduler="AllocationModel (steady-state pipeline latency, compute vs transfer bottleneck)",
             solver=backend,
         )
 
@@ -57,13 +61,11 @@ class SolveStatsIR(BaseModel):
     iteration_count: int | None = Field(default=None, description="Simplex iterations")
 
 
-class ConstraintSelectionIR(BaseModel):
-    """IR representation of the ConstraintSelection configuration used during the solve."""
+class ConstraintFamilyIR(BaseModel):
+    """One constraint family the allocation model was built from."""
 
-    memory_capacity: bool = Field(description="Whether memory capacity constraints were active during solve")
-    object_fifo_depth: bool = Field(description="Whether object FIFO depth constraints were active during solve")
-    buffer_descriptors: bool = Field(description="Whether buffer descriptor constraints were active during solve")
-    dma_channels: bool = Field(description="Whether DMA channel constraints were active during solve")
+    name: str = Field(description="The family's name, as SolveOptions.families selects it")
+    options: dict[str, Any] = Field(default_factory=dict, description="The options the family was built with")
 
 
 class NodeAllocationIR(BaseModel):
@@ -171,18 +173,18 @@ class SteadyStateIR(BaseModel):
 class AllocationAlgorithmicView(BaseModel):
     """Algorithmic-persona projection of AllocationIR.
 
-    Contains latency totals, solver backend, constraint configuration, and fusion splits.
+    Contains latency totals, solver backend, constraint families, and fusion splits.
     Suitable for algorithmic engineers reasoning about schedule quality and solver behaviour.
     """
 
-    schema_version: Literal["1.1"] = "1.1"
+    schema_version: Literal["2.0"] = "2.0"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
         default=None, description="Solver status and optimality gap: the noise floor for any latency comparison"
     )
-    constraint_selection: ConstraintSelectionIR | None = Field(
-        description="Constraint groups active during solve, or None if no selection was specified"
+    families: list[ConstraintFamilyIR] = Field(
+        description="The constraint families the allocation model was built from"
     )
     fusion_splits: dict[str, int] = Field(description="Fusion split factors per dimension applied before scheduling")
 
@@ -222,7 +224,7 @@ class NodePerformanceIR(BaseModel):
 
     kind: str = Field(description="Node kind, e.g. 'compute'")
     n_cores: int = Field(description="Number of cores the node is inter-core-tiled across")
-    latency_cycles: int = Field(description="The node's latency contribution to one steady-state iteration")
+    latency_cycles: float = Field(description="The node's latency contribution to one steady-state iteration")
     ideal_compute_cycles: float | None = Field(
         default=None, description="Cycles at perfect MAC spatial utilization (the compute-ideal floor)"
     )
@@ -230,13 +232,14 @@ class NodePerformanceIR(BaseModel):
         default=None, description="Fraction of the core's MAC array used spatially (1.0 = full PE array)"
     )
     compute_efficiency: float | None = Field(
-        default=None, description="ideal_compute_cycles / latency_cycles; how close to the compute-ideal this node runs"
+        default=None,
+        description="ideal_compute_cycles over the cycles of one call; how close to its ideal this node runs",
     )
     fallback: bool = Field(
         default=False,
         description=(
-            "True when a matmul/conv node's ZigZag estimate fell back to the 1-MAC/cycle scalar cost "
-            "(no CME): the spatial array was not modelled, so this node's latency is untrustworthy"
+            "True when a matmul/conv node's cost estimate fell back to ideal cycles: the spatial array was "
+            "not modelled, so this node's latency is untrustworthy"
         ),
     )
 
@@ -357,6 +360,104 @@ class MemoryOccupancyIR(BaseModel):
     )
 
 
+class ResourceActivityIR(BaseModel):
+    """One resource under the memory_ports family, in ZigZag's port-activity terms."""
+
+    kind: str = Field(default="memory_port", description="'memory_port', 'shared_bandwidth' or 'link'")
+    resource: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
+    core_ids: list[int] = Field(description="Cores sharing the resource")
+    core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
+    bw_bits_per_cycle: float = Field(description="Port bandwidth")
+    bits_per_iteration: float = Field(description="Bits the solved schedule moves through the port per iteration")
+    req_bw_aver: float | None = Field(description="Average bandwidth required over the initiation interval")
+    real_cycle: float = Field(description="Cycles the port needs for one iteration's bits")
+    allowed_cycle: float = Field(description="Initiation interval: the cycles one iteration gives the port")
+    stall_or_slack: float = Field(description="real_cycle - allowed_cycle; negative is slack")
+    utilization: float | None = Field(description="real_cycle / allowed_cycle; 1 when the port sets the interval")
+    burst_utilization: float | None = Field(description="Highest per-slot bits / (bandwidth * slot latency)")
+    burst_slot: int | None = Field(description="Slot where burst_utilization occurs")
+
+
+class MemoryBanksIR(BaseModel):
+    """A memory split into banks: byte address ``a`` sits in bank ``a // width // stripe % count``."""
+
+    count: int
+    width: int = Field(description="Bytes per bank word")
+    stripe: int = Field(description="Words a bank holds before the next: 1 interleaves words, its depth blocks them")
+
+
+class LayoutSideIR(BaseModel):
+    """One side of a transfer: the buffer its copy sits in, how the DMA walks it, and what it passes through."""
+
+    extent: list[int] = Field(description="The buffer the copy sits in, per axis: tensor off chip, tile on chip")
+    strides: list[int] = Field(description="Elements between neighbours along each axis of that buffer")
+    access: list[list[int]] = Field(
+        description="The [size, stride] loops, outermost first, in elements, the DMA walks the tile in on this side"
+    )
+    memory: str | None = Field(description="The memory instance whose port it passes, None for a measured bandwidth")
+    port: str | None = Field(description="That port, `measured` for a core's measured shared bandwidth")
+    bits_per_cycle: float | None = Field(description="Its contiguous rate")
+    burst_bytes: int | None = Field(description="Bytes it moves per access, where declared")
+    banks: MemoryBanksIR | None = Field(description="The banks of the core's memory, where declared")
+
+
+class AxisDimsIR(BaseModel):
+    """The tile's axes in the dims of a node that touches it."""
+
+    node: str
+    dims: list[str] = Field(description="Per axis, the node's dims it spans, as a mapping writes them (`D3 + D5`)")
+
+
+class LayoutIterationIR(BaseModel):
+    """A steady-state loop a transferred copy goes through, below the core level."""
+
+    dim: str = Field(description="The unique dim it iterates")
+    size: int = Field(description="Its trip count")
+    type: str = Field(description="temporal, spatial or spatiotemporal")
+    effect: str = Field(description="varying, invariant or absent: whether the copy changes across its trips")
+    reuse: str = Field(description="Whether the copy is reused across its trips")
+    halo: int = Field(description="Elements consecutive trips share along its axis")
+    axis: int | None = Field(description="The tile axis it advances, None where the copy does not index it")
+    step: int | None = Field(description="Elements it advances that axis by per trip")
+
+
+class TransferLayoutIR(BaseModel):
+    """One transfer on its chosen route: the tile it moves, where from and to, and how both copies are laid out."""
+
+    transfer: str
+    tensor: str = Field(description="The copy it reads")
+    tile_shape: list[int] = Field(description="The tile it moves per firing, per axis")
+    full_shape: list[int] = Field(description="The whole tensor the tile belongs to, per axis")
+    element_bits: int = Field(description="Bits per element")
+    source_cores: list[int] = Field(description="The cores it reads from")
+    target_cores: list[int] = Field(description="The cores it writes to")
+    source_order: list[int] = Field(description="Axis order it reads, outermost first")
+    target_order: list[int] = Field(description="Axis order it writes, outermost first")
+    converts: bool = Field(description="Whether it lays its tile out anew, as a DMA does on the fly")
+    read_run_bytes: float = Field(description="Contiguous bytes per run it reads")
+    write_run_bytes: float = Field(description="Contiguous bytes per run it writes")
+    streams_in: Literal["source", "target"] = Field(
+        description="The layout the data streams in: the target's when the DMA gathers, else the source's"
+    )
+    axes: AxisDimsIR | None = Field(description="The tile's axes in a node's dims, None where no node touches it")
+    iterations: list[LayoutIterationIR] = Field(
+        default_factory=list, description="The steady-state loops the copy goes through, outermost first"
+    )
+    read: LayoutSideIR
+    write: LayoutSideIR
+
+
+class EnergyIR(BaseModel):
+    """Energy of the solved allocation under the energy family, in pJ."""
+
+    node_pj_per_iteration: float = Field(description="Every node on the cores it runs on, in one iteration")
+    transfer_pj_per_iteration: float = Field(
+        description="Every DMA stream's bits times the energy per bit of the ports and links it uses, in one iteration"
+    )
+    per_iteration_pj: float = Field(description="node_pj_per_iteration + transfer_pj_per_iteration")
+    total_pj: float = Field(description="per_iteration_pj over every iteration of the run")
+
+
 class AllocationPerformanceView(BaseModel):
     """Performance-persona projection of AllocationIR.
 
@@ -383,16 +484,23 @@ class AllocationPerformanceView(BaseModel):
         default_factory=list,
         description="Per-core solved residency vs declared capacity: the floor on any capacity reduction",
     )
+    memory_ports: list[ResourceActivityIR] = Field(
+        default_factory=list,
+        description="Activity of each memory port, shared-bandwidth core and link, busiest first; empty unless "
+        "memory_ports is on",
+    )
+    layouts: list[TransferLayoutIR] = Field(
+        default_factory=list, description="Each transfer's tile and the layouts it reads and writes on its chosen route"
+    )
+
+    energy: EnergyIR | None = Field(default=None, description="The run's energy; None unless energy is on")
 
 
 class AllocationIR(BaseModel):
-    """Typed Pydantic model wrapping SteadyStateScheduler.get_ir() output.
+    """Typed Pydantic model wrapping Allocation.get_ir() output.
 
-    schema_version '1.1': minor bumps for additive fields, major bumps (2.0) for
+    schema_version '2.0': minor bumps for additive fields, major bumps (2.0) for
     removed/renamed fields. Construction is always via from_internal().
-
-    Note: from_internal() raises ValueError if called on a pre-solve scheduler
-    (latency_total == -1 sentinel).
     """
 
     model_config = ConfigDict(
@@ -402,8 +510,8 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["1.5"] = "1.5"
-    latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
+    schema_version: Literal["2.0"] = "2.0"
+    latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
         default=None,
@@ -412,8 +520,8 @@ class AllocationIR(BaseModel):
     cost_models: CostModelsIR | None = Field(
         default=None, description="Which cost models produced this result (transparency); always set by from_internal"
     )
-    constraint_selection: ConstraintSelectionIR | None = Field(
-        description="Constraint groups active during solve, or None if no selection was specified"
+    families: list[ConstraintFamilyIR] = Field(
+        description="The constraint families the allocation model was built from"
     )
     fusion_splits: dict[str, int] = Field(description="Fusion split factors per dimension applied before scheduling")
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
@@ -447,20 +555,13 @@ class AllocationIR(BaseModel):
     )
 
     @classmethod
-    def from_internal(cls, scheduler: SteadyStateScheduler) -> AllocationIR:
-        """Construct AllocationIR from a post-solve SteadyStateScheduler.
+    def from_internal(cls, allocation: Allocation) -> AllocationIR:
+        """Construct AllocationIR from a solved Allocation.
 
-        Calls scheduler.get_ir() once, maps the resulting dict fields to Pydantic types,
-        and validates on construction. Raises ValueError if the scheduler has not been solved
-        (latency_total == -1 sentinel from SteadyStateScheduler.__init__).
+        Calls allocation.get_ir() once, maps the resulting dict fields to Pydantic types,
+        and validates on construction.
         """
-
-        if scheduler.latency_total == -1:
-            raise ValueError("Cannot build AllocationIR from unsolved SteadyStateScheduler")
-
-        raw = scheduler.get_ir()
-        cs_raw = raw.get("constraint_selection")
-        constraint_selection = ConstraintSelectionIR(**cs_raw) if cs_raw else None
+        raw = allocation.get_ir()
 
         mapping = raw["mapping"]
         mapping_nodes = {
@@ -490,6 +591,9 @@ class AllocationIR(BaseModel):
                 overlap=OverlapIR(**perf_raw["overlap"]) if perf_raw.get("overlap") else None,
                 tensor_reuse=[TensorReuseIR(**d) for d in perf_raw.get("tensor_reuse") or []],
                 memory_occupancy=[MemoryOccupancyIR(**d) for d in perf_raw.get("memory_occupancy") or []],
+                memory_ports=[ResourceActivityIR(**d) for d in perf_raw.get("memory_ports") or []],
+                layouts=[TransferLayoutIR(**d) for d in perf_raw.get("layouts") or []],
+                energy=EnergyIR(**perf_raw["energy"]) if perf_raw.get("energy") else None,
             )
             if perf_raw
             else None
@@ -529,7 +633,7 @@ class AllocationIR(BaseModel):
             backend=raw["backend"],
             solve=solve,
             cost_models=CostModelsIR.for_backend(raw["backend"]),
-            constraint_selection=constraint_selection,
+            families=[ConstraintFamilyIR(**family) for family in raw["families"]],
             fusion_splits=raw["fusion_splits"],
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
@@ -541,12 +645,12 @@ class AllocationIR(BaseModel):
         )
 
     def algorithmic_view(self) -> AllocationAlgorithmicView:
-        """Return algorithmic-persona projection: latency, backend, constraint selection, fusion splits."""
+        """Return algorithmic-persona projection: latency, backend, constraint families, fusion splits."""
         return AllocationAlgorithmicView(
             latency=self.latency,
             backend=self.backend,
             solve=self.solve,
-            constraint_selection=self.constraint_selection,
+            families=self.families,
             fusion_splits=self.fusion_splits,
         )
 

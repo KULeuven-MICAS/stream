@@ -11,10 +11,11 @@ from stream.workload.workload import Workload
 
 
 class ExpandNormalizationStage(Stage):
-    REQUIRED_FIELDS = ("workload",)
+    reads = ("workload",)
+    writes = ("workload",)
 
     def run(self) -> Generator[StageContext]:
-        workload: Workload = self.ctx.require_value("workload", self.__class__.__name__)
+        workload: Workload = self.ctx.get("workload")
         self.ctx.set(workload=expand_normalizations(workload))
 
         sub_stage: Stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)

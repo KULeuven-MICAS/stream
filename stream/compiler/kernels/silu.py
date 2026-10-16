@@ -7,7 +7,6 @@ from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,
-    FunctionType,
     MemRefType,
     i32,
 )
@@ -23,7 +22,7 @@ from stream.compiler.kernels.aie_kernel import (
 
 @dataclass(kw_only=True)
 class SiluKernel(AIEKernel):
-    DIMS: ClassVar[Mapping[str, int]] = {"m": 0, "n": 1}
+    OPERAND_AXES: ClassVar[Mapping[str, tuple[int, int]]] = {"m": (-1, -2), "n": (-1, -1)}
     m: int = 32
     n: int = 64
     layout: str
@@ -31,13 +30,6 @@ class SiluKernel(AIEKernel):
     @property
     def function_name(self) -> str:
         return f"silu_{self.element_type}_size"
-
-    def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(
-            inputs=[op.inputs[0].type, op.inputs[1].type, i32],
-            outputs=[],
-        )
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return [elementwise_operand_layout(self.m, self.n, self.layout, self.mac) for _ in range(2)]

@@ -7,6 +7,8 @@ pytest.importorskip("snaxc", reason="the AIE kernels are a separate install, via
 from dataclasses import dataclass  # noqa: E402
 from typing import Any  # noqa: E402
 
+from xdsl.ir.affine import AffineMap  # noqa: E402
+
 from stream.compiler.kernels.flash import PartialSoftmaxKernel  # noqa: E402
 from stream.compiler.kernels.gemm import GemmKernel  # noqa: E402
 from stream.compiler.kernels.library import KernelLibrary  # noqa: E402
@@ -75,12 +77,19 @@ class _Group:
     intra_core_tiling: tuple
 
 
-def _node(name):
-    return ComputationNode(type=name, name=name, inputs=(), outputs=(), operand_mapping=())
+# The iteration spaces the Gemm and elementwise parsers give: (m, k, n) and (m, n).
+GEMM_MAPS = tuple(
+    AffineMap.from_callable(f) for f in (lambda m, k, n: (m, k), lambda m, k, n: (k, n), lambda m, k, n: (m, n))
+)
+ELEMENTWISE_MAPS = (AffineMap.identity(2), AffineMap.identity(2))
+
+
+def _node(name, maps):
+    return ComputationNode(type=name, name=name, inputs=(), outputs=(), operand_mapping=maps)
 
 
 def _attention(lib):
-    gemm, softmax = _node("Attn_QK"), _node("Attn_Softmax")
+    gemm, softmax = _node("Attn_QK", GEMM_MAPS), _node("Attn_Softmax", ELEMENTWISE_MAPS)
     workload = _Workload({gemm: (M, K, N), softmax: (M, S)})
     mapping = _Mapping(
         {
@@ -92,7 +101,7 @@ def _attention(lib):
 
 
 def test_a_group_whose_only_block_rule_is_a_divisor_offers_no_candidates():
-    gemm = _node("Gemm_Left")
+    gemm = _node("Gemm_Left", GEMM_MAPS)
     workload = _Workload({gemm: (M, K, N)})
     mapping = _Mapping({gemm: _Entry(GemmKernel(m=64, k=64, n=64, layout="default", library=library()))})
     assert block_options(workload, mapping, _Group(layers=("Gemm_Left",), intra_core_tiling=TILED)) == {}

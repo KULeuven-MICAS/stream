@@ -38,6 +38,7 @@ def test_no_descriptors_keeps_defaults():
 def test_budget_is_debited_across_fifos():
     policy = FifoDepths(budgets={(0, 1): TileBudget(bytes_free=70000, bds_free=40)})
     assert policy.deepen((2, 2), tiles((0, 1), (0, 2)), 16384) == (4, 2)
+    assert policy.deepen((2, 2), tiles((0, 1), (0, 2)), 16384) == (3, 2)
     assert policy.deepen((2, 2), tiles((0, 1), (0, 2)), 16384) == (2, 2)
 
 
@@ -59,3 +60,21 @@ def test_object_bytes():
     from xdsl.dialects.builtin import BFloat16Type
 
     assert object_bytes(elem_bits(BFloat16Type()), (64, 64)) == 8192
+
+
+def test_a_reader_deepens_as_far_as_its_slack_allows():
+    """Two more 8 KB objects do not fit half of 31 KB, one does."""
+    policy = FifoDepths(budgets={(0, 4): TileBudget(bytes_free=31744, bds_free=7)})
+    assert policy.deepen((4, 2), tiles((0, 1), (0, 4)), 8192) == (4, 3)
+
+
+def test_a_broadcast_deepens_its_readers_together():
+    """Every reader takes the depth the tightest one affords."""
+    policy = FifoDepths(
+        budgets={
+            (0, 2): TileBudget(bytes_free=1 << 20, bds_free=40),
+            (1, 2): TileBudget(bytes_free=20000, bds_free=40),
+        }
+    )
+    assert policy.deepen((4, 2, 2), tiles((0, 1), (0, 2), (1, 2)), 8192) == (4, 3, 3)
+    assert policy.budgets[(0, 2)].bytes_free == (1 << 20) - 8192

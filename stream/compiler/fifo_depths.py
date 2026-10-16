@@ -36,37 +36,41 @@ class FifoDepths:
     def deepen(
         self, depths: tuple[int, ...], tiles: tuple[SSAValue, ...], object_bytes: int, feed: bool = True
     ) -> tuple[int, ...]:
-        """Per-endpoint depths, raised where the endpoint's tile has slack for the extra objects."""
-        if not feed:
-            return depths
-        if len(depths) != len(tiles):
+        """Per-endpoint depths, raised as far as each endpoint's tile has slack for the extra objects. Readers on
+        compute tiles deepen together, since a broadcast advances only once every reader has room."""
+        if not feed or len(depths) != len(tiles):
             return depths
         out = list(depths)
+        readers = []
         for i, tile in enumerate(tiles):
-            if out[i] != DEFAULT_DEPTH:
-                continue
             coords = self._coords(tile)
-            if coords is None:
+            if out[i] != DEFAULT_DEPTH or coords is None or coords not in self.budgets:
                 continue
             if coords[1] == MEM_ROW:
-                margin = BYTE_MARGIN
+                out[i] = self._spend(coords, self._affordable(coords, BYTE_MARGIN, object_bytes), object_bytes)
             elif coords[1] >= COMPUTE_ROW and i > 0:
-                margin = COMPUTE_BYTE_MARGIN
-            else:
-                continue
-            budget = self.budgets.get(coords)
-            if budget is None:
-                continue
-            extra = self.max_depth - out[i]
-            if extra <= 0:
-                continue
-            cost = extra * object_bytes
-            if budget.bytes_free * margin < cost or budget.bds_free * BD_MARGIN < extra:
-                continue
-            budget.bytes_free -= cost
-            budget.bds_free -= extra
-            out[i] = self.max_depth
+                readers.append((i, coords))
+        if readers:
+            depth = min(self._affordable(coords, COMPUTE_BYTE_MARGIN, object_bytes) for _, coords in readers)
+            for i, coords in readers:
+                out[i] = self._spend(coords, depth, object_bytes)
         return tuple(out)
+
+    def _affordable(self, coords: tuple[int, int], margin: float, object_bytes: int) -> int:
+        """The deepest depth up to ``max_depth`` whose extra objects fit the tile's slack."""
+        budget = self.budgets[coords]
+        for depth in range(self.max_depth, DEFAULT_DEPTH, -1):
+            extra = depth - DEFAULT_DEPTH
+            if budget.bytes_free * margin >= extra * object_bytes and budget.bds_free * BD_MARGIN >= extra:
+                return depth
+        return DEFAULT_DEPTH
+
+    def _spend(self, coords: tuple[int, int], depth: int, object_bytes: int) -> int:
+        budget = self.budgets[coords]
+        extra = depth - DEFAULT_DEPTH
+        budget.bytes_free -= extra * object_bytes
+        budget.bds_free -= extra
+        return depth
 
 
 def object_bytes(elem_bits: int, shape: tuple[int, ...]) -> int:

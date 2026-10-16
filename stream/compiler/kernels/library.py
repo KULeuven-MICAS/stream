@@ -13,7 +13,7 @@ import yaml
 
 FAMILIES = ("matmul", "vector")
 _FAMILY_KEYS = {"ops_per_cycle", "mac"}
-_KERNEL_KEYS = {"family", "source", "object", "dims", "cycles", "per_op"}
+_KERNEL_KEYS = {"family", "binding", "object", "dims", "cycles", "per_op"}
 _DIM_KEYS = {"name", "runtime", "fixed", "blocks", "divisor", "keep_whole"}
 
 
@@ -45,8 +45,8 @@ class KernelSpec:
     symbol: str
     family: str
     dims: tuple[CallDim, ...]
+    binding: str | None = None
     object: str | None = None
-    source: str | None = None
     cycles: tuple[tuple[Mapping[str, int], float], ...] = ()
     per_op: tuple[float, int] | None = None
 
@@ -80,7 +80,8 @@ class KernelLibrary:
 
     @property
     def mac(self) -> Mapping[str, int]:
-        """The matmul unit's tile, which is also the tiling an operand leaves a matmul in."""
+        """The matmul unit's tile, one of which it computes per cycle, which is also the tiling an operand leaves a
+        matmul in."""
         family = self.families.get("matmul")
         if family is None or family.mac is None:
             raise ValueError("the kernel library declares no matmul MAC tile")
@@ -134,8 +135,8 @@ def _kernel(symbol: str, entry: Mapping[str, Any], families: Mapping[str, Family
         symbol=symbol,
         family=entry["family"],
         dims=tuple(dims),
+        binding=entry.get("binding"),
         object=entry.get("object"),
-        source=entry.get("source"),
         cycles=tuple(cycles),
         per_op=(float(per_op["cycles"]), int(per_op["ops"])) if per_op else None,
     )

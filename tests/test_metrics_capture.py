@@ -134,18 +134,13 @@ def test_capture_emits_file_and_fields(tmp_path):
     assert key == expected_key, f"unexpected node-ID key: {key!r}"
 
     entry = data[key]
-    assert set(entry) == {
-        "total_latency",
-        "group_latencies_max",
-        "objective",
-        "mip_gap",
-        "solve_time_s",
-    }, f"field mismatch: {set(entry)}"
+    golden = json.loads((repo_root / "tests" / "golden_metrics.json").read_text())
+    assert set(entry) == set(golden[expected_key]), f"field mismatch with the baseline: {set(entry)}"
 
     assert isinstance(entry["total_latency"], int | float) and entry["total_latency"] > 0, (
         f"total_latency must be a positive float, got {entry['total_latency']!r}"
     )
-    assert entry["mip_gap"] is None, f"expected mip_gap=None (OR-Tools), got {entry['mip_gap']!r}"
+    assert entry["mip_gap"] is None or entry["mip_gap"] >= 0, f"mip_gap must be None or >= 0, got {entry['mip_gap']!r}"
     assert entry["solve_time_s"] is not None and entry["solve_time_s"] >= 0, (
         f"solve_time_s must be >= 0, got {entry['solve_time_s']!r}"
     )

@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from xdsl.ir.affine import AffineExpr
 
 from stream.datatypes import LayerDim
 from stream.workload.affine_access import footprint, map_dim_positions
@@ -50,6 +51,15 @@ class TensorRefIR(BaseModel):
 
     name: str
     shape: list[int] = Field(default_factory=list, description="Dimension sizes, in tensor-axis order")
+    dims: list[str] = Field(
+        default_factory=list, description="Per tensor axis, the unique dims it spans, as the nodes' dims write them"
+    )
+
+
+class OperandIR(TensorRefIR):
+    """A tensor a node reads or writes, each axis written in the unique dims it spans as the node indexes it."""
+
+    role: Literal["input", "output"]
 
 
 class OperandReuseIR(BaseModel):
@@ -105,6 +115,9 @@ class GraphNodeIR(BaseModel):
     proposed_region: int | None = Field(default=None, description="Auto-proposed fusion-region id")
     tensor: TensorRefIR | None = Field(
         default=None, description="For input/output boundary nodes: the tensor (name + shape) they carry"
+    )
+    tensors: list[OperandIR] = Field(
+        default_factory=list, description="The tensors a node iterating over its dims reads and writes, in order"
     )
     reuse: list[OperandReuseIR] = Field(default_factory=list)
     reduction_axes: list[AxisRefIR] | None = None
@@ -173,7 +186,7 @@ class WorkloadGraphView(BaseModel):
         nodes = [_node_ir(by_name[name], dims, block_of, region_of, proposed_of) for name in order]
         edges = []
         for s, t in workload.edges:
-            shared = _shared(s, t)
+            shared = _shared(s, t, dims)
             edges.append(
                 GraphEdgeIR(source=s.name, target=t.name, shared_tensors=[x.name for x in shared], tensors=shared)
             )
@@ -196,7 +209,11 @@ class _DimResolver:
     def __init__(self, workload: Workload):
         self._global_idxs = workload.global_idxs
         _, self._expressions = workload.unique_dimensions()
-        self._ranges = workload.get_dimension_sizes()
+        self._size = workload.get_dimension_size
+        self._workload = workload
+
+    def neighbours(self, node) -> list:
+        return [*self._workload.predecessors(node), *self._workload.successors(node)]
 
     def dims(self, node: HasIterationSpace) -> list[LayerDim]:
         span = self._global_idxs[node]
@@ -204,7 +221,7 @@ class _DimResolver:
 
     def size(self, dim: LayerDim) -> int | None:
         try:
-            return self._ranges[self._expressions.index(dim)]
+            return self._size(dim)
         except Exception:  # noqa: BLE001 -- unknown sizes render blank, exactly as get_dimension_size
             return None
 
@@ -217,17 +234,25 @@ def _topo_names(workload: Workload) -> list[str]:
     return [n.name for n in workload.dataflow_sort()]
 
 
-def _tensor_ref(t: Tensor) -> TensorRefIR:
+def _tensor_ref(t: Tensor, resolver: _DimResolver, *nodes) -> TensorRefIR:
+    """``t`` with its shape and, read through the first of ``nodes`` that iterates over it, each axis' unique dims."""
     try:
         shape = [int(s) for s in t.shape]
     except Exception:  # noqa: BLE001 -- a symbolic/unknown shape renders as no dims, not a crash
         shape = []
-    return TensorRefIR(name=t.name, shape=shape)
+    node = next((n for n in nodes if isinstance(n, HasIterationSpace) and t in n.tensors), None)
+    dims = [] if node is None else [_axis(r, resolver.dims(node)) for r in node.get_mapping(t).results]
+    return TensorRefIR(name=t.name, shape=shape, dims=dims)
 
 
-def _shared(src, dst) -> list[TensorRefIR]:
+def _axis(expr: AffineExpr, dims: list[LayerDim]) -> str:
+    text = str(expr.replace_dims_and_symbols(dims, [])).replace("+ -", "- ")
+    return text[1:-1] if text.startswith("(") and text.endswith(")") else text
+
+
+def _shared(src, dst, resolver: _DimResolver) -> list[TensorRefIR]:
     if isinstance(src, HasOutputs) and isinstance(dst, HasInputs):
-        return [_tensor_ref(t) for t in src.outputs if t in dst.inputs]
+        return [_tensor_ref(t, resolver, src, dst) for t in src.outputs if t in dst.inputs]
     return []
 
 
@@ -333,9 +358,9 @@ def _node_ir(
     )
     # Boundary nodes (graph inputs/outputs) carry a single tensor -- keep its shape.
     if isinstance(node, InEdge) and node.outputs:
-        ir.tensor = _tensor_ref(node.outputs[0])
+        ir.tensor = _tensor_ref(node.outputs[0], resolver, *resolver.neighbours(node))
     elif isinstance(node, OutEdge) and node.inputs:
-        ir.tensor = _tensor_ref(node.inputs[0])
+        ir.tensor = _tensor_ref(node.inputs[0], resolver, *resolver.neighbours(node))
     if not isinstance(node, HasIterationSpace):
         return ir
 
@@ -343,6 +368,11 @@ def _node_ir(
     iterator_types = derive_iterator_types(node)
     ir.dims = [
         GraphDimIR(name=str(d), size=resolver.size(d), iterator_type=iterator_types[p].name) for p, d in enumerate(dims)
+    ]
+    ir.tensors = [
+        OperandIR(**_tensor_ref(t, resolver, node).model_dump(), role=role)
+        for role, tensors in (("input", node.inputs), ("output", node.outputs))
+        for t in tensors
     ]
     ir.is_recurrence = bool(sequential_dims(node))
     ir.reuse = _reuse(node, ir.dims)
