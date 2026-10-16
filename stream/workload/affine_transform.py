@@ -19,9 +19,6 @@ import numpy.typing as npt
 from xdsl.ir.affine import (
     AffineBinaryOpExpr,
     AffineBinaryOpKind,
-    AffineConstantExpr,
-    AffineDimExpr,
-    AffineExpr,
     AffineMap,
 )
 
@@ -82,19 +79,6 @@ class AffineTransform:
             a[:, dim] = temp - b
 
         return cls(a, b)
-
-    def to_affine_map(self) -> AffineMap:
-        """
-        Return the xDSL AffineMap representation of this AffineTransform
-        """
-        results: list[AffineExpr] = []
-        for result in range(self.num_results):
-            expr = AffineConstantExpr(int(self.b[result]))
-            for dim in range(self.num_dims):
-                if self.A[result, dim] != 0:
-                    expr += AffineConstantExpr(int(self.A[result, dim])) * AffineDimExpr(dim)
-            results.append(expr)
-        return AffineMap(self.num_dims, 0, tuple(results))
 
     @property
     def num_dims(self) -> int:

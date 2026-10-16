@@ -1,6 +1,7 @@
 import logging
 
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.parser.mapping_parser import MappingParser
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.node import HasIterationSpace
@@ -12,25 +13,21 @@ PER_LAYER = "per-layer"
 
 
 class GenericMappingGenerationStage(Stage):
-    """Generate per-fusion-group mapping YAMLs from workload+accelerator.
+    """Generate each fusion group's mapping from workload+accelerator, written as YAML beside the run."""
 
-    Reads: accelerator, workload, output_path
-    Writes: group_mapping_paths (list[str] of YAML file paths), sub_workloads (list[Workload])
-    Delegates to: FusionGroupIterationStage (next in list_of_callables)
-    """
-
-    REQUIRED_FIELDS = ("accelerator", "workload", "output_path")
+    reads = ("accelerator", "workload", "output_path")
+    optional_reads = ("fusion_cut_points", "intra_core_tiling")
+    writes = ("sub_workloads", "sub_mappings")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
-        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
-        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
-        self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
+        self.accelerator = self.ctx.get("accelerator")
+        self.workload = self.ctx.get("workload")
+        self.output_path = self.ctx.get("output_path")
 
     def run(self):
-        from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415
-
-        # Caller-supplied cuts win over the derived ones.
+        # Caller-supplied cuts win over the ones the generator derives (the affine barriers, and where a group's
+        # weights cannot stay on its cores).
         cut_points = self.ctx.get("fusion_cut_points", None)
         if cut_points == PER_LAYER:
             # A cut point ends its group, so cut after every layer but the last -> one group per layer.
@@ -38,8 +35,7 @@ class GenericMappingGenerationStage(Stage):
             cut_points = names[:-1]
             logger.info(f"Layer-by-layer: cutting at every layer boundary ({len(cut_points)} cuts)")
         elif cut_points is None:
-            cut_points = determine_fusion_cut_points(self.workload)
-            logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+            logger.info("Fusion cut points derived by the mapping generator")
         else:
             logger.info(f"Using {len(cut_points)} caller-supplied fusion cut points: {cut_points}")
 
@@ -53,8 +49,10 @@ class GenericMappingGenerationStage(Stage):
         group_mapping_paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
         logger.info(f"Generated {len(group_mapping_paths)} group mapping(s): {group_mapping_paths}")
 
-        # Write both paths AND sub_workloads to context so FusionGroupIterationStage
-        # does NOT need to re-call split_fusion_groups() (avoids duplicate work per WARNING 2)
-        self.ctx.set(group_mapping_paths=group_mapping_paths, sub_workloads=sub_workloads)
+        sub_mappings = [
+            MappingParser(path, sub_workload, self.accelerator).run()
+            for path, sub_workload in zip(group_mapping_paths, sub_workloads, strict=True)
+        ]
+        self.ctx.set(sub_workloads=sub_workloads, sub_mappings=sub_mappings)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()

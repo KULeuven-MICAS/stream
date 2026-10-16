@@ -59,10 +59,20 @@ core_connectivity:
 | `cores` | yes | Map of integer **core id → core file**. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
 | `offchip_core_id` | yes | The id of the core that fronts external memory (DRAM). Must appear in `cores`. No computation is ever placed here. |
 | `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
+| `bandwidth` | no | Map of core id to the measured bandwidth every transfer through that core shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes, or, where nothing is measured, `burst`, the bytes the memory moves per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). The allocation then runs no transfer through the core faster than its access pattern allows, and bounds every step by the time the core spends on one iteration's transfers. A key can also name one memory port, see [Memory ports](#memory-ports). |
+| `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
 | `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
-| `core_memory_sharing` | no | Groups of core ids that share L1 memory, e.g. `["0, 1", "2, 3"]`. |
+| `core_memory_sharing` | no | Groups of core ids that share their top-level memory, e.g. `["0, 1", "2, 3"]`. Its capacity bounds everything the group's cores hold in it together: split tiles add up, a tensor each core holds whole counts once. Data between the group's cores moves in place, without a route; the group sends and receives through its first core where that one has links, and the shared memory is priced once. |
+
+### Memory ports
+
+A `bandwidth` key `<core id>.<memory>.<port>` (e.g. `2.dram.rw_port_1`) gives the measured model to one port of a top-level memory of a ZigZag core. It replaces that port's `bandwidth_max`, in bits per cycle. A core with a core-id key has no per-port model, so it takes no port key.
+
+A port belongs to a physical memory: cores in one `core_memory_sharing` group share it, and memories listed in one `memory_aliases` group share the ports of the group's first memory.
+
+The `memory_ports` [constraint family](stages.md#constraint-families), in the default set, uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
 ### Connections: `link` vs `bus`
 
@@ -76,6 +86,8 @@ Each entry in `core_connectivity` is one connection:
 | `unit_energy_cost` | no | Per-word energy for this connection; inherits the accelerator-level default if omitted. |
 
 Connections are how the MILP allocator routes tensors between cores. A typical accelerator has fast point-to-point `link`s on-chip and one wider `bus` to the off-chip core.
+
+A transfer's route serves each target from the nearest core holding the data it reads, then joins each source's targets in one tree (a Steiner tree, grown from the shortest paths with each link weighted by the time the transfer already keeps it busy), so data shared by several targets crosses each link once. Partial sums, of a computation split over a dimension it reduces, are added up on their way to their target; one headed off-chip is completed in the on-chip memories next to it, a slice each, as a reduce-scatter. A route never passes through the off-chip core, and a bus carries what each core sends over it separately. Each link is charged the share of the transfer's data crossing it.
 
 ---
 
@@ -193,6 +205,55 @@ operator_types: [MaxPool, AveragePool, GlobalAveragePool]
 ```
 
 If `operator_types` is omitted, the core accepts **any** operator. The auto-mapper (see [Mapping](mapping.md)) uses this field to decide which nodes a core is eligible for - e.g. SiLU/Mul go to the SIMD core, pooling to the pooling core, and Conv/Gemm to the general compute cores.
+
+### Operand precision
+
+A compute core can declare the element types it computes in:
+
+```yaml
+operand_precision:
+  input: bf16
+  accumulator: fp32
+```
+
+The `accumulator` sets how wide a matmul's or convolution's partial sums are while the core accumulates them; the
+result is written out at its output tensor's type. A core without an `accumulator` keeps partial sums at the output's
+type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
+`int8`, `uint8`, `int16`, `int24`, `bf16`, `fp16`, `int32` and `fp32`.
+
+### Memory banks
+
+A core can declare how its memory is banked, for the layout report to place each tile's bytes in banks:
+
+```yaml
+banks:
+  count: 8     # banks
+  width: 16    # bytes per bank word
+  stripe: 512  # words a bank holds before the next one does; 1 (the default) interleaves words
+```
+
+Byte address `a` sits in bank `a // width // stripe % count`. An AIE-ML tile's eight banks are each one contiguous
+8 KB range (`stripe: 512`); a memory that interleaves words across its banks takes the default. The allocation does
+not price bank conflicts: the banks only describe where data lands.
+
+### Systolic arrays
+
+An operational array whose operands move from one unit to the next, one unit per cycle, rather than being broadcast,
+lists the dimensions they move along:
+
+```yaml
+operational_array:
+  dimensions: [D1, D2]
+  sizes: [256, 256]
+  systolic_dimensions: [D1, D2]
+```
+
+ZigZag then adds the cycles the last results take to leave the array, one per unit in use along each such dimension
+(510 on a full 256 x 256 array). A run's tiles follow each other through the array, so Stream charges this drain once
+per run, in its fill, rather than on every tile. A node that reads another's results waits for them to drain, while
+one that does not streams into its array behind it, so the fill adds the drains along the run's longest chain of
+dependent nodes: a SwiGLU's gate and up projections drain together, then its down projection. The TPU-like, TPU7x MXU
+and FuseMax arrays are systolic.
 
 ### AIE cores
 

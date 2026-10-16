@@ -10,19 +10,20 @@ namespaces = true
 [tool.setuptools.package-data]
 # Ship the static hardware-description YAMLs so a pip-installed package can run
 # codegen without a checkout. (.py-only is the setuptools default; declare the
-# data files explicitly.) cores/ holds the per-tile descriptions referenced by
-# the top-level accelerator YAMLs. Test workloads/onnx fixtures are intentionally
-# NOT shipped.
+# data files explicitly.) cores/ holds the per-tile descriptions and kernels/ the
+# kernel library referenced by the top-level accelerator YAMLs. Test
+# workloads/onnx fixtures are intentionally NOT shipped.
 "stream" = [
     "inputs/aie/hardware/*.yaml",
     "inputs/aie/hardware/cores/*.yaml",
+    "inputs/aie/kernels/*.toml",
     "inputs/examples/hardware/*.yaml",
     "inputs/examples/hardware/cores/*.yaml",
 ]
 
 [project]
 name = "stream-dse"
-version = "1.14.1"
+version = "2.1.1"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -33,7 +34,7 @@ classifiers = [
 ]
 keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", "zigzag", "dse", "design-space-exploration", "machine-learning", "deep-learning", "mapping"]
 dependencies = [
-    "zigzag-dse==3.8.5",
+    "zigzag-dse==3.9.1",
     "cerberus",
     "ortools>=9.15",
     "pydantic>=2.0,<2.12",
@@ -76,12 +77,10 @@ stream-setup-aie = "stream.aie_setup:main"
 onnx = "stream.frontends.onnx:OnnxFrontend"
 torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 
-# Namespace-specific MILP constraints: the entry-point name is the core namespace, its object a
-# NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a
-# core of that namespace, so an out-of-tree extension supplies constraints for its own hardware
-# namespace. The built-in aie2 strategy registers here too -- the public path is the plugin path.
-[project.entry-points."stream.constraints"]
-aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
+# Pipeline observers, enabled per run by SolveOptions.instrumentation. `timing` profiles every stage and
+# the spans inside them.
+[project.entry-points."stream.instrumentation"]
+timing = "stream.profiling:TimingInstrumentation"
 
 # Core-cost estimator backends: the entry-point name is the backend's `name` (= metadata["backend"]),
 # its object a CoreCostBackend that `claims` the cores it models and `make`s the estimator. The engine's
@@ -90,6 +89,16 @@ aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 [project.entry-points."stream.core_cost_backends"]
 aie = "stream.stages.estimation.core_cost_backends:AIE_BACKEND"
 zigzag = "stream.stages.estimation.core_cost_backends:ZIGZAG_BACKEND"
+
+# Code generation backends: the entry-point name is the backend's `name`, its object a CodegenBackend
+# that `claims` the accelerators it emits code for and returns the per-group codegen `stage()`.
+[project.entry-points."stream.codegen_backends"]
+aie2 = "stream.stages.codegen.backends:AIE2_CODEGEN"
+
+# Mapping generators: the entry-point name is the generator's `name`, its object a MappingGenerator that
+# `claims` the accelerators it proposes mappings for and returns the `stages()` that build them.
+[project.entry-points."stream.mapping_generators"]
+generic = "stream.stages.generation.mapping_generators:GENERIC_MAPPING"
 
 # A plugin distribution declares itself here so it can be allowlisted (STREAM_ALLOWED_OVERLAYS) and
 # ordered by an OVERLAY_PRIORITY int on its module -- public entry points are priority 0, so a plugin
@@ -113,7 +122,7 @@ zigzag = "stream.stages.estimation.core_cost_backends:ZIGZAG_BACKEND"
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
 [tool.bumpver]
-current_version = "1.14.1"
+current_version = "2.1.1"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true

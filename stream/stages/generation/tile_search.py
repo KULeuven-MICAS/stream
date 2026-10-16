@@ -1,11 +1,11 @@
 import logging
 import os
+import shutil
 from dataclasses import replace
 
-from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.ir.infeasibility import InfeasibleAllocationError, save_infeasibility_report
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
-from stream.stages.generation.mapping_generation import save_infeasibility_report
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import Workload
 
@@ -17,7 +17,11 @@ GROWTH_FACTORS = (2, 4)
 class TileSearchStage(Stage):
     """Let the optimizer choose each fused group's intra-core tile size."""
 
-    REQUIRED_FIELDS = ("workload", "mapping", "output_path")
+    reads = ("workload", "mapping", "output_path")
+    optional_reads = ("tile_search",)
+    writes = ("mapping", "output_path", "placement_alternatives", "placement_reserves")
+    result_reads = ("allocation",)
+    result_writes = ("output_path",)
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
@@ -47,12 +51,12 @@ class TileSearchStage(Stage):
 
     def run(self):
         if not self.enabled:
-            self.ctx.data.pop("placement_alternatives", None)
+            self.ctx.pop("placement_alternatives")
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             yield from sub_stage.run()
             return
-        attempts = [self.mapping, *(self.ctx.data.pop("placement_alternatives", None) or [])]
-        reserves = self.ctx.data.pop("placement_reserves", None) or []
+        attempts = [self.mapping, *(self.ctx.pop("placement_alternatives") or [])]
+        reserves = self.ctx.pop("placement_reserves") or []
         entry = dict(self.ctx.data)
         best = None
         error: Exception | None = None
@@ -131,15 +135,16 @@ class TileSearchStage(Stage):
         return best_context, best_index, best_latency, len(candidates)
 
     def _finish(self, best_context, best_index, best_latency, n):
+        """Hand on the chosen candidate's context, its files copied into the group's own folder."""
         logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, n, best_latency)
+        shutil.copytree(best_context.get("output_path"), self.output_path, dirs_exist_ok=True)
         best_context.set(output_path=self.output_path)
         self.ctx = best_context
         return best_context
 
     def _seed_exhausted(self, ctx) -> bool:
         """A seed that alone hits the solve budget is not a model to search over."""
-        stats = ctx.get("scheduler").solve_stats
-        if stats is not None and stats.status == "TIME_LIMIT":
+        if ctx.get("allocation").solution.solve_stats.status == "TIME_LIMIT":
             logger.info("Seed solve hit the time limit; skipping tile candidates")
             return True
         return False
@@ -148,4 +153,4 @@ class TileSearchStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
-        return ctxs, ctxs[0].get("scheduler").latency_total
+        return ctxs, ctxs[0].get("allocation").estimated_cycles

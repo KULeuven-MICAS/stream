@@ -102,13 +102,6 @@ class Mapping:
             raise TypeError("layer_mapping must be a NodeMapping instance")
         self._by_node[node] = layer_mapping
 
-    def update_memory_allocation_for_node(
-        self,
-        node: Node,
-        new_memory_allocation: tuple[tuple[Core, ...], ...],
-    ) -> None:
-        self._by_node[node].memory_allocation = new_memory_allocation
-
     def update_inter_core_tiling(self, node: Node, new_inter_core_tiling: tuple[InterCoreTiling, ...]) -> None:
         self._by_node[node].inter_core_tiling = new_inter_core_tiling
 

@@ -1,11 +1,13 @@
+from functools import cached_property
 from typing import Any
 
-from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.kernels.library import KernelLibrary
+from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
+from stream.hardware.ports import MemoryRef, PortRef, PortRegistry
 
 
 class CoreGraph(DiGraphWrapper[Core]):
@@ -19,19 +21,31 @@ class Accelerator:
     In this Stream version, the cores are actually a graph with directed edges representing communication links.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         name: str,
         cores: CoreGraph,
-        nb_shared_mem_groups: int,
+        shared_mem_group_ids: dict[int, int],
         offchip_core_id: int | None = None,
         kernel_library: KernelLibrary | None = None,
+        bandwidth: dict[int, BandwidthModel] | None = None,
+        *,
+        reconfiguration: dict | None = None,
+        port_bandwidth: dict[PortRef, BandwidthModel] | None = None,
+        memory_aliases: dict[MemoryRef, MemoryRef] | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
         self.cores = cores
         self.offchip_core_id = offchip_core_id
-        self.nb_shared_mem_groups = nb_shared_mem_groups
+        self.bandwidth = bandwidth or {}
+        # (core id, memory instance, port name) -> measured model replacing the port's declared width
+        self.port_bandwidth = port_bandwidth or {}
+        # (core id, memory instance) -> the first memory of its `memory_aliases` group, the physical one
+        self.memory_aliases = memory_aliases or {}
+        self.reconfiguration = reconfiguration or {}
+        # core id -> the first core of its `core_memory_sharing` group, whose top-level memory it uses
+        self.shared_mem_group_ids = shared_mem_group_ids
         self.communication_manager = CommunicationManager(self)
 
     def get_core(self, core_id: int) -> Core:
@@ -41,21 +55,26 @@ class Accelerator:
         """
         return self.cores.get_node_with_id(core_id)
 
-    def get_offchip_core(self) -> Core:
-        """Return the offchip core."""
-        assert self.offchip_core_id, "This accelerator has no offchip core id."
-        return self.get_core(self.offchip_core_id)
+    @property
+    def nb_shared_mem_groups(self) -> int:
+        return len(set(self.shared_mem_group_ids.values()))
 
-    def get_spatial_mapping_from_core(self, core_allocation: list[int]) -> SpatialMapping:
-        """Iff the dataflows of all given cores is the same, return that dataflow. Otherwise, throw an error"""
-        all_dataflows = [self.get_core(core_id).dataflows for core_id in core_allocation]
-        some_dataflow = all_dataflows.pop()
+    @property
+    def core_memory_sharing(self) -> list[list[int]]:
+        """The ids of each group of cores that share one top-level memory."""
+        groups: dict[int, list[int]] = {}
+        for core_id, owner in sorted(self.shared_mem_group_ids.items()):
+            groups.setdefault(owner, []).append(core_id)
+        return [ids for ids in groups.values() if len(ids) > 1]
 
-        # All cores have same dataflow
-        if some_dataflow is not None and all(some_dataflow == dataflow for dataflow in all_dataflows):
-            return some_dataflow
+    def memory_of(self, core: Core) -> Core:
+        """The core owning the top-level memory ``core`` uses: the first of its `core_memory_sharing` group."""
+        return self.get_core(self.shared_mem_group_ids.get(core.id, core.id))
 
-        raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
+    @cached_property
+    def ports(self) -> PortRegistry:
+        """The top-level memory ports of every core."""
+        return PortRegistry.from_accelerator(self)
 
     @property
     def core_list(self) -> list[Core]:
@@ -119,6 +138,7 @@ class Accelerator:
             "num_cores": len(list(self.cores.nodes)),
             "offchip_core_id": self.offchip_core_id,
             "nb_shared_mem_groups": self.nb_shared_mem_groups,
+            "core_memory_sharing": self.core_memory_sharing,
             "cores": cores_ir,
             "core_connectivity": links_ir,
         }

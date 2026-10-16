@@ -1,4 +1,4 @@
-"""Tests for Accelerator.get_ir() and parse_accelerator_ir().
+"""Tests for Accelerator.get_ir().
 
 Each test builds a real accelerator from one of the checked-in hardware YAML
 files, calls get_ir(), and asserts that the structure of the returned dictionary
@@ -11,11 +11,11 @@ import pytest
 import yaml
 from zigzag.utils import open_yaml
 
-from stream.api import parse_accelerator_ir
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.parser.core_validator import ALLOWED_KINDS
+from stream.stages.parsing.accelerator_parser import parse_accelerator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -265,17 +265,9 @@ def test_get_ir_connectivity_references_valid_core_ids(hardware_path, expected):
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
-def test_parse_accelerator_ir_writes_yaml(hardware_path, expected, tmp_path):
-    """parse_accelerator_ir() must write a valid YAML file and return its path."""
-
-    out_path = tmp_path / "accel_ir.yaml"
-    returned = parse_accelerator_ir(str(REPO_ROOT / hardware_path), str(out_path))
-
-    assert returned == str(out_path)
-    assert out_path.exists()
-
-    with open(out_path) as f:
-        data = yaml.safe_load(f)
+def test_accelerator_ir_round_trips_through_yaml(hardware_path, expected):
+    """The IR of a parsed hardware description is plain YAML."""
+    data = yaml.safe_load(yaml.dump(parse_accelerator(str(REPO_ROOT / hardware_path)).get_ir(), sort_keys=False))
 
     assert data["name"] == expected["name"]
     assert data["num_cores"] == expected["expected_num_cores"]

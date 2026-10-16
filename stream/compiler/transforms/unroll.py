@@ -66,6 +66,7 @@ class UnrollComputationNodes(RewritePattern):
                 output_tensor.ssis,
                 (core,),
                 output_tensor.reuse_index,
+                output_tensor.buffers,
             )
             new_ops.append(
                 ComputationNodeOp(
@@ -116,6 +117,7 @@ class UnrollTransfers(RewritePattern):
                     output.type.ssis,
                     (core,),
                     output.type.reuse_index,
+                    output.type.buffers,
                 )
                 ssis = StrensorSpaceAttr(StrensorSpace(tuple(var)))
                 pull_ops.append(PullOp(result_type, channel, ssis))

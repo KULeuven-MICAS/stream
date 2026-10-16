@@ -63,7 +63,3 @@ class SteadyStateComputation(ComputationNode, Node):
             steady_state_iteration_space=steady_state_iteration_space,
         )
         self.chosen_resource_allocation = possible_resource_allocation[0] if possible_resource_allocation else None
-
-    @property
-    def plot_name(self):
-        return self.node_name

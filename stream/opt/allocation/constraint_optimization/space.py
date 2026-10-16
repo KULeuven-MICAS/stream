@@ -1,0 +1,580 @@
+"""The choices an allocation model decides between, read off the steady-state problem before any variable exists."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from functools import cached_property, reduce
+from math import ceil, prod
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+import numpy as np
+
+from stream.cost_model.bandwidth import BandwidthModel
+from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.hardware.ports import OUTPUT, READ, input_role
+from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
+from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
+from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
+from stream.workload.iterator_type import is_state_operand
+from stream.workload.node import HasOutputs, TransferType
+from stream.workload.steady_state.iteration_space import IterationVariableType, Reuse
+from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode
+
+if TYPE_CHECKING:
+    from stream.allocation.problem import AllocationProblem
+    from stream.cost_model.layout import Rate
+    from stream.hardware.ports import Port
+    from stream.workload.steady_state.node import Node
+    from stream.workload.workload import Workload
+
+Placement: TypeAlias = tuple[Core, ...]
+Choice: TypeAlias = tuple[TransferNode, MulticastPathPlan]
+
+
+class DecisionSpace:
+    """What the allocation decides between: the placements each tensor may take, the routes each transfer may
+    take and the reuse stops of each tensor, with the facts every family reads off them. Read-only once built."""
+
+    def __init__(self, problem: AllocationProblem) -> None:
+        self.problem = problem
+        self.workload = problem.workload
+        self.slot_of = problem.timeslots
+        self.accelerator = problem.accelerator
+        self.hardware = problem.hardware
+        self.offchip_core_id = self.hardware.offchip_core_id
+        self.shared_bandwidth: dict[int, BandwidthModel] = dict(self.accelerator.bandwidth)
+        self.iterations = problem.iterations
+        self.ssis = problem.ssis
+        self.mapping = problem.mapping
+        self.cost_lut = problem.cost_lut
+        self.max_slot = max(self.slot_of.values()) if self.slot_of else 0
+        self.big_m = len(self.workload.nodes()) + 5
+        self.mem_cores = list(self.hardware.mem_cores)
+        self.ssc_nodes: tuple[ComputationNode, ...] = tuple(self.workload.get_computation_nodes())
+        self.transfer_nodes: tuple[TransferNode, ...] = tuple(self.workload.get_transfer_nodes())
+
+        self.tensor_fixed: list[Tensor] = []
+        self.tensor_var: list[Tensor] = []
+        self.tensor_choices: dict[Tensor, tuple[Placement, ...]] = {}
+        self.path_choices: dict[TransferNode, tuple[MulticastPathPlan, ...]] = {}
+        self._init_option_sets()
+        self._fixed = frozenset(self.tensor_fixed)
+        self._candidates: dict[Tensor, set[Core]] = {}
+        self._broadcast: dict[TransferNode, bool] = {}
+        self._one_memory: dict[TransferNode, bool] = {}
+        self._overlaps: dict[TransferNode, dict[tuple[int, int], int]] = {}
+
+        self.reuse_levels: dict[tuple[Tensor, int], int] = {}
+        self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
+        self.rotation_levels: dict[tuple[Tensor, int], bool] = {}
+        self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
+        self.tensors_to_optimize_reuse_for: list[Tensor] = []
+        self._ensure_same_ssis_for_all_transfers()
+        self._init_transfer_fire_helpers()
+
+        self.link_set: set[CommunicationLink] = set()
+        self.links_in_choice: dict[Choice, set[CommunicationLink]] = {}
+        self.choice_src_cores: dict[Choice, set[Core]] = {}
+        self.choice_dst_cores: dict[Choice, set[Core]] = {}
+        self.choice_has_empty_path: dict[Choice, bool] = {}
+        self._index_choice_metadata()
+
+    def _init_option_sets(self) -> None:
+        for node in self.workload.topological_sort():
+            if not isinstance(node, HasOutputs):
+                continue
+            carried = (
+                [x for x in node.inputs if is_state_operand(node, x)] if isinstance(node, HasIterationSpace) else []
+            )
+            for tensor in (*node.outputs, *carried):
+                if tensor in self.tensor_choices:
+                    continue
+                try:
+                    normalized = _normalize_tensor_choices(self.core_allocation(node))
+                    if isinstance(node, TransferNode):
+                        normalized = self._reader_placements(node, tensor, normalized)
+                except ValueError as exc:
+                    raise InfeasibleAllocationError(
+                        structural_infeasibility(
+                            f"node '{getattr(node, 'name', node)}' has no core it can be placed on"
+                        )
+                    ) from exc
+                self.tensor_choices[tensor] = normalized
+                if len(normalized) == 1:
+                    self.tensor_fixed.append(tensor)
+                else:
+                    self.tensor_var.append(tensor)
+
+        for tr in self.transfer_nodes:
+            self.path_choices[tr] = _normalize_path_choices(self.mapping.get(tr).resource_allocation)
+
+    def _ensure_same_ssis_for_all_transfers(self) -> None:
+        first = self.transfer_nodes[0]
+        first_total = prod(self.ssis[first].get_temporal_sizes())
+        for tr in self.transfer_nodes:
+            total = prod(self.ssis[tr].get_temporal_sizes())
+            if total != first_total:
+                raise ValueError(
+                    f"Transfer {tr.name} has different SSIS total size than the {first.name}: {total} != {first_total}"
+                )
+
+    def _init_transfer_fire_helpers(self) -> None:
+        for t in self.workload.tensors:
+            ssis = self.ssis[t].get_applicable_temporal_variables()
+            sizes = [iter_var.size for iter_var in ssis]
+            relevancies = [iter_var.relevant for iter_var in ssis]
+            if any(iter_var.reuse != Reuse.NOT_SET for iter_var in ssis):
+                continue
+            self.tensors_to_optimize_reuse_for.append(t)
+            reuse_factor = 1
+            tiles_factor = 1
+            self.reuse_levels[(t, -1)] = reuse_factor
+            self.tiles_needed_levels[(t, -1)] = tiles_factor
+            self.bds_needed_levels[(t, -1)] = tiles_factor
+            for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
+                reuse_factor *= Nl if not relevancy else 1
+                tiles_factor *= Nl if relevancy else 1
+                self.reuse_levels[(t, i)] = reuse_factor
+                self.tiles_needed_levels[(t, i)] = tiles_factor
+                self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
+                self.bds_needed_levels[(t, i)] = 4 if i == len(sizes) - 1 else tiles_factor
+            if tiles_factor > 1:
+                self.tiles_needed_levels[(t, -1)] = 2
+
+    def _index_choice_metadata(self) -> None:
+        for tr in self.transfer_nodes:
+            for choice in self.path_choices[tr]:
+                key = (tr, choice)
+                self.links_in_choice[key] = set() if self.in_one_memory(choice) else set(choice.links_used)
+                self.link_set.update(self.links_in_choice[key])
+                self.choice_src_cores[key] = set(choice.sources)
+                self.choice_dst_cores[key] = set(choice.targets)
+                self.choice_has_empty_path[key] = not choice.links_used and not self.in_one_memory(choice)
+
+    def is_fixed(self, t: Tensor) -> bool:
+        return t in self._fixed
+
+    def fixed_choice(self, t: Tensor) -> Placement:
+        choices = self.tensor_choices[t]
+        assert len(choices) == 1, f"Tensor {t.name} is not fixed."
+        return choices[0]
+
+    def candidate_cores(self, t: Tensor) -> set[Core]:
+        """Every core one of ``t``'s placements uses; the set is shared, so callers do not change it."""
+        if (cores := self._candidates.get(t)) is None:
+            cores = self._candidates[t] = {core for choice in self.tensor_choices[t] for core in choice}
+        return cores
+
+    def runtime(self, n: ComputationNode) -> int:
+        """Cycles ``n`` takes on the slowest core it may run on, before its active fraction."""
+        latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+        return ceil(max(latencies)) if latencies else 0
+
+    def active_runtime(self, n: ComputationNode) -> float:
+        """Cycles ``n`` takes per iteration: its runtime over the iterations it is not idle on an absent loop."""
+        return get_active_latency(n, self.runtime(n), self.ssis)
+
+    def stops(self, t: Tensor) -> range:
+        """The reuse stops ``t`` may take: -1 (none) up to its outermost applicable temporal loop."""
+        return range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
+
+    def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
+        """A transfer's copy lives on the cores of the computation node it reaches, not on every target of the
+        transfer; a copy for another transfer or an edge keeps the transfer's placements."""
+        reader = list(self.workload.successors(tr))[tr.outputs.index(t)]
+        if not isinstance(reader, ComputationNode):
+            return choices
+        cores = {core for choice in _normalize_tensor_choices(self.core_allocation(reader)) for core in choice}
+        narrowed = (tuple(core for core in choice if core in cores) for choice in choices)
+        return tuple(dict.fromkeys(choice for choice in narrowed if choice)) or choices
+
+    def core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
+        if isinstance(node, InEdge | OutEdge):
+            assert self.offchip_core_id is not None
+            return ((self.accelerator.get_core(self.offchip_core_id),),)
+        if isinstance(node, TransferNode):
+            return self.mapping.get(node).memory_allocation
+        return self.mapping.get(node).resource_allocation
+
+    @cached_property
+    def sole_outputs(self) -> set[Tensor]:
+        """The tensors a transfer moves to a single reader."""
+        return {tr.outputs[0] for tr in self.transfer_nodes if len(tr.outputs) == 1}
+
+    def may_single_buffer(self, t: Tensor, stop: int) -> bool:
+        """Whether a tensor a transfer moves to one reader may hold its one-tile window at ``stop`` in
+        a single buffer where an outer loop moves it on: the next window then waits for the last
+        read of this one."""
+        return (
+            stop >= 0
+            and t in self.tensors_to_optimize_reuse_for
+            and t in self.sole_outputs
+            and self.rotation_levels[(t, stop)]
+            and self.tiles_needed_levels[(t, stop)] == 1
+        )
+
+    def resident_tiles(self, t: Tensor, stop: int, single: bool = False) -> int:
+        """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``, held in one
+        buffer where ``single``."""
+        tiles = self.tiles_needed_levels[(t, stop)]
+        return max(tiles, 2) if self.rotation_levels.get((t, stop)) and not single else tiles
+
+    def memory_capacity_bits(self, memory: Core) -> int:
+        """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims on each core using it."""
+        users = [c for c in self.accelerator.core_list if self.accelerator.memory_of(c) == memory]
+        return memory.get_memory_capacity() - sum(self.hardware.reserved_memory_bits(c) for c in users)
+
+    def is_const_i(self, tr: TransferNode) -> bool:
+        return is_const_input(self.workload, tr)
+
+    def is_const_o(self, tr: TransferNode) -> bool:
+        return is_const_output(self.workload, tr)
+
+    def is_const_io(self, tr: TransferNode) -> bool:
+        return self.is_const_i(tr) or self.is_const_o(tr)
+
+    def constant_transfer_tensor(self, tr: TransferNode) -> Tensor:
+        if self.is_const_i(tr):
+            return tr.outputs[0]
+        if self.is_const_o(tr):
+            return tr.inputs[0]
+        raise ValueError(f"Transfer {tr.name} is not a constant I/O transfer.")
+
+    def transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
+        """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse."""
+        if self.choice_shares_memory(tr, path):
+            return 0
+        link = get_transfer_latency_for_path(tr, path, self.moved_bits(tr, path))
+        shared = (self.shared_cycles(core, tr, path, model.contiguous) for core, model in self.shared_bandwidth.items())
+        return max(link, *shared) if self.shared_bandwidth else link
+
+    @staticmethod
+    def direction(core_id: int, path: MulticastPathPlan) -> str | None:
+        """'read' for a transfer out of this core, 'write' for one into it, None for one it takes no part in."""
+        if any(c.id == core_id for c in path.sources):
+            return "read"
+        if any(c.id == core_id for c in path.targets):
+            return "write"
+        return None
+
+    def shared_cycles(self, core_id: int, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
+        """Cycles one firing holds a shared-bandwidth core at ``rate``, slowed by its access pattern."""
+        direction = self.direction(core_id, path)
+        if direction is None:
+            return 0
+        span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
+        return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
+
+    @cached_property
+    def layouts(self) -> CopyLayouts:
+        """The layout of every tensor copy, and the contiguous runs each transfer moves them in."""
+        return CopyLayouts(self)
+
+    def side_rate(self, tr: TransferNode, core: Core, direction: str) -> Rate:
+        """Bits per cycle ``core`` moves one side of ``tr`` at per contiguous run length: its measured shared
+        bandwidth, else that of the port the transfer's operand passes, else unbounded."""
+        model = self.side_bandwidth(tr, core, direction)
+        if model is None:
+            return lambda span: float("inf")
+        return lambda span: model.contiguous * model.efficiency(span, direction)
+
+    def side_port(self, tr: TransferNode, core: Core, direction: str) -> Port | None:
+        """The port of ``core``'s top memory the operand of ``tr`` passes in ``direction``, None where none is."""
+        return self.accelerator.ports.port_for(core, direction, self.operand_role(tr, read_side=direction == READ))
+
+    def side_bandwidth(self, tr: TransferNode, core: Core, direction: str) -> BandwidthModel | None:
+        """What bounds ``core``'s side of ``tr``: its measured shared bandwidth, else its port's, else nothing."""
+        if (model := self.shared_bandwidth.get(core.id)) is not None:
+            return model
+        port = self.side_port(tr, core, direction)
+        return port.bandwidth if port is not None else None
+
+    def operand_role(self, tr: TransferNode, read_side: bool) -> str:
+        """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
+        producer = next(iter(self.workload.predecessors(tr)), None)
+        if read_side and isinstance(producer, ComputationNode):
+            return OUTPUT
+        for consumer in self.workload.successors(tr):
+            if isinstance(consumer, ComputationNode):
+                for tensor in tr.outputs:
+                    if tensor in consumer.inputs:
+                        return input_role(consumer.inputs.index(tensor) + 1)
+        return OUTPUT
+
+    def offchip_bandwidth(self) -> float:
+        """Bits per cycle the array can move across the off-chip boundary."""
+        off = self.offchip_core_id
+        if off is None:
+            return 0.0
+        return float(
+            sum(
+                link.bandwidth
+                for link in self.link_set
+                if core_id(link.receiver) == off or any(core.id == off for core in link.members)
+            )
+        )
+
+    def placement_width(self, tensors: Iterable[Tensor]) -> int:
+        """How many cores one side of a transfer occupies."""
+        return max((len(choice) for t in tensors for choice in self.tensor_choices[t]), default=1)
+
+    def distinct_slice_width(self, tensors: Iterable[Tensor]) -> int:
+        """How many distinct slices one side of a transfer holds: cores a spatial loop does not address separately
+        read one slice, which the object-fifo lowering serves from one channel."""
+        return max(
+            (
+                prod(v.size for v in self.ssis[t].variables if v.type is IterationVariableType.SPATIAL and v.relevant)
+                for t in tensors
+                if t in self.ssis
+            ),
+            default=1,
+        )
+
+    def transfer_is_broadcast(self, tr: TransferNode) -> bool:
+        """Whether several cores are served the same slice, so one fifo carries them all, on the DMA however the
+        cores are placed (``requiresDMAs`` only looks at the tiles of a fifo with one consumer)."""
+        if (broadcast := self._broadcast.get(tr)) is None:
+            tensors = unique_tensors(tr.outputs)
+            broadcast = self._broadcast[tr] = self.distinct_slice_width(tensors) < self.placement_width(tensors)
+        return broadcast
+
+    def transfer_shares_memory(self, tr: TransferNode, core: Core, incoming: bool) -> bool:
+        """Whether this core is served this transfer out of memory it already shares: the object-fifo lowering keeps
+        a single-consumer fifo off the DMA, and Stream routes core to core only where the layouts agree, so what is
+        left to check is whether the cores this one hands to, or takes from, are its neighbours."""
+        if self.within_one_memory(tr):
+            return True
+        choices = self.path_choices.get(tr) or ()
+        if not choices or self.transfer_is_broadcast(tr):
+            return False
+        if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
+            return False
+        for choice in choices:
+            touching = [(a, b) for a, b in self.pairs(tr, choice) if (b if incoming else a) == core]
+            if not touching:
+                return False
+            if any(not self.hardware.shares_memory(one, other) for one, other in touching):
+                return False
+        return True
+
+    def choice_shares_memory(self, tr: TransferNode, choice: MulticastPathPlan) -> bool:
+        """Whether this transfer, placed on this choice, lands core to core out of memory the two
+        sides already share -- the object-fifo lowering that spends no DMA channel and moves no bytes
+        over a link. The per-choice form of the same conditions ``transfer_shares_memory`` reads."""
+        if self.in_one_memory(choice):
+            return True
+        if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self.transfer_is_broadcast(tr):
+            return False
+        pairs = self.pairs(tr, choice)
+        return bool(pairs) and all(self.hardware.shares_memory(one, other) for one, other in pairs)
+
+    def overlaps(self, tr: TransferNode) -> dict[tuple[int, int], int]:
+        """Elements per firing each source position hands each target position where windows overlap tiles."""
+        if (found := self._overlaps.get(tr)) is None:
+            found = self._overlaps[tr] = self.workload.get_transfer_overlaps(tr, self.mapping, self.ssis[tr.outputs[0]])
+        return found
+
+    def moved_bits(
+        self, tr: TransferNode, choice: MulticastPathPlan, source: Core | None = None, target: Core | None = None
+    ) -> float:
+        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of ``source`` or into ``target``: what
+        sources hand targets they share no memory with where windows overlap neighbouring tiles, else its tensor (a
+        source's even share, a target's tile) less the halo a sliding loop keeps resident."""
+        tensor, out = tr.inputs[0], tr.outputs[0]
+        if overlaps := self.overlaps(tr):
+            moved = sum(
+                n
+                for (i, j), n in overlaps.items()
+                if not self.hardware.shares_memory(a := choice.sources[i], b := choice.targets[j])
+                and source in (None, a)
+                and target in (None, b)
+            )
+            return moved * tensor.operand_type.bitwidth
+        sources = len(choice.sources) if source is not None else 1
+        if not (sliding := self.workload.sliding_halo(out, tr, self.mapping, self.ssis.get(out))) and target is None:
+            return tensor.size_bits() / sources
+        tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis.get(out))
+        if target is not None:
+            return tile.size_bits()
+        return (
+            tensor.size_bits()
+            * min(tile.shape[sliding[0]], tensor.shape[sliding[0]])
+            // tensor.shape[sliding[0]]
+            / sources
+        )
+
+    def copied_bits(self, t: Tensor) -> float:
+        """Bits per firing the transfers of ``t`` deliver, in place or not: a halo once per target holding it."""
+        if len(readers := [tr for tr in self.transfer_nodes if t in tr.inputs]) > 1:
+            return sum(self._delivered_bits(tr) for tr in readers)
+        tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
+        return t.size_bits() if tr is None else self._delivered_bits(tr)
+
+    def _delivered_bits(self, tr: TransferNode) -> float:
+        if overlaps := self.overlaps(tr):
+            return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
+        return self.moved_bits(tr, self.path_choices[tr][0])
+
+    def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
+        """The sources and targets of ``choice`` that hand ``tr``'s data to each other: those its route pairs up."""
+        if choice.pairs:
+            return tuple((choice.sources[i], choice.targets[j]) for i, j in choice.pairs)
+        return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
+
+    def link_load(self, tr: TransferNode, choice: MulticastPathPlan) -> dict[CommunicationLink, float]:
+        """Per link of ``choice``, the share of one firing's latency it is busy: the bottleneck link 1."""
+        if not (links := self.links_in_choice[(tr, choice)]):
+            return {}
+        if not choice.link_shares:
+            return dict.fromkeys(links, 1.0)
+        cycles = {link: share / link.bandwidth for link, share in choice.link_shares if link in links and share}
+        slowest = max(cycles.values(), default=0.0)
+        return {link: c / slowest for link, c in cycles.items()}
+
+    def in_one_memory(self, choice: MulticastPathPlan) -> bool:
+        """Whether each source of this choice hands its targets data already in their memory, so none of it moves:
+        every pair its route makes shares a memory, or, without pairs, every core of it does."""
+        memory_of = self.accelerator.memory_of
+        if choice.pairs:
+            return all(memory_of(choice.sources[i]) == memory_of(choice.targets[j]) for i, j in choice.pairs)
+        return len({memory_of(c) for c in (*choice.sources, *choice.targets)}) == 1
+
+    def within_one_memory(self, tr: TransferNode) -> bool:
+        """Whether every placement of this transfer stays in one memory."""
+        if (within := self._one_memory.get(tr)) is None:
+            choices = self.path_choices.get(tr)
+            within = self._one_memory[tr] = bool(choices) and all(self.in_one_memory(choice) for choice in choices)
+        return within
+
+    @cached_property
+    def handovers(self) -> tuple[tuple[Core, Core, int], ...]:
+        """Cores that pass a kernel's state (such as a running reduction's scale) to the core consuming its output,
+        in a buffer both ends hold, and the bits each holds; which core meets which is the relation the transfer
+        between them uses, read off the mapping's allocation."""
+        found: list[tuple[Core, Core, int]] = []
+        for node in self.ssc_nodes:
+            kernel = self.mapping.get(node).kernel
+            for state in kernel.state_operands() if kernel else ():
+                if not state.handover:
+                    continue
+                held = next((t for t in node.inputs if is_state_operand(node, t)), None)
+                if held is None:
+                    continue
+                bits = self.workload.get_tensor_single_core(held, node, self.mapping).size_bits()
+                sources = self.core_allocation(node)[0]
+                for consumer in self._consumers(node):
+                    pairs = communicating_pairs(sources, self.core_allocation(consumer)[0])
+                    found += [(one, other, state.handover * bits) for one, other in pairs]
+        return tuple(found)
+
+    @cached_property
+    def warmup(self) -> dict[HasIterationSpace, float]:
+        """How far, in interior tiles, each node's work along the sliding windows runs ahead of its steady pace at most,
+        the fused loops nested as listed, innermost first: the lookahead a producer computes and the halo a transfer
+        moves before a window slides, each sweep of an inner loop restarting them."""
+        found: dict[HasIterationSpace, float] = {}
+        if not any(loop.halo for ssis in self.ssis.values() for loop in ssis):
+            return found
+        splits = self.problem.fusion_splits
+        rates: dict[HasIterationSpace, list] = {}
+        for k, (dim, n) in enumerate(splits.items()):
+            for node, work in self.workload.get_sliding_work(dim, n).items():
+                rates.setdefault(node, [np.ones(m) for m in splits.values()])[k] = np.array(work) * n / sum(work)
+        for node, rate in rates.items():
+            excess = np.cumsum(reduce(np.multiply.outer, reversed(rate)).ravel() - 1).max()
+            if excess > 0:
+                found[node] = float(excess)
+        return found
+
+    def is_waited_on(self, node: ComputationNode) -> bool:
+        """Whether a reader of ``node``'s output waits for its tiles: one on a core ``node`` does not run on, or behind
+        a transfer that takes cycles on some route."""
+        after = [tr for tr in self.workload.successors(node) if tr in self.path_choices]
+        cores = set(self.core_allocation(node)[0])
+        return any(self.transfer_latency_for_path(tr, c) for tr in after for c in self.path_choices[tr]) or any(
+            not cores.issuperset(self.core_allocation(c)[0]) for c in self._consumers(node)
+        )
+
+    def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
+        """The computation nodes this one's output reaches, across the transfer between them."""
+        reached = []
+        for succ in self.workload.successors(node):
+            reached += (
+                [succ]
+                if isinstance(succ, ComputationNode)
+                else [x for x in self.workload.successors(succ) if isinstance(x, ComputationNode)]
+            )
+        return reached
+
+
+def is_const_input(workload: Workload, tr: TransferNode) -> bool:
+    """Whether ``tr`` moves a tensor the workload takes in."""
+    return isinstance(next(iter(workload.predecessors(tr))), InEdge)
+
+
+def is_const_output(workload: Workload, tr: TransferNode) -> bool:
+    """Whether ``tr`` moves a tensor the workload puts out."""
+    return isinstance(next(iter(workload.successors(tr))), OutEdge)
+
+
+def core_id(end: Core | str) -> int | None:
+    """A link end's core id, None for an end that is not a core."""
+    return end.id if isinstance(end, Core) else None
+
+
+def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
+    """The tensors among ``tensors``, each once, in order."""
+    return list(dict.fromkeys(t for t in tensors if isinstance(t, Tensor)))
+
+
+def communicating_pairs(
+    src: Sequence[Core], dst: Sequence[Core], overlaps: Mapping[tuple[int, int], int] | None = None
+) -> tuple[tuple[Core, Core], ...]:
+    """Which ``src`` cores hand to which ``dst`` cores: those whose tiles ``overlaps`` the targets' windows, else by
+    spatial index as codegen pairs them, its contract and why overlaps only pair windowed transfers: the target at
+    ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
+    if not src or not dst:
+        return ()
+    if overlaps:
+        return tuple((src[i], dst[j]) for i, j in overlaps)
+    narrow = min(len(src), len(dst))
+    return tuple((src[i], dst[j]) for i in range(len(src)) for j in range(len(dst)) if i % narrow == j % narrow)
+
+
+def _normalize_tensor_choices(raw: Any) -> tuple[Placement, ...]:
+    """The placements a node's allocation offers, as a tuple of core tuples."""
+    if raw is None:
+        raise ValueError("Tensor allocation options cannot be None.")
+    raw_tuple = tuple(raw)
+    if not raw_tuple:
+        raise ValueError("Tensor allocation options cannot be empty.")
+    if all(isinstance(x, Core) for x in raw_tuple):
+        return (tuple(raw_tuple),)
+    out: list[Placement] = []
+    for choice in raw_tuple:
+        choice_tuple = tuple(choice)
+        if not choice_tuple:
+            raise ValueError("Empty tensor placement choice encountered.")
+        if not all(isinstance(c, Core) for c in choice_tuple):
+            raise TypeError(f"Invalid tensor placement choice: {choice_tuple}")
+        out.append(choice_tuple)
+    return tuple(out)
+
+
+def _normalize_path_choices(raw: Any) -> tuple[MulticastPathPlan, ...]:
+    """The routes a transfer's allocation offers, as a tuple of path plans."""
+    if raw is None:
+        raise ValueError("Transfer path options cannot be None.")
+    raw_tuple = tuple(raw)
+    if not raw_tuple:
+        raise ValueError("Transfer path options cannot be empty.")
+    if not all(isinstance(x, MulticastPathPlan) for x in raw_tuple):
+        bad_types = {type(x) for x in raw_tuple if not isinstance(x, MulticastPathPlan)}
+        raise TypeError(
+            f"Unsupported routing choice structure. Expected iterable of MulticastPathPlan, "
+            f"got invalid element types: {bad_types}"
+        )
+    return raw_tuple

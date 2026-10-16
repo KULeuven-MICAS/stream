@@ -89,33 +89,6 @@ class SolveStats:
     """Number of simplex iterations, or None if not available for this backend."""
 
 
-class PipeliningModel(Enum):
-    """Inter-iteration overlap model: SPAN (idle only before first / after last use) or OCCUPANCY (any unused slot)."""
-
-    SPAN = "span"
-    OCCUPANCY = "occupancy"
-
-
-@dataclass(frozen=True)
-class ConstraintSelection:
-    """How TransferAndTensorAllocator builds its model: the boolean fields toggle constraint groups
-    (all default True); ``pipelining`` picks the inter-iteration overlap formulation."""
-
-    memory_capacity: bool = True
-    object_fifo_depth: bool = True
-    buffer_descriptors: bool = True
-    dma_channels: bool = True
-    pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
-
-    def __post_init__(self) -> None:
-        if not self.memory_capacity and self.object_fifo_depth:
-            _logger.warning(
-                "ConstraintSelection: memory_capacity=False with object_fifo_depth=True "
-                "is nonsensical -- object-FIFO depth constraints assume memory capacity "
-                "is enforced. Continuing with this configuration."
-            )
-
-
 @dataclass(frozen=True)
 class ObjectiveLevel:
     """A single level in a lexicographic objective hierarchy.
@@ -148,12 +121,14 @@ class ObjectiveLevel:
 
 
 def _unwrap(other: Any) -> Any:
-    """Unwrap SolverVar or LinExpr to underlying backend object.
-
-    Passes through int, float, gp.Var, gp.LinExpr, and other raw types.
-    """
-    if isinstance(other, (_GurobiVar, _GurobiLinExpr)):
-        return other._raw
+    """Unwrap SolverVar or LinExpr to the underlying backend object; int, float, gp.Var, gp.LinExpr and other raw
+    types pass through. Exact types, as the wrappers have no subclasses: an isinstance test against their abstract
+    bases is a large part of building an expression."""
+    kind = type(other)
+    if kind is _GurobiVar:
+        return other._v
+    if kind is _GurobiLinExpr:
+        return other._e
     return other
 
 
@@ -374,12 +349,20 @@ class SolverModel(ABC):
         """Return the number of solutions found."""
 
     @abstractmethod
+    def value(self, expr: Any) -> float:
+        """Solved value of a variable, a linear expression or a constant."""
+
+    @abstractmethod
     def solve_stats(self) -> SolveStats:
         """Return structured solve statistics.
 
         Must be called after optimize(). Returns a SolveStats instance
         with fields populated for this backend; unavailable fields are None.
         """
+
+    def model_size(self) -> dict[str, int] | None:
+        """The model's variable, constraint and nonzero counts where the backend reports them, else None."""
+        return None
 
     @abstractmethod
     def compute_iis(self) -> None:
@@ -458,10 +441,6 @@ class SolverModel(ABC):
             ValueError: If *objectives* is empty.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support lexicographic objectives")
-
-    def infinity(self) -> float:
-        """Convenience accessor for INFINITY class constant."""
-        return self.INFINITY
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +596,15 @@ _PARAM_MAP: dict[SolverParams, str] = {
 }
 
 
+def _require_gurobipy() -> None:
+    if gp is None:
+        raise ImportError(
+            "The Gurobi backend requires gurobipy, which is not installed. Install it with "
+            "`pip install 'stream-dse[gurobi]'` (a valid Gurobi license is also required at solve "
+            "time). The default OR-Tools GSCIP backend needs no extra install."
+        )
+
+
 class GurobiBackend(SolverModel):
     """Gurobipy-backed SolverModel implementation.
 
@@ -627,12 +615,7 @@ class GurobiBackend(SolverModel):
     INFINITY: float = float("inf")  # Maps to GRB.INFINITY (also float('inf'))
 
     def __init__(self, name: str = "") -> None:
-        if gp is None:
-            raise ImportError(
-                "The Gurobi backend requires gurobipy, which is not installed. Install it with "
-                "`pip install 'stream-dse[gurobi]'` (a valid Gurobi license is also required at solve "
-                "time). The default OR-Tools GSCIP backend needs no extra install."
-            )
+        _require_gurobipy()
         self._model = gp.Model(name)
 
     def add_var(
@@ -699,6 +682,12 @@ class GurobiBackend(SolverModel):
     def get_sol_count(self) -> int:
         return self._model.SolCount
 
+    def value(self, expr: Any) -> float:
+        raw = _unwrap(expr)
+        if isinstance(raw, int | float):
+            return float(raw)
+        return float(raw.getValue() if hasattr(raw, "getValue") else raw.X)
+
     def _mip_gap(self) -> float | None:
         """Relative optimality gap; falls back to the primal/dual bounds when ``MIPGap`` is absent."""
         if self._model.SolCount <= 0:
@@ -728,6 +717,17 @@ class GurobiBackend(SolverModel):
             node_count=int(self._model.NodeCount),
             iteration_count=int(self._model.IterCount),
         )
+
+    def model_size(self) -> dict[str, int]:
+        m = self._model
+        return {
+            "variables": m.NumVars,
+            "integer_variables": m.NumIntVars,
+            "binary_variables": m.NumBinVars,
+            "linear_constraints": m.NumConstrs,
+            "general_constraints": m.NumGenConstrs,
+            "nonzeros": m.NumNZs,
+        }
 
     def compute_iis(self) -> None:
         self._model.computeIIS()
@@ -771,6 +771,7 @@ class GurobiBackend(SolverModel):
     @staticmethod
     def check_license() -> None:
         """Verify Gurobi license is available. Raises ValueError on failure."""
+        _require_gurobipy()
         try:
             tmp = gp.Model("_license_check")
             tmp.setParam("OutputFlag", 0)
@@ -800,9 +801,10 @@ def _unwrap_ort(other: Any) -> Any:
 
     Passes through mathopt.Variable, LinearSum, LinearExpression, int, float unchanged.
     """
-    if isinstance(other, _ORToolsVar):
+    kind = type(other)
+    if kind is _ORToolsVar:
         return other._v
-    if isinstance(other, _ORToolsLinExpr):
+    if kind is _ORToolsLinExpr:
         return other._e
     return other
 
@@ -1099,6 +1101,14 @@ class ORToolsBackend(SolverModel):
         if self._result is None:
             return 0
         return 1 if self._result.has_primal_feasible_solution() else 0
+
+    def value(self, expr: Any) -> float:
+        raw = _unwrap_ort(expr)
+        if isinstance(raw, int | float):
+            return float(raw)
+        if self._result is None or not self._result.has_primal_feasible_solution():
+            raise ValueError("No solution available")
+        return float(mathopt.evaluate_expression(raw, self._result.variable_values()))
 
     def _mip_gap(self) -> float | None:
         """Relative optimality gap, derived from MathOpt's primal/dual bounds."""

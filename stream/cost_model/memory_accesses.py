@@ -30,20 +30,6 @@ class CoreMemoryAccesses:
         """Add write accesses for a core-tensor pair."""
         self.accesses[core][tensor].write += count
 
-    def get_reads(self, core: Core, tensor: Tensor) -> int:
-        """Get read count for a core-tensor pair."""
-        return self.accesses[core][tensor].read
-
-    def get_writes(self, core: Core, tensor: Tensor) -> int:
-        """Get write count for a core-tensor pair."""
-        return self.accesses[core][tensor].write
-
-    def get_total(self, core: Core, tensor: Tensor) -> int:
-        """Get total (read + write) accesses for a core-tensor pair."""
-        reads = self.accesses[core][tensor].read
-        writes = self.accesses[core][tensor].write
-        return reads + writes
-
     def to_ir(self, offchip_core_id: int | None = None) -> dict:
         """Serialise the accesses for inspection: per core, per tensor, read/write counts.
 

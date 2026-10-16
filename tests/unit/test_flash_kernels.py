@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 pytest.importorskip("snaxc", reason="the AIE dialects are a separate install, via stream-setup-aie")
+pytest.importorskip("aie.iron.kernels", reason="the library binds mha.cc through mlir-aie")
 
 from pathlib import Path  # noqa: E402
 
@@ -30,6 +31,16 @@ def column():
     Score GEMM, online softmax and value GEMM on three neighbouring tiles, each in the
     query loop over the key loop the blocked design nests them in.
     """
+    return _column(split=True)
+
+
+@pytest.fixture(scope="module")
+def unsplit():
+    """The same column where one query block is all there is, so no core splits it."""
+    return _column(split=False)
+
+
+def _column(split):
     from xdsl.dialects.arith import ConstantOp
     from xdsl.dialects.builtin import IndexType, IntegerAttr, ModuleOp, bf16
     from xdsl.dialects.scf import ForOp, YieldOp
@@ -54,6 +65,7 @@ def column():
         StrensorVarAttr,
         StrensorVarType,
     )
+    from stream.compiler.kernels.binding import Bindings
     from stream.compiler.kernels.flash import CausalGemmKernel, FlashKernel, PartialSoftmaxKernel
     from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
     from stream.datatypes import LayerDim
@@ -61,9 +73,10 @@ def column():
     query, key, head = LayerDim(0), LayerDim(2), LayerDim(3)
     query_loop = StrensorVar(StrensorVarType.TEMPORAL, BLOCKS // COLUMNS, query)
     key_loop = StrensorVar(StrensorVarType.TEMPORAL, BLOCKS, key)
-    outer = (query_loop, StrensorVar(StrensorVarType.SPATIAL, COLUMNS, query), key_loop)
+    outer = (query_loop, StrensorVar(StrensorVarType.SPATIAL, COLUMNS, query), key_loop) if split else (key_loop,)
     # A point variable carries its position, so this is the first column of the four.
-    position = StrensorSpaceAttr(StrensorSpace((StrensorVar(StrensorVarType.POINT, 0, query),)))
+    points = (StrensorVar(StrensorVarType.POINT, 0, query),) if split else ()
+    position = StrensorSpaceAttr(StrensorSpace(points))
 
     def node(kernel_name, operands, kernel_dims):
         """One computation node, its operands taken from fifos the way codegen leaves them."""
@@ -85,7 +98,7 @@ def column():
     def core(row, body):
         """The node on its own tile, wrapped in the key loop and then the query loop."""
         ops = body
-        for var in (key_loop, query_loop):
+        for var in (key_loop, query_loop) if split else (key_loop,):
             bounds = [ConstantOp.from_int_and_width(bound, IndexType()) for bound in (0, var.size, 1)]
             loop = ForOp(*bounds, [], Region(Block([*ops, YieldOp()], arg_types=[IndexType()])))
             loop.attributes["layer_dim"] = StrensorVarAttr(var)
@@ -110,15 +123,15 @@ def column():
         ),
     )
     kernels = {kernel.unique_name: kernel for kernel in (scores, softmax, context)}
-    PatternRewriteWalker(ConvertAIEKernels(kernels)).rewrite_module(ModuleOp([device]))
+    PatternRewriteWalker(ConvertAIEKernels(kernels, Bindings("npu2"))).rewrite_module(ModuleOp([device]))
     return device
 
 
 def _call(device, name):
-    """The one call to ``name`` in the rewritten column."""
+    """The one call to ``name``, under the prefix its binding gives it, in the rewritten column."""
     from xdsl.dialects.func import CallOp
 
-    calls = [op for op in device.walk() if isinstance(op, CallOp) and op.callee.root_reference.data == name]
+    calls = [op for op in device.walk() if isinstance(op, CallOp) and op.callee.root_reference.data.endswith(name)]
     assert len(calls) == 1, f"{len(calls)} calls to {name}"
     return calls[0]
 
@@ -152,7 +165,7 @@ def test_the_score_gemm_skips_only_the_blocks_past_the_diagonal(column):
 
     from stream.datatypes import LayerDim
 
-    condition = _guard(_call(column, "matmul_bf16_bf16_64_64_64"))
+    condition = _guard(_call(column, "matmul_bf16_bf16"))
     assert isinstance(condition, CmpiOp) and "arith.cmpi sle," in str(condition)
     assert _driven_by(condition.lhs, LayerDim(2)) and _driven_by(condition.rhs, LayerDim(0))
 
@@ -239,4 +252,11 @@ def test_the_declared_state_is_the_size_the_core_buffer_holds():
     # _core_buffer allocates SCALE_ROWS * m elements; the declaration says rows per step, and
     # the node supplies the query extent that a split then divides.
     assert state.rows * kernel.m == SCALE_ROWS * kernel.m
-    assert (state.carried_over, state.indexed_by) == (1, 0)
+    assert (state.carried_over, state.indexed_by) == ("n", "m")
+
+
+def test_an_unsplit_step_still_hands_its_scale_on(unsplit):
+    """With no split to say which cores pair up, the two halves of a step share one column."""
+    from xdsl_aie.dialects.aie import ObjectFifoOp
+
+    assert [op.sym_name.data for op in unsplit.walk() if isinstance(op, ObjectFifoOp)] == ["flash_scale_0_1_0_2"]

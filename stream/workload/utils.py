@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Sequence
+from math import ceil
 from typing import TYPE_CHECKING
 
 import sympy as sp
@@ -13,7 +14,7 @@ from stream.workload.iterator_type import (
     nonlinear_reduction_dims,
     sequential_dims,
 )
-from stream.workload.node import ComputationNode, HasInputs, HasIterationSpace, Node, Tensor, TransferNode
+from stream.workload.node import ComputationNode, HasIterationSpace, Node, Tensor, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
 
 
 #: Operator-type substrings that denote multiply-accumulate work (matched case-insensitively as a substring).
-MAC_OPERATOR_TYPES: tuple[str, ...] = ("conv", "gemm", "matmul", "linear")
+MAC_OPERATOR_TYPES: tuple[str, ...] = ("conv", "gemm", "matmul", "linear", "einsum")
 
 
 def is_mac_operator_type(op_type: object) -> bool:
@@ -102,6 +103,36 @@ def generate_steady_state_iteration_spaces(
     return ssis_dict
 
 
+def generate_tensor_ssis(
+    workload: "Workload",
+    tensor: Tensor,
+    node: "HasIterationSpace",
+    ssis: dict["HasIterationSpace | Tensor", SteadyStateIterationSpace],
+) -> SteadyStateIterationSpace:
+    """The iteration space of ``tensor`` as ``node`` produces or reads it: ``node``'s loops, each varying
+    where it indexes the tensor."""
+    producer_ssis = ssis.get(node, None)
+    if producer_ssis is None:
+        raise KeyError(f"Node {node.name} does not have a valid producer SSIS.")
+    tensor_dims = workload.get_tensor_dimensions(tensor)
+    tensor_ivs = []
+    for prod_iv in producer_ssis.variables:
+        prod_iv_dim = prod_iv.dimension
+        if prod_iv_dim in tensor_dims:
+            tensor_effect = LoopEffect.VARYING
+        else:
+            tensor_effect = LoopEffect.ABSENT if prod_iv.effect == LoopEffect.ABSENT else LoopEffect.INVARIANT
+        tensor_ivs.append(
+            IterationVariable(
+                dimension=prod_iv_dim,
+                size=prod_iv.size,
+                type=prod_iv.type,
+                effect=tensor_effect,
+            )
+        )
+    return SteadyStateIterationSpace(variables=tuple(tensor_ivs))
+
+
 def _create_steady_state_iteration_spaces(iteration_variables, workload: "Workload"):
     """Create the steady state iteration spaces for each computation node."""
     ssis_dict: dict[ComputationNode, SteadyStateIterationSpace] = {}
@@ -115,16 +146,21 @@ def _add_temporal_iteration_variables(
     fusion_splits: dict[LayerDim, int],
     workload: "Workload",
 ) -> dict["HasIterationSpace", list[IterationVariable]]:
-    """Iterate through all computation nodes and add the temporal iteration variables."""
+    """Iterate through all computation nodes and add the temporal iteration variables: a node varies along a fused dim
+    it steps along, even through a strided reader's ``s*d + r``."""
+
+    def steps(node: "HasIterationSpace") -> set[LayerDim]:
+        return {workload.leading_dim(d)[0] for d in workload.get_dims(node)}
+
     for node in workload.get_iteration_space_nodes():
         for dim, size in fusion_splits.items():
             if isinstance(node, ComputationNode):
-                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.ABSENT
+                effect = LoopEffect.VARYING if dim in steps(node) else LoopEffect.ABSENT
             elif isinstance(node, TransferNode):
                 compute_preds_succs = get_compute_predecessors_successors(node, workload)
-                if dim in workload.get_dims(node):
+                if dim in steps(node):
                     effect = LoopEffect.VARYING
-                elif any(dim in workload.get_dims(n) for n in compute_preds_succs):
+                elif any(dim in steps(n) for n in compute_preds_succs):
                     effect = LoopEffect.INVARIANT
                 else:
                     effect = LoopEffect.ABSENT
@@ -256,7 +292,8 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
     for node in workload.get_iteration_space_nodes():
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
-        unrollings = workload.get_unique_dims_inter_core_tiling(node, mapping)
+        # A factor of one spreads nothing: the node then has no spatial variable of that dimension.
+        unrollings = tuple(u for u in workload.get_unique_dims_inter_core_tiling(node, mapping) if u[1] > 1)
         _reject_illegal_spatial_unroll(workload, node, unrollings, node_mapping.kernel is not None)
         spatial_unrollings[node] = unrollings
 
@@ -349,59 +386,45 @@ def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
     raise ValueError(f"Unsupported sympy expression type: {type(expr)} ({expr})")
 
 
+def sliding_window(
+    sizes: Sequence[int],
+    kernel: Sequence[int],
+    strides: Sequence[int] | None = None,
+    dilations: Sequence[int] | None = None,
+    pads: Sequence[int] | None = None,
+    auto_pad: str = "NOTSET",
+) -> tuple[list[int], ...]:
+    """A sliding window's strides, dilations and leading padding per spatial axis: ``pads``, or what ONNX's
+    ``auto_pad`` (``SAME_UPPER``, ``SAME_LOWER``, ``VALID``) derives from the input ``sizes`` and the ``kernel``."""
+    strides, dilations = list(strides or [1] * len(sizes)), list(dilations or [1] * len(sizes))
+    if auto_pad == "NOTSET":
+        return strides, dilations, list(pads or [0] * len(sizes))[: len(sizes)]
+    totals = [
+        max(0, (ceil(n / s) - 1) * s + (f - 1) * d + 1 - n) if auto_pad != "VALID" else 0
+        for n, f, s, d in zip(sizes, kernel, strides, dilations, strict=True)
+    ]
+    return strides, dilations, [t // 2 if auto_pad == "SAME_UPPER" else t - t // 2 for t in totals]
+
+
+def window_index(
+    outputs: Sequence[AffineExpr], kernels: Sequence[AffineExpr], strides, dilations, pads
+) -> tuple[AffineExpr, ...]:
+    """The index a sliding window reads along each spatial axis: ``s*o + d*f - p`` of its output and kernel dims."""
+    return tuple(s * o + d * f - p for o, f, s, d, p in zip(outputs, kernels, strides, dilations, pads, strict=True))
+
+
+def affine_coefficients(expr: AffineExpr, n: int) -> tuple[int, list[int]]:
+    """The constant of an affine-linear ``expr`` over ``n`` dims and the coefficient of each dim."""
+    c = int(expr.eval([0] * n, []))
+    return c, [int(expr.eval([int(i == d) for i in range(n)], [])) - c for d in range(n)]
+
+
 def affine_bounds(expr: AffineExpr, dim_sizes: list[int]) -> tuple[int, int]:
     """
     Compute min/max value of expr when each dim i is in [0, dim_sizes[i]-1].
     Assumes expr is affine-linear in dims (no mod/floordiv).
     """
-    # Extract coefficients by probing basis vectors (works with your AffineExpr.eval)
-    n = len(dim_sizes)
-
-    zero = [0] * n
-    c = int(expr.eval(zero, []))  # constant term
-
-    # coeff[i] = expr(e_i) - expr(0)
-    coeffs: list[int] = []
-    for i in range(n):
-        e = [0] * n
-        e[i] = 1
-        coeffs.append(int(expr.eval(e, [])) - c)
-
-    # Now compute min/max over a box.
-    # For each coeff a:
-    # - if a >= 0, min uses 0, max uses (S-1)
-    # - if a < 0, min uses (S-1), max uses 0
-    mins = c
-    maxs = c
-    for a, S in zip(coeffs, dim_sizes, strict=True):
-        lo = 0
-        hi = S - 1
-        if a >= 0:
-            mins += a * lo
-            maxs += a * hi
-        else:
-            mins += a * hi
-            maxs += a * lo
-
-    return mins, maxs
-
-
-def is_reused_on_chip(workload: "Workload", tensor: Tensor, dsts: Sequence[HasInputs]) -> bool:
-    """Whether a destination reads ``tensor`` more than once.
-
-    A destination that iterates a dimension the tensor does not span reads it once per
-    position of that dimension, so holding it in a memory tile saves that many offchip
-    reads. A destination that spans every dimension of the tensor, as an elementwise
-    node does, reads each element once, and a memory tile would only add a second
-    transfer of the same data.
-    """
-    spanned = set(workload.get_tensor_dimensions(tensor))
-    for dst in dsts:
-        if not isinstance(dst, HasIterationSpace):
-            continue
-        # The caller may hold a rebuilt copy of the node; the iteration space is
-        # keyed by the node this workload knows.
-        known = workload.get_node_by_name(dst.name)
-        if set(workload.get_dims(known)) - spanned:
-            return True
-    return False
+    c, coeffs = affine_coefficients(expr, len(dim_sizes))
+    low = c + sum(a * (S - 1) for a, S in zip(coeffs, dim_sizes, strict=True) if a < 0)
+    high = c + sum(a * (S - 1) for a, S in zip(coeffs, dim_sizes, strict=True) if a > 0)
+    return low, high

@@ -1,4 +1,4 @@
-"""Build the single-head attention workload used across the tests.
+"""Build the attention workloads used across the tests: one head, and a multi-head block of any size.
 
 A faithful scaled-dot-product attention head -- one head of a small-transformer block: Q/K/V
 projections, scores = Q·Kᵀ, a row-wise Softmax over the key axis, then context = attn·V. The weights
@@ -52,6 +52,25 @@ def make_attention_head(path: str | None = None) -> onnx.ModelProto:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attention_head.onnx")
     onnx.save(model, path)
     return model
+
+
+def make_multi_head_attention(path, seq: int, d_model: int = 4096, heads: int = 32) -> str:
+    """Multi-head attention with heads as a batch axis: per-head projections, scores, softmax and context."""
+    d_head = d_model // heads
+    value = lambda name, shape: helper.make_tensor_value_info(name, DTYPE, shape)  # noqa: E731
+    nodes = [helper.make_node("MatMul", ["x", f"w{p}"], [p], name=f"proj_{p}") for p in "QKV"]
+    nodes += [
+        helper.make_node("Transpose", ["K"], ["Kt"], perm=[0, 2, 1], name="transpose_K"),
+        helper.make_node("MatMul", ["Q", "Kt"], ["scores"], name="scores"),
+        helper.make_node("Softmax", ["scores"], ["attn"], axis=-1, name="softmax"),
+        helper.make_node("MatMul", ["attn", "V"], ["ctx"], name="context"),
+    ]
+    weights = [value(f"w{p}", [heads, d_model, d_head]) for p in "QKV"]
+    graph = helper.make_graph(
+        nodes, "mha", [value("x", [seq, d_model]), *weights], [value("ctx", [heads, seq, d_head])]
+    )
+    onnx.save(onnx.shape_inference.infer_shapes(helper.make_model(graph)), path)
+    return str(path)
 
 
 if __name__ == "__main__":

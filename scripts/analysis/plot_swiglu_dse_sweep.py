@@ -283,10 +283,10 @@ def _plot_violin_box(latencies: np.ndarray, out_path_no_ext: str, units: str) ->
 
 
 def _load_optimization_trace(trace_path: str) -> list[float] | None:
-    """Return ordered list of incumbent latencies from a tetra optimization_trace.yaml.
+    """Return ordered list of incumbent latencies from an allocation's optimization_trace.yaml.
 
     Returns ``None`` if the file is missing or has no usable incumbent values
-    (e.g. mapping did not meet constraints, so tetra/ only contains model.ilp).
+    (e.g. mapping did not meet constraints, so allocation/ only contains model.ilp).
     """
     if not os.path.exists(trace_path):
         return None
@@ -302,14 +302,14 @@ def _load_optimization_trace(trace_path: str) -> list[float] | None:
     for entry in trace:
         if not isinstance(entry, dict):
             continue
-        v = entry.get("incumbent")
+        v = entry.get("incumbent_objective")
         if v is None:
             continue
         try:
             f = float(v)
         except (TypeError, ValueError):
             continue
-        if math.isnan(f) or math.isinf(f):
+        if math.isnan(f) or math.isinf(f) or (incumbents and f == incumbents[-1]):
             continue
         incumbents.append(f)
     return incumbents or None
@@ -327,7 +327,7 @@ def _plot_optimization_progress(  # noqa: PLR0912, PLR0915
 
     Stylistically mirrors ``_plot_box_compare`` — same orange "This Work"
     palette, black-edged final-incumbent marker for emphasis, grey × markers
-    for mapping indices whose tetra/ run did not produce an optimization
+    for mapping indices whose allocation did not produce an optimization
     trace (i.e. did not meet constraints).
     """
     index_dirs = _list_index_dirs(combo.path)
@@ -338,7 +338,7 @@ def _plot_optimization_progress(  # noqa: PLR0912, PLR0915
     traces: list[list[float]] = []
     indices_fail: list[int] = []
     for idx, d in index_dirs:
-        trace = _load_optimization_trace(os.path.join(d, "tetra", "optimization_trace.yaml"))
+        trace = _load_optimization_trace(os.path.join(d, "allocation", "reports", "optimization_trace.yaml"))
         if trace:
             indices_ok.append(idx)
             traces.append(trace)

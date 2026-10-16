@@ -1,12 +1,13 @@
 """De-aliased hardware bundles (C1) and the built-in hardware cost model / budget guard (C4)."""
 
+import json
 import math
 import tempfile
 
 import pytest
 import yaml
 
-from stream.api import hardware_cost_report, optimize_allocation_co_generic
+from stream.api import evaluate_mapping
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import (
     BudgetVerdict,
@@ -34,8 +35,16 @@ _ALIASED_VMEM_BITS = 1024 * 1024 * 1024
 
 # One 64 MiB TensorCore VMEM, from the ZigZag declaration in cores/tpu_v7_vmem.yaml.
 _VMEM_BITS = 512 * 1024 * 1024
-# Array-local operand staging on each MXU/VPU compute core (cores/tpu_v7_mxu.yaml).
-_OPERAND_BUFFER_BITS = 16 * 1024 * 1024
+# Each MXU output lane's result buffer (cores/tpu_v7_mxu.yaml).
+_RESULT_BUFFER_BITS = 16 * 1024
+# TensorCore 0's VMEM core, which owns the VMEM, then the MXUs and VPU sharing it.
+_TC0 = (3, 0, 1, 2)
+
+
+def _grow_vmem(bundle: HardwareBundle, cores: tuple[int, ...] = _TC0) -> None:
+    """Double one TensorCore's VMEM, as seen by every core sharing it."""
+    for core_id in cores:
+        bundle.cores[core_id]["memories"]["vmem"]["size"] *= 2
 
 
 def _parse(accelerator_path: str):
@@ -49,20 +58,20 @@ def _parse(accelerator_path: str):
 
 
 def test_bundle_de_aliases_shared_core_files():
-    """Cores 0/2/4/6 are authored from one file; the bundle must give each its own description."""
+    """All eight MXUs are authored from one file; the bundle must give each its own description."""
     bundle = HardwareBundle.from_yaml(TPU_V7)
-    assert bundle.cores[0] is not bundle.cores[2]
-    assert bundle.cores[0] == bundle.cores[2]  # identical content, independent objects
+    assert bundle.cores[0] is not bundle.cores[4]
+    assert bundle.cores[0] == bundle.cores[4]  # identical content, independent objects
 
-    bundle.cores[0]["memories"]["operand_buffer"]["size"] *= 2
-    assert bundle.cores[2]["memories"]["operand_buffer"]["size"] == _OPERAND_BUFFER_BITS
+    bundle.cores[0]["memories"]["result_buffer"]["size"] *= 2
+    assert bundle.cores[4]["memories"]["result_buffer"]["size"] == _RESULT_BUFFER_BITS
 
 
 def test_materialized_bundle_carries_a_per_core_vmem_and_parses():
-    """The C1 done-condition: a bundle in which core 9's VMEM differs from core 19's, on disk,
-    parsed by Stream."""
+    """The C1 done-condition: a bundle in which TensorCore 0's VMEM differs from TensorCore 1's, on
+    disk, parsed by Stream."""
     bundle = HardwareBundle.from_yaml(TPU_V7)
-    bundle.cores[9]["memories"]["vmem"]["size"] = 2 * _VMEM_BITS
+    _grow_vmem(bundle)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         accelerator_path = bundle.materialize(tmpdir)
@@ -73,8 +82,8 @@ def test_materialized_bundle_carries_a_per_core_vmem_and_parses():
         accelerator = _parse(str(accelerator_path))
 
     capacities = {core.id: core.get_memory_capacity() for core in accelerator.core_list}
-    assert capacities[9] == 2 * _VMEM_BITS
-    assert capacities[19] == _VMEM_BITS
+    assert capacities[3] == capacities[0] == 2 * _VMEM_BITS
+    assert capacities[7] == capacities[4] == _VMEM_BITS
 
 
 def test_bundle_to_accelerator_needs_no_files():
@@ -87,7 +96,7 @@ def test_bundle_to_accelerator_needs_no_files():
 def test_inline_core_rejected_when_invalid():
     """A mutated bundle that is no longer a legal accelerator must not silently reach a solve."""
     bundle = HardwareBundle.from_yaml(TPU_V7)
-    del bundle.cores[0]["memories"]["operand_buffer"]["size"]
+    del bundle.cores[0]["memories"]["result_buffer"]["size"]
     with pytest.raises(ValueError, match="not a valid accelerator"):
         bundle.validated_data()
 
@@ -95,7 +104,7 @@ def test_inline_core_rejected_when_invalid():
 def test_memory_alias_typo_is_rejected():
     """A mistyped alias would stop deduplicating and quietly inflate the modelled area."""
     data = HardwareBundle.from_yaml(TPU_V7).to_data()
-    data["memory_aliases"] = [["9.vmem", "0.not_a_memory"]]
+    data["memory_aliases"] = [["3.vmem", "0.not_a_memory"]]
     validator = AcceleratorValidator(data, TPU_V7)
     assert not validator.validate()
     assert any("not_a_memory" in e for e in validator.errors)
@@ -124,12 +133,7 @@ def test_asymmetric_bundle_runs_end_to_end():
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         accelerator_path = bundle.materialize(tmpdir)
-        ctx = optimize_allocation_co_generic(
-            hardware=str(accelerator_path),
-            workload=workload_path,
-            experiment_id="test-bundle-asymmetric",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(str(accelerator_path), workload_path, tmpdir).context
     assert ctx.get("total_latency") > 0
 
 
@@ -181,21 +185,25 @@ def test_memory_aliases_do_not_change_scheduling_capacity():
     assert with_aliases == without
 
 
-def test_vmem_is_one_core_per_tensorcore_priced_once():
-    """Each TensorCore's 64 MiB VMEM is a single memory core, not aliased views inside the compute
-    cores, so it is priced once with no memory_aliases needed."""
+def test_a_shared_vmem_is_priced_once_per_tensorcore():
+    """Each TensorCore's 64 MiB VMEM is the top memory of its VMEM core, both MXUs and its VPU
+    (core_memory_sharing): four views of one macro, priced once, by the VMEM core that owns it."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
     vmems = [m for c in report.cores for m in c.memories if m.total_bits == _VMEM_BITS]
-    assert len(vmems) == 4  # one per TensorCore, no compute-core duplicate
-    assert all(m.counted for m in vmems)
-    assert sorted(m.core_id for m in vmems) == [9, 19, 29, 39]
+    assert len(vmems) == 16
+    assert sorted(m.core_id for m in vmems if m.counted) == [3, 7, 11, 15]
+
+    grown = HardwareBundle.from_yaml(TPU_V7)
+    _grow_vmem(grown)
+    growth = evaluate_bundle_cost(grown).on_die_memory_bits - report.on_die_memory_bits
+    assert growth == _VMEM_BITS
 
 
 def test_offchip_and_shim_cores_carry_no_die_area():
     """An HBM stack and an AIE shim front external memory; billing their capacity as SRAM would
     swamp everything else."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    hbm = next(c for c in report.cores if c.core_id == 40)
+    hbm = next(c for c in report.cores if c.core_id == 16)
     assert not hbm.on_die
     assert hbm.area_mm2 == 0.0
     assert report.off_die_access_energy_pj_per_cycle > 0
@@ -214,10 +222,8 @@ def test_aie_bundle_is_priceable_and_reports_what_it_cannot_model():
     assert compute_tiles and all(not c.compute.modelled for c in compute_tiles)
 
 
-def test_api_hardware_cost_report_round_trips(tmp_path):
-    out = tmp_path / "hardware_cost.json"
-    report = hardware_cost_report(TPU_V7, str(out))
-    assert out.exists()
+def test_cost_report_is_plain_json():
+    report = json.loads(json.dumps(evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7)).to_dict()))
     assert report["total_area_mm2"] > 0
     assert report["cores"][0]["memories"][0]["memory_name"]
 
@@ -233,39 +239,23 @@ def test_baseline_is_its_own_budget():
     assert verdict.ok, verdict.violations
 
 
-def test_over_budget_variant_is_rejected_without_a_solve(monkeypatch):
-    """(c) The C4 done-condition: rejection happens before anything is scheduled."""
+def test_over_budget_variant_is_rejected():
     bundle = HardwareBundle.from_yaml(TPU_V7)
     budget = HardwareBudget.from_bundle(bundle)
 
     variant = bundle.copy()
-    variant.cores[9]["memories"]["vmem"]["size"] *= 2
+    _grow_vmem(variant)
     verdict = check_budget(variant, budget)
     assert not verdict.ok
     assert "area" in verdict.violations[0]
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        accelerator_path = variant.materialize(tmpdir)
-
-        # Any stage running at all would mean the budget was checked too late.
-        def _fail(*args, **kwargs):
-            raise AssertionError("the pipeline must not start for an over-budget variant")
-
-        monkeypatch.setattr(MainStage, "run", _fail)
-        with pytest.raises(HardwareBudgetExceededError):
-            optimize_allocation_co_generic(
-                hardware=str(accelerator_path),
-                workload="stream/inputs/examples/workload/resnet18.onnx",
-                experiment_id="test-budget-reject",
-                output_path=tmpdir,
-                hardware_budget=budget,
-            )
+    with pytest.raises(HardwareBudgetExceededError):
+        assert_within_budget(variant, budget)
 
 
 def test_budget_headroom_admits_a_bounded_increase():
     bundle = HardwareBundle.from_yaml(TPU_V7)
     variant = bundle.copy()
-    variant.cores[9]["memories"]["vmem"]["size"] *= 2
+    _grow_vmem(variant)
     growth = evaluate_bundle_cost(variant).total_area_mm2 / evaluate_bundle_cost(bundle).total_area_mm2
 
     assert not check_budget(variant, HardwareBudget.from_bundle(bundle, headroom=0.05)).ok

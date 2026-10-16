@@ -1,4 +1,4 @@
-"""Generate comparison plots for cross-backend TETRA verification results.
+"""Generate comparison plots for cross-backend allocation verification results.
 
 Produces:
   outputs/backend_comparison.png — 2x2 panel with objective + solve time for GEMM and SwiGLU
@@ -34,7 +34,7 @@ HATCHES = {"Gurobi": "", "GSCIP": "//", "HiGHS": ".."}
 def main():  # noqa: PLR0915
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     fig.suptitle(
-        "TETRA Cross-Backend Solver Comparison",
+        "Allocation Cross-Backend Solver Comparison",
         fontsize=16,
         fontweight="bold",
         y=0.98,

@@ -6,6 +6,12 @@ and derived affine metadata per node — the single serialization a viewer consu
 
 from __future__ import annotations
 
+import numpy as np
+import onnx
+from onnx import TensorProto, helper, numpy_helper
+
+from stream.frontends import load_workload
+from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_scan import make_scan_workload
 from stream.ir import WorkloadGraphView
 from stream.parser.onnx.model import ONNXModelParser
@@ -83,11 +89,26 @@ def test_node_kinds_and_regions():
     assert all(n.region is not None for n in view.nodes if n.kind in {"compute", "normalization", "data_movement"})
 
 
-def test_barrier_kind_from_onnx():
-    parser = ONNXModelParser("stream/inputs/testing/workload/attention_head.onnx")
+def test_barrier_kind_from_onnx(tmp_path):
+    """A reshape regrouping elements across axes ([6, 4] as [4, 6]) cannot be read in place, so it is a barrier."""
+    nodes = [
+        helper.make_node("Relu", ["x"], ["a"], name="relu_a"),
+        helper.make_node("Reshape", ["a", "shape"], ["b"], name="regroup"),
+        helper.make_node("Relu", ["b"], ["y"], name="relu_b"),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "regroup",
+        [helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [6, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.BFLOAT16, [4, 6])],
+        [numpy_helper.from_array(np.array([4, 6], np.int64), "shape")],
+    )
+    path = str(tmp_path / "regroup.onnx")
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), path)
+    parser = ONNXModelParser(path)
     parser.run()
     view = _view(parser.workload)
-    assert any(n.kind == "barrier" and n.op == "Transpose" for n in view.nodes)
+    assert any(n.kind == "barrier" and n.op == "Reshape" for n in view.nodes)
     assert len(view.regions) >= 2  # the layout barrier cuts the graph
 
 
@@ -143,19 +164,43 @@ def test_untiled_flag_and_json_roundtrip():
     assert restored.block_classes[0].multiplicity == view.block_classes[0].multiplicity
 
 
-def test_api_entry_point_parses_and_views():
-    from stream.api import workload_graph_view
+def _view_of_file(path: str, **kwargs) -> dict:
+    from stream.frontends import load_workload
 
-    view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx")
+    return WorkloadGraphView.from_workload(load_workload(path), **kwargs).model_dump()
+
+
+def test_a_loaded_workload_views():
+    view = _view_of_file("stream/inputs/testing/workload/attention_head.onnx")
     assert view["schema_version"] == "1.1"
     assert view["nodes"] and view["edges"]
     assert any(c["op"] == "MatMul" for c in view["block_classes"])
     assert view["proposed_regions"] == []  # no capacity -> no proposals
 
 
-def test_api_entry_point_surfaces_proposed_regions_under_a_capacity():
-    from stream.api import workload_graph_view
-
-    view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
+def test_a_loaded_workload_surfaces_proposed_regions_under_a_capacity():
+    view = _view_of_file("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
     assert view["proposed_regions"]
     assert any(n["proposed_region"] is not None for n in view["nodes"])
+
+
+def test_edges_name_the_unique_dims_of_each_tensor_axis():
+    """Between two convs a tensor's axes are the first conv's output dims; the graph input slides each kernel
+    window over the output rows and columns."""
+    config = TwoConvWorkloadConfig(1, 32, 32, 8, 16, 32, 3, "bf16", "bf16")
+    view = _view(load_workload(make_2_conv_workload(config)))
+    tensors = {(e.source, e.target): e.tensors for e in view.edges}
+    assert [t.dims for t in tensors["Conv1", "Conv2"]] == [["z3", "z8", "z5", "z4"]]
+    assert [t.dims for t in tensors["input", "Conv1"]] == [["z3", "z2", "(z5 + z1) - 1", "(z4 + z0) - 1"]]
+
+
+def test_a_node_names_each_operand_axis_in_the_unique_dims_it_indexes():
+    """The second conv reads the first one's output through its own window, which the edge, read through the
+    producer, does not show."""
+    config = TwoConvWorkloadConfig(1, 32, 32, 8, 16, 32, 3, "bf16", "bf16")
+    conv2 = next(n for n in _view(load_workload(make_2_conv_workload(config))).nodes if n.name == "Conv2")
+    assert [(t.role, t.name, t.dims) for t in conv2.tensors] == [
+        ("input", "conv1_out", ["z3", "z8", "(z5 + z7) - 1", "(z4 + z6) - 1"]),
+        ("input", "weights_2", ["z9", "z8", "z7", "z6"]),
+        ("output", "output", ["z3", "z9", "z5", "z4"]),
+    ]

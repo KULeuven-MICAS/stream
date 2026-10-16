@@ -17,11 +17,13 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 import yaml
+from xdsl.ir.affine import AffineMap
 
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
+from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import (
@@ -32,6 +34,7 @@ from stream.workload.iterator_type import (
     sequential_dims,
 )
 from stream.workload.node import ComputationNode
+from stream.workload.normalization import source_operator
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload, determine_fusion_cut_points
 
@@ -74,6 +77,10 @@ class GenericMappingGenerator:
         # {"dim": "NodeName.D{n}", "tile": size}; they override the trivial default in
         # _build_intra_core_tiling, filtered per group to the nodes that group actually contains.
         self.intra_core_tiling = intra_core_tiling
+        self._activations = {t.name for cn in workload.get_computation_nodes() for t in cn.outputs}
+        self._accumulates_across_cores = all(
+            cls.accumulates_across_cores for cls in namespace_classes(accelerator).values()
+        )
 
     # ---------------------------------------------------------------------- #
     # Public API                                                              #
@@ -84,14 +91,23 @@ class GenericMappingGenerator:
 
         Args:
             cut_points: Node names to split at, in addition to FusionEdge boundaries. Defaults to the
-                affine barriers ``determine_fusion_cut_points`` derives.
+                affine barriers ``determine_fusion_cut_points`` derives, cut again where a group's weights
+                cannot stay on its cores (see ``_cut_points``), and, unless ``intra_core_tiling`` is given, at every
+                node of a group no tiling fits (see ``_unfit_nodes``).
 
         Returns:
             A tuple ``(paths, sub_workloads)`` where *paths* is a list of
             absolute file paths to the written YAML files and *sub_workloads*
             is the list of sub-workloads returned by ``split_fusion_groups()``.
         """
-        sub_workloads = self.workload.split_fusion_groups(cut_points=self._cut_points(cut_points))
+        cuts = self._cut_points(cut_points)
+        sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
+        if (
+            cut_points is None
+            and self.intra_core_tiling is None
+            and (unfit := [n for sub in sub_workloads for n in self._unfit_nodes(sub)])
+        ):
+            sub_workloads = self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         paths: list[str] = []
         for i, sub_workload in enumerate(sub_workloads):
             path = self._generate_group_yaml(sub_workload, i)
@@ -200,7 +216,7 @@ class GenericMappingGenerator:
         3. Fallback: if nothing matches, use all cores with kind 'compute'.
 
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
-        Conv/Gemm go to all 4 generic compute cores.
+        Conv/Gemm go to the generic compute cores that split it fastest.
         """
         _SKIP_TYPES = {"offchip", "shim", "memory"}
         node_op = node.type
@@ -224,13 +240,23 @@ class GenericMappingGenerator:
             return specialized_cores
 
         if generic_cores:
-            # use all generic compute cores together
-            return generic_cores
+            return self._fastest_even_split(generic_cores)
 
         # fallback: no match — use all cores with kind 'compute'
         fallback = [c for c in self.accelerator.core_list if c.type == "compute"]
         logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
         return fallback
+
+    @staticmethod
+    def _fastest_even_split(cores: list[Core]) -> list[Core]:
+        """The largest-array cores whose even split finishes first: an even split runs at the pace of its
+        smallest array, so ``n`` cores of at least ``u`` units each deliver ``n * u`` MACs per cycle."""
+
+        def units(core: Core) -> int:
+            return getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
+
+        _, floor = max((n * u, u) for n, u in enumerate(sorted(map(units, cores), reverse=True), start=1))
+        return [core for core in cores if units(core) >= floor]
 
     def _factor_split_across_dims(
         self, sub_workload: Workload, cn: ComputationNode, n_cores: int, protected: set[LayerDim]
@@ -244,12 +270,21 @@ class GenericMappingGenerator:
         (a "dataflow-style" split). Each factor divides its dimension's size, so the
         resulting tiling is always valid.
 
-        Parallel output dimensions (OY/OX/K) are consumed before reduction ones, each
-        group largest-first, so a contraction only absorbs what the output axes could
-        not: splitting a reduction leaves every core holding a partial sum that has to
-        be reduced across the mesh. If ``n_cores`` cannot be fully factored over the
-        available dimensions, the largest achievable subset is returned (product of
-        factors < ``n_cores``) rather than forcing an indivisible split.
+        Parallel output dimensions (OY/OX/K) are consumed before reduction ones, so a
+        contraction only absorbs what the output axes could not: splitting a reduction
+        leaves every core holding a partial sum that has to be reduced across the mesh.
+        A contraction indexing an activation (an input another node of the workload
+        produces) at least twice the output ranks with them where the cores can add partial
+        sums: reducing the output, its partial sums at accumulator precision, then moves less
+        than gathering that input onto every core, as in a tensor-parallel MLP whose down
+        projection contracts the hidden dimension.
+        Within each group the dimension that leaves the fused group's cores the smallest
+        footprint goes first (an operand it does not index stays whole on every core; weights
+        that overflow a core count before activations a sliding window streams), then the one
+        smallest for this node, then the largest, then the outermost output axis. If
+        ``n_cores`` cannot be fully factored over the available dimensions, the largest
+        achievable subset is returned (product of factors < ``n_cores``) rather than forcing
+        an indivisible split.
 
         ``protected`` are global dimensions that must never be inter-core split (a SEQUENTIAL
         recurrence carry, or a nonlinear normalization reduction) for any node in the fused group.
@@ -264,9 +299,54 @@ class GenericMappingGenerator:
         # (index, size) per splittable dimension, parallel axes before reductions and each
         # group largest first (protected dims excluded).
         types = derive_iterator_types(cn)
+        operands = [(_tensor_bits(t.shape, t), map_dim_positions(cn.get_mapping(t))) for t in cn.tensors]
+
+        output = [
+            map_dim_positions(AffineMap(m.num_dims, 0, (r,)))
+            for t in cn.outputs
+            for m in [cn.get_mapping(t)]
+            for r in m.results
+        ]
+
+        output_bits = sum(_tensor_bits(t.shape, t) for t in cn.outputs)
+        activations = [
+            map_dim_positions(cn.get_mapping(t))
+            for t in cn.inputs
+            if t.name in self._activations and _tensor_bits(t.shape, t) >= 2 * output_bits
+        ]
+
+        def ranks_as_parallel(idx: int) -> bool:
+            if types.get(idx) == IteratorType.PARALLEL:
+                return True
+            return self._accumulates_across_cores and any(idx in indexed for indexed in activations)
+
+        def footprint(idx: int, size: int) -> float:
+            factor = math.gcd(n_cores, size)
+            return sum(bits / factor if idx in indexed else bits for bits, indexed in operands)
+
+        def outer(idx: int) -> int:
+            return -next((axis for axis, read in enumerate(output) if idx in read), len(output))
+
+        # A dim a node of the group reduces over is not one all of them split, so their tiles do not line up along
+        # it: it is preferred only for the weights it fits.
+        group = self._group_footprints(sub_workload, n_cores)
+        held = self._group_footprints(sub_workload, n_cores, sliding_only=False)
+        for reducer in sub_workload.get_computation_nodes():
+            reducer_dims = sub_workload.get_dims(reducer)
+            for p, kind in derive_iterator_types(reducer).items():
+                lead = sub_workload.leading_dim(reducer_dims[p])[0] if p < len(reducer_dims) else None
+                if kind == IteratorType.REDUCTION and lead in group:
+                    group[lead] = (group[lead][0], math.inf)
         dim_sizes = sorted(
             ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
-            key=lambda pair: (types.get(pair[0]) == IteratorType.PARALLEL, pair[1]),
+            key=lambda pair: (
+                ranks_as_parallel(pair[0]),
+                tuple(-x for x in group.get(sub_workload.leading_dim(dims[pair[0]])[0], (math.inf, math.inf))),
+                -footprint(*pair),
+                -held.get(sub_workload.leading_dim(dims[pair[0]])[0], (0.0, 0.0))[1],
+                pair[1],
+                outer(pair[0]),
+            ),
             reverse=True,
         )
 
@@ -281,6 +361,40 @@ class GenericMappingGenerator:
                 split_factors.append((dim_idx, factor))
                 remaining //= factor
         return split_factors
+
+    def _group_footprints(
+        self,
+        sub_workload: Workload,
+        n_cores: int,
+        cns: tuple[ComputationNode, ...] | None = None,
+        sliding_only: bool = True,
+    ) -> dict[LayerDim, tuple[float, float]]:
+        """Per unique dim of a group a window slides through, what its multi-core nodes hold per core when each splits
+        along it: first how far the operands no sliding window streams (the weights) overflow half a core, then
+        everything held, so every node splits along the dim that suits the whole group and their tiles line up.
+        ``cns`` narrows the group to some of its nodes. Without ``sliding_only``, a group no window slides through
+        has them too."""
+        cns = cns or tuple(sub_workload.get_computation_nodes())
+        sliding = {sub_workload.leading_dim(d)[0] for d in self._sliding_dims(sub_workload, cns)}
+        if not sliding and sliding_only:
+            return {}
+        operands: list[tuple[int, frozenset[LayerDim]]] = []
+        capacity = math.inf
+        for cn in cns:
+            if len(cores := self._select_cores_for_node(cn)) <= 1:
+                continue
+            capacity = min(capacity, *(c.get_memory_capacity() for c in cores))
+            dims = sub_workload.get_dims(cn)
+            for t in cn.tensors:
+                lead = frozenset(sub_workload.leading_dim(dims[p])[0] for p in map_dim_positions(cn.get_mapping(t)))
+                operands.append((_tensor_bits(t.shape, t), lead))
+        held: dict[LayerDim, tuple[float, float]] = {}
+        for dim in {d for _, lead in operands for d in lead}:
+            factor = math.gcd(n_cores, sub_workload.get_dimension_size(dim))
+            share = [(bits / factor if dim in lead else bits, lead) for bits, lead in operands]
+            resident = sum(bits for bits, lead in share if not lead & sliding)
+            held[dim] = (max(0.0, resident - capacity / 2), sum(bits for bits, _ in share))
+        return held
 
     def _global_dims_at(
         self,
@@ -313,8 +427,45 @@ class GenericMappingGenerator:
             candidates = [d for d in dims if sub_workload.get_dimension_size(d) > 1]
             return max(candidates, key=lambda d: (sub_workload.get_dimension_size(d), str(d))) if candidates else None
 
-        return largest(self._recurrence_dims(sub_workload, cns) & indexed) or largest(
-            self._fusible_parallel_dims(sub_workload, cns) & indexed
+        fusible = self._fusible_parallel_dims(sub_workload, cns) & indexed
+        split = set(self._inter_core_unrolling(sub_workload, cns))
+        sliding = {
+            d for d in self._sliding_dims(sub_workload, cns) & fusible - split if sub_workload.get_dimension_size(d) > 1
+        }
+        if recurrent := largest(self._recurrence_dims(sub_workload, cns) & indexed):
+            return recurrent
+        if sliding:
+            axis = max(sliding, key=lambda d: (self._output_axis(sub_workload, cns, d), str(d)))
+            return sub_workload.leading_dim(axis)[0]
+        return largest(fusible)
+
+    def _sliding_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
+        """Global dims a node slides a window along: an output axis indexing an operand with one of its other dims."""
+        out: set[LayerDim] = set()
+        for cn in cns:
+            dims = sub_workload.get_dims(cn)
+            produced = set().union(*(map_dim_positions(cn.get_mapping(t)) for t in cn.outputs))
+            for t in cn.inputs:
+                access = cn.get_mapping(t)
+                for result in access.results:
+                    if len(read := map_dim_positions(AffineMap(access.num_dims, 0, (result,)))) > 1:
+                        out |= {dims[p] for p in read & produced}
+        return out
+
+    def _output_axis(self, sub_workload: Workload, cns: tuple[ComputationNode, ...], dim: LayerDim) -> int:
+        """The innermost axis ``dim`` indexes in any node's output, so a row-major activation streams its last axis."""
+        return max(
+            (
+                axis
+                for cn in cns
+                for t in cn.outputs
+                for axis, result in enumerate(cn.get_mapping(t).results)
+                if any(
+                    sub_workload.get_dims(cn)[p] == dim
+                    for p in map_dim_positions(AffineMap(cn.get_mapping(t).num_dims, 0, (result,)))
+                )
+            ),
+            default=-1,
         )
 
     def _indexed_by_intermediates(
@@ -351,8 +502,36 @@ class GenericMappingGenerator:
         return unroll
 
     def _cut_points(self, cut_points: list[str] | None) -> list[str]:
-        """The caller's fusion cuts, else the affine barriers ``determine_fusion_cut_points`` derives."""
-        return determine_fusion_cut_points(self.workload) if cut_points is None else cut_points
+        """The caller's fusion cuts, else the affine barriers ``determine_fusion_cut_points`` derives, cut again before
+        a node whose weights overflow its cores more fused with the nodes before it than on their own."""
+        if cut_points is not None:
+            return cut_points
+        cuts = determine_fusion_cut_points(self.workload)
+        for sub in self.workload.split_fusion_groups(cut_points=cuts):
+            segment: tuple[ComputationNode, ...] = ()
+            for cn in sub.get_computation_nodes():
+                fused = self._weight_overflow(sub, (*segment, cn))
+                if segment and fused > self._weight_overflow(sub, segment) + self._weight_overflow(sub, (cn,)):
+                    cuts.append(segment[-1].name)
+                    segment = ()
+                segment = (*segment, cn)
+        return cuts
+
+    def _unfit_nodes(self, sub_workload: Workload) -> list[str]:
+        """The operators of a fused group no tiling fits on its cores, each to be a group of its own: an operator alone
+        has the memories to itself and the whole tile budget, as a layer-by-layer mapping gives it; the sub-ops of an
+        expanded normalization stay together. [] for a group that fits."""
+        cns = tuple(sub_workload.get_computation_nodes())
+        seed = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
+        if len(cns) == 1 or self._capacity_refine(sub_workload, cns, seed) is not None:
+            return []
+        return [source_operator(cn) for cn in cns]
+
+    def _weight_overflow(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> float:
+        """How far ``cns``' weights overflow half their cores under the split that suits them best (0 when they fit)."""
+        n_cores = max(len(self._select_cores_for_node(cn)) for cn in cns)
+        held = self._group_footprints(sub_workload, n_cores, cns)
+        return min((overflow for overflow, _ in held.values()), default=0.0)
 
     def _build_intra_core_tiling(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
@@ -363,22 +542,32 @@ class GenericMappingGenerator:
             selected = [dict(e) for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in names]
             return selected or self._whole_layer_tiling(sub_workload, cns)
         automatic = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
-        return self._capacity_refine(sub_workload, cns, automatic)
+        return self._capacity_refine(sub_workload, cns, automatic) or automatic
 
     def _capacity_refine(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], seed_tiling: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Stream extra axes (e.g. a matmul contraction) when ``seed_tiling`` still overflows the operand buffer."""
+    ) -> list[dict[str, Any]] | None:
+        """Stream extra axes (e.g. a matmul contraction) when ``seed_tiling`` still overflows the operand buffer; None
+        when no tiling fits."""
         cores_per_node = {cn: self._select_cores_for_node(cn) for cn in cns}
         if not any(cores_per_node.values()):
             return seed_tiling
         unroll = self._inter_core_unrolling(sub_workload, cns)
         # Only nonlinear (softmax/layernorm) reductions are off-limits temporally; the contraction is streamed.
         protected = self._global_dims_at(sub_workload, cns, nonlinear_reduction_dims)
+        split = self._protected_dims(sub_workload, cns)
+        node_unroll = {
+            cn: {
+                sub_workload.get_dims(cn)[idx]: factor
+                for idx, factor in self._factor_split_across_dims(sub_workload, cn, len(cores), split)
+            }
+            for cn, cores in cores_per_node.items()
+            if len(cores) > 1
+        }
         refined = CapacityTiler(sub_workload, self.accelerator).plan(
-            cns, cores_per_node, unroll, protected, seed_tiling
+            cns, cores_per_node, unroll, protected, seed_tiling, node_unroll
         )
-        return refined or seed_tiling
+        return refined if refined is None else refined or seed_tiling
 
     def _whole_layer_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
         """Tile the first node's first dimension so the group is one steady-state tile (nb_splits=1)."""
@@ -416,8 +605,10 @@ class GenericMappingGenerator:
                 factor = size // tile if tile else 1
                 buffer_elements = max(
                     (
-                        math.prod(sub.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]))
-                        for t in indexed[fusion_dim]
+                        math.prod(sub.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)], readers=True))
+                        for dim, tensors in indexed.items()
+                        if sub.leading_dim(dim)[0] == fusion_dim
+                        for t in tensors
                     ),
                     default=0,
                 )
@@ -453,7 +644,7 @@ class GenericMappingGenerator:
                 seen.add(tensor.name)
                 full = tuple(tensor.shape)
                 tiled = (
-                    sub_workload.get_tensor_shape_with_tiling(tensor, [(fusion_dim, factor)])
+                    sub_workload.get_tensor_shape_with_tiling(tensor, [(fusion_dim, factor)], readers=True)
                     if fusion_dim is not None and factor > 1
                     else full
                 )
@@ -547,7 +738,9 @@ class GenericMappingGenerator:
         full = sub_workload.get_dimension_size(fusion_dim)
         # Only the intermediates the fusion dim indexes shrink with the tile; the others stay resident.
         streamed = [
-            t for t in intermediates if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)]) != t.shape
+            t
+            for t in intermediates
+            if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)], readers=True) != t.shape
         ]
         if not streamed:
             return []
@@ -562,16 +755,15 @@ class GenericMappingGenerator:
         def resident_bits(tile: int) -> int:
             factor = full // tile
             return max(
-                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t) for t in streamed
+                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)], readers=True), t)
+                for t in streamed
             )
 
         # Only tile when the whole per-core slice does not fit (the layer-fusion trigger).
         if budget <= 0 or resident_bits(per_core) <= budget:
             return []
         divisors = sorted((t for t in range(1, per_core + 1) if per_core % t == 0), reverse=True)
-        tile = next((t for t in divisors if resident_bits(t) <= budget), None)
-        if tile is None:
-            return []
+        tile = next((t for t in divisors if resident_bits(t) <= budget), divisors[-1])
         for cn in cns:
             dims = sub_workload.get_dims(cn)
             if fusion_dim in dims:

@@ -6,9 +6,7 @@ import pytest
 
 from stream.compiler.dialects.stream import StrensorSpace, StrensorVar, StrensorVarType
 from stream.datatypes import LayerDim
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
-    replay_unexpressible_levels,
-)
+from stream.opt.allocation.constraint_optimization.families.reuse import replay_unexpressible_levels
 
 Q, KEY = LayerDim("d2"), LayerDim("d1")
 

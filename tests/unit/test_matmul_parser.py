@@ -65,6 +65,16 @@ def test_matmul_broadcast_batch_maps_to_constant():
     assert a_map.results[0].value == 0
 
 
+def test_a_batch_axis_of_one_on_every_operand_is_the_nodes_batch_dimension():
+    """Attention over one head: the head axis is no broadcast, so every operand indexes it by the node's
+    batch dimension, as it would for two heads."""
+    from xdsl.ir.affine import AffineDimExpr
+
+    node = _parse_single(_matmul_model((1, 8, 4), (1, 4, 6), (1, 8, 6)))
+    for operand_map in node.operand_mapping:
+        assert operand_map.results[0] == AffineDimExpr(0)
+
+
 def test_matmul_footprint_matches_numpy_contraction_shape():
     """The affine maps agree with numpy.matmul on the produced/consumed index extents."""
     a, b = np.random.default_rng(0).random((2, 5, 3)), np.random.default_rng(1).random((2, 3, 7))

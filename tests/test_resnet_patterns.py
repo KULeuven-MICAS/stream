@@ -1,8 +1,7 @@
 """Integration tests for ResNet18 sub-graph patterns through the CO pipeline.
 
 Tests basic residual, stride-2 downsample, and front-end + pooling core patterns.
-Also tests dual-residual multi-group split via identity Reshape FusionEdge.
-Full ResNet18 E2E test with fixed spatial tiling across 11 fusion groups.
+Also tests that an identity Reshape between two residual blocks folds rather than splitting them.
 
 Dedicated test file separate from test_generic_mapping.py.
 Assertions check positive latency, correct group count, and core type allocation.
@@ -13,25 +12,13 @@ import tempfile
 
 import pytest
 import yaml
-from zigzag.mapping.temporal_mapping import TemporalMappingType
 
-from stream.api import optimize_allocation_co_generic
+from stream.api import evaluate_mapping
 from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetPattern,
     ResNetSubgraphConfig,
     make_resnet_subgraph,
 )
-from stream.opt.solver import SolverBackend
-from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
-from stream.stages.context import StageContext
-from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
-from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
-from stream.stages.generation.fixed_mapping_generation import FixedMappingGenerationStage
-from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage
-from stream.stages.generation.tiling_generation import TilingGenerationStage
-from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
-from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.stages.stage import MainStage, StageCallable
 from stream.workload.node import ComputationNode
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -52,12 +39,7 @@ def test_basic_residual():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-basic-residual",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         total_latency = ctx.get("total_latency")
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
@@ -77,12 +59,7 @@ def test_stride2_downsample():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-stride2-downsample",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         total_latency = ctx.get("total_latency")
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
@@ -102,12 +79,7 @@ def test_frontend_path():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-frontend-path",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         # Latency assertions
         total_latency = ctx.get("total_latency")
@@ -119,49 +91,28 @@ def test_frontend_path():
             f"All group latencies must be positive, got {group_latencies}"
         )
 
-        # Core type assertion: MaxPool must be on pooling core (core 4)
-        # Read the group mapping YAML from the output directory (still available inside `with`)
-        experiment_dir = os.path.join(tmpdir, "test-frontend-path")
-        group_dir = os.path.join(experiment_dir, "group_0")
-        mapping_path = os.path.join(group_dir, "mapping.yaml")
-        assert os.path.exists(mapping_path), f"Group mapping YAML not found at {mapping_path}"
-
-        with open(mapping_path) as f:
-            mapping_data = yaml.safe_load(f)
-
-        # Find the MaxPool layer
-        maxpool_layer = None
-        for layer in mapping_data["layers"]:
-            if "MaxPool" in layer["name"]:
-                maxpool_layer = layer
-                break
-        assert maxpool_layer is not None, "MaxPool layer not found in mapping YAML"
-
-        # Assert pooling core allocation (core 4)
-        core_ids = [c for slot in maxpool_layer["core_allocation"] for c in slot]
+        # MaxPool must be on the pooling core (core 4)
+        mapping = ctx.get("mapping")
+        maxpool = next(n for n in ctx.get("workload").get_computation_nodes() if "MaxPool" in n.name)
+        core_ids = {core.id for cores in mapping.get(maxpool).resource_allocation for core in cores}
         assert 4 in core_ids, f"MaxPool should be allocated to pooling core (id=4), got core_ids={core_ids}"
 
 
 @pytest.mark.timeout(120)
 def test_dual_residual():
-    """Dual-residual (two blocks + Reshape FusionEdge) produces 2 fusion groups,
-    both with positive latency."""
+    """Two residual blocks joined by an identity Reshape fuse into one group: the Reshape only re-indexes, so it
+    folds into the nodes reading its output instead of cutting the graph."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.DUAL_RESIDUAL)
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-dual-residual",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         total_latency = ctx.get("total_latency")
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
         group_latencies = ctx.get("group_latencies")
         assert group_latencies is not None, "group_latencies not set in context"
-        assert len(group_latencies) == 2, f"Dual-residual should have 2 groups, got {len(group_latencies)}"
+        assert len(group_latencies) == 1, f"Dual-residual should have 1 group, got {len(group_latencies)}"
         assert all(lat > 0 for lat in group_latencies.values()), (
             f"All group latencies must be positive, got {group_latencies}"
         )
@@ -199,10 +150,8 @@ def test_fusion_cut_points_heuristic():
 
 @pytest.mark.timeout(60)
 def test_resnet18_split_with_cut_points():
-    """split_fusion_groups(cut_points=...) produces 11 groups for ResNet18.
-
-    9 cut points + 1 FusionEdge (Flatten) = 10 boundaries -> 11 groups.
-    """
+    """split_fusion_groups(cut_points=...) produces 10 groups for ResNet18: 9 cut points, the Flatten folding into
+    the Gemm."""
     from stream.parser.onnx.model import ONNXModelParser
     from stream.workload.workload import determine_fusion_cut_points
 
@@ -213,7 +162,7 @@ def test_resnet18_split_with_cut_points():
     cut_points = determine_fusion_cut_points(workload)
     groups = workload.split_fusion_groups(cut_points=cut_points)
 
-    assert len(groups) == 11, f"Expected 11 groups, got {len(groups)}"
+    assert len(groups) == 10, f"Expected 10 groups, got {len(groups)}"
 
     # Verify each group has at least 1 ComputationNode
     for i, group in enumerate(groups):
@@ -226,14 +175,14 @@ def test_resnet18_split_with_cut_points():
     g0_comp = [n for n in groups[0].nodes if isinstance(n, ComputationNode)]
     assert len(g0_comp) == 3, f"Front-end group should have 3 nodes, got {len(g0_comp)}"
 
-    # Last group (post-Flatten): just Gemm = 1 ComputationNode
-    g_last_comp = [n for n in groups[-1].nodes if isinstance(n, ComputationNode)]
-    assert len(g_last_comp) == 1, f"Last group should have 1 node (Gemm), got {len(g_last_comp)}"
+    # Last group: the GlobalAveragePool and the Gemm, its Flatten folded
+    g_last_comp = [n.type for n in groups[-1].nodes if isinstance(n, ComputationNode)]
+    assert g_last_comp == ["GlobalAveragePool", "Gemm"], f"Last group should pool and project, got {g_last_comp}"
 
 
 @pytest.mark.timeout(120)
 def test_resnet18_cut_point_groups():
-    """Per-group mappings for ResNet18 (11 groups) all pass MappingValidator."""
+    """Per-group mappings for ResNet18 (10 groups) all pass MappingValidator."""
     from zigzag.utils import open_yaml
 
     from stream.mapping.generic_generator import GenericMappingGenerator
@@ -268,9 +217,8 @@ def test_resnet18_cut_point_groups():
         )
         paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
 
-        # 11 groups = 11 YAML paths
-        assert len(paths) == 11, f"Expected 11 group mapping paths, got {len(paths)}"
-        assert len(sub_workloads) == 11, f"Expected 11 sub-workloads, got {len(sub_workloads)}"
+        assert len(paths) == 10, f"Expected 10 group mapping paths, got {len(paths)}"
+        assert len(sub_workloads) == 10, f"Expected 10 sub-workloads, got {len(sub_workloads)}"
 
         # Each YAML must pass MappingValidator
         for i, path in enumerate(paths):
@@ -279,74 +227,3 @@ def test_resnet18_cut_point_groups():
                 mapping_data = yaml.safe_load(f)
             mv = MappingValidator(mapping_data)
             assert mv.validate(), f"Group {i} mapping failed validation: {mv.errors}"
-
-
-_RESNET18_MAPPING = "stream/inputs/examples/mapping/resnet18_tpu_quad_core.yaml"
-
-
-@pytest.mark.slow
-@pytest.mark.timeout(900)
-def test_resnet18_full_e2e(request, tmp_path):
-    """Full ResNet18 E2E through CO pipeline: 11 fusion groups, all with positive latency.
-
-    Uses FixedMappingGenerationStage to parse the fixed mapping YAML and build
-    per-group Mappings in-memory — no intermediate YAML file round-trips.
-
-    memory_capacity constraints are disabled because ZigZag's fallback estimator
-    (triggered by the 7x7 stride-2 Conv in Group 0) produces invalid memory loads
-    that make the MILP infeasible. The spatial tiling already guarantees tensors fit.
-
-    Run with ``pytest --keep-output`` to persist outputs in ``outputs/resnet18_e2e/``.
-    """
-    from pathlib import Path  # noqa: PLC0415
-
-    from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
-
-    keep = request.config.getoption("--keep-output")
-    if keep:
-        output_path = Path("outputs/resnet18_e2e")
-        output_path.mkdir(parents=True, exist_ok=True)
-    else:
-        output_path = tmp_path / "resnet18-e2e"
-        output_path.mkdir()
-    output_path = str(output_path)
-
-    stages: list[StageCallable] = [
-        AcceleratorParserStage,
-        StreamONNXModelParserStage,
-        FixedMappingGenerationStage,
-        FusionGroupIterationStage,
-        TilingGenerationStage,
-        CoreCostEstimationStage,
-        ConstraintOptimizationAllocationStage,
-        MemoryAccessesEstimationStage,
-    ]
-    ctx = StageContext.from_kwargs(
-        accelerator=_ACCELERATOR,
-        workload_path=_RESNET18,
-        mapping_path=_RESNET18_MAPPING,
-        loma_lpf_limit=6,
-        output_path=output_path,
-        temporal_mapping_type=TemporalMappingType.UNEVEN,
-        nb_cols_to_use=4,
-        backend=SolverBackend.ORTOOLS_GSCIP.value,
-        constraint_selection=ConstraintSelection(memory_capacity=False),
-    )
-
-    mainstage = MainStage(stages, ctx)
-    answers = mainstage.run()
-    assert len(answers) == 1, f"Expected 1 result, got {len(answers)}"
-    ctx = answers[0]
-
-    total_latency = ctx.get("total_latency")
-    assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
-
-    group_latencies = ctx.get("group_latencies")
-    assert group_latencies is not None, "group_latencies not set in context"
-    assert len(group_latencies) == 11, f"Expected 11 groups, got {len(group_latencies)}"
-    assert all(lat > 0 for lat in group_latencies.values()), (
-        f"All group latencies must be positive, got {group_latencies}"
-    )
-    assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
-        f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
-    )

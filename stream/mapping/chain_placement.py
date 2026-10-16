@@ -8,9 +8,9 @@ DMA_ELEMENTS_PER_CYCLE = 32.0
 MIN_CALL_OPERANDS = 2
 
 
-def call_sizes(kernel) -> dict[int, int]:
-    """The size of one call along each node dimension the kernel library declares."""
-    return {position: size for position, size, _ in kernel.call_tile()}
+def call_sizes(kernel, node) -> dict[int, int]:
+    """The size of one call along each dimension of ``node`` the kernel library declares."""
+    return {position: size for position, size, _ in kernel.call_tile(node)}
 
 
 def is_matmul(kernel) -> bool:
@@ -32,7 +32,7 @@ def bandwidth_bound(kernel) -> bool:
     if is_matmul(kernel):
         return False
     operands = max(MIN_CALL_OPERANDS, len(kernel.operand_layouts() or ()))
-    move_cycles = operands * prod(call_sizes(kernel).values()) / DMA_ELEMENTS_PER_CYCLE
+    move_cycles = operands * prod(kernel.call_shape().values()) / DMA_ELEMENTS_PER_CYCLE
     return layer_cost(kernel) <= move_cycles
 
 

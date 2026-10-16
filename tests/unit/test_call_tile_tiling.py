@@ -8,7 +8,7 @@ class _Kernel:
     def __init__(self, *tile):
         self.tile = list(tile)
 
-    def call_tile(self):
+    def call_tile(self, node):
         return self.tile
 
 
@@ -43,3 +43,13 @@ def test_only_dimensions_every_kernel_sizes_at_runtime_may_grow():
     silu = _node(("s", "h"), _Kernel((1, 32, CallDim("n", runtime=True)), (0, 16, CallDim("m", runtime=True))))
     factory = _Factory({"gemm": gemm, "silu": silu}, {"s": 256, "h": 512})
     assert factory._runtime_dims(("gemm", "silu"), (("s", 16), ("h", 32))) == ("s",)
+
+
+def test_a_dimension_no_kernel_addresses_is_tiled_one_at_a_time_outermost():
+    """Attention's heads lead every operand of a batched matmul, which its kernel is called
+    once per head of; a unit axis needs no loop."""
+    gemm = _node(
+        ("u", "b", "s", "e", "h"), _Kernel((3, 64, CallDim("k")), (4, 32, CallDim("n")), (2, 16, CallDim("m")))
+    )
+    factory = _Factory({"gemm": gemm}, {"u": 1, "b": 4, "s": 256, "e": 128, "h": 512})
+    assert factory._call_tile_tiling(("gemm",)) == (("e", 64), ("h", 32), ("s", 16), ("b", 1))

@@ -59,9 +59,9 @@ def build_swiglu_block(config: SwiGLUConfig | None = None) -> Workload:
     id2 = AffineMap.identity(2)
     nodes = [
         InEdge(name="x", outputs=(x,)),
-        InEdge(name="W_gate", outputs=(w_gate,)),
-        InEdge(name="W_up", outputs=(w_up,)),
-        InEdge(name="W_down", outputs=(w_down,)),
+        InEdge(name="W_gate", outputs=(w_gate,), parameter=True),
+        InEdge(name="W_up", outputs=(w_up,), parameter=True),
+        InEdge(name="W_down", outputs=(w_down,), parameter=True),
         ComputationNode(type="MatMul", name="gate_proj", inputs=(x, w_gate), outputs=(gate,), operand_mapping=_MM2D),
         ComputationNode(type="MatMul", name="up_proj", inputs=(x, w_up), outputs=(up,), operand_mapping=_MM2D),
         ComputationNode(type="Silu", name="silu", inputs=(gate,), outputs=(act,), operand_mapping=(id2, id2)),
@@ -94,7 +94,7 @@ def build_rmsnorm_block(config: RMSNormConfig | None = None) -> Workload:
     gamma_map = AffineMap(2, 0, (AffineExpr.dimension(1),))  # gamma[d] broadcast over the token axis
     nodes = [
         InEdge(name="x", outputs=(x,)),
-        InEdge(name="gamma", outputs=(gamma,)),
+        InEdge(name="gamma", outputs=(gamma,), parameter=True),
         NormalizationNode(
             type="RMSNormalization",
             name="rmsnorm",
@@ -162,9 +162,9 @@ def build_moe_block(config: MoEConfig | None = None) -> Workload:
     )
     nodes = [
         InEdge(name="x", outputs=(x,)),
-        InEdge(name="W_router", outputs=(w_r,)),
-        InEdge(name="W_expert_in", outputs=(w1,)),
-        InEdge(name="W_expert_out", outputs=(w2,)),
+        InEdge(name="W_router", outputs=(w_r,), parameter=True),
+        InEdge(name="W_expert_in", outputs=(w1,), parameter=True),
+        InEdge(name="W_expert_out", outputs=(w2,), parameter=True),
         ComputationNode(type="MatMul", name="router", inputs=(x, w_r), outputs=(logits,), operand_mapping=router_maps),
         ComputationNode(
             type="MoEDispatch",

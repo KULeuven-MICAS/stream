@@ -1,9 +1,7 @@
 import logging
-import os
 from math import ceil, prod
 
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
@@ -37,20 +35,15 @@ def _memory_tile_cores(allocation) -> list[Core]:
 class MemoryAccessesEstimationStage(Stage):
     """
     Stage that computes the number of memory accesses (reads/writes) for each core and tensor in the workload.
-        This stage should be run after the ConstraintOptimizationAllocationStage.
+        This stage should be run after the AllocationStage.
         The memory accesses are estimated based on the mapping and the workload.
         The results can be used for further analysis or visualization of memory access patterns.
         The estimated memory accesses are stored in the context for use by subsequent stages or for output.
         NOTE: For now, this stage does not currently distinguish between different memories inside the core.
     """
 
-    REQUIRED_FIELDS = (
-        "workload",
-        "accelerator",
-        "mapping",
-        "scheduler",
-        "output_path",
-    )
+    reads = ("workload", "accelerator", "mapping", "allocation")
+    writes = ("memory_accesses",)
 
     def __init__(
         self,
@@ -66,10 +59,7 @@ class MemoryAccessesEstimationStage(Stage):
         self.workload: Workload = self.ctx.get("workload")
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
-        self.scheduler: SteadyStateScheduler = self.ctx.get("scheduler")
-        self.ssis = self.scheduler.ssis
-        self.output_path = self.ctx.get("output_path")
-        self.yaml_path: str = os.path.join(self.output_path, "memory_accesses.yaml")
+        self.ssis = self.ctx.get("allocation").ssis
 
         self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses()
 
@@ -83,7 +73,7 @@ class MemoryAccessesEstimationStage(Stage):
             accesses = None  # None means "estimation failed", distinct from "nothing to count"
         logger.info("Finished MemoryAccessesEstimationStage.")
 
-        self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=accesses)
+        self.ctx.set(memory_accesses=accesses)
         yield from (self.ctx,)
 
     def calculate_memory_accesses(self) -> None:
@@ -138,7 +128,9 @@ class MemoryAccessesEstimationStage(Stage):
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
                 self.core_memory_accesses.add_write(mem_core, t_core, accesses_per_fire * nb_fires)
             for tensor in tn.outputs:
-                t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
+                t_core = self.workload.get_tensor_of_transfer_to_single_core(
+                    tensor, tn, self.mapping, ssis=self.ssis.get(tensor)
+                )
                 bandwidth = mem_core.get_max_memory_bandwidth(type="read")
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
                 self.core_memory_accesses.add_read(mem_core, t_core, accesses_per_fire * nb_fires)
@@ -149,7 +141,9 @@ class MemoryAccessesEstimationStage(Stage):
         assert compute_reuse != 0, "Compute tile reuse factor cannot be zero."
         nb_fires = nb_temporal_iterations // compute_reuse
         for tensor in tn.outputs:
-            t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
+            t_core = self.workload.get_tensor_of_transfer_to_single_core(
+                tensor, tn, self.mapping, ssis=self.ssis.get(tensor)
+            )
             # Get the destination core allocation
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
