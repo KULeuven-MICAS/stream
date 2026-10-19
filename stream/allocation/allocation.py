@@ -160,6 +160,7 @@ class Allocation:
                     "kind": "transfer",
                     "transfer_type": getattr(transfer_type, "name", None),
                     "tensor": out.name if out is not None else None,
+                    "copies": len(tn.outputs),
                     "elements": int(prod(out.shape)) if out is not None else 0,
                 }
             )
