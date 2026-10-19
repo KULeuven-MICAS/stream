@@ -233,9 +233,7 @@ class Workload(DiGraphWrapper[Node]):
                     mapping_b = self.global_mapping(b, b.get_mapping(output))
                     for axis, (expr_a, expr_b) in enumerate(zip(mapping_a.results, mapping_b.results, strict=True)):
                         relation = expr_a - expr_b
-                        if self._is_identity_relation(relation) and not self._both_parallel_outputs(
-                            a, b, expr_a, expr_b
-                        ):
+                        if self._is_identity_relation(relation):
                             candidates.append((relation, 1, (node, axis)))
         return candidates
 
@@ -287,20 +285,6 @@ class Workload(DiGraphWrapper[Node]):
                 parent[rb] = ra
                 nodes[ra] |= nodes[rb]
         return None
-
-    def _both_parallel_outputs(
-        self, a: "HasIterationSpace", b: "HasIterationSpace", expr_a: AffineExpr, expr_b: AffineExpr
-    ) -> bool:
-        """Whether a shared-input axis is a PARALLEL output for both consumers ``a`` and ``b``."""
-        from stream.workload.iterator_type import IteratorType, derive_iterator_types  # noqa: PLC0415
-
-        if not (isinstance(expr_a, AffineDimExpr) and isinstance(expr_b, AffineDimExpr)):
-            return False
-        a_local = expr_a.position - self.global_idxs[a].start
-        b_local = expr_b.position - self.global_idxs[b].start
-        types_a = derive_iterator_types(a)
-        types_b = derive_iterator_types(b)
-        return types_a.get(a_local) == IteratorType.PARALLEL and types_b.get(b_local) == IteratorType.PARALLEL
 
     def get_computation_nodes(self) -> tuple[ComputationNode, ...]:
         return tuple(cast(ComputationNode, node) for node in self.nodes if isinstance(node, ComputationNode))
