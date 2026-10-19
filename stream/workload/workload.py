@@ -728,7 +728,7 @@ class Workload(DiGraphWrapper[Node]):
     ) -> Tensor:
         """What ``transfer`` moves of ``tensor`` to one core per firing, interior or at position ``core``: the window
         of the node it reaches, less the halo the innermost sliding loop of ``ssis`` keeps resident."""
-        succ = list(self.successors(transfer))[transfer.outputs.index(tensor)]
+        succ = next(n for n in self.successors(transfer) if tensor in n.inputs)
         if isinstance(succ, OutEdge):
             tiling = tuple()
         elif isinstance(succ, TransferNode):

@@ -184,7 +184,7 @@ class DecisionSpace:
     def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
         """A transfer's copy lives on the cores of the computation node it reaches, not on every target of the
         transfer; a copy for another transfer or an edge keeps the transfer's placements."""
-        reader = list(self.workload.successors(tr))[tr.outputs.index(t)]
+        reader = next(n for n in self.workload.successors(tr) if t in n.inputs)
         if not isinstance(reader, ComputationNode):
             return choices
         cores = {core for choice in _normalize_tensor_choices(self.core_allocation(reader)) for core in choice}
