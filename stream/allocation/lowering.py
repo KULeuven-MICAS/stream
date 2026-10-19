@@ -18,7 +18,6 @@ from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
-from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import is_state_operand, streamed_operands
 from stream.workload.node import (
     ComputationNode,
@@ -125,53 +124,18 @@ class _Lowering:
             if is_constant_o_transfer and not isinstance(src, InEdge):
                 self.add_two_transfer_nodes_for_constant_output_transfer(tensor, src, dsts, new_nodes)
             else:
-                groups = [[new_nodes[n.name] for n in group] for group in self._reader_walks(tensor, readers)]
-                self.add_transfer_nodes(tensor, src, groups, new_nodes)
+                self.add_transfer_nodes(tensor, src, dsts, new_nodes)
         new_workload = Workload(new_nodes.values())
         return new_workload
 
-    def _reader_walks(self, tensor: Tensor, readers: list[HasInputs]) -> list[list[HasInputs]]:
-        """The readers of ``tensor`` grouped so readers in a group share a unique dim at each of its indices.
-
-        One copy is walked along one dim per index, so readers that index it along unrelated dims (the queries and
-        the keys of a self-attention both read its input rows) each get their own transfer; output edges join the
-        first group."""
-        n_unique = len(self.workload.unique_dimensions()[0])
-        groups: list[tuple[list[frozenset[int]], list[HasInputs]]] = []
-        for reader in readers:
-            if not isinstance(reader, HasIterationSpace):
-                continue
-            dims, access = self.workload.get_dims(reader), reader.get_mapping(tensor)
-            walk = [
-                frozenset().union(
-                    *(
-                        map_dim_positions(AffineMap(n_unique, 0, (dims[p],)))
-                        for p in map_dim_positions(AffineMap(access.num_dims, 0, (r,)))
-                    )
-                )
-                for r in access.results
-            ]
-            group = next((g for g in groups if all(a & b for a, b in zip(g[0], walk, strict=True))), None)
-            if group is None:
-                groups.append((walk, [reader]))
-            else:
-                group[1].append(reader)
-        if len(groups) <= 1:
-            return [readers]
-        groups[0][1].extend(r for r in readers if not isinstance(r, HasIterationSpace))
-        return [members for _, members in groups]
-
-    def add_transfer_nodes(
-        self, tensor: Tensor, src: HasOutputs, groups: list[list[HasInputs]], new_nodes: dict[str, Node]
-    ):
+    def add_transfer_nodes(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[str, Node]):
         """
-        Move ``tensor`` from its source to each group of destinations, either directly or staged on a memory tile.
+        Move ``tensor`` from its source to all its readers in one transfer, either directly or staged on a memory tile.
 
         Staging splits the move in two -- source to the on-chip buffer, buffer to every destination --
         so the tile can hold the tensor across reads and re-lay it out on the way through. See
-        :meth:`_stages_on_mem_tile`. Every group after the first is named after its first reader.
+        :meth:`_stages_on_mem_tile`.
         """
-        dsts = [dst for group in groups for dst in group]
         staged = self._stages_on_mem_tile(tensor, src, dsts)
         source = tensor
         if staged:
@@ -180,18 +144,16 @@ class _Lowering:
                 [src], tensor, transfer_type_1, self._fresh(f"{tensor.name}_1")
             )
             new_nodes[hop.name] = hop
-        for i, group in enumerate(groups):
-            tag = f" for {group[0].name}" if i else ""
-            out_name = self._fresh(f"{tensor.name}_{group[0].name}" if i else f"{tensor.name}_{2 if staged else 1}")
-            transfer_type = (
-                self.determine_transfer_type(src, group, src_type="memory")
-                if staged
-                else self.determine_transfer_type(src, group)
-            )
-            transfer_node, updated_tensors = self.generate_transfer_node(group, source, transfer_type, out_name, tag)
-            new_nodes[transfer_node.name] = transfer_node
-            for dst, updated_tensor in zip(group, updated_tensors, strict=True):
-                self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
+        transfer_type = (
+            self.determine_transfer_type(src, dsts, src_type="memory")
+            if staged
+            else self.determine_transfer_type(src, dsts)
+        )
+        out_name = self._fresh(f"{tensor.name}_{2 if staged else 1}")
+        transfer_node, updated_tensors = self.generate_transfer_node(dsts, source, transfer_type, out_name)
+        new_nodes[transfer_node.name] = transfer_node
+        for dst, updated_tensor in zip(dsts, updated_tensors, strict=True):
+            self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
 
     def _stages_on_mem_tile(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs]) -> bool:
         """Whether a transfer is staged in a memory tile instead of landing straight on the cores.
@@ -343,12 +305,12 @@ class _Lowering:
         return name
 
     def generate_transfer_node(
-        self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType, out_name: str = "", tag: str = ""
+        self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType, out_name: str = ""
     ) -> tuple[TransferNode, list[Tensor]]:
         transfer_outputs = self.generate_transfer_output_tensors(tensor, dsts, out_name)
         operand_mapping = tuple(AffineMap.identity(len(tensor.shape)) for _ in range(1 + len(dsts)))
         transfer_node = TransferNode(
-            name=f"Transfer({tensor.name}{tag})",
+            name=f"Transfer({tensor.name})",
             inputs=(tensor,),
             outputs=tuple(transfer_outputs),
             transfer_type=transfer_type,
