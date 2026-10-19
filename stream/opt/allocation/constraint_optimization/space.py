@@ -202,7 +202,7 @@ class DecisionSpace:
     @cached_property
     def sole_outputs(self) -> set[Tensor]:
         """The tensors a transfer moves to a single reader."""
-        return {tr.outputs[0] for tr in self.transfer_nodes if len(tr.outputs) == 1}
+        return {tr.outputs[0] for tr in self.transfer_nodes if len(set(self.workload.successors(tr))) == 1}
 
     def may_single_buffer(self, t: Tensor, stop: int) -> bool:
         """Whether a tensor a transfer moves to one reader may hold its one-tile window at ``stop`` in

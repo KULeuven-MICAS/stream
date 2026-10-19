@@ -33,6 +33,7 @@ from stream.workload.node import (
 )
 from stream.workload.steady_state.iteration_space import IterationVariableType, SteadyStateIterationSpace
 from stream.workload.utils import (
+    affine_coefficients,
     generate_steady_state_iteration_spaces,
     generate_tensor_ssis,
     get_compute_predecessors_successors,
@@ -150,10 +151,38 @@ class _Lowering:
             else self.determine_transfer_type(src, dsts)
         )
         out_name = self._fresh(f"{tensor.name}_{2 if staged else 1}")
-        transfer_node, updated_tensors = self.generate_transfer_node(dsts, source, transfer_type, out_name)
+        placements = [self._placement(dst, tensor) for dst in dsts]
+        transfer_node, updated_tensors = self.generate_transfer_node(dsts, source, transfer_type, out_name, placements)
         new_nodes[transfer_node.name] = transfer_node
         for dst, updated_tensor in zip(dsts, updated_tensors, strict=True):
             self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
+
+    def _placement(self, dst: HasInputs, tensor: Tensor) -> object:
+        """What and where ``dst`` reads of ``tensor``: its cores, the tensor's index in the workload's unique dims, and
+        per core the tile it takes of each dim indexing the tensor. Destinations that read alike share one copy."""
+        if not isinstance(dst, ComputationNode):
+            return dst.name
+        node = self.workload.get_node_by_name(dst.name)
+        unique_dims, dim_values = self.workload.unique_dimensions()
+        access = self.workload.global_mapping(node, node.get_mapping(tensor))
+        index = tuple(expr.replace_dims_and_symbols(dim_values, ()) for expr in access.results)
+        indexed = {
+            z
+            for expr in index
+            for z, c in zip(unique_dims, affine_coefficients(expr, len(unique_dims))[1], strict=True)
+            if c
+        }
+        dims, node_mapping = self.workload.get_dims(node), self.mapping.get(dst)
+        tiling = [
+            (self.workload.leading_dim(dims[dim.position])[0], factor)
+            for split in node_mapping.inter_core_tiling[:1]
+            for dim, factor in split
+        ]
+        tiles = tuple(  # per core, in the order codegen unrolls them: the last split dim fastest
+            tuple((z, i, f) for (z, f), i in zip(tiling, position, strict=True) if z in indexed)
+            for position in np.ndindex(*(f for _, f in tiling))
+        )
+        return node_mapping.resource_allocation, tuple(map(str, index)), tiles
 
     def _stages_on_mem_tile(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs]) -> bool:
         """Whether a transfer is staged in a memory tile instead of landing straight on the cores.
@@ -305,14 +334,20 @@ class _Lowering:
         return name
 
     def generate_transfer_node(
-        self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType, out_name: str = ""
+        self,
+        dsts: list[HasInputs],
+        tensor: Tensor,
+        transfer_type: TransferType,
+        out_name: str = "",
+        placements: list[object] | None = None,
     ) -> tuple[TransferNode, list[Tensor]]:
-        transfer_outputs = self.generate_transfer_output_tensors(tensor, dsts, out_name)
-        operand_mapping = tuple(AffineMap.identity(len(tensor.shape)) for _ in range(1 + len(dsts)))
+        """The transfer of ``tensor`` to ``dsts``, and the copy each reads: one per distinct placement."""
+        copies, transfer_outputs = self.generate_transfer_output_tensors(tensor, placements or dsts, out_name)
+        operand_mapping = tuple(AffineMap.identity(len(tensor.shape)) for _ in range(1 + len(copies)))
         transfer_node = TransferNode(
             name=f"Transfer({tensor.name})",
             inputs=(tensor,),
-            outputs=tuple(transfer_outputs),
+            outputs=tuple(copies),
             transfer_type=transfer_type,
             operand_mapping=operand_mapping,
         )
@@ -329,19 +364,20 @@ class _Lowering:
         return input_tensor
 
     def generate_transfer_output_tensors(
-        self, tensor: Tensor, dsts: list[HasInputs], out_name: str = ""
-    ) -> list[Tensor]:
-        transfer_outputs = []
-        for i, _ in enumerate(dsts):
-            suffix = f".{i}" if len(dsts) > 1 else ""
-            transfer_output = Tensor(
-                name=f"{out_name}{suffix}",
+        self, tensor: Tensor, placements: list, out_name: str = ""
+    ) -> tuple[list[Tensor], list[Tensor]]:
+        """The copies of ``tensor``, one per distinct placement, and the copy of each placement."""
+        distinct = list(dict.fromkeys(placements))
+        copies = [
+            Tensor(
+                name=f"{out_name}.{i}" if len(distinct) > 1 else out_name,
                 operand_type=tensor.operand_type,
                 shape=tensor.shape,
                 subview=tensor.subview,
             )
-            transfer_outputs.append(transfer_output)
-        return transfer_outputs
+            for i in range(len(distinct))
+        ]
+        return copies, [copies[distinct.index(placement)] for placement in placements]
 
     def generate_ssis(self) -> dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]:
         ssis = generate_steady_state_iteration_spaces(
