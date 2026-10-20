@@ -128,6 +128,21 @@ def test_off_chip_memory_never_relays_data_between_cores(tmp_path):
     assert shares(plan) == {"CL(Core(0, zigzag.compute), Core(1, zigzag.compute), bw=10)": 1.0}
 
 
+def test_a_link_beside_a_bus_is_kept_and_the_faster_one_carries_the_route(tmp_path):
+    """Cores 0 and 1 have a narrow link and share a wide bus with off-chip memory, declared after it: both stay
+    routes, so the transfer takes the bus."""
+    path = tmp_path / "link_and_bus.yaml"
+    path.write_text(
+        "name: link-and-bus\ncores:\n  0: testing_core1.yaml\n  1: testing_core1.yaml\n  2: offchip.yaml\n"
+        "offchip_core_id: 2\nunit_energy_cost: 0\ncore_connectivity:\n"
+        "  - {type: link, cores: [0, 1], bandwidth: 10}\n  - {type: bus, cores: [0, 1, 2], bandwidth: 1000}\n"
+    )
+    accelerator = parse_accelerator(str(path))
+    assert sorted(link.bandwidth for link in accelerator.links) == [10, 10, 1000]
+    plan = route(accelerator, (0,), (1,), [DemandItem(0, (0,), WHOLE)])
+    assert shares(plan) == {"Bus(0,1,2, bw=1000)": 1.0}
+
+
 def test_cores_in_one_memory_need_no_route(tmp_path):
     """Two cores sharing their memory, reachable from each other only through DRAM: the data is already there."""
     path = tmp_path / "shared.yaml"
@@ -144,7 +159,7 @@ def test_cores_in_one_memory_need_no_route(tmp_path):
 
 def test_buses_of_the_same_width_are_distinct_links(accelerator):
     """Each cluster bus is its own link, so traffic on one does not count against the other."""
-    buses = {link for _, _, data in accelerator.cores.edges(data=True) if (link := data["cl"]).members}
+    buses = {link for link in accelerator.links if link.members}
     assert sorted(str(bus) for bus in buses) == ["Bus(0,1,2, bw=1000)", "Bus(2,5,6, bw=100)", "Bus(3,4,5, bw=1000)"]
 
 

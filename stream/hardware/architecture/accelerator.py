@@ -7,6 +7,7 @@ from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.hardware.ports import MemoryRef, PortRef, PortRegistry
 
 
@@ -76,6 +77,11 @@ class Accelerator:
         """The top-level memory ports of every core."""
         return PortRegistry.from_accelerator(self)
 
+    @cached_property
+    def links(self) -> tuple[CommunicationLink, ...]:
+        """Every communication link once, a bus once for all its members."""
+        return tuple(dict.fromkeys(link for _, _, data in self.cores.edges(data=True) for link in data["links"]))
+
     @property
     def core_list(self) -> list[Core]:
         return list(self.cores.node_list)
@@ -93,45 +99,15 @@ class Accelerator:
         # --- cores ---
         cores_ir: list[dict] = [core.get_ir() for core in self.cores.node_list]
 
-        # --- connectivity ---
-        # Buses: all edges that share the same CommunicationLink object (bidirectional=True)
-        # are collected into a single bus entry listing every participating core.
-        # Point-to-point links (bidirectional=False) are emitted as directed pairs.
+        # --- connectivity: a bus once with every core on it, a point-to-point link per direction ---
         links_ir: list[dict] = []
-        seen_bus_ids: set[int] = set()
-        for src, dst, data in self.cores.edges(data=True):
-            cl = data.get("cl")
-            if cl is None:
-                continue
-            if cl.bidirectional:
-                bus_id = id(cl)
-                if bus_id in seen_bus_ids:
-                    continue
-                seen_bus_ids.add(bus_id)
-                # Collect every core that participates in this shared bus instance
-                connected_ids: set[int] = set()
-                for u, v, edge_data in self.cores.edges(data=True):
-                    if edge_data.get("cl") is cl:
-                        connected_ids.add(u.id)
-                        connected_ids.add(v.id)
-                links_ir.append(
-                    {
-                        "type": "bus",
-                        "cores": sorted(connected_ids),
-                        "bandwidth": cl.bandwidth,
-                        "unit_energy_cost": cl.unit_energy_cost,
-                    }
-                )
-            else:
-                links_ir.append(
-                    {
-                        "type": "link",
-                        "from_core": src.id,
-                        "to_core": dst.id,
-                        "bandwidth": cl.bandwidth,
-                        "unit_energy_cost": cl.unit_energy_cost,
-                    }
-                )
+        for link in self.links:
+            ends = (
+                {"type": "bus", "cores": sorted(core.id for core in link.members)}
+                if link.members
+                else {"type": "link", "from_core": link.sender.id, "to_core": link.receiver.id}
+            )
+            links_ir.append(ends | {"bandwidth": link.bandwidth, "unit_energy_cost": link.unit_energy_cost})
 
         return {
             "name": self.name,
