@@ -18,7 +18,10 @@ class RoofIR(BaseModel):
 class CeilingResourceIR(BaseModel):
     """One memory port or link a bandwidth ceiling sums."""
 
-    resource: str = Field(description="'<memory>.<port>@<cores>' or '<sender>-><receiver>'")
+    resource: str = Field(
+        description="'<memory>.<port>@<cores>', 'measured@<core>' for a measured shared bandwidth, "
+        "'<sender>-><receiver>' or 'bus <cores>'"
+    )
     cores: list[int]
     bytes_per_cycle: float
 
@@ -32,6 +35,8 @@ class CeilingIR(BaseModel):
 
 
 class HardwareRooflineIR(BaseModel):
+    """An accelerator's roofline: its compute roofs and the bandwidth ceiling of each memory level."""
+
     roofs: list[RoofIR] = Field(description="Largest first")
     levels: list[CeilingIR]
 

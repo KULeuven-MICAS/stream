@@ -106,9 +106,9 @@ def group_point(allocation: Allocation, hardware: dict[str, Any]) -> dict[str, A
         )
     ceilings = [(COMPUTE, float(peak))] + [(lv["name"], lv["attainable"]) for lv in levels if lv["attainable"]]
     bound, attainable = min(ceilings, key=lambda c: c[1]) if peak else (None, None)
-    spatial = aggregate.get("latency_weighted_mac_spatial_utilization")
-    # Zero when no node reports its spatial utilization (an AIE kernel), which is no ceiling.
-    if spatial and peak:
+    # Zero when no node reports its spatial utilization (an AIE kernel): unknown, so no ceiling.
+    spatial = aggregate.get("latency_weighted_mac_spatial_utilization") or None
+    if spatial is not None and peak:
         ceilings.append((ARRAY_FILL, float(peak) * spatial))
     limiter, limit = min(ceilings, key=lambda c: c[1]) if peak else (None, None)
     point = {
