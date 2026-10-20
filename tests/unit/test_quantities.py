@@ -7,6 +7,7 @@ from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mappin
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families.energy import Energy
+from stream.opt.allocation.constraint_optimization.families.memory_ports import MemoryPorts
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.utils import active_fraction
 
@@ -72,6 +73,8 @@ def test_energy_components_split_the_iterations_energy(alloc: AllocationModel) -
     assert by_kind["mac"] > 0 and by_kind["memory"] > 0
     assert by_kind["mac"] + by_kind["memory"] == pytest.approx(report["node_pj_per_iteration"])
     assert transfers == pytest.approx(report["transfer_pj_per_iteration"])
+    rows = {(r["resource"], tuple(r["core_ids"])) for r in MemoryPorts().report(alloc.context)["memory_ports"]}
+    assert {(c["resource"], tuple(c["core_ids"])) for c in components if c["kind"] in ("port", "link")} <= rows
     assert [c["pj_per_iteration"] for c in components] == sorted(
         (c["pj_per_iteration"] for c in components), reverse=True
     )

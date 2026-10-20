@@ -129,4 +129,5 @@ def link_name(link: Any) -> str:
 
 
 def link_cores(link: Any) -> tuple[int, ...]:
+    """The ids of the cores a link connects."""
     return tuple(core.id for core in link.cores)

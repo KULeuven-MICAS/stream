@@ -24,10 +24,17 @@ if TYPE_CHECKING:
 Component = tuple[str, str, tuple[int, ...]]
 
 
-def _energy_per_bit(stream: DmaStream) -> float:
-    """pJ per bit: each source's share of its read, each target's write, and every link the stream crosses."""
-    ports = sum(side.share * side.port.energy_per_bit(side.direction) for side in stream.sides)
-    return ports + sum(link.unit_energy_cost / link.bandwidth for link in stream.choice.links_used)
+def _energy_per_bit(stream: DmaStream) -> list[tuple[Component, float]]:
+    """pJ per bit by where it is spent: each source's share of its read, each target's write, and every link the
+    stream crosses."""
+    ports = [
+        (("port", port_name(side.port.key), side.port.core_ids), side.share * side.port.energy_per_bit(side.direction))
+        for side in stream.sides
+    ]
+    links = stream.choice.links_used
+    return ports + [
+        (("link", link_name(link), link_cores(link)), link.unit_energy_cost / link.bandwidth) for link in links
+    ]
 
 
 class Energy:
@@ -45,7 +52,9 @@ class Energy:
             for node in space.ssc_nodes
             for core in placed_cores(ctx, node)
         )
-        transfers = [s.bits_per_cycle * _energy_per_bit(s) * s.active_cycles for s in dma_streams(ctx)]
+        transfers = [
+            s.bits_per_cycle * sum(pj for _, pj in _energy_per_bit(s)) * s.active_cycles for s in dma_streams(ctx)
+        ]
         q.add("node_energy", nodes)
         q.add("transfer_energy", ctx.model.quicksum(transfers)._raw if transfers else 0.0)
         q.add("energy", q.get("node_energy").expr + q.get("transfer_energy").expr)
@@ -77,11 +86,8 @@ def _components(ctx: FormulationContext) -> list[dict[str, Any]]:
                 pj[(kind, resource, (core.id,))] += energy * fraction
     for stream in dma_streams(ctx):
         bits = ctx.model.value(stream.bits_per_cycle * stream.active_cycles)
-        for side in stream.sides:
-            component = ("port", port_name(side.port.key), side.port.core_ids)
-            pj[component] += bits * side.share * side.port.energy_per_bit(side.direction)
-        for link in stream.choice.links_used:
-            pj[("link", link_name(link), link_cores(link))] += bits * link.unit_energy_cost / link.bandwidth
+        for component, pj_per_bit in _energy_per_bit(stream):
+            pj[component] += bits * pj_per_bit
     rows = [
         {"kind": kind, "resource": resource, "core_ids": list(cores), "pj_per_iteration": energy}
         for (kind, resource, cores), energy in pj.items()
