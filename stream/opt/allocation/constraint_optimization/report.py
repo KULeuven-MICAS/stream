@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
+_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
 """Core kinds that model a memory or DMA endpoint, never in a compute roofline."""
 
 VAR_THRESHOLD = 0.5
@@ -323,7 +323,7 @@ def mac_roofline_peak(accelerator: Accelerator) -> tuple[int, int]:
 
 def compute_units(accelerator: Accelerator, core: Any) -> int:
     """The units of ``core``'s operational array, 0 for the off-chip core and memory and DMA endpoints."""
-    if core.id == accelerator.offchip_core_id or core.type in NON_COMPUTE_CORE_TYPES:
+    if core.id == accelerator.offchip_core_id or core.type in _NON_COMPUTE_CORE_TYPES:
         return 0
     return int(getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0)
 

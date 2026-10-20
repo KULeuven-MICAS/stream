@@ -21,12 +21,29 @@ def test_fusemax_has_a_mac_roof_a_vector_roof_and_one_shared_on_chip_memory():
     roofline = hardware_roofline(parse_accelerator(HARDWARE.format("fusemax")))
     assert [(r["name"], r["ops_per_cycle"], r["cores"]) for r in roofline["roofs"]] == [
         ("MAC", 65536, [0]),
-        ("vector", 256, [1]),
+        ("vector@1", 256, [1]),
     ]
     levels = {level["name"]: level for level in roofline["levels"]}
     assert list(levels) == ["off-chip memory", "off-chip links", "on-chip memory"]
     assert {tuple(r["cores"]) for r in levels["on-chip memory"]["resources"]} == {(0, 1)}
     assert levels["off-chip links"]["bytes_per_cycle"] == 4 * 512 / 8
+
+
+def test_vector_cores_serving_other_operators_are_separate_roofs():
+    """Eyeriss's 72-wide pooling core and 64-wide elementwise core each bound only the operators they serve."""
+    roofs = hardware_roofline(parse_accelerator(HARDWARE.format("eyeriss_like_quad_core")))["roofs"]
+    assert [(r["name"], r["ops_per_cycle"]) for r in roofs] == [("MAC", 672), ("vector@4", 72), ("vector@5", 64)]
+
+
+def test_aie_tiles_have_a_mac_and_a_vector_roof_and_keep_an_on_chip_measured_bandwidth_on_chip():
+    """Each of the 32 tiles adds its library's 8x8x8 MAC tile and 16-wide vector rate; a measured bandwidth counts as
+    off-chip memory only on the off-chip core."""
+    accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
+    accelerator.bandwidth[1] = accelerator.bandwidth[0]
+    roofline = hardware_roofline(accelerator)
+    assert [(r["name"], r["ops_per_cycle"]) for r in roofline["roofs"]] == [("MAC", 32 * 512), ("vector", 32 * 16)]
+    levels = {level["name"]: {r["resource"] for r in level["resources"]} for level in roofline["levels"]}
+    assert "measured@0" in levels["off-chip memory"] and "measured@1" in levels["on-chip memory"]
 
 
 def _onnx(path: Path, nodes: list[onnx.NodeProto], inputs: dict[str, list[int]], output: str, shape: list[int]) -> str:
@@ -81,9 +98,6 @@ def test_a_point_sits_on_or_below_every_ceiling_it_is_read_against(roofline: dic
     ceilings = [level["attainable"] for level in point["levels"] if level["attainable"]]
     assert point["ops_per_cycle"] <= min([*ceilings, point["attainable"]]) * (1 + 1e-9)
     assert point["bound"] in (COMPUTE, *LEVELS)
-    for level in point["levels"]:
-        if level["bytes"]:
-            assert level["intensity"] == pytest.approx(point["operations"] / level["bytes"])
     assert point["diagnosis"][0]["code"] in ("compute_bound", "memory_bound", "array_underfilled")
 
 
@@ -162,6 +176,6 @@ def test_a_group_without_macs_on_the_vector_unit_sits_under_the_vector_roof(tmp_
     options = SolveOptions(artifacts=False, families=default_families(accelerator))
     estimate = evaluate_mapping(accelerator, workload, str(tmp_path), options=options)
     (point,) = estimate.context.get("roofline")["points"]
-    assert (point["roof"], point["macs"], point["operations"]) == ("vector", 0.0, 16 * 32 * 32 * 9)
+    assert (point["roof"], point["macs"], point["operations"]) == ("vector@1", 0.0, 16 * 32 * 32 * 9)
     assert point["ops_per_cycle"] <= 256
-    assert estimate.context.get("group_allocations")[0]["roofline"]["roof"] == "vector"
+    assert estimate.context.get("group_allocations")[0]["roofline"]["roof"] == "vector@1"

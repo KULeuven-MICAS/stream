@@ -13,7 +13,7 @@ from math import prod
 from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.families.traffic import link_name
+from stream.opt.allocation.constraint_optimization.families.traffic import link_cores, link_name, port_name
 from stream.opt.allocation.constraint_optimization.report import compute_units, runs_macs
 
 if TYPE_CHECKING:
@@ -37,30 +37,32 @@ GAP = 0.5
 def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
     """The roofs and ceilings of ``accelerator``, each with the resources it sums."""
     offchip = accelerator.offchip_core_id
-    roofs: dict[str, dict[str, Any]] = {}
+    roofs: dict[tuple[str, Any], dict[str, Any]] = {}
     for core in accelerator.core_list:
-        if not (units := _units(accelerator, core)):
-            continue
-        name = "MAC" if runs_macs(core) else "vector"
-        roof = roofs.setdefault(name, {"name": name, "ops_per_cycle": 0, "cores": []})
-        roof["ops_per_cycle"] += units
-        roof["cores"].append(core.id)
+        for name, served, units in _core_roofs(accelerator, core):
+            roof = roofs.setdefault((name, served), {"name": name, "ops_per_cycle": 0, "cores": []})
+            roof["ops_per_cycle"] += units
+            roof["cores"].append(core.id)
+    for (_, served), roof in roofs.items():
+        if served:
+            roof["name"] += "@" + ",".join(map(str, sorted(roof["cores"])))
     levels: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for port in accelerator.ports:
         levels[OFFCHIP_MEMORY if offchip in port.core_ids else ONCHIP_MEMORY].append(
             {
-                "resource": _port_name(f"{port.key.memory}.{port.key.port}", port.core_ids),
+                "resource": _port_name(port_name(port.key), port.core_ids),
                 "cores": list(port.core_ids),
                 "bytes_per_cycle": port.bits_per_cycle / 8,
             }
         )
     for core_id, model in accelerator.bandwidth.items():
-        levels[OFFCHIP_MEMORY].append(
+        levels[OFFCHIP_MEMORY if core_id == offchip else ONCHIP_MEMORY].append(
             {"resource": _port_name("measured", (core_id,)), "cores": [core_id], "bytes_per_cycle": model.ceiling / 8}
         )
-    for link, cores in _links(accelerator).items():
+    for link in dict.fromkeys(data["cl"] for _, _, data in accelerator.cores.edges(data=True) if "cl" in data):
+        cores = sorted(link_cores(link))
         levels[OFFCHIP_LINKS if offchip in cores else CORE_LINKS].append(
-            {"resource": link_name(link), "cores": sorted(cores), "bytes_per_cycle": link.bandwidth / 8}
+            {"resource": link_name(link), "cores": cores, "bytes_per_cycle": link.bandwidth / 8}
         )
     return {
         "roofs": sorted(roofs.values(), key=lambda roof: -roof["ops_per_cycle"]),
@@ -81,7 +83,7 @@ def group_point(allocation: Allocation, hardware: dict[str, Any]) -> dict[str, A
     what holds it down."""
     performance = allocation.solution.performance or {}
     aggregate = performance.get("aggregate") or {}
-    latency = round(allocation.estimated_cycles)
+    latency = allocation.solution.latency.total
     macs = float(aggregate.get("total_mac_ops") or 0)
     workload = allocation.problem.source_workload
     nodes = workload.get_computation_nodes()
@@ -172,7 +174,7 @@ def _diagnosis(point: dict[str, Any]) -> list[dict[str, Any]]:
     it runs above (whose rate the solve did not enforce), a resource it saturates, and its gap below the ceiling."""
     limiter = point["limiter"]
     if limiter is None:
-        return [{"code": "no_mac_work"}]
+        return [{"code": "no_roof"}]
     if limiter == COMPUTE:
         found = [{"code": "compute_bound"}]
     elif limiter == ARRAY_FILL:
@@ -212,14 +214,15 @@ def _placed_cores(allocation: Allocation) -> dict[str, set[int]]:
 
 
 def _roof(hardware: dict[str, Any], allocation: Allocation, macs: float) -> dict[str, Any] | None:
-    """The roof a group is read against: the MAC roof for MAC work, else the vector roof when every node runs on a
-    vector core, else the MAC roof of the generic cores running it."""
-    roofs = {roof["name"]: roof for roof in hardware["roofs"]}
+    """The roof a group is read against: the MAC roof for MAC work, else the vector roofs of the cores it runs on when
+    each has one, else the MAC roof of the generic cores running it."""
     cores = set().union(*_placed_cores(allocation).values())
-    vector = roofs.get("vector")
-    if not macs and vector is not None and cores and cores <= set(vector["cores"]):
-        return vector
-    return roofs.get("MAC") or vector
+    vector = [r for r in hardware["roofs"] if r["name"].startswith("vector") and cores & set(r["cores"])]
+    covered = {core for roof in vector for core in roof["cores"]}
+    if not macs and cores and cores <= covered:
+        ops = sum(roof["ops_per_cycle"] for roof in vector)
+        return {"name": " + ".join(roof["name"] for roof in vector), "ops_per_cycle": ops, "cores": sorted(covered)}
+    return next((roof for roof in hardware["roofs"] if roof["name"] == "MAC"), None)
 
 
 def _traffic(rows: list[dict[str, Any]], hardware: dict[str, Any], iterations: int) -> dict[str, tuple]:
@@ -248,22 +251,19 @@ def _signature(allocation: Allocation, latency: int, levels: list[dict[str, Any]
     return repr((nodes, latency, [round(level["bytes"]) for level in levels]))
 
 
-def _units(accelerator: Accelerator, core: Core) -> int:
-    """Operations per cycle of ``core``: its operational array, else one MAC tile of its kernel library a cycle."""
+def _core_roofs(accelerator: Accelerator, core: Core) -> list[tuple[str, Any, float]]:
+    """The roofs ``core`` adds operations per cycle to, each with the operators its cores serve when that splits it:
+    its operational array to the MAC roof, or to the vector roof of the operators it serves; without one, its kernel
+    library's MAC tile and vector rate to the MAC and vector roofs."""
     if units := compute_units(accelerator, core):
-        return units
-    library = getattr(accelerator, "kernel_library", None)
-    family = library.families.get("matmul") if library is not None else None
-    return prod(family.mac.values()) if family is not None and family.mac and core.type == "compute" else 0
-
-
-def _links(accelerator: Accelerator) -> dict[Any, set[int]]:
-    """Each communication link once, with the ids of the cores it connects."""
-    links: dict[Any, set[int]] = {}
-    for src, dst, data in accelerator.cores.edges(data=True):
-        if (link := data.get("cl")) is not None:
-            links.setdefault(link, set()).update((src.id, dst.id))
-    return links
+        return [("MAC", None, units) if runs_macs(core) else ("vector", frozenset(core.operator_types or ()), units)]
+    library = accelerator.kernel_library
+    if library is None or core.type != "compute":
+        return []
+    families = library.families
+    mac = families.get("matmul")
+    roofs = [("MAC", None, prod(mac.mac.values()))] if mac is not None and mac.mac else []
+    return roofs + ([("vector", None, families["vector"].ops_per_cycle)] if "vector" in families else [])
 
 
 def _port_name(port: str, core_ids: Any) -> str:

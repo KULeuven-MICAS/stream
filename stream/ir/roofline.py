@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class RoofIR(BaseModel):
     """The compute roof of one class of compute core."""
 
-    name: str = Field(description="'MAC' or 'vector'")
+    name: str = Field(description="'MAC' or 'vector', a vector roof of cores serving only some operators '@<cores>'")
     ops_per_cycle: float
     cores: list[int]
 
@@ -45,7 +45,10 @@ class PointLevelIR(BaseModel):
     """A group's traffic through one level and the ceiling it gives the group."""
 
     name: str
-    bytes: float = Field(description="Bytes the group moved through the level over its iterations")
+    bytes: float = Field(
+        description="Bytes the group moved through the level over its iterations, a port counting what it is held for "
+        "at the efficiency of each access pattern"
+    )
     intensity: float | None = Field(description="Operations per byte moved")
     attainable: float | None = Field(description="The level's bandwidth times the intensity, in operations per cycle")
     busiest: dict[str, Any] | None = Field(
@@ -59,7 +62,7 @@ class RooflinePointIR(BaseModel):
 
     layers: list[str]
     operators: list[str]
-    roof: str | None = Field(description="The roof it is read against")
+    roof: str | None = Field(description="The roof it is read against, vector roofs of its cores joined by ' + '")
     macs: float
     operations: float = Field(description="Its MACs, or its elementwise operations without MACs")
     latency_cycles: int
@@ -77,19 +80,24 @@ class RooflinePointIR(BaseModel):
         description="What holds it down, the lowest ceiling first, each a 'code' and its details: 'compute_bound', "
         "'memory_bound' ('level'), 'array_underfilled' ('spatial_utilization'), 'exceeds_ceiling' and "
         "'resource_saturated' ('level' and its busiest 'resource' and 'utilization'), 'below_ceiling' ('fraction' of "
-        "the limit achieved, 'fill_share' of the latency spent filling), or 'no_mac_work' alone"
+        "the limit achieved, 'fill_share' of the latency spent filling), or 'no_roof' alone"
     )
     signature: str | None = Field(default=None, description="Equal for groups that are the same point")
-    groups: list[int] = Field(default_factory=list, description="In a run, the groups it stands for")
-    multiplicity: int = 1
-    share: float | None = Field(default=None, description="In a run, its groups' share of the run's latency")
+
+
+class RunPointIR(RooflinePointIR):
+    """A point of a run, standing for every group that is the same point."""
+
+    groups: list[int] = Field(description="The groups it stands for")
+    multiplicity: int
+    share: float = Field(description="Its groups' share of the run's latency")
 
 
 class RooflineIR(BaseModel):
     """The roofline of a run: the hardware and its solved groups, repeated groups merged into one point."""
 
     hardware: HardwareRooflineIR
-    points: list[RooflinePointIR]
+    points: list[RunPointIR]
     groups_solved: int
     n_groups: int
     summary: dict[str, Any] = Field(
