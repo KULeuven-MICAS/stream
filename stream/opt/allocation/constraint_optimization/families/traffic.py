@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from stream.hardware.ports import READ, WRITE, Port
+from stream.hardware.ports import READ, WRITE, Port, PortKey
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
 from stream.workload.workload import ComputationNode, TransferNode
@@ -114,3 +114,20 @@ def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
                 if port is not None:
                     traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))
     return traffic
+
+
+def port_name(key: PortKey) -> str:
+    """How reports name a memory port: ``<memory>.<port>``."""
+    return f"{key.memory}.{key.port}"
+
+
+def link_name(link: Any) -> str:
+    """How reports name a link: ``bus <cores>`` for a bus, else ``<sender>-><receiver>``."""
+    if link.members:
+        return "bus " + ",".join(str(core.id) for core in link.members)
+    return "->".join(str(getattr(end, "id", end)) for end in (link.sender, link.receiver))
+
+
+def link_cores(link: Any) -> tuple[int, ...]:
+    """The ids of the cores a link connects."""
+    return tuple(core.id for core in link.cores)
