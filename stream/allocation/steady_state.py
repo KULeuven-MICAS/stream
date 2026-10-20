@@ -6,6 +6,7 @@ from __future__ import annotations
 from math import prod
 from typing import TYPE_CHECKING, Any
 
+from stream.opt.allocation.constraint_optimization.families.traffic import link_name
 from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.opt.allocation.constraint_optimization.space import core_id
 from stream.workload.node import Tensor
@@ -60,7 +61,7 @@ def _tensors(allocation: Allocation) -> list[dict[str, Any]]:
             "name": t.name,
             "shape": _shape(t),
             "bits": int(t.size_bits()),
-            "loops": loops(ssis),
+            "loops": _loops(ssis),
             "placement": [core.id for core in solution.tensor_placements.get(t, ())],
             "reuse_level": solution.reuse_levels.get(t),
             "depth": solution.depths.get(t),
@@ -71,7 +72,7 @@ def _tensors(allocation: Allocation) -> list[dict[str, Any]]:
     ]
 
 
-def loops(ssis: SteadyStateIterationSpace | None) -> list[dict[str, Any]]:
+def _loops(ssis: SteadyStateIterationSpace | None) -> list[dict[str, Any]]:
     """The loops of a steady-state iteration space, outermost first."""
     return [
         {
@@ -108,7 +109,7 @@ class _NodeDetail:
         tile = self.workload.get_tensor_single_core
         return {
             "dims": [str(dim) for dim in self.workload.get_dims(cn)],
-            "loops": loops(self.allocation.ssis.get(cn)),
+            "loops": _loops(self.allocation.ssis.get(cn)),
             "cores": [core.id for core in self.space.core_allocation(cn)[0]],
             "tiles": [_shape(tile(cn.outputs[0], cn, self.mapping, p)) for p in range(self._positions(cn))],
             "waited_on": self.space.is_waited_on(cn),
@@ -131,7 +132,7 @@ class _NodeDetail:
         return {
             "sources": [core_id(c) for c in route.sources],
             "targets": [core_id(c) for _, c in held],
-            "links": [str(link) for link in route.links_used],
+            "links": [link_name(link) for link in route.links_used],
             "windows": [_shape(self.workload.get_tensor_single_core(copy, tn, self.mapping, p)) for copy, p in at],
             "moved": [_shape(tile) for tile in moved],
             "halos": [

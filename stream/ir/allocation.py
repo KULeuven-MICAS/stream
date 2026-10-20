@@ -203,8 +203,9 @@ class SteadyStateIR(BaseModel):
             "The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}. With the "
             "per-core detail, a computation node also carries its dims, loops, cores, output tile per core position "
             "and whether a reader waits on it; a transfer its copies, sources, targets and links, the window and moved "
-            "tile per copy a target holds, its halos, what each source hands each target, and its moved bits and route "
-            "cycles"
+            "tile per copy a target holds, its halos, what each source hands each target, its moved bits, route cycles "
+            "and reuse factor. Where a window slides, both also carry their work per fused tile and how far they run "
+            "ahead"
         )
     )
     iterations: int | None = Field(default=None, description="Steady-state iterations of the group")
