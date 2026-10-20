@@ -60,7 +60,7 @@ def test_cores_sharing_a_memory_use_the_first_cores():
 
 
 def test_cores_sharing_a_memory_fit_their_tiles_in_it_together():
-    # The array holds 246 KB here and the vector core 8 KB, both bounded by the one 300 KB memory.
+    # Together the two cores hold 184 KB here, bounded by the one 300 KB memory.
     rows = solve_swiglu(fusemax(sram_kb=300)).get("allocation").solution.performance["memory_occupancy"]
     (sram,) = [row for row in rows if row["core_id"] in (0, 1)]
     assert sram["core_id"] == 0
@@ -69,8 +69,9 @@ def test_cores_sharing_a_memory_fit_their_tiles_in_it_together():
 
 def test_a_shared_memory_too_small_for_both_cores_is_infeasible():
     with pytest.raises(InfeasibleAllocationError):
-        # Apart, each core fits its tiles in 133 KB; together they need 136 KB.
-        solve_swiglu(fusemax(sram_kb=134))
+        # Apart, each core fits its tiles in 127 KB; together they need 128 KB, the projections sharing one copy of
+        # their input.
+        solve_swiglu(fusemax(sram_kb=127))
 
 
 def test_a_handover_between_cores_sharing_a_memory_stays_in_it():

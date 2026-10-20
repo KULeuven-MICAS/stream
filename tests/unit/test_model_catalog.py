@@ -102,8 +102,8 @@ def test_a_recurrence_with_an_initial_state_input_solves_end_to_end(tmp_path, bl
 
 
 def test_self_attention_keeps_its_query_and_key_axes_apart_in_the_steady_state(tmp_path):
-    """The queries and the keys both read the input rows: each reader gets its own copy, so the scores still span
-    every query by every key."""
+    """The queries and the keys both read the input rows from one copy, and the scores still span every query by every
+    key."""
     workload = build_block("attention", batch=1, heads=2, seq=16, d_head=16)
     allocation = evaluate_mapping(
         "stream/inputs/examples/hardware/tpu_like_quad_core.yaml", workload, str(tmp_path)
@@ -112,7 +112,4 @@ def test_self_attention_keeps_its_query_and_key_axes_apart_in_the_steady_state(t
     scores = next(n for n in lowered.get_computation_nodes() if n.name == "scores")
     query, key = (lowered.get_dims(scores)[p] for p in (2, 3))
     assert query != key
-    assert {tr.name for tr in lowered.get_transfer_nodes() if tr.inputs[0].name == "x"} == {
-        "Transfer(x)",
-        "Transfer(x for proj_q)",
-    }
+    assert [tr.name for tr in lowered.get_transfer_nodes() if tr.inputs[0].name == "x"] == ["Transfer(x)"]

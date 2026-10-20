@@ -184,7 +184,7 @@ class DecisionSpace:
     def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
         """A transfer's copy lives on the cores of the computation node it reaches, not on every target of the
         transfer; a copy for another transfer or an edge keeps the transfer's placements."""
-        reader = list(self.workload.successors(tr))[tr.outputs.index(t)]
+        reader = next(n for n in self.workload.successors(tr) if t in n.inputs)
         if not isinstance(reader, ComputationNode):
             return choices
         cores = {core for choice in _normalize_tensor_choices(self.core_allocation(reader)) for core in choice}
@@ -202,7 +202,7 @@ class DecisionSpace:
     @cached_property
     def sole_outputs(self) -> set[Tensor]:
         """The tensors a transfer moves to a single reader."""
-        return {tr.outputs[0] for tr in self.transfer_nodes if len(tr.outputs) == 1}
+        return {tr.outputs[0] for tr in self.transfer_nodes if len(set(self.workload.successors(tr))) == 1}
 
     def may_single_buffer(self, t: Tensor, stop: int) -> bool:
         """Whether a tensor a transfer moves to one reader may hold its one-tile window at ``stop`` in
@@ -407,13 +407,10 @@ class DecisionSpace:
         )
 
     def copied_bits(self, t: Tensor) -> float:
-        """Bits per firing the transfers of ``t`` deliver, in place or not: a halo once per target holding it."""
-        if len(readers := [tr for tr in self.transfer_nodes if t in tr.inputs]) > 1:
-            return sum(self._delivered_bits(tr) for tr in readers)
+        """Bits per firing the transfer of ``t`` delivers, in place or not: a halo once per target holding it."""
         tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
-        return t.size_bits() if tr is None else self._delivered_bits(tr)
-
-    def _delivered_bits(self, tr: TransferNode) -> float:
+        if tr is None:
+            return t.size_bits()
         if overlaps := self.overlaps(tr):
             return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
         return self.moved_bits(tr, self.path_choices[tr][0])

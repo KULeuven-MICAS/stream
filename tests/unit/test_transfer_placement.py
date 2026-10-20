@@ -17,9 +17,10 @@ def test_each_copy_of_a_multicast_is_placed_with_its_reader(tmp_path):
     spread = 0
     for tr in space.transfer_nodes:
         targets = {core for choice in space.tensor_choices[tr.outputs[0]] for core in choice}
-        for copy, reader in zip(tr.outputs, space.workload.successors(tr), strict=True):
+        for reader in space.workload.successors(tr):
             if not isinstance(reader, ComputationNode):
                 continue
+            copy = next(t for t in tr.outputs if t in reader.inputs)
             readers = {core for choice in space.core_allocation(reader) for core in choice}
             assert space.candidate_cores(copy) <= readers, (tr.name, copy.name)
             spread += len(tr.outputs) > 1 and targets != readers
@@ -36,7 +37,8 @@ def test_a_copy_for_a_reader_on_one_core_holds_the_whole_tensor(tmp_path):
     problem = allocation.problem
     whole = 0
     for tr in problem.workload.get_transfer_nodes():
-        for copy, reader in zip(tr.outputs, problem.workload.successors(tr), strict=True):
+        for reader in problem.workload.successors(tr):
+            copy = next(t for t in tr.outputs if t in reader.inputs)
             split = isinstance(reader, ComputationNode) and problem.mapping.get(reader).inter_core_tiling[0]
             if isinstance(reader, ComputationNode) and not split and len(tr.outputs) > 1:
                 assert problem.workload.get_tensor_single_core(copy, tr, problem.mapping).shape == copy.shape
