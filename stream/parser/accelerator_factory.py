@@ -223,7 +223,11 @@ class AcceleratorFactory:
                 raise ValueError(
                     f"Invalid connection type '{connection_type}' for connection {core_objs}. Expected 'link' or 'bus'."
                 )
-        graph = CoreGraph(edges)
+        # Every link between two cores is a route a transfer may take, a bus beside a point-to-point link alike.
+        links: dict[tuple[Core, Core], list[CommunicationLink]] = {}
+        for core_a, core_b, data in edges:
+            links.setdefault((core_a, core_b), []).append(data["cl"])
+        graph = CoreGraph((a, b, {"links": tuple(between)}) for (a, b), between in links.items())
         # A core that shares another's memory is reached through it, so it needs no link of its own.
         graph.add_nodes_from(cores[i] for group in self.data["core_memory_sharing"] for i in group)
         return graph

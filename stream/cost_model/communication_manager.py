@@ -1,7 +1,7 @@
 import heapq
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from itertools import combinations, product
+from itertools import combinations
 from math import prod
 from typing import TYPE_CHECKING
 
@@ -82,24 +82,9 @@ class CommunicationManager:
     Handles both data transfers and link blocking for memory constraints.
     """
 
-    shortest_paths: dict[tuple[Core, Core], list[Core]]
-
     def __init__(self, accelerator: "Accelerator") -> None:
         self.accelerator = accelerator
-        self.all_pair_links = self.get_all_links_for_all_core_pairs()
         self._transfer_plans: dict[tuple, tuple[MulticastPathPlan, ...]] = {}
-
-    def get_all_links_for_all_core_pairs(self) -> dict[tuple[Core, Core], tuple[tuple[CommunicationLink, ...], ...]]:
-        """The links of every shortest path between each pair of cores one can reach from the other."""
-        graph = self.accelerator.cores
-        links: dict[tuple[Core, Core], tuple[tuple[CommunicationLink, ...], ...]] = {}
-        for sender, receiver in product(self.accelerator.core_list, self.accelerator.core_list):
-            if nx.has_path(graph, sender, receiver):
-                paths = nx.all_shortest_paths(graph, sender, receiver)
-                links[(sender, receiver)] = tuple(
-                    tuple(graph.edges[edge]["cl"] for edge in zip(path, path[1:], strict=False)) for path in paths
-                )
-        return links
 
     def _adjacency(self) -> dict[Core, list[tuple[Core, CommunicationLink]]]:
         """Each core's outgoing links, computed once per accelerator."""
@@ -107,7 +92,7 @@ class CommunicationManager:
         if adjacency is None:
             adjacency = {core: [] for core in self.accelerator.core_list}
             for u, v, data in self.accelerator.cores.edges(data=True):
-                adjacency[u].append((v, data["cl"]))
+                adjacency[u] += [(v, link) for link in data["links"]]
             for links in adjacency.values():
                 links.sort(key=lambda edge: edge[0].id)
             self.accelerator.__dict__["_route_adjacency"] = adjacency

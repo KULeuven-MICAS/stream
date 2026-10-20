@@ -85,7 +85,7 @@ Each entry in `core_connectivity` is one connection:
 | `bandwidth` | yes | Peak bandwidth of the connection (bits per cycle), `> 0`. |
 | `unit_energy_cost` | no | Per-word energy for this connection; inherits the accelerator-level default if omitted. |
 
-Connections are how the MILP allocator routes tensors between cores. A typical accelerator has fast point-to-point `link`s on-chip and one wider `bus` to the off-chip core.
+Connections are how the MILP allocator routes tensors between cores. A typical accelerator has fast point-to-point `link`s on-chip and one wider `bus` to the off-chip core. Two cores joined by both a `link` and a `bus` may be routed over either.
 
 A transfer's route serves each target from the nearest core holding the data it reads, then joins each source's targets in one tree (a Steiner tree, grown from the shortest paths with each link weighted by the time the transfer already keeps it busy), so data shared by several targets crosses each link once. Partial sums, of a computation split over a dimension it reduces, are added up on their way to their target; one headed off-chip is completed in the on-chip memories next to it, a slice each, as a reduce-scatter. A route never passes through the off-chip core, and a bus carries what each core sends over it separately. Each link is charged the share of the transfer's data crossing it.
 
