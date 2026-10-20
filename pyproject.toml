@@ -100,7 +100,7 @@ aie2 = "stream.stages.codegen.backends:AIE2_CODEGEN"
 [project.entry-points."stream.mapping_generators"]
 generic = "stream.stages.generation.mapping_generators:GENERIC_MAPPING"
 
-# A plugin distribution declares itself here so it can be allowlisted (STREAM_ALLOWED_OVERLAYS) and
+# A plugin distribution declares itself here so it can be allowlisted (STREAM_OVERLAYS) and
 # ordered by an OVERLAY_PRIORITY int on its module -- public entry points are priority 0, so a plugin
 # outranks a built-in of the same name. The value is the distribution's module.
 [project.entry-points."stream.overlays"]

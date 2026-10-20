@@ -147,7 +147,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |
 | `FusionAnalysisStage` | `workload` |  | `fusion_edges` |  |  |
-| `FusionGroupIterationStage` | `accelerator`, `output_path`, `sub_workloads`, `sub_mappings` | `memory_accesses` | `workload`, `mapping`, `output_path`, `group_index` | `allocation` | `total_latency`, `group_latencies`, `group_columns`, `group_cycles`, `group_wall_times`, `group_allocations`, `group_memory_accesses` |
+| `FusionGroupIterationStage` | `accelerator`, `output_path`, `sub_workloads`, `sub_mappings` | `memory_accesses` | `workload`, `mapping`, `output_path`, `group_index` | `allocation` | `total_latency`, `group_latencies`, `group_columns`, `group_cycles`, `group_wall_times`, `group_allocations`, `group_memory_accesses`, `roofline` |
 | `FusionProposalStage` | `workload` | `fusion_capacity_elements` | `proposed_fusion_regions` |  |  |
 | `GenericMappingGenerationStage` | `accelerator`, `workload`, `output_path` | `fusion_cut_points`, `intra_core_tiling` | `sub_workloads`, `sub_mappings` |  |  |
 | `KernelStateStage` | `workload`, `mapping` | `placement_alternatives`, `placement_reserves` | `workload`, `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
