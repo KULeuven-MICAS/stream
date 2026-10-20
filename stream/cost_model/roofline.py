@@ -13,7 +13,8 @@ from math import prod
 from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.core import Core
-from stream.workload.utils import is_mac_operator_type
+from stream.opt.allocation.constraint_optimization.families.traffic import link_name
+from stream.opt.allocation.constraint_optimization.report import compute_units, runs_macs
 
 if TYPE_CHECKING:
     from stream.allocation.allocation import Allocation
@@ -26,7 +27,6 @@ CORE_LINKS = "core-to-core links"
 LEVELS = (OFFCHIP_MEMORY, OFFCHIP_LINKS, ONCHIP_MEMORY, CORE_LINKS)
 COMPUTE = "compute"
 ARRAY_FILL = "array fill"
-NON_COMPUTE_CORE_TYPES = frozenset({"offchip", "shim", "memory"})
 
 SATURATED = 0.95
 """A resource this busy is reported as saturated."""
@@ -39,9 +39,9 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
     offchip = accelerator.offchip_core_id
     roofs: dict[str, dict[str, Any]] = {}
     for core in accelerator.core_list:
-        if core.id == offchip or core.type in NON_COMPUTE_CORE_TYPES or not (units := _units(accelerator, core)):
+        if not (units := _units(accelerator, core)):
             continue
-        name = "MAC" if _runs_macs(core) else "vector"
+        name = "MAC" if runs_macs(core) else "vector"
         roof = roofs.setdefault(name, {"name": name, "ops_per_cycle": 0, "cores": []})
         roof["ops_per_cycle"] += units
         roof["cores"].append(core.id)
@@ -49,14 +49,18 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
     for port in accelerator.ports:
         levels[OFFCHIP_MEMORY if offchip in port.core_ids else ONCHIP_MEMORY].append(
             {
-                "resource": _port_name(port.key.memory, port.key.port, port.core_ids),
+                "resource": _port_name(f"{port.key.memory}.{port.key.port}", port.core_ids),
                 "cores": list(port.core_ids),
                 "bytes_per_cycle": port.bits_per_cycle / 8,
             }
         )
+    for core_id, model in accelerator.bandwidth.items():
+        levels[OFFCHIP_MEMORY].append(
+            {"resource": _port_name("measured", (core_id,)), "cores": [core_id], "bytes_per_cycle": model.ceiling / 8}
+        )
     for link, cores in _links(accelerator).items():
         levels[OFFCHIP_LINKS if offchip in cores else CORE_LINKS].append(
-            {"resource": _link_name(link), "cores": sorted(cores), "bytes_per_cycle": link.bandwidth / 8}
+            {"resource": link_name(link), "cores": sorted(cores), "bytes_per_cycle": link.bandwidth / 8}
         )
     return {
         "roofs": sorted(roofs.values(), key=lambda roof: -roof["ops_per_cycle"]),
@@ -103,7 +107,8 @@ def group_point(allocation: Allocation, hardware: dict[str, Any]) -> dict[str, A
     ceilings = [(COMPUTE, float(peak))] + [(lv["name"], lv["attainable"]) for lv in levels if lv["attainable"]]
     bound, attainable = min(ceilings, key=lambda c: c[1]) if peak else (None, None)
     spatial = aggregate.get("latency_weighted_mac_spatial_utilization")
-    if spatial is not None and peak:
+    # Zero when no node reports its spatial utilization (an AIE kernel), which is no ceiling.
+    if spatial and peak:
         ceilings.append((ARRAY_FILL, float(peak) * spatial))
     limiter, limit = min(ceilings, key=lambda c: c[1]) if peak else (None, None)
     point = {
@@ -223,7 +228,7 @@ def _traffic(rows: list[dict[str, Any]], hardware: dict[str, Any], iterations: i
     moved: dict[str, float] = defaultdict(float)
     busiest: dict[str, dict[str, Any]] = {}
     for row in rows:
-        name = row["resource"] if row["kind"] == "link" else _port_name(*row["resource"].split(".", 1), row["core_ids"])
+        name = row["resource"] if row["kind"] == "link" else _port_name(row["resource"], row["core_ids"])
         if (level := level_of.get(name)) is None:
             continue
         moved[level] += row["bits_per_iteration"] * iterations / 8
@@ -245,16 +250,11 @@ def _signature(allocation: Allocation, latency: int, levels: list[dict[str, Any]
 
 def _units(accelerator: Accelerator, core: Core) -> int:
     """Operations per cycle of ``core``: its operational array, else one MAC tile of its kernel library a cycle."""
-    if units := getattr(getattr(core, "operational_array", None), "total_unit_count", 0):
-        return int(units)
+    if units := compute_units(accelerator, core):
+        return units
     library = getattr(accelerator, "kernel_library", None)
     family = library.families.get("matmul") if library is not None else None
     return prod(family.mac.values()) if family is not None and family.mac and core.type == "compute" else 0
-
-
-def _runs_macs(core: Core) -> bool:
-    served = getattr(core, "operator_types", None)
-    return served is None or any(is_mac_operator_type(op) for op in served)
 
 
 def _links(accelerator: Accelerator) -> dict[Any, set[int]]:
@@ -266,9 +266,5 @@ def _links(accelerator: Accelerator) -> dict[Any, set[int]]:
     return links
 
 
-def _link_name(link: Any) -> str:
-    return "->".join(str(getattr(end, "id", end)) for end in (link.sender, link.receiver))
-
-
-def _port_name(memory: str, port: str, core_ids: Any) -> str:
-    return f"{memory}.{port}@{','.join(map(str, sorted(core_ids)))}"
+def _port_name(port: str, core_ids: Any) -> str:
+    return f"{port}@{','.join(map(str, sorted(core_ids)))}"

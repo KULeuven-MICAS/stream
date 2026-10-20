@@ -8,7 +8,9 @@ import pytest
 from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, default_families, evaluate_mapping
-from stream.cost_model.roofline import COMPUTE, LEVELS, hardware_roofline
+from stream.cost_model.roofline import COMPUTE, LEVELS, _diagnosis, hardware_roofline, run_roofline
+from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
+from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.stages.parsing.accelerator_parser import parse_accelerator
 
 HARDWARE = "stream/inputs/examples/hardware/{}.yaml"
@@ -83,6 +85,66 @@ def test_a_point_sits_on_or_below_every_ceiling_it_is_read_against(roofline: dic
         if level["bytes"]:
             assert level["intensity"] == pytest.approx(point["operations"] / level["bytes"])
     assert point["diagnosis"][0]["code"] in ("compute_bound", "memory_bound", "array_underfilled")
+
+
+def test_bus_traffic_to_off_chip_memory_reaches_the_off_chip_links(roofline: dict[str, Any]):
+    """The quad core reaches its off-chip memory over a bus, whose traffic counts on the off-chip links level."""
+    (point,) = roofline["points"]
+    (links,) = [level for level in point["levels"] if level["name"] == "off-chip links"]
+    assert links["bytes"] > 0 and links["busiest"]["resource"].startswith("bus ")
+
+
+def test_an_aie_gemm_has_a_roofline_point(tmp_path: Path):
+    """The shim's measured bandwidth is the off-chip memory, and kernels without a spatial utilization set no
+    ceiling."""
+    workload = make_gemm_workload(128, 128, 128, "bf16", "bf16")
+    mapping = make_gemm_mapping(128, 128, 128, 64, 64, 64, nb_rows_to_use=2, nb_cols_to_use=2)
+    options = SolveOptions(artifacts=False, nb_cols_to_use=2)
+    estimate = evaluate_mapping(
+        "stream/inputs/aie/hardware/whole_array_strix.yaml", workload, str(tmp_path), mapping, options
+    )
+    point = estimate.context.get("group_allocations")[0]["roofline"]
+    assert point is not None and point["bound"] == "off-chip memory" and point["limit"] > 0
+    assert {level["name"]: level["bytes"] > 0 for level in point["levels"]} == {
+        "off-chip memory": True,
+        "off-chip links": True,
+        "on-chip memory": True,
+        "core-to-core links": True,
+    }
+
+
+def _point(ops_per_cycle: float, utilization: float) -> dict[str, Any]:
+    """A point bound by compute at 100 operations per cycle, whose on-chip memory runs at ``utilization``."""
+    busiest = {"resource": "sram.rw@0", "utilization": utilization}
+    level = {"name": "on-chip memory", "bytes": 1.0, "intensity": 1.0, "attainable": 200.0, "busiest": busiest}
+    return {
+        "limiter": COMPUTE,
+        "limit": 100.0,
+        "ops_per_cycle": ops_per_cycle,
+        "latency_cycles": 10,
+        "fill_cycles": 4,
+        "levels": [level],
+    }
+
+
+def test_a_point_far_below_its_ceiling_on_a_saturated_resource_is_diagnosed_both_ways():
+    """A saturated level other than the limiter is named, and so is a gap of more than half below the limit."""
+    diagnosis = _diagnosis(_point(ops_per_cycle=20.0, utilization=0.97))
+    assert [d["code"] for d in diagnosis] == ["compute_bound", "resource_saturated", "below_ceiling"]
+    assert diagnosis[-1] == {"code": "below_ceiling", "fraction": 0.2, "fill_share": 0.4}
+    assert [d["code"] for d in _diagnosis(_point(ops_per_cycle=80.0, utilization=0.5))] == ["compute_bound"]
+
+
+def test_the_summary_splits_the_run_latency_by_bound_and_by_limiter():
+    """Two equal groups of 30 cycles and an unplotted one of 40 split the run's 100 cycles 60/40."""
+
+    def point(signature: str, latency: int, bound: str | None, limiter: str | None) -> dict[str, Any]:
+        return dict(signature=signature, latency_cycles=latency, macs=1, operations=1, bound=bound, limiter=limiter)
+
+    points = {i: point("a", 30, COMPUTE, "array fill") for i in (0, 1)} | {2: point("b", 40, None, None)}
+    summary = run_roofline({}, points, 3)["summary"]
+    assert summary["bound_share"] == pytest.approx({COMPUTE: 0.6, "unplotted": 0.4})
+    assert summary["limiter_share"] == pytest.approx({"array fill": 0.6, "unplotted": 0.4})
 
 
 def test_a_point_above_a_ceiling_names_the_resource_the_solve_did_not_hold_to_its_rate(tmp_path: Path):

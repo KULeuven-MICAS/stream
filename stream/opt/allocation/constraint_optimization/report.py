@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
+NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
 """Core kinds that model a memory or DMA endpoint, never in a compute roofline."""
 
 VAR_THRESHOLD = 0.5
@@ -317,21 +317,21 @@ def _json_scalar(v: Any) -> Any:
 
 def mac_roofline_peak(accelerator: Accelerator) -> tuple[int, int]:
     """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
-    offchip_id = accelerator.offchip_core_id
-    peak = 0
-    n_cores = 0
-    for core in accelerator.core_list:
-        if core.id == offchip_id or core.type in _NON_COMPUTE_CORE_TYPES:
-            continue
-        op_types = getattr(core, "operator_types", None)
-        if op_types is not None and not any(is_mac_operator_type(t) for t in op_types):
-            continue
-        units = getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
-        if not units:
-            continue
-        peak += units
-        n_cores += 1
-    return peak, n_cores
+    units = [u for core in accelerator.core_list if runs_macs(core) and (u := compute_units(accelerator, core))]
+    return sum(units), len(units)
+
+
+def compute_units(accelerator: Accelerator, core: Any) -> int:
+    """The units of ``core``'s operational array, 0 for the off-chip core and memory and DMA endpoints."""
+    if core.id == accelerator.offchip_core_id or core.type in NON_COMPUTE_CORE_TYPES:
+        return 0
+    return int(getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0)
+
+
+def runs_macs(core: Any) -> bool:
+    """Whether ``core`` may execute MAC work: it serves a MAC operator, or does not restrict what it serves."""
+    served = getattr(core, "operator_types", None)
+    return served is None or any(is_mac_operator_type(op) for op in served)
 
 
 def end_to_end_mac_utilization(accelerator: Accelerator, total_mac_ops: int | None, latency: int) -> dict[str, Any]:

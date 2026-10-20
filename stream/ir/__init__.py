@@ -38,7 +38,6 @@ from stream.ir.graph_view import (
     RegionIR,
     WorkloadGraphView,
 )
-from stream.ir.roofline import HardwareRooflineIR, RooflineIR, RooflinePointIR
 from stream.ir.workload import (
     NodeIR,
     WorkloadAlgorithmicView,
@@ -80,7 +79,4 @@ __all__ = [
     "SteadyStateIR",
     "SteadyStateOperatorIR",
     "SteadyStateLoopIR",
-    "HardwareRooflineIR",
-    "RooflineIR",
-    "RooflinePointIR",
 ]

@@ -43,7 +43,10 @@ class PointLevelIR(BaseModel):
     bytes: float = Field(description="Bytes the group moved through the level over its iterations")
     intensity: float | None = Field(description="Operations per byte moved")
     attainable: float | None = Field(description="The level's bandwidth times the intensity, in operations per cycle")
-    busiest: dict[str, Any] | None = Field(description="The level's busiest resource and its utilization")
+    busiest: dict[str, Any] | None = Field(
+        description="The level's busiest resource: 'resource', its name, and 'utilization', its real cycles per "
+        "initiation interval"
+    )
 
 
 class RooflinePointIR(BaseModel):
@@ -65,7 +68,12 @@ class RooflinePointIR(BaseModel):
     spatial_utilization: float | None
     limiter: str | None = Field(description="The lowest ceiling counting the fill of the MAC array ('array fill')")
     limit: float | None
-    diagnosis: list[dict[str, Any]] = Field(description="What holds it down, by code, the lowest ceiling first")
+    diagnosis: list[dict[str, Any]] = Field(
+        description="What holds it down, the lowest ceiling first, each a 'code' and its details: 'compute_bound', "
+        "'memory_bound' ('level'), 'array_underfilled' ('spatial_utilization'), 'exceeds_ceiling' and "
+        "'resource_saturated' ('level' and its busiest 'resource' and 'utilization'), 'below_ceiling' ('fraction' of "
+        "the limit achieved, 'fill_share' of the latency spent filling), or 'no_mac_work' alone"
+    )
     signature: str | None = Field(default=None, description="Equal for groups that are the same point")
     groups: list[int] = Field(default_factory=list, description="In a run, the groups it stands for")
     multiplicity: int = 1
@@ -79,4 +87,7 @@ class RooflineIR(BaseModel):
     points: list[RooflinePointIR]
     groups_solved: int
     n_groups: int
-    summary: dict[str, Any] = Field(description="Latency, MACs and operations, and the latency share per bound")
+    summary: dict[str, Any] = Field(
+        description="'latency_cycles', 'macs' and 'operations' of the solved groups, and 'bound_share' and "
+        "'limiter_share', the share of that latency per bound and per limiter ('unplotted' for points without one)"
+    )
