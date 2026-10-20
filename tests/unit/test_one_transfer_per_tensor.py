@@ -1,16 +1,20 @@
-"""Every tensor moves in one transfer to all its readers, however the readers are grouped, placed or tiled."""
+"""Every tensor moves in one transfer to all its readers, however the readers are grouped, placed or tiled, and in one
+more to its group's output edge when a later group reads it."""
 
-from collections import Counter
+from collections import defaultdict
 
+import onnx
 import pytest
 import yaml
+from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.workload.blocks import available_blocks, build_block
 
 TPU = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-FAILING_ON_MAIN = {"moe", "flash_attention"}  # unrelated to transfers: they fail before lowering finishes
+TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"  # stages through its memory cores
+NOT_SOLVABLE = {"flash_attention"}  # multi-output nodes, which the solve does not support yet
 SWIGLU = ("Gemm_Left", "Gemm_Right", "Silu", "Elt_Mul", "Gemm_Down")
 
 
@@ -18,16 +22,60 @@ def _graphs(estimate):
     return [group["steady_state"]["tiled_graph"] for group in estimate.context.get("group_allocations").values()]
 
 
-def _transfers_per_source(graph):
+def _moves(graph):
+    """Per source, the nodes each transfer it feeds ends at, through any staging hop."""
     transfers = {n["name"] for n in graph["nodes"] if n["kind"] == "transfer"}
-    return Counter(e["source"] for e in graph["edges"] if e["target"] in transfers)
+    targets = defaultdict(list)
+    for edge in graph["edges"]:
+        targets[edge["source"]].append(edge["target"])
+
+    def ends(node):
+        return {end for target in targets[node] for end in (ends(target) if target in transfers else {target})}
+
+    return {src: [ends(t) for t in feeds if t in transfers] for src, feeds in targets.items() if src not in transfers}
 
 
-@pytest.mark.parametrize("block", [b.key for b in available_blocks() if b.key not in FAILING_ON_MAIN])
+def _carrying(graph, tensor):
+    return {n["name"] for n in graph["nodes"] if n["kind"] == "transfer" and n["tensor"] == tensor}
+
+
+def _assert_one_transfer_per_tensor(graph):
+    computes = {n["name"] for n in graph["nodes"] if n["kind"] == "compute"}
+    for source, moves in _moves(graph).items():
+        assert sum(bool(m & computes) for m in moves) <= 1, (source, moves)  # to its readers in the group
+        assert sum(not m & computes for m in moves) <= 1, (source, moves)  # to the output edge
+
+
+@pytest.mark.parametrize("block", [b.key for b in available_blocks() if b.key not in NOT_SOLVABLE])
 def test_no_tensor_of_a_block_moves_in_two_transfers(tmp_path, block):
     estimate = evaluate_mapping(TPU, build_block(block), str(tmp_path), options=SolveOptions(artifacts=False))
     for graph in _graphs(estimate):
-        assert max(_transfers_per_source(graph).values()) == 1
+        _assert_one_transfer_per_tensor(graph)
+
+
+def _value(name):
+    return helper.make_tensor_value_info(name, TensorProto.BFLOAT16, [64, 64])
+
+
+@pytest.mark.parametrize("hardware", [TPU, TPU_V7], ids=["direct", "staged"])
+def test_a_tensor_read_in_its_group_and_after_it_moves_once_to_each(tmp_path, hardware):
+    """``h`` feeds ``mm2`` in its group and ``mm3`` after the cut: one transfer to ``mm2``, one to the output edge."""
+    layers = (("mm1", "x", "w1", "h"), ("mm2", "h", "w2", "a"), ("mm3", "a", "h", "b"))
+    nodes = [helper.make_node("MatMul", [x, w], [y], name=name) for name, x, w, y in layers]
+    graph = helper.make_graph(nodes, "g", [_value(t) for t in ("x", "w1", "w2")], [_value("b")])
+    path = str(tmp_path / "shared.onnx")
+    onnx.save(onnx.shape_inference.infer_shapes(helper.make_model(graph)), path)
+    options = SolveOptions(artifacts=False, stage_options={"fusion_cut_points": ["mm2"]})
+    first, second = _graphs(evaluate_mapping(hardware, path, str(tmp_path), options=options))
+
+    moves = _moves(first)["mm1"]
+    assert len(moves) == 2 and {"mm2"} in moves
+    (export,) = (move for move in moves if move != {"mm2"})
+    (edge,) = export  # the output edge, reached under the tensor's own name
+    assert any(e["target"] == edge and e["source"] in _carrying(first, "h") for e in first["edges"])
+    assert any("mm3" in move for move in _moves(second)[edge.replace("_out", "_in")])
+    for steady in (first, second):
+        _assert_one_transfer_per_tensor(steady)
 
 
 @pytest.mark.parametrize("split", [False, True], ids=["fused", "split"])
@@ -55,7 +103,7 @@ def test_both_swiglu_projections_read_their_input_from_one_transfer(tmp_path, sp
     tiles = {op["name"]: op["tensors"][0]["shape"] for op in projections["operators"] if op["name"] in SWIGLU[:2]}
     assert tiles["Gemm_Left"] == tiles["Gemm_Right"] == [8 if tiled else 32, 32]
     for graph in _graphs(estimate):
-        assert max(_transfers_per_source(graph).values()) == 1
+        _assert_one_transfer_per_tensor(graph)
 
 
 @pytest.mark.parametrize(("right", "copies"), [([("D0", 2), ("D2", 2)], 1), ([("D2", 2), ("D0", 2)], 2)])
