@@ -116,24 +116,24 @@ class _NodeDetail:
         }
 
     def transfer(self, tn: TransferNode) -> dict[str, Any]:
-        """Its route, the window of the copy each target holds and what one firing moves to it, the halos its loops
-        keep, what each source hands each target, and the bits it moves. A target holds the copy of the node it runs,
-        at its position among that copy's targets modulo the positions, as sources pair with targets."""
+        """Its route, the window of each copy a target holds and what one firing moves to it, the halos its loops
+        keep, what each source hands each target, and the bits it moves. A target holds the copies of the nodes it
+        runs, each at its position among that copy's targets modulo the positions, as sources pair with targets."""
         space, solution = self.space, self.allocation.solution
         route, n = solution.transfer_routes[tn], self._positions(tn)
-        held = [next((o for o in tn.outputs if c in space.candidate_cores(o)), tn.outputs[0]) for c in route.targets]
-        at = [(copy, held[:j].count(copy) % n) for j, copy in enumerate(held)]
+        held = [(copy, c) for copy in tn.outputs for c in route.targets if c in space.candidate_cores(copy)]
+        held += [(tn.outputs[0], c) for c in route.targets if all(c != target for _, target in held)]
+        at = [(copy, [other for other, _ in held[:j]].count(copy) % n) for j, (copy, _) in enumerate(held)]
         moved = [
             self.workload.get_tensor_of_transfer_to_single_core(copy, tn, self.mapping, p, space.ssis.get(copy))
             for copy, p in at
         ]
         return {
             "sources": [core_id(c) for c in route.sources],
-            "targets": [core_id(c) for c in route.targets],
+            "targets": [core_id(c) for _, c in held],
             "links": [str(link) for link in route.links_used],
             "windows": [_shape(self.workload.get_tensor_single_core(copy, tn, self.mapping, p)) for copy, p in at],
             "moved": [_shape(tile) for tile in moved],
-            "received_bits": [int(tile.size_bits()) for tile in moved],
             "halos": [
                 {"dim": str(loop.dimension), "type": loop.type.name.lower(), "halo": loop.halo}
                 for loop in space.ssis.get(tn.outputs[0]) or ()
@@ -145,7 +145,6 @@ class _NodeDetail:
             ],
             "moved_bits": 0 if space.choice_shares_memory(tn, route) else space.moved_bits(tn, route),
             "route_cycles": solution.route_cycles[tn],
-            "in_place": solution.route_cycles[tn] == 0,
             "reuse_factor": solution.reuse_factors.get(tn),
             **self._sliding(tn),
         }

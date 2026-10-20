@@ -77,8 +77,9 @@ def test_the_detail_reports_the_tiles_windows_halos_and_sources(tmp_path: Path, 
     assert (into2["windows"], into2["moved"]) == (expected["window"], expected["moved"])
     assert handed == expected["sources"]
     assert {(h["type"], h["halo"]) for h in into2["halos"]} >= {("spatial", 2)}
-    assert into2["links"] and into2["route_cycles"] > 0 and not into2["in_place"]
-    assert into2["received_bits"] == [16 * sum(expected["sources"][core].values()) for core in into2["targets"]]
+    assert into2["links"] and into2["route_cycles"] > 0
+    moved = [prod(tile) for tile in into2["moved"]]
+    assert moved == [sum(expected["sources"][core].values()) for core in into2["targets"]]
     assert {axis["dim"] for axis in view["axes"] if axis["sliding"]} >= {h["dim"] for h in into2["halos"]}
     assert nodes["Conv1"]["waited_on"]
     if expected["iterations"] > 1:
@@ -102,8 +103,8 @@ def test_every_tensor_reports_its_placement_and_buffering(tmp_path: Path):
 def test_a_copy_within_one_memory_moves_nothing_over_links(tmp_path: Path, scenario: str, hardware: str, pool: bool):
     view = _view(tmp_path, hardware, conv_chain(pool=pool), str(MAPPINGS / f"{scenario}.yaml"))
     into2 = _nodes(view)[INTO_CONV2]
-    assert into2["in_place"] and into2["moved_bits"] == 0
-    assert into2["moved"] == [[1, 16, 8, 32]] and into2["received_bits"] == [16 * prod(into2["moved"][0])]
+    assert into2["route_cycles"] == 0 and into2["moved_bits"] == 0
+    assert into2["moved"] == [[1, 16, 8, 32]]
 
 
 def test_a_multicast_to_two_readers_reports_each_targets_window(tmp_path: Path):
@@ -133,7 +134,35 @@ fused_groups:
     ]
     assert load["targets"] == [0, 1, 2, 3]
     assert load["windows"] == load["moved"] == [[1, 8, 8, 16]] * 4
-    assert load["received_bits"] == [16 * 8 * 8 * 16] * 4
+
+
+def test_readers_with_other_windows_on_the_same_cores_each_report_their_copy(tmp_path: Path):
+    """A 1x1 and a 3x3 convolution split over the same two cores read one input: each core holds both copies, the 3x3
+    one with its halo."""
+    (tmp_path / "mapping.yaml").write_text(
+        """
+layers:
+- {name: ConvA, core_allocation: [[0, 1]], inter_core_tiling: [[{dim: D1, split: 2}]]}
+- {name: ConvB, core_allocation: [[0, 1]], inter_core_tiling: [[{dim: D1, split: 2}]]}
+- {name: Add, core_allocation: [[5]]}
+fused_groups:
+- {name: g, layers: [ConvA, ConvB, Add], intra_core_tiling: [{dim: ConvA.D2, tile: 8}]}
+"""
+    )
+    workload = onnx_graph(
+        [
+            conv("ConvA", "input", "wa", "a", k=1, pads=0),
+            conv("ConvB", "input", "wb", "b", k=3, pads=1),
+            helper.make_node("Add", ["a", "b"], ["o"], name="Add"),
+        ],
+        {"input": [1, 8, 32, 32], "wa": [16, 8, 1, 1], "wb": [16, 8, 3, 3]},
+        ["o"],
+    )
+    load = _nodes(_view(tmp_path, "eyeriss_like_quad_core", workload, str(tmp_path / "mapping.yaml")))[
+        "Transfer(input)"
+    ]
+    assert load["copies"] == 2 and load["targets"] == [0, 1, 0, 1]
+    assert load["windows"] == [[1, 8, 8, 16]] * 2 + [[1, 8, 10, 17]] * 2
 
 
 def test_a_node_whose_detail_fails_keeps_its_summary_and_the_rest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
