@@ -2,7 +2,7 @@
 routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
 
 from dataclasses import replace
-from itertools import combinations
+from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
@@ -18,7 +18,6 @@ from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
-from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import is_state_operand, streamed_operands
 from stream.workload.node import (
     ComputationNode,
@@ -34,6 +33,7 @@ from stream.workload.node import (
 )
 from stream.workload.steady_state.iteration_space import IterationVariableType, SteadyStateIterationSpace
 from stream.workload.utils import (
+    affine_coefficients,
     generate_steady_state_iteration_spaces,
     generate_tensor_ssis,
     get_compute_predecessors_successors,
@@ -121,89 +121,86 @@ class _Lowering:
             src = new_nodes[srcs[0].name]
             readers = [n for n in self.workload.nodes if isinstance(n, HasInputs) and tensor in n.inputs]
             dsts = [new_nodes[n.name] for n in readers]
-            is_constant_o_transfer = any(isinstance(dst, OutEdge) for dst in dsts)
-            if is_constant_o_transfer and not isinstance(src, InEdge):
-                self.add_two_transfer_nodes_for_constant_output_transfer(tensor, src, dsts, new_nodes)
-            else:
-                groups = [[new_nodes[n.name] for n in group] for group in self._reader_walks(tensor, readers)]
-                self.add_transfer_nodes(tensor, src, groups, new_nodes)
+            self.add_transfer_nodes(tensor, src, dsts, new_nodes)
         new_workload = Workload(new_nodes.values())
         return new_workload
 
-    def _reader_walks(self, tensor: Tensor, readers: list[HasInputs]) -> list[list[HasInputs]]:
-        """The readers of ``tensor`` grouped so readers in a group share a unique dim at each of its indices.
-
-        One copy is walked along one dim per index, so readers that index it along unrelated dims (the queries and
-        the keys of a self-attention both read its input rows) each get their own transfer; output edges join the
-        first group."""
-        n_unique = len(self.workload.unique_dimensions()[0])
-        groups: list[tuple[list[frozenset[int]], list[HasInputs]]] = []
-        for reader in readers:
-            if not isinstance(reader, HasIterationSpace):
-                continue
-            dims, access = self.workload.get_dims(reader), reader.get_mapping(tensor)
-            walk = [
-                frozenset().union(
-                    *(
-                        map_dim_positions(AffineMap(n_unique, 0, (dims[p],)))
-                        for p in map_dim_positions(AffineMap(access.num_dims, 0, (r,)))
-                    )
-                )
-                for r in access.results
-            ]
-            group = next((g for g in groups if all(a & b for a, b in zip(g[0], walk, strict=True))), None)
-            if group is None:
-                groups.append((walk, [reader]))
-            else:
-                group[1].append(reader)
-        if len(groups) <= 1:
-            return [readers]
-        groups[0][1].extend(r for r in readers if not isinstance(r, HasIterationSpace))
-        return [members for _, members in groups]
-
-    def add_transfer_nodes(
-        self, tensor: Tensor, src: HasOutputs, groups: list[list[HasInputs]], new_nodes: dict[str, Node]
-    ):
+    def add_transfer_nodes(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[str, Node]):
         """
-        Move ``tensor`` from its source to each group of destinations, either directly or staged on a memory tile.
+        Move ``tensor`` from its source to its readers in one transfer, either directly or staged on a memory tile.
 
         Staging splits the move in two -- source to the on-chip buffer, buffer to every destination --
         so the tile can hold the tensor across reads and re-lay it out on the way through. See
-        :meth:`_stages_on_mem_tile`. Every group after the first is named after its first reader.
+        :meth:`_stages_on_mem_tile`. A tensor the group computes and a later fused group reads also moves to the
+        group's output edge, in a transfer of its own that keeps its name, by which that group reads it; its source
+        then writes a renamed copy.
         """
-        dsts = [dst for group in groups for dst in group]
-        staged = self._stages_on_mem_tile(tensor, src, dsts)
+        names = (self._fresh(f"{tensor.name}_{i}") for i in count(1))
+        exports = [] if isinstance(src, InEdge) else [dst for dst in dsts if isinstance(dst, OutEdge)]
+        assert len(exports) <= 1, f"{tensor.name} leaves its group through more than one output edge"
+        readers = [dst for dst in dsts if dst not in exports]
+        moves = [(group, self._stages_on_mem_tile(tensor, src, group)) for group in (readers, exports) if group]
         source = tensor
-        if staged:
-            transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
-            hop, (source,) = self.generate_transfer_node(
-                [src], tensor, transfer_type_1, self._fresh(f"{tensor.name}_1")
+        if exports:
+            source = replace(tensor, name=next(names))
+            src = self.update_source_tensor(tensor, src, new_nodes, source)
+        for group, staged in moves:
+            copy = source
+            # Named after the tensor it moves, apart from the export's transfer, which reads the same renamed copy.
+            name = f"Transfer({tensor.name})" if exports and group is readers else None
+            if staged:
+                hop_type = self.determine_transfer_type(src, group, dst_type="memory")
+                hop, (copy,) = self.generate_transfer_node([src], copy, hop_type, next(names), name)
+                new_nodes[hop.name] = hop
+                name = None
+            transfer_type = self.determine_transfer_type(src, group, src_type="memory" if staged else None)
+            out_name = tensor.name if group is exports else next(names)
+            placements = [self._placement(dst, tensor) for dst in group]
+            transfer_node, updated_tensors = self.generate_transfer_node(
+                group, copy, transfer_type, out_name, name, placements
             )
-            new_nodes[hop.name] = hop
-        for i, group in enumerate(groups):
-            tag = f" for {group[0].name}" if i else ""
-            out_name = self._fresh(f"{tensor.name}_{group[0].name}" if i else f"{tensor.name}_{2 if staged else 1}")
-            transfer_type = (
-                self.determine_transfer_type(src, group, src_type="memory")
-                if staged
-                else self.determine_transfer_type(src, group)
-            )
-            transfer_node, updated_tensors = self.generate_transfer_node(group, source, transfer_type, out_name, tag)
             new_nodes[transfer_node.name] = transfer_node
             for dst, updated_tensor in zip(group, updated_tensors, strict=True):
                 self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
 
+    def _placement(self, dst: HasInputs, tensor: Tensor) -> object:
+        """What and where ``dst`` reads of ``tensor``: its cores, the tensor's index in the workload's unique dims, and
+        per core the tile it takes of each dim indexing the tensor. Destinations that read alike share one copy."""
+        if not isinstance(dst, ComputationNode):
+            return dst.name
+        node = self.workload.get_node_by_name(dst.name)
+        unique_dims, dim_values = self.workload.unique_dimensions()
+        access = self.workload.global_mapping(node, node.get_mapping(tensor))
+        index = tuple(expr.replace_dims_and_symbols(dim_values, ()) for expr in access.results)
+        indexed = {
+            z
+            for expr in index
+            for z, c in zip(unique_dims, affine_coefficients(expr, len(unique_dims))[1], strict=True)
+            if c
+        }
+        dims, node_mapping = self.workload.get_dims(node), self.mapping.get(dst)
+        tiling = [
+            (self.workload.leading_dim(dims[dim.position])[0], factor)
+            for split in node_mapping.inter_core_tiling[:1]
+            for dim, factor in split
+        ]
+        tiles = tuple(  # per core, in the order codegen unrolls them: the last split dim fastest
+            tuple((z, i, f) for (z, f), i in zip(tiling, position, strict=True) if z in indexed)
+            for position in np.ndindex(*(f for _, f in tiling))
+        )
+        return node_mapping.resource_allocation, tuple(map(str, index)), tiles
+
     def _stages_on_mem_tile(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs]) -> bool:
         """Whether a transfer is staged in a memory tile instead of landing straight on the cores.
 
-        Two things ask for a staging buffer. An offchip input is held in the tile,
-        which keeps the fan-out off the shim's two DMA channels: one channel feeds the tile, which then
+        Two things ask for a staging buffer. An offchip input, or an output the next fused group reads, is held in
+        the tile, which keeps the fan-out off the shim's two DMA channels: one channel feeds the tile, which then
         serves every core from its own. And a producer and consumer that disagree on layout need the
         tensor re-laid out between them, which is the tile's other job.
         """
         if not self._get_accelerator_memory_cores():
             return False
-        if isinstance(src, InEdge):
+        if isinstance(src, InEdge) or any(isinstance(dst, OutEdge) for dst in dsts):
             return True
         produced = self._declared_layout(src, tensor)
         if produced is None:
@@ -242,66 +239,12 @@ class _Lowering:
         else:
             raise ValueError(f"Unexpected dst node type: {type(dst_new)}")
         new_nodes[dst_new.name] = new_dst
+        if isinstance(new_dst, OutEdge):
+            return  # an output edge has no mapping entry
         # Update the mapping entry for this new_dst node to be the same as the original dst node
         self.mapping.set(new_dst, self.mapping.get(dst))
         # Remove the original dst node from the mapping as it has been updated with new inputs
         self.mapping.remove(dst)
-
-    def add_two_transfer_nodes_for_constant_output_transfer(
-        self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[str, Node]
-    ):
-        """
-        For constant output transfers, we add two transfer nodes:
-        - one from the source to the on-chip memory buffer,
-        - a second one from the on-chip memory buffer to the destination.
-        This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
-
-        If the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), falls back to a single
-        direct transfer from the source to the destinations (COMPUTE_TO_MEM).
-        """
-        assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
-        dst = dsts[0]
-        assert isinstance(dst, OutEdge), (
-            f"Expected destination of constant transfer to be an OutEdge, found {type(dst)}"
-        )
-        # Fall back to a single direct transfer when no memory tiles are available
-        if not self._get_accelerator_memory_cores():
-            transfer_type = self.determine_transfer_type(src, dsts)
-            new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
-            out_name = f"{tensor.name}"
-            transfer_node, updated_tensors = self.generate_transfer_node([dst], new_tensor, transfer_type, out_name)
-            new_nodes[transfer_node.name] = transfer_node
-            new_src = self.update_source_tensor(tensor, src, new_nodes, new_tensor)
-            self.update_destination_tensor(tensor, new_src, new_nodes, dst, updated_tensors)
-            return
-        # First transfer node from source to on-chip buffer
-        transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
-        new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
-        out_name_1 = self._fresh(f"{tensor.name}_2")
-        transfer_node_1, updated_tensors_1 = self.generate_transfer_node([src], new_tensor, transfer_type_1, out_name_1)
-        new_nodes[transfer_node_1.name] = transfer_node_1
-        new_src = self.update_source_tensor(tensor, src, new_nodes, new_tensor)
-        # Second transfer node from on-chip buffer to destination
-        transfer_type_2 = self.determine_transfer_type(new_src, dsts, src_type="memory")
-        out_name_2 = f"{tensor.name}"
-        transfer_node_2, updated_tensors_2 = self.generate_transfer_node(
-            [dst], updated_tensors_1[0], transfer_type_2, out_name_2
-        )
-        new_nodes[transfer_node_2.name] = transfer_node_2
-        # Update the dst input to the second transfer node
-        self.update_destination_tensor(tensor, new_src, new_nodes, dst, updated_tensors_2)
-
-    def update_destination_tensor(self, tensor, src, new_nodes, dst, updated_tensors_2):
-        dst_new = new_nodes[dst.name]
-        assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below."
-        input_idx = dst_new.inputs.index(tensor)
-        new_inputs = dst_new.inputs[:input_idx] + (updated_tensors_2[0],) + dst_new.inputs[input_idx + 1 :]
-        new_dst = OutEdge(
-            name=dst_new.name,
-            inputs=new_inputs,
-        )
-        new_nodes[new_dst.name] = new_dst
-        # No need to update mapping of dst as it's an OutEdge
 
     def update_source_tensor(self, tensor, src, new_nodes, new_tensor) -> ComputationNode:
         output_idx = src.outputs.index(tensor)
@@ -343,43 +286,41 @@ class _Lowering:
         return name
 
     def generate_transfer_node(
-        self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType, out_name: str = "", tag: str = ""
+        self,
+        dsts: list[HasInputs],
+        tensor: Tensor,
+        transfer_type: TransferType,
+        out_name: str = "",
+        name: str | None = None,
+        placements: list[object] | None = None,
     ) -> tuple[TransferNode, list[Tensor]]:
-        transfer_outputs = self.generate_transfer_output_tensors(tensor, dsts, out_name)
-        operand_mapping = tuple(AffineMap.identity(len(tensor.shape)) for _ in range(1 + len(dsts)))
+        """The transfer of ``tensor`` to ``dsts``, and the copy each reads: one per distinct placement."""
+        copies, transfer_outputs = self.generate_transfer_output_tensors(tensor, placements or dsts, out_name)
+        operand_mapping = tuple(AffineMap.identity(len(tensor.shape)) for _ in range(1 + len(copies)))
         transfer_node = TransferNode(
-            name=f"Transfer({tensor.name}{tag})",
+            name=name or f"Transfer({tensor.name})",
             inputs=(tensor,),
-            outputs=tuple(transfer_outputs),
+            outputs=tuple(copies),
             transfer_type=transfer_type,
             operand_mapping=operand_mapping,
         )
         return transfer_node, transfer_outputs
 
-    def generate_transfer_input_tensor(self, tensor: Tensor, src: HasOutputs, name_suffix: str = "") -> Tensor:
-        assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below."
-        input_tensor = Tensor(
-            name=self._fresh(f"{tensor.name}{name_suffix}") if name_suffix else tensor.name,
-            operand_type=tensor.operand_type,
-            shape=tensor.shape,
-            subview=tensor.subview,
-        )
-        return input_tensor
-
     def generate_transfer_output_tensors(
-        self, tensor: Tensor, dsts: list[HasInputs], out_name: str = ""
-    ) -> list[Tensor]:
-        transfer_outputs = []
-        for i, _ in enumerate(dsts):
-            suffix = f".{i}" if len(dsts) > 1 else ""
-            transfer_output = Tensor(
-                name=f"{out_name}{suffix}",
+        self, tensor: Tensor, placements: list, out_name: str = ""
+    ) -> tuple[list[Tensor], list[Tensor]]:
+        """The copies of ``tensor``, one per distinct placement, and the copy of each placement."""
+        distinct = list(dict.fromkeys(placements))
+        copies = [
+            Tensor(
+                name=f"{out_name}.{i}" if len(distinct) > 1 else out_name,
                 operand_type=tensor.operand_type,
                 shape=tensor.shape,
                 subview=tensor.subview,
             )
-            transfer_outputs.append(transfer_output)
-        return transfer_outputs
+            for i in range(len(distinct))
+        ]
+        return copies, [copies[distinct.index(placement)] for placement in placements]
 
     def generate_ssis(self) -> dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]:
         ssis = generate_steady_state_iteration_spaces(

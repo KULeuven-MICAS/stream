@@ -3,8 +3,11 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from stream.cost_model.roofline import hardware_roofline, run_roofline
 from stream.hardware.architecture.core import Core
 from stream.ir.allocation import AllocationIR
+from stream.ir.roofline import RooflineIR
+from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
@@ -41,6 +44,7 @@ class FusionGroupIterationStage(Stage):
         "group_wall_times",
         "group_allocations",
         "group_memory_accesses",
+        "roofline",
     )
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
@@ -101,7 +105,9 @@ class FusionGroupIterationStage(Stage):
             final_ctx = ctx
 
         assert final_ctx is not None, "No groups processed"
+        roofline = guarded("roofline", self._roofline, group_allocations, len(sub_workloads))
         final_ctx.set(
+            roofline=roofline,
             total_latency=total_latency,
             group_latencies=group_latencies,
             group_columns=group_columns,
@@ -113,3 +119,8 @@ class FusionGroupIterationStage(Stage):
         logger.info(f"Total latency across all groups: {total_latency}")
         logger.info(f"Per-group latencies: {group_latencies}")
         yield final_ctx
+
+    def _roofline(self, group_allocations: dict[int, dict | None], n_groups: int) -> dict:
+        """The run's roofline, from the point of each group that has one."""
+        points = {i: ir["roofline"] for i, ir in group_allocations.items() if ir and ir.get("roofline")}
+        return RooflineIR(**run_roofline(hardware_roofline(self.accelerator), points, n_groups)).model_dump()

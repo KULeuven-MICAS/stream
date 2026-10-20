@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from stream.ir.roofline import RooflinePointIR
 from stream.plugins import loaded_overlays
 
 if TYPE_CHECKING:
@@ -160,14 +161,57 @@ class SteadyStateLoopIR(BaseModel):
     )
 
 
+class SteadyStateAxisIR(BaseModel):
+    """One unique dim of the steady state."""
+
+    dim: str
+    size: int = Field(description="Its extent in the workload")
+    split: int = Field(description="The fused tiles it is split into")
+    sliding: bool = Field(description="Whether a window slides along it, consecutive tiles sharing a halo")
+
+
+class SteadyStateIterationIR(BaseModel):
+    """One loop of a solved steady-state iteration space."""
+
+    dim: str
+    size: int = Field(description="Its trip count")
+    type: str = Field(description="temporal, spatial, spatiotemporal or kernel")
+    effect: str = Field(description="varying, invariant or absent: whether what it iterates changes across its trips")
+    reuse: str = Field(description="Whether the solution reuses it across its trips")
+    halo: int = Field(description="Elements consecutive trips share")
+
+
+class SteadyStateTensorIR(BaseModel):
+    """A tensor of the steady state as the solution placed and buffered it."""
+
+    name: str
+    shape: list[int]
+    bits: int
+    loops: list[SteadyStateIterationIR] = Field(description="Its solved loop nest, outermost first")
+    placement: list[int] = Field(description="The cores it is placed on")
+    reuse_level: int | None = Field(description="The temporal loop it is reused up to")
+    depth: int | None = Field(description="The buffers it is kept in")
+    single_buffered: bool
+
+
 class SteadyStateIR(BaseModel):
     """Tiled/steady-state view of a fused group: operators + tensor sizes, loop nest, and tiled transfer graph."""
 
     operators: list[SteadyStateOperatorIR] = Field(description="Original operators + tensor sizes")
     loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space for-loop nest")
     tiled_graph: dict[str, Any] = Field(
-        description="The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}"
+        description=(
+            "The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}. With the "
+            "per-core detail, a computation node also carries its dims, loops, cores, output tile per core position "
+            "and whether a reader waits on it; a transfer its copies, sources, targets and links, the window and moved "
+            "tile per copy a target holds, its halos, what each source hands each target, its moved bits, route cycles "
+            "and reuse factor. Where a window slides, both also carry their work per fused tile and how far they run "
+            "ahead"
+        )
     )
+    iterations: int | None = Field(default=None, description="Steady-state iterations of the group")
+    axes: list[SteadyStateAxisIR] = Field(default_factory=list)
+    tensors: list[SteadyStateTensorIR] = Field(default_factory=list)
 
 
 class AllocationAlgorithmicView(BaseModel):
@@ -447,6 +491,15 @@ class TransferLayoutIR(BaseModel):
     write: LayoutSideIR
 
 
+class EnergyComponentIR(BaseModel):
+    """Where part of one iteration's energy is spent."""
+
+    kind: str = Field(description="'mac', 'memory' (a core's memory level), 'port', 'link', or 'node' when unsplit")
+    resource: str = Field(description="'MAC', the memory's name, '<memory>.<port>', or the link's name")
+    core_ids: list[int] = Field(description="The cores it belongs to")
+    pj_per_iteration: float
+
+
 class EnergyIR(BaseModel):
     """Energy of the solved allocation under the energy family, in pJ."""
 
@@ -456,6 +509,9 @@ class EnergyIR(BaseModel):
     )
     per_iteration_pj: float = Field(description="node_pj_per_iteration + transfer_pj_per_iteration")
     total_pj: float = Field(description="per_iteration_pj over every iteration of the run")
+    components: list[EnergyComponentIR] = Field(
+        default_factory=list, description="per_iteration_pj by where it is spent, largest first"
+    )
 
 
 class AllocationPerformanceView(BaseModel):
@@ -536,6 +592,9 @@ class AllocationIR(BaseModel):
     steady_state: SteadyStateIR | None = Field(
         default=None,
         description="Tiled/steady-state inspection view (operators+tensor sizes, loop nest, transfer graph)",
+    )
+    roofline: RooflinePointIR | None = Field(
+        default=None, description="Where the group sits on the accelerator's roofline, and what holds it down"
     )
     fusion: FusionIR | None = Field(
         default=None,
@@ -640,6 +699,7 @@ class AllocationIR(BaseModel):
             runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
             performance=performance,
             steady_state=steady_state,
+            roofline=RooflinePointIR(**raw["roofline"]) if raw.get("roofline") else None,
             fusion=fusion,
             tiling=tiling,
         )

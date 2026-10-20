@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from math import prod
 from typing import TYPE_CHECKING, Any
 
+from stream.allocation.steady_state import steady_state_detail
+from stream.cost_model.roofline import group_point, hardware_roofline
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.workload.node import Tensor
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.allocation.solution import AllocationSolution
     from stream.mapping.mapping import Mapping
+    from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.node import ComputationNode, HasIterationSpace
     from stream.workload.workload import Workload
 
@@ -39,8 +42,8 @@ _LOOP_NEST_DEPTH: dict[str, int] = {
 @dataclass(frozen=True)
 class Allocation:
     """A solved steady state as downstream reads it: the problem it solves, the mapping and iteration
-    spaces the solution decided, the constraint families it was built from with their options, and the
-    solution itself."""
+    spaces the solution decided, the constraint families it was built from with their options, the
+    solution itself and, where kept, the decision space it was solved in."""
 
     problem: AllocationProblem
     mapping: Mapping
@@ -48,6 +51,7 @@ class Allocation:
     backend: str
     families: tuple[tuple[str, dict[str, Any]], ...]
     solution: AllocationSolution
+    space: DecisionSpace | None = None
 
     @property
     def estimated_cycles(self) -> float:
@@ -57,7 +61,8 @@ class Allocation:
 
     def get_ir(self) -> dict:
         """The allocation as a plain dict: latencies, solve configuration, statistics and families, fusion splits,
-        mapping, performance report and the steady-state inspection view, None when it cannot be built."""
+        mapping, performance report, the steady-state inspection view and the group's point on the roofline, each of
+        the last two None when it cannot be built."""
         stats = self.solution.solve_stats
         latency = self.solution.latency
         return {
@@ -82,7 +87,12 @@ class Allocation:
             "mapping": self.mapping.get_ir(),
             "performance": self.solution.performance,
             "steady_state": guarded("steady-state IR view", self._steady_state_ir),
+            "roofline": guarded("roofline point", self.roofline_point),
         }
+
+    def roofline_point(self) -> dict[str, Any]:
+        """Where this group sits on its accelerator's roofline."""
+        return group_point(self, hardware_roofline(self.problem.accelerator))
 
     def _core_loops(self, cn: ComputationNode) -> list[dict]:
         """The loop nest inside one core (ZigZag mapping), as ``core_*`` loops; empty for a non-ZigZag core."""
@@ -115,7 +125,8 @@ class Allocation:
         return loops
 
     def _steady_state_ir(self) -> dict:
-        """Serialise the tiled/steady-state inspection view: operators, loop nest and transfer graph."""
+        """Serialise the tiled/steady-state inspection view: operators, loop nest and transfer graph, and with the
+        decision space the per-core detail of every tiled node, axis and tensor."""
         operators = [
             {
                 "name": cn.name,
@@ -160,11 +171,18 @@ class Allocation:
                     "kind": "transfer",
                     "transfer_type": getattr(transfer_type, "name", None),
                     "tensor": out.name if out is not None else None,
+                    "copies": len(tn.outputs),
                     "elements": int(prod(out.shape)) if out is not None else 0,
                 }
             )
         edges = [{"source": s.name, "target": t.name} for s, t in self.problem.workload.edges()]
-        return {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
+        view = {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
+        if self.space is None:
+            return view
+        detail = steady_state_detail(self, self.space)
+        for node in tiled_nodes:
+            node.update(detail["nodes"].get(node["name"], {}))
+        return view | {key: detail[key] for key in ("iterations", "axes", "tensors")}
 
 
 def solved_iteration_spaces(
