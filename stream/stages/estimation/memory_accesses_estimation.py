@@ -4,6 +4,7 @@ from math import ceil, prod
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -23,13 +24,10 @@ def _flatten_cores(allocation) -> list[Core]:
     return out
 
 
-def _memory_tile_cores(allocation) -> list[Core]:
-    """The distinct memory-kind cores a transfer's memory allocation names."""
-    tiles: dict[int, Core] = {}
-    for core in _flatten_cores(allocation):
-        if core.kind == "memory":
-            tiles.setdefault(core.id, core)
-    return list(tiles.values())
+def _memory_tile_cores(allocation: tuple[tuple[Memory, ...], ...]) -> list[Core]:
+    """The memory tiles a transfer's memory allocation lands in."""
+    memories = dict.fromkeys(memory for placement in allocation for memory in placement if memory.kind == "memory")
+    return [memory.core for memory in memories]
 
 
 class MemoryAccessesEstimationStage(Stage):
@@ -101,7 +99,7 @@ class MemoryAccessesEstimationStage(Stage):
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
-                cores = [self.accelerator.get_core(self.accelerator.offchip_core_id)]
+                cores = self._offchip_cores()
             else:
                 cores = _flatten_cores(self.mapping.get(src).resource_allocation)
             for core in cores:
@@ -148,7 +146,7 @@ class MemoryAccessesEstimationStage(Stage):
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
-                cores = [self.accelerator.get_core(self.accelerator.offchip_core_id)]
+                cores = self._offchip_cores()
             else:
                 cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
             for core in cores:
@@ -157,6 +155,13 @@ class MemoryAccessesEstimationStage(Stage):
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
                 total_accesses = accesses_per_fire * nb_fires
                 self.core_memory_accesses.add_write(core, t_core, total_accesses)
+
+    def _offchip_cores(self) -> list[Core]:
+        """The core an edge's tensor is counted on: off-chip memory is accessed once whichever of its cores (an AIE
+        column's shim) the data passes, so on the one the description declares fronts it, ``offchip_core_id``."""
+        if self.accelerator.offchip_core_id is None:
+            raise ValueError(f"{self.accelerator.name} declares no off-chip core to count edge accesses on")
+        return [self.accelerator.get_core(self.accelerator.offchip_core_id)]
 
     def is_leaf(self):
         return True

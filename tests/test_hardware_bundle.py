@@ -17,6 +17,7 @@ from stream.hardware.cost import (
     check_budget,
     evaluate_bundle_cost,
 )
+from stream.hardware.ports import OUTPUT
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.stages.context import StageContext
@@ -30,14 +31,14 @@ TPU_V7_VIEWS = "tests/fixtures/hardware/tpu_v7_views.yaml"
 QUAD_CORE = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 AIE2_STRIX = "stream/inputs/aie/hardware/whole_array_strix.yaml"
 
-# 128 MiB VMEM, the aliased fixture's per-TensorCore scratchpad size in bits.
+# 128 MiB VMEM, the views fixture's per-TensorCore scratchpad size in bits.
 _VIEWS_VMEM_BITS = 1024 * 1024 * 1024
 
 # One 64 MiB TensorCore VMEM, from the ZigZag declaration in cores/tpu_v7_vmem.yaml.
 _VMEM_BITS = 512 * 1024 * 1024
 # Each MXU output lane's result buffer (cores/tpu_v7_mxu.yaml).
 _RESULT_BUFFER_BITS = 16 * 1024
-# TensorCore 0's VMEM core, which owns the VMEM, then the MXUs and VPU sharing it.
+# TensorCore 0's VMEM core, then the MXUs and VPU sharing its VMEM.
 _TC0 = (3, 0, 1, 2)
 
 
@@ -81,7 +82,7 @@ def test_materialized_bundle_carries_a_per_core_vmem_and_parses():
 
         accelerator = _parse(str(accelerator_path))
 
-    capacities = {core.id: core.get_memory_capacity() for core in accelerator.core_list}
+    capacities = {core.id: accelerator.memory_of(core, OUTPUT).capacity_bits for core in accelerator.core_list}
     assert capacities[3] == capacities[0] == 2 * _VMEM_BITS
     assert capacities[7] == capacities[4] == _VMEM_BITS
 
@@ -140,36 +141,31 @@ def test_asymmetric_bundle_runs_end_to_end():
 # ── C4: the built-in cost model ───────────────────────────────────────────────────────────────────
 
 
-def test_simple_model_reports_positive_cost_and_counts_each_memory_once():
+def test_simple_model_reports_positive_cost_and_prices_each_memory_once():
     """The built-in model prices a bundle with positive area and energy, and four memories seen through
-    twelve views are billed exactly once each."""
+    twelve views exactly once each."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7_VIEWS))
     assert report.total_area_mm2 > 0
     assert report.peak_access_energy_pj_per_cycle > 0
 
-    views = [m for c in report.cores for m in c.memories if m.bits_per_instance == _VIEWS_VMEM_BITS]
-    assert len(views) == 12  # 4 vmem cores + 8 operand_buffer views (2 compute cores per TensorCore)
-    counted = [m for m in views if m.counted]
-    assert len(counted) == 4, "exactly the four physical VMEMs, one per TensorCore"
-    assert all(m.memory_name == "vmem" for m in counted)
+    vmems = [m for m in report.memories if m.bits_per_instance == _VIEWS_VMEM_BITS]
+    assert [(m.name, m.core_ids) for m in vmems] == [(f"vmem_{k}", (8 + k, 2 * k, 2 * k + 1)) for k in range(4)]
+    assert not any(m.bits_per_instance == _VIEWS_VMEM_BITS for c in report.cores for m in c.memories)
 
     # The built-in model advertises none of the detailed model's caveat fields.
     assert report.accuracy_claim is None
     assert report.authored_disagreements == []
 
 
-def test_mutating_a_view_that_does_not_bill_its_memory_does_not_change_area():
-    """Growing a view that does not bill its memory must not move priced area; growing the billing view does."""
+def test_growing_a_memory_through_all_its_views_grows_its_area_once():
     bundle = HardwareBundle.from_yaml(TPU_V7_VIEWS)
-    baseline = evaluate_bundle_cost(bundle).total_area_mm2
+    baseline = evaluate_bundle_cost(bundle)
 
-    view = bundle.copy()
-    view.cores[0]["memories"]["operand_buffer"]["size"] *= 2  # 0.operand_buffer does not bill vmem_0
-    assert evaluate_bundle_cost(view).total_area_mm2 == pytest.approx(baseline)
-
-    owner = bundle.copy()
-    owner.cores[8]["memories"]["vmem"]["size"] *= 2  # 8.vmem, vmem_0's first view, bills it
-    assert evaluate_bundle_cost(owner).total_area_mm2 > baseline
+    grown = bundle.copy()
+    grown.cores[8]["memories"]["vmem"]["size"] *= 2
+    for core_id in (0, 1):
+        grown.cores[core_id]["memories"]["operand_buffer"]["size"] *= 2
+    assert evaluate_bundle_cost(grown).on_die_memory_bits == baseline.on_die_memory_bits + _VIEWS_VMEM_BITS
 
 
 def test_the_views_of_a_memory_hold_its_capacity_once():
@@ -177,28 +173,29 @@ def test_the_views_of_a_memory_hold_its_capacity_once():
     accelerator = HardwareBundle.from_yaml(TPU_V7_VIEWS).to_accelerator()
     vmem = accelerator.memories["vmem_0"]
     assert [(core.id, instance) for core, instance in vmem.views] == [
+        (8, "vmem"),
         (0, "operand_buffer"),
         (1, "operand_buffer"),
-        (8, "vmem"),
     ]
     assert vmem.capacity_bits == _VIEWS_VMEM_BITS
-    assert all(accelerator.memory_of(accelerator.get_core(i)) is vmem for i in (0, 1, 8))
+    assert all(accelerator.memory_of(accelerator.get_core(i), OUTPUT) is vmem for i in (0, 1, 8))
 
 
 def test_views_of_one_memory_that_disagree_on_its_size_are_rejected():
     bundle = HardwareBundle.from_yaml(TPU_V7_VIEWS)
     bundle.cores[0]["memories"]["operand_buffer"]["size"] *= 2
-    with pytest.raises(ValueError, match="different capacities"):
-        bundle.to_accelerator()
+    with pytest.raises(ValueError, match="declare different sizes"):
+        bundle.validated_data()
+    with pytest.raises(ValueError, match="declare different sizes"):
+        evaluate_bundle_cost(bundle)
 
 
 def test_a_shared_vmem_is_priced_once_per_tensorcore():
     """Each TensorCore's 64 MiB VMEM is the top memory of its VMEM core, both MXUs and its VPU
     (one memory): four views of one macro, priced once."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    vmems = [m for c in report.cores for m in c.memories if m.total_bits == _VMEM_BITS]
-    assert len(vmems) == 16
-    assert sorted(m.core_id // 4 for m in vmems if m.counted) == [0, 1, 2, 3]
+    vmems = [m for m in report.memories if m.total_bits == _VMEM_BITS]
+    assert [m.core_ids for m in vmems] == [tuple(range(4 * k, 4 * k + 4)) for k in range(4)]
 
     grown = HardwareBundle.from_yaml(TPU_V7)
     _grow_vmem(grown)
@@ -232,7 +229,8 @@ def test_aie_bundle_is_priceable_and_reports_what_it_cannot_model():
 def test_cost_report_is_plain_json():
     report = json.loads(json.dumps(evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7)).to_dict()))
     assert report["total_area_mm2"] > 0
-    assert report["cores"][0]["memories"][0]["memory_name"]
+    assert report["cores"][0]["memories"][0]["name"]
+    assert report["memories"][0]["core_ids"]
 
 
 # ── C4: the budget guard ────────────────────────────────────────────────────────────────────────

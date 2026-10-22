@@ -7,21 +7,24 @@ cores:
   3: ./cores/aie_tile.yaml
   4: ./cores/aie_tile.yaml
   5: ./cores/aie_tile.yaml
-  6: ./cores/mem_tile_256KB.yaml
-  7: ./cores/aie_tile.yaml
+  6: ./cores/shim_dma.yaml
+  7: ./cores/mem_tile_256KB.yaml
   8: ./cores/aie_tile.yaml
   9: ./cores/aie_tile.yaml
   10: ./cores/aie_tile.yaml
-  11: ./cores/mem_tile_256KB.yaml
-  12: ./cores/aie_tile.yaml
-  13: ./cores/aie_tile.yaml
+  11: ./cores/aie_tile.yaml
+  12: ./cores/shim_dma.yaml
+  13: ./cores/mem_tile_256KB.yaml
   14: ./cores/aie_tile.yaml
   15: ./cores/aie_tile.yaml
-  16: ./cores/mem_tile_256KB.yaml
+  16: ./cores/aie_tile.yaml
   17: ./cores/aie_tile.yaml
-  18: ./cores/aie_tile.yaml
-  19: ./cores/aie_tile.yaml
+  18: ./cores/shim_dma.yaml
+  19: ./cores/mem_tile_256KB.yaml
   20: ./cores/aie_tile.yaml
+  21: ./cores/aie_tile.yaml
+  22: ./cores/aie_tile.yaml
+  23: ./cores/aie_tile.yaml
 core_coordinates:
 # code id: [col, row]
   0: [0, 0]
@@ -30,49 +33,53 @@ core_coordinates:
   3: [0, 3]
   4: [0, 4]
   5: [0, 5]
-  6: [1, 1]
-  7: [1, 2]
-  8: [1, 3]
-  9: [1, 4]
-  10: [1, 5]
-  11: [2, 1]
-  12: [2, 2]
-  13: [2, 3]
-  14: [2, 4]
-  15: [2, 5]
-  16: [3, 1]
-  17: [3, 2]
-  18: [3, 3]
-  19: [3, 4]
-  20: [3, 5]
+  6: [1, 0]
+  7: [1, 1]
+  8: [1, 2]
+  9: [1, 3]
+  10: [1, 4]
+  11: [1, 5]
+  12: [2, 0]
+  13: [2, 1]
+  14: [2, 2]
+  15: [2, 3]
+  16: [2, 4]
+  17: [2, 5]
+  18: [3, 0]
+  19: [3, 1]
+  20: [3, 2]
+  21: [3, 3]
+  22: [3, 4]
+  23: [3, 5]
 offchip_core_id: 0
+# Every column's shim reaches the one DRAM; any other tile's memory is its own.
 memories:
-  tile_0_0: [0.memory]
+  dram: [0.memory, 6.memory, 12.memory, 18.memory]
   tile_0_1: [1.memory]
   tile_0_2: [2.memory]
   tile_0_3: [3.memory]
   tile_0_4: [4.memory]
   tile_0_5: [5.memory]
-  tile_1_1: [6.memory]
-  tile_1_2: [7.memory]
-  tile_1_3: [8.memory]
-  tile_1_4: [9.memory]
-  tile_1_5: [10.memory]
-  tile_2_1: [11.memory]
-  tile_2_2: [12.memory]
-  tile_2_3: [13.memory]
-  tile_2_4: [14.memory]
-  tile_2_5: [15.memory]
-  tile_3_1: [16.memory]
-  tile_3_2: [17.memory]
-  tile_3_3: [18.memory]
-  tile_3_4: [19.memory]
-  tile_3_5: [20.memory]
+  tile_1_1: [7.memory]
+  tile_1_2: [8.memory]
+  tile_1_3: [9.memory]
+  tile_1_4: [10.memory]
+  tile_1_5: [11.memory]
+  tile_2_1: [13.memory]
+  tile_2_2: [14.memory]
+  tile_2_3: [15.memory]
+  tile_2_4: [16.memory]
+  tile_2_5: [17.memory]
+  tile_3_1: [19.memory]
+  tile_3_2: [20.memory]
+  tile_3_3: [21.memory]
+  tile_3_4: [22.memory]
+  tile_3_5: [23.memory]
 
 connections:
-  # ───── Connect shim_dma to mem_tile (Column 0) ─────
+  # ───── Connect DRAM, through the column's shim, to its mem tile (Column 0) ─────
   - type: link
-    memories: [tile_0_0, tile_0_1]
+    memories: [dram, tile_0_1]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 0) ─────
   - type: link
@@ -89,9 +96,9 @@ connections:
     memories: [tile_0_4, tile_0_5]
     bandwidth: 64
 
-  # ───── Connect shim_dma to mem_tile (Column 1) ─────
+  # ───── Connect DRAM, through the column's shim, to its mem tile (Column 1) ─────
   - type: link
-    memories: [tile_0_0, tile_1_1]
+    memories: [dram, tile_1_1]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 1) ─────
   - type: link
@@ -108,9 +115,9 @@ connections:
     memories: [tile_1_4, tile_1_5]
     bandwidth: 64
 
-  # ───── Connect shim_dma to mem_tile (Column 2) ─────
+  # ───── Connect DRAM, through the column's shim, to its mem tile (Column 2) ─────
   - type: link
-    memories: [tile_0_0, tile_2_1]
+    memories: [dram, tile_2_1]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 2) ─────
   - type: link
@@ -127,9 +134,9 @@ connections:
     memories: [tile_2_4, tile_2_5]
     bandwidth: 64
 
-  # ───── Connect shim_dma to mem_tile (Column 3) ─────
+  # ───── Connect DRAM, through the column's shim, to its mem tile (Column 3) ─────
   - type: link
-    memories: [tile_0_0, tile_3_1]
+    memories: [dram, tile_3_1]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 3) ─────
   - type: link

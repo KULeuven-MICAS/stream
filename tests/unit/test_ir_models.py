@@ -431,12 +431,12 @@ ALLOCATION_RAW: dict = {
             "MatMul": {
                 "resource_allocation": [[{"type": "core", "id": 0}, {"type": "core", "id": 1}]],
                 "inter_core_tiling": [[["K", 2], ["M", 1]]],
-                "memory_allocation": [[0]],
+                "memory_allocation": [["m0"]],
             },
             "ReLU": {
                 "resource_allocation": [[{"type": "core", "id": 2}]],
                 "inter_core_tiling": [[["N", 1]]],
-                "memory_allocation": [[2]],
+                "memory_allocation": [["m2"]],
             },
         },
         "fused_groups": [
@@ -577,7 +577,7 @@ class TestAllocationIR:
         # resource_allocation and memory_allocation are accessible
         assert len(matmul_node.resource_allocation) == 1
         assert matmul_node.resource_allocation[0][0] == {"type": "core", "id": 0}
-        assert matmul_node.memory_allocation[0] == [0]
+        assert matmul_node.memory_allocation[0] == ["m0"]
 
     def test_compiler_view(self):
         """AllocationIR.compiler_view() returns AllocationCompilerView with node-to-core mapping, fused_groups."""

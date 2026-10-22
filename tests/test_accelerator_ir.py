@@ -50,7 +50,7 @@ HARDWARE_CASES = [
             "name": "whole_array_strix",
             "offchip_core_id": 0,
             "expected_namespace": "aie2",
-            "expected_num_cores": 41,
+            "expected_num_cores": 48,
         },
         id="aie/whole_array_strix",
     ),
@@ -147,13 +147,7 @@ def test_get_ir_cores_structure(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_core_ids_are_unique(hardware_path, expected):
-    """Core ids must be unique and the count must match num_cores.
-
-    Note: ids are not guaranteed to be sequential – cores that are defined in
-    the hardware YAML but have no connectivity edges are absent from the
-    CoreGraph and therefore absent from the IR (e.g. isolated shim-DMA tiles
-    in whole_array_strix).
-    """
+    """Core ids must be unique and the count must match num_cores."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     ids = [core["id"] for core in ir["cores"]]
@@ -235,34 +229,29 @@ def test_get_ir_type_specific_aie2_fields(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_connectivity_structure(hardware_path, expected):
-    """Every connectivity entry must be a dict with 'type', 'bandwidth', and memory references."""
+    """Every connection is a link between two memories or a bus between two or more, with a bandwidth."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     for entry in ir["connections"]:
-        assert "type" in entry, f"Connectivity entry missing 'type': {entry}"
         assert entry["type"] in {"link", "bus"}, f"Unknown connectivity type: {entry['type']}"
         assert "bandwidth" in entry, f"Connectivity entry missing 'bandwidth': {entry}"
-        if entry["type"] == "bus":
-            assert "memories" in entry, f"Bus entry missing 'memories': {entry}"
-            assert isinstance(entry["memories"], list) and len(entry["memories"]) >= 2  # noqa: PLR2004
-        else:
-            assert "from_memory" in entry, f"Link entry missing 'from_memory': {entry}"
-            assert "to_memory" in entry, f"Link entry missing 'to_memory': {entry}"
+        assert len(entry["memories"]) == 2 if entry["type"] == "link" else len(entry["memories"]) >= 2  # noqa: PLR2004
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_connectivity_references_valid_memories(hardware_path, expected):
-    """Every memory referenced in connectivity must exist in the memories."""
+    """Every memory a connection names is one of the accelerator's."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    valid = set(ir["memories"])
     for entry in ir["connections"]:
-        if entry["type"] == "bus":
-            for name in entry["memories"]:
-                assert name in valid, f"Bus references unknown memory {name}"
-        else:
-            assert entry["from_memory"] in valid, f"Link 'from_memory' {entry['from_memory']} not in memories"
-            assert entry["to_memory"] in valid, f"Link 'to_memory' {entry['to_memory']} not in memories"
+        assert set(entry["memories"]) <= set(ir["memories"]), entry
+
+
+@pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
+def test_get_ir_lists_each_declared_connection_once(hardware_path, expected):
+    """One entry per declared link or bus, not one per direction."""
+    data = yaml.safe_load((REPO_ROOT / hardware_path).read_text())
+    assert len(_build_accelerator(hardware_path).get_ir()["connections"]) == len(data["connections"])
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)

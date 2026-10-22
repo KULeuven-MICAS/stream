@@ -7,6 +7,7 @@ import pytest
 from stream.api import SolveOptions, evaluate_mapping
 from stream.cost_model.communication_manager import DemandItem, box_bits
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.ports import OUTPUT, input_role
 from stream.opt.allocation.constraint_optimization.space import communicating_pairs
 from stream.stages.parsing.accelerator_parser import parse_accelerator
 
@@ -30,6 +31,12 @@ memories:
   m4: [4.sram_128K_A]
   m5: [5.sram_128K_A]
   m6: [6.dram]
+  w0: [0.sram_128K_W]
+  w1: [1.sram_128K_W]
+  w2: [2.sram_128K_W]
+  w3: [3.sram_128K_W]
+  w4: [4.sram_128K_W]
+  w5: [5.sram_128K_W]
 connections:
   - type: bus
     memories: [m0, m1, m2]
@@ -43,9 +50,10 @@ connections:
   - type: link
     memories: [m2, m5]
     bandwidth: 300
+  - {type: bus, memories: [w0, w1, w2, w3, w4, w5, m6], bandwidth: 100}
 """
 """Two clusters of three cores on a bus each, whose hubs 2 and 5 share a bus with off-chip memory 6 and a link; every
-core has a memory of its own, m<core>."""
+core has a memory of its own, m<core>, and a weights memory w<core> that only off-chip memory reaches."""
 
 HALF_A, HALF_B = ((0, 7), (0, 15)), ((8, 15), (0, 15))
 WHOLE = ((0, 15), (0, 15))
@@ -59,9 +67,15 @@ def accelerator(tmp_path_factory: pytest.TempPathFactory) -> Accelerator:
 
 
 def route(accelerator: Accelerator, sources, targets, demand, shares_memory=lambda one, other: False):
+    """Route between the memories cores ``sources`` write their output in and cores ``targets`` read their first
+    input in."""
     core = accelerator.get_core
     return accelerator.communication_manager.route(
-        tuple(core(i) for i in sources), tuple(core(i) for i in targets), tuple(demand), 16, shares_memory
+        tuple(accelerator.memory_of(core(i), OUTPUT) for i in sources),
+        tuple(accelerator.memory_of(core(i), input_role(1)) for i in targets),
+        tuple(demand),
+        16,
+        shares_memory,
     )
 
 
@@ -89,8 +103,10 @@ def test_a_link_is_charged_only_the_part_that_is_not_already_in_its_target(tmp_p
     path.write_text(
         "name: local\ncores:\n  0: shared_testing_core1.yaml\n  1: shared_testing_core2.yaml\n"
         "  2: testing_core1.yaml\n  3: offchip.yaml\noffchip_core_id: 3\nunit_energy_cost: 0\n"
-        "memories: {l1: [0.sram_64KB, 1.sram_64KB], m2: [2.sram_128K_A], m3: [3.dram]}\nconnections:\n"
+        "memories: {l1: [0.sram_64KB, 1.sram_64KB], m2: [2.sram_128K_A], w2: [2.sram_128K_W], m3: [3.dram]}\n"
+        "connections:\n"
         "  - {type: link, memories: [l1, m2], bandwidth: 64}\n  - {type: link, memories: [l1, m3], bandwidth: 64}\n"
+        "  - {type: link, memories: [w2, m3], bandwidth: 64}\n"
     )
     quarter = ((0, 3), (0, 15))
     demand = [DemandItem(0, (0,), HALF_A), DemandItem(1, (0,), ((8, 11), (0, 15))), DemandItem(1, (1,), quarter)]
@@ -129,8 +145,9 @@ def test_off_chip_memory_never_relays_data_between_cores(tmp_path):
     path = tmp_path / "relay.yaml"
     path.write_text(
         "name: relay\ncores:\n  0: testing_core1.yaml\n  1: testing_core1.yaml\n  2: offchip.yaml\n"
-        "offchip_core_id: 2\nunit_energy_cost: 0\nmemories: {m0: [0.sram_128K_A], m1: [1.sram_128K_A], m2: [2.dram]}\n"
-        "connections:\n"
+        "offchip_core_id: 2\nunit_energy_cost: 0\nmemories: {m0: [0.sram_128K_A], m1: [1.sram_128K_A], m2: [2.dram],\n"
+        "  w0: [0.sram_128K_W], w1: [1.sram_128K_W]}\nconnections:\n"
+        "  - {type: link, memories: [w0, m2], bandwidth: 1000}\n  - {type: link, memories: [w1, m2], bandwidth: 1000}\n"
         "  - {type: link, memories: [m0, m2], bandwidth: 1000}\n  - {type: link, memories: [m1, m2], bandwidth: 1000}\n"
         "  - {type: link, memories: [m0, m1], bandwidth: 10}\n"
     )
@@ -159,6 +176,7 @@ def test_buses_of_the_same_width_are_distinct_links(accelerator):
         "Bus(m0,m1,m2, bw=1000)",
         "Bus(m2,m5,m6, bw=100)",
         "Bus(m3,m4,m5, bw=1000)",
+        "Bus(w0,w1,w2,w3,w4,w5,m6, bw=100)",
     ]
 
 
@@ -202,10 +220,11 @@ def test_partial_sums_bound_for_dram_are_reduce_scattered(tmp_path):
         + "".join(f"  {i}: testing_core1.yaml\n" for i in range(4))
         + "  4: offchip.yaml\noffchip_core_id: 4\nunit_energy_cost: 0\n"
         + "memories: {"
-        + "".join(f"m{i}: [{i}.sram_128K_A], " for i in range(4))
+        + "".join(f"m{i}: [{i}.sram_128K_A], w{i}: [{i}.sram_128K_W], " for i in range(4))
         + "m4: [4.dram]}\n"
         + "connections:\n"
         + links
+        + "  - {type: bus, memories: [w0, w1, w2, w3, m4], bandwidth: 100}\n"
     )
     plan = route(parse_accelerator(str(path)), (0, 1, 2, 3), (4,), [DemandItem(0, (0, 1, 2, 3), WHOLE, reduce=True)])
     ring = {link: share for link, share in shares(plan).items() if ", m4," not in link}

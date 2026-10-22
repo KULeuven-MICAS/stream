@@ -17,9 +17,9 @@ class MemoryGraph(nx.MultiDiGraph):
 
 
 class Accelerator:
-    """A set of cores and the memories they compute out of. Each core reads and writes one memory directly, which
-    several cores may share; the memories are a graph whose edges are the links and buses that move data between
-    them, one of them off-chip."""
+    """A set of cores and the memories they compute out of: each top-level memory instance of a core is a view of
+    one memory, which several cores may share. The memories are a graph whose edges are the links and buses that move
+    data between them; the one an off-die core views is off-chip."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -38,9 +38,22 @@ class Accelerator:
         self.kernel_library = kernel_library
         self._cores = {core.id: core for core in sorted(cores, key=lambda core: core.id)}
         self.memories = {memory.name: memory for memory in sorted(memories)}
-        self._memory_of = {core.id: memory for memory in memories for core in memory.cores}
-        if missing := [core_id for core_id in self._cores if core_id not in self._memory_of]:
-            raise ValueError(f"cores {missing} are in no memory")
+        # (core id, top-level instance) -> the memory that view is of
+        self._viewed = {(core.id, instance): memory for memory in memories for core, instance in memory.views}
+        for core in self._cores.values():
+            bound = {instance for core_id, instance in self._viewed if core_id == core.id}
+            if unbound := sorted(core.top_instances() - bound):
+                raise ValueError(f"{core}'s top-level memories {unbound} are views of no memory")
+        if len(offchip := [memory for memory in memories if memory.offchip]) > 1:
+            raise ValueError(f"several off-chip memories: {offchip}")
+        self.offchip_memory = offchip[0] if offchip else None
+        if offchip_core_id is not None and (viewed := self.memories_of(self.get_core(offchip_core_id))) != tuple(
+            offchip
+        ):
+            raise ValueError(
+                f"offchip_core_id {offchip_core_id} views {viewed}, not the off-chip memory {offchip}, the one the "
+                f"off-die cores view"
+            )
         self.network = network
         self.offchip_core_id = offchip_core_id
         # memory -> the measured bandwidth every transfer into or out of it shares
@@ -59,13 +72,14 @@ class Accelerator:
             raise ValueError(f"no core with id {core_id} in {self}")
         return self._cores[core_id]
 
-    def memory_of(self, core: Core) -> Memory:
-        """The memory ``core`` reads and writes directly, its top-level memory."""
-        return self._memory_of[core.id]
+    def memory_of(self, core: Core, role: str) -> Memory:
+        """The memory ``core`` reads or writes the operand of ``role`` ('input<k>' or 'output') in: the one its
+        top-level instance holding that operand is a view of."""
+        return self._viewed[(core.id, core.top_instance(role))]
 
-    @property
-    def offchip_memory(self) -> Memory | None:
-        return None if self.offchip_core_id is None else self.memory_of(self.get_core(self.offchip_core_id))
+    def memories_of(self, core: Core) -> tuple[Memory, ...]:
+        """Every memory ``core`` sees, one per top-level instance."""
+        return tuple(dict.fromkeys(memory for (core_id, _), memory in self._viewed.items() if core_id == core.id))
 
     @cached_property
     def ports(self) -> PortRegistry:
@@ -77,45 +91,24 @@ class Accelerator:
         return list(self._cores.values())
 
     def get_ir(self) -> dict:
-        """Return a dictionary representation of the accelerator for serialization.
-
-        Captures:
-        - Top-level accelerator metadata (name, offchip core, its memories and the cores of each).
-        - Per-core IR produced by :meth:`~stream.hardware.architecture.core.Core.get_ir`,
-          which includes type-specific fields keyed by ``core_type`` namespace.
-        - The connections between memories as a list of ``bus`` or directed ``link`` entries,
-          mirroring the structure of the hardware YAML input.
-        """
+        """The accelerator as plain data: its name, off-chip core, cores (:meth:`Core.get_ir`), memories with their
+        views, and connections, one entry per link or bus as the hardware description declares them."""
         cores_ir: list[dict] = [core.get_ir() for core in self.core_list]
-
-        # Buses: every edge of one CommunicationLink object (bidirectional) is one bus entry listing its memories.
-        # Point-to-point links are emitted as directed pairs.
-        links_ir: list[dict] = []
-        seen_buses: set[int] = set()
+        connections: dict[tuple, dict] = {}
         for src, dst, data in self.network.edges(data=True):
             cl = data["cl"]
-            if cl.bidirectional:
-                if id(cl) in seen_buses:
-                    continue
-                seen_buses.add(id(cl))
-                links_ir.append(
-                    {
-                        "type": "bus",
-                        "memories": sorted(memory.name for memory in cl.members),
-                        "bandwidth": cl.bandwidth,
-                        "unit_energy_cost": cl.unit_energy_cost,
-                    }
-                )
-            else:
-                links_ir.append(
-                    {
-                        "type": "link",
-                        "from_memory": src.name,
-                        "to_memory": dst.name,
-                        "bandwidth": cl.bandwidth,
-                        "unit_energy_cost": cl.unit_energy_cost,
-                    }
-                )
+            ends = [memory.name for memory in cl.members] if cl.members else [src.name, dst.name]
+            # a bus is one object for all its edges; a link is two, one per direction
+            key = id(cl) if cl.members else (tuple(sorted(ends)), cl.parallel)
+            connections.setdefault(
+                key,
+                {
+                    "type": "bus" if cl.members else "link",
+                    "memories": ends,
+                    "bandwidth": cl.bandwidth,
+                    "unit_energy_cost": cl.unit_energy_cost,
+                },
+            )
 
         return {
             "name": self.name,
@@ -126,7 +119,7 @@ class Accelerator:
                 for memory in self.memories.values()
             },
             "cores": cores_ir,
-            "connections": links_ir,
+            "connections": list(connections.values()),
         }
 
     def __str__(self) -> str:

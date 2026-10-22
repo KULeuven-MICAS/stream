@@ -48,7 +48,8 @@ class AcceleratorHardwareView(BaseModel):
     name: str = Field(description="Accelerator name")
     num_cores: int = Field(description="Total number of cores including offchip")
     cores: list[CoreIR] = Field(description="All cores with full resource info (including extra_fields)")
-    connections: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between memories")
+    memories: dict[str, list[str]] = Field(description="Each memory by name, with its views '<core id>.<instance>'")
+    connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
 
 class AcceleratorCompilerView(BaseModel):
@@ -61,7 +62,8 @@ class AcceleratorCompilerView(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     name: str = Field(description="Accelerator name")
     cores: list[CoreIR] = Field(description="All cores — use id, core_type, row_id, col_id for placement")
-    connections: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between memories")
+    memories: dict[str, list[str]] = Field(description="Each memory by name, with its views '<core id>.<instance>'")
+    connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
 
 class AcceleratorIR(BaseModel):
@@ -90,7 +92,7 @@ class AcceleratorIR(BaseModel):
     )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
     connections: list[dict[str, Any]] = Field(
-        description="Connectivity entries: bus (bidirectional, multiple cores) or link (directed pair)"
+        description="The links and buses between memories, one entry each as the hardware description declares them"
     )
 
     @classmethod
@@ -133,6 +135,7 @@ class AcceleratorIR(BaseModel):
             name=self.name,
             num_cores=self.num_cores,
             cores=self.cores,
+            memories=self.memories,
             connections=self.connections,
         )
 
@@ -141,5 +144,6 @@ class AcceleratorIR(BaseModel):
         return AcceleratorCompilerView(
             name=self.name,
             cores=self.cores,
+            memories=self.memories,
             connections=self.connections,
         )

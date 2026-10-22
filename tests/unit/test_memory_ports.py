@@ -10,6 +10,7 @@ from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.memory_port import DataDirection
 
 from stream.api import SolveOptions
+from stream.hardware.ports import PortKey
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
@@ -19,7 +20,7 @@ from stream.opt.allocation.constraint_optimization.quantities import QuantityReg
 from stream.workload.steady_state.iteration_space import LoopEffect
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-DRAM = (6, "dram", "rw_port_1")
+DRAM = PortKey("offchip", "rw_port_1")
 Solve = Callable[[list[Any]], AllocationModel]
 
 
@@ -134,13 +135,13 @@ def constraint_names(ctx: MagicMock) -> list[str]:
 def test_burst_off_keeps_only_the_interval_bound() -> None:
     ctx = port_context()
     MemoryPorts(burst=False).build(ctx)
-    assert constraint_names(ctx) == ["port_interval_6_dram_rw_port_1"]
+    assert constraint_names(ctx) == ["port_interval_offchip_rw_port_1"]
 
 
 def test_interval_off_keeps_only_the_burst_bound() -> None:
     ctx = port_context()
     MemoryPorts(interval=False).build(ctx)
-    assert constraint_names(ctx) == ["port_burst_6_dram_rw_port_1_0"]
+    assert constraint_names(ctx) == ["port_burst_offchip_rw_port_1_0"]
 
 
 def test_a_stream_active_for_less_than_a_cycle_keeps_its_bits(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -14,8 +13,7 @@ from stream.opt.solver import SolverModel, SolverVar, SolverVarType
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.memory import Memory
-    from stream.mapping.mapping import Resource
-    from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, StructuralRule
+    from stream.opt.allocation.constraint_optimization.diagnosis import HardwareResource, ResourceKind, StructuralRule
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import Choice, DecisionSpace, Placement
     from stream.workload.workload import Tensor
@@ -69,14 +67,14 @@ class FormulationContext:
         self.quantities = quantities
         self.ledger = ledger
         self._names: dict[str, int] = {}
-        self._on_core: dict[tuple[Tensor, Core], SolverVar] = {}
+        self._in_memory: dict[tuple[Tensor, Memory, int | None], SolverVar] = {}
 
     def add_constr(
         self,
         expr: Any,
         *,
         name: str,
-        resource: Resource | None = None,
+        resource: HardwareResource | None = None,
         kind: ResourceKind | None = None,
         subject: str | None = None,
         rule: StructuralRule | None = None,
@@ -103,46 +101,30 @@ class FormulationContext:
         self._names[sanitized] = count + 1
         return sanitized if count == 0 else f"{sanitized}_{count}"
 
-    def tensor_on_core_expr(self, t: Tensor, core: Core) -> Any:
-        """Whether ``t`` sits on ``core``: a constant for a fixed tensor, else the sum of its placements there."""
-        return self.tensor_on_cores_expr(t, (core,))
+    def tensor_in_memory_expr(self, t: Tensor, memory: Memory, positions: int | None = None) -> Any:
+        """Whether ``t`` sits in ``memory`` (at exactly ``positions`` of its positions, when given): a constant for a
+        fixed tensor, else the sum of its placements there."""
 
-    def tensor_on_cores_expr(self, t: Tensor, cores: Sequence[Core]) -> Any:
-        """Whether ``t`` sits on any of ``cores``: a constant for a fixed tensor, else the sum of its placements on
-        them."""
+        def there(choice: Placement) -> bool:
+            return memory in choice if positions is None else choice.count(memory) == positions
+
         space = self.space
         if space.is_fixed(t):
-            return int(any(c in space.fixed_choice(t) for c in cores))
+            return int(there(space.fixed_choice(t)))
         x = self.vars.x
-        return self.model.quicksum(
-            x[(t, choice)]._raw for choice in space.tensor_choices[t] if any(c in choice for c in cores)
-        )
+        return self.model.quicksum(x[(t, choice)]._raw for choice in space.tensor_choices[t] if there(choice))
 
-    def tensor_uses_core_var(self, t: Tensor, core: Core) -> SolverVar:
-        """A binary equal to whether ``t`` sits on ``core``, one per (tensor, core) for the whole model."""
-        key = (t, core)
-        if (u := self._on_core.get(key)) is not None:
+    def tensor_in_memory_var(self, t: Tensor, memory: Memory, positions: int | None = None) -> SolverVar:
+        """A binary equal to :meth:`tensor_in_memory_expr`, one per (tensor, memory, positions) for the whole model."""
+        key = (t, memory, positions)
+        if (u := self._in_memory.get(key)) is not None:
             return u
-        u = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{resource_key(core)}")
-        self._on_core[key] = u
+        name = f"{t.name}_{resource_key(memory)}" + (f"_x{positions}" if positions is not None else "")
+        u = self._in_memory[key] = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{name}")
         self.add_constr(
-            u == self.tensor_on_core_expr(t, core),
-            name=f"u_eq_{t.name}_{resource_key(core)}",
-            resource=core,
-            subject=t.name,
+            u == self.tensor_in_memory_expr(t, memory, positions), name=f"u_eq_{name}", resource=memory, subject=t.name
         )
         return u
-
-    def tensor_in_memory_var(self, t: Tensor, cores: list[Core]) -> SolverVar:
-        """Whether ``t`` sits on any of ``cores``, the cores sharing one memory."""
-        if len(cores) == 1:
-            return self.tensor_uses_core_var(t, cores[0])
-        key = "__".join(resource_key(c) for c in cores)
-        v = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{key}")
-        self.add_constr(
-            v == self.tensor_on_cores_expr(t, cores), name=f"u_eq_{t.name}_{key}", resource=cores[0], subject=t.name
-        )
-        return v
 
     def binary_product(
         self, *, a: SolverVar, b: SolverVar, base_name: str, tag: ConstraintTag | None = None

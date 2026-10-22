@@ -78,8 +78,8 @@ class NodeAllocationIR(BaseModel):
     inter_core_tiling: list[list[list[Any]]] = Field(
         description="Per-slot tiling as [[dim_str, factor], ...] specifying how the node is split across cores"
     )
-    memory_allocation: list[list[int]] = Field(
-        description="Per-slot list of core IDs indicating where tensors are placed in memory"
+    memory_allocation: list[list[str]] = Field(
+        description="Per slot, the memory a transfer's copy lands in at each target position"
     )
 
 
@@ -188,7 +188,7 @@ class SteadyStateTensorIR(BaseModel):
     shape: list[int]
     bits: int
     loops: list[SteadyStateIterationIR] = Field(description="Its solved loop nest, outermost first")
-    placement: list[int] = Field(description="The cores it is placed on")
+    placement: list[str] = Field(description="The memory it sits in at each position")
     reuse_level: int | None = Field(description="The temporal loop it is reused up to")
     depth: int | None = Field(description="The buffers it is kept in")
     single_buffered: bool
@@ -203,10 +203,10 @@ class SteadyStateIR(BaseModel):
         description=(
             "The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}. With the "
             "per-core detail, a computation node also carries its dims, loops, cores, output tile per core position "
-            "and whether a reader waits on it; a transfer its copies, sources, targets and links, the window and moved "
-            "tile per copy a target holds, its halos, what each source hands each target, its moved bits, route cycles "
-            "and reuse factor. Where a window slides, both also carry their work per fused tile and how far they run "
-            "ahead"
+            "and whether a reader waits on it; a transfer its source and target memories and links, the window and "
+            "moved tile per copy a target holds, its halos, what each source hands each target, its moved bits, route "
+            "cycles and reuse factor. Where a window slides, both also carry their work per fused tile and how far "
+            "they run ahead"
         )
     )
     iterations: int | None = Field(default=None, description="Steady-state iterations of the group")
@@ -306,7 +306,7 @@ class BottleneckIR(BaseModel):
 class PerformanceAggregateIR(BaseModel):
     """Accelerator-wide utilization aggregates."""
 
-    compute_cores_available: int = Field(description="Non-offchip cores in the accelerator")
+    compute_cores_available: int = Field(description="Cores of kind compute in the accelerator")
     compute_cores_used: int = Field(description="Distinct cores any computation node is mapped to")
     latency_weighted_mac_spatial_utilization: float | None = Field(
         default=None,
@@ -440,11 +440,11 @@ class LayoutSideIR(BaseModel):
     access: list[list[int]] = Field(
         description="The [size, stride] loops, outermost first, in elements, the DMA walks the tile in on this side"
     )
-    memory: str | None = Field(description="The memory instance whose port it passes, None for a measured bandwidth")
-    port: str | None = Field(description="That port, `measured` for a core's measured shared bandwidth")
+    memory: str = Field(description="The memory it reads or writes")
+    port: str | None = Field(description="The port of that memory it passes, `measured` for a measured bandwidth")
     bits_per_cycle: float | None = Field(description="Its contiguous rate")
     burst_bytes: int | None = Field(description="Bytes it moves per access, where declared")
-    banks: MemoryBanksIR | None = Field(description="The banks of the core's memory, where declared")
+    banks: MemoryBanksIR | None = Field(description="The banks of that memory, where declared")
 
 
 class AxisDimsIR(BaseModel):
@@ -475,8 +475,8 @@ class TransferLayoutIR(BaseModel):
     tile_shape: list[int] = Field(description="The tile it moves per firing, per axis")
     full_shape: list[int] = Field(description="The whole tensor the tile belongs to, per axis")
     element_bits: int = Field(description="Bits per element")
-    source_cores: list[int] = Field(description="The cores it reads from")
-    target_cores: list[int] = Field(description="The cores it writes to")
+    source_memories: list[str] = Field(description="The memory it reads from at each source position")
+    target_memories: list[str] = Field(description="The memory it writes to at each target position")
     source_order: list[int] = Field(description="Axis order it reads, outermost first")
     target_order: list[int] = Field(description="Axis order it writes, outermost first")
     converts: bool = Field(description="Whether it lays its tile out anew, as a DMA does on the fly")

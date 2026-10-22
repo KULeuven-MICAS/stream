@@ -15,6 +15,7 @@ from stream.hardware.architecture.core import Core
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.opt.allocation.constraint_optimization.families import FamilySpec
+from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 
 # ---------------------------------------------------------------------------
 # Constants (same as test_cross_backend.py)
@@ -86,9 +87,10 @@ def test_memory_capacity_flip():
     """
     least = 64 * 8192  # bits: the pinned tensors of compute tile 0, the most any memory holds
 
-    with tempfile.TemporaryDirectory() as tmpdir, patch.object(Core, "get_memory_capacity", return_value=least):
+    shrunk = patch.object(DecisionSpace, "memory_capacity_bits", return_value=least)
+    with tempfile.TemporaryDirectory() as tmpdir, shrunk:
         limited = _extract_latency_total(_run_gemm(tmpdir, families=_only("memory_capacity")))
-    with tempfile.TemporaryDirectory() as tmpdir, patch.object(Core, "get_memory_capacity", return_value=least):
+    with tempfile.TemporaryDirectory() as tmpdir, shrunk:
         unlimited = _extract_latency_total(_run_gemm(tmpdir, families=_only()))
     assert unlimited < limited
 

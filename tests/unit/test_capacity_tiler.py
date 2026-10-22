@@ -188,8 +188,9 @@ def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
 @pytest.mark.parametrize(
     ("hardware", "workload", "node", "layer_by_layer", "innermost"),
     [
-        # The key projection alone: its 2 MiB of outputs per core cannot stay resident over its 4096-wide contraction
-        ("meta_prototype_dual_core_simd_offchip", "mha", "proj_K", True, "proj_K.D3"),
+        # The key projection alone: its 1 MiB of outputs per 256 KiB chiplet cannot stay resident over its 4096-wide
+        # contraction
+        ("simba_small", "mha", "proj_K", True, "proj_K.D3"),
         # The fused SwiGLU's down projection keeps its outputs while the d_ff its weights stream along goes past them
         ("eyeriss_like_quad_core", _SWIGLU_FITS, "Gemm_Down", False, "Gemm_Left.D0"),
     ],

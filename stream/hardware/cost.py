@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from stream.hardware.bundle import HardwareBundle
-from stream.parser.core_validator import core_kind_from_type
+from stream.parser.core_validator import OFF_DIE_KINDS, core_kind_from_type
 from stream.plugins import load_group
 
 __all__ = [
@@ -27,9 +27,11 @@ HARDWARE_COST_MODEL_GROUP = "stream.hardware_cost_model"
 
 @dataclass(frozen=True)
 class MemoryCost:
-    core_id: int
-    core_name: str
-    memory_name: str
+    """One memory, priced once: a physical memory of the accelerator, seen by ``core_ids``, or a level private to one
+    core."""
+
+    name: str
+    core_ids: tuple[int, ...]
     style: str
     instances: int
     bits_per_instance: int
@@ -40,8 +42,6 @@ class MemoryCost:
     read_energy_pj: float
     write_energy_pj: float
     authored_read_energy_pj: float | None
-    counted: bool
-    shared_memory: str | None
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class CoreCost:
     name: str
     core_type: str
     on_die: bool
-    memories: list[MemoryCost]
+    memories: list[MemoryCost]  # its private levels; the memories it shares with others are the report's
     compute: ComputeCost | None
     area_mm2: float
 
@@ -76,6 +76,7 @@ class HardwareCostReport:
     technology_node: str
     technology_declared: bool
     cores: list[CoreCost]
+    memories: list[MemoryCost]  # the accelerator's memories, each seen by its cores' top-level instances
     total_area_mm2: float
     memory_area_mm2: float
     compute_area_mm2: float
@@ -113,7 +114,6 @@ _DENSITIES: dict[str, _Density] = {
 }
 DEFAULT_TECH_NODE = "n16"
 DRAM_PJ_PER_BIT = 4.0
-OFF_DIE_KINDS = frozenset({"offchip", "shim"})
 
 
 def evaluate_bundle_cost(bundle: HardwareBundle, technology_node: str | None = None) -> HardwareCostReport:
@@ -136,129 +136,115 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
 
     data = bundle.validated_data()
     cores_data = data["cores"]
-    memory_of_view, billing_view = _view_maps(data)
+    on_die = {
+        core_id: (core_kind_from_type(core.get("type")) or "compute") not in OFF_DIE_KINDS
+        for core_id, core in cores_data.items()
+    }
+    viewed = {view for views in data["memories"].values() for view in views}
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
+        private = [name for name in _levels(core) if (core_id, name) not in viewed]
+        memories = [_memory_cost(name, [(core_id, core, name)], on_die[core_id], density) for name in private]
         core_name = str(core.get("name", f"core_{core_id}"))
-        on_die = (core_kind_from_type(core.get("type")) or "compute") not in OFF_DIE_KINDS
-        memories = _memory_costs(core_id, core_name, core, density, on_die, memory_of_view, billing_view)
-        compute = _compute_cost(core_id, core_name, core, density) if on_die else None
+        compute = _compute_cost(core_id, core_name, core, density) if on_die[core_id] else None
         core_costs.append(
             CoreCost(
                 core_id=core_id,
                 name=core_name,
                 core_type=str(core.get("type", "")),
-                on_die=on_die,
+                on_die=on_die[core_id],
                 memories=memories,
                 compute=compute,
                 area_mm2=sum(m.area_mm2 for m in memories) + (compute.area_mm2 if compute else 0.0),
             )
         )
+    shared = []
+    for name, views in data["memories"].items():
+        if len(sides := {on_die[core_id] for core_id, _ in views}) != 1:
+            raise ValueError(f"memory {name} is seen by on-die and off-die cores alike")
+        (on_die_side,) = sides
+        levels = [(cid, cores_data[cid], level) for cid, level in views]
+        shared.append(_memory_cost(name, levels, on_die_side, density))
 
-    memories_all = [(c, m) for c in core_costs for m in c.memories]
+    memories_all = [*shared, *(m for c in core_costs for m in c.memories)]
+    on_die_memories = [m for m in memories_all if m.style == "sram"]
+    off_die_memories = [m for m in memories_all if m.style == "off_die"]
     computes = [c.compute for c in core_costs if c.compute and c.compute.modelled]
-    peak_energy_pj = sum(m.instances * m.nb_ports * m.read_energy_pj for _, m in memories_all if m.counted) + sum(
+    peak_energy_pj = sum(m.instances * m.nb_ports * m.read_energy_pj for m in on_die_memories) + sum(
         c.nb_units * c.energy_per_op_pj for c in computes
     )
-    off_die = [(c, m) for c, m in memories_all if not c.on_die]
     warnings = list(dict.fromkeys(warnings))
 
-    memory_area = sum(m.area_mm2 for _, m in memories_all)
+    memory_area = sum(m.area_mm2 for m in memories_all)
     compute_area = sum(c.compute.area_mm2 for c in core_costs if c.compute)
     return HardwareCostReport(
         bundle_name=bundle.name,
         technology_node=node,
         technology_declared=declared,
         cores=core_costs,
+        memories=shared,
         total_area_mm2=memory_area + compute_area,
         memory_area_mm2=memory_area,
         compute_area_mm2=compute_area,
-        on_die_memory_bits=sum(m.total_bits for _, m in memories_all if m.counted),
-        off_die_memory_bits=sum(m.total_bits for _, m in off_die),
+        on_die_memory_bits=sum(m.total_bits for m in on_die_memories),
+        off_die_memory_bits=sum(m.total_bits for m in off_die_memories),
         peak_access_energy_pj_per_cycle=peak_energy_pj,
-        off_die_access_energy_pj_per_cycle=sum(m.instances * m.nb_ports * m.read_energy_pj for _, m in off_die),
+        off_die_access_energy_pj_per_cycle=sum(m.instances * m.nb_ports * m.read_energy_pj for m in off_die_memories),
         warnings=warnings,
     )
 
 
-def _view_maps(data: dict[str, Any]) -> tuple[dict[tuple[int, str], str], dict[str, tuple[int, str]]]:
-    """The views of each memory several cores see, one physical macro: per view the memory's name, and per memory the
-    view that bills it, its first."""
-    memory_of_view: dict[tuple[int, str], str] = {}
-    billing_view: dict[str, tuple[int, str]] = {}
-    for name, views in data["memories"].items():
-        if len(views) > 1:
-            billing_view[name] = views[0]
-            for view in views:
-                memory_of_view[view] = name
-    return memory_of_view, billing_view
+def _levels(core: dict[str, Any]) -> list[str]:
+    """The memory levels a core file declares: a ZigZag core's by name, an AIE tile's one `memory`."""
+    return list(core["memories"]) if "memories" in core else ["memory"]
 
 
-def _memory_costs(
-    core_id: int,
-    core_name: str,
-    core: dict[str, Any],
-    density: _Density,
-    on_die: bool,
-    memory_of_view: dict[tuple[int, str], str],
-    billing_view: dict[str, tuple[int, str]],
-) -> list[MemoryCost]:
-    is_zigzag = "memories" in core
-    declared: dict[str, dict[str, Any]] = dict(core["memories"]) if is_zigzag else {"memory": core.get("memory", {})}
-    oa_sizes = _oa_sizes(core) if is_zigzag else {}
+def _level(core: dict[str, Any], name: str) -> tuple[int, int, dict[str, int]]:
+    """A level's instances (one per array element it does not serve), bits per instance and port widths by name."""
+    if "memories" not in core:
+        width = int(core["memory"]["bandwidth_max"])
+        return 1, int(core["memory"]["capacity"]), {"read": width, "write": width}
+    level = core["memories"][name]
+    served = set(level["served_dimensions"])
+    instances = 1
+    for dim, size in _oa_sizes(core).items():
+        if dim not in served:
+            instances *= max(int(size), 1)
+    return instances, int(level["size"]), {port["name"]: int(port["bandwidth_max"]) for port in level["ports"]}
 
-    costs: list[MemoryCost] = []
-    for mem_name, mem in declared.items():
-        if is_zigzag:
-            ports = mem.get("ports") or []
-            nb_ports = max(len(ports), 1)
-            width = max((int(p.get("bandwidth_max", 0)) for p in ports), default=0)
-            bits = int(mem.get("size", 0))
-            served = set(mem.get("served_dimensions") or [])
-            instances = 1
-            for dim, size in oa_sizes.items():
-                if dim not in served:
-                    instances *= max(int(size), 1)
-        else:
-            instances, nb_ports = 1, 2
-            width = int(mem.get("bandwidth_max", 0))
-            bits = int(mem.get("capacity", 0))
 
-        shared = memory_of_view.get((core_id, mem_name))
-        counted = on_die and (shared is None or billing_view[shared] == (core_id, mem_name))
-
-        if on_die:
-            style = "sram"
-            read_energy = width * density.read_pj_per_bit
-            write_energy = width * density.write_pj_per_bit
-            area_mm2 = bits * instances * density.sram_um2_per_bit / 1e6 if counted else 0.0
-        else:
-            style = "off_die"
-            read_energy = width * DRAM_PJ_PER_BIT
-            write_energy = width * DRAM_PJ_PER_BIT
-            area_mm2 = 0.0
-
-        costs.append(
-            MemoryCost(
-                core_id=core_id,
-                core_name=core_name,
-                memory_name=mem_name,
-                style=style,
-                instances=instances,
-                bits_per_instance=bits,
-                total_bits=bits * instances,
-                access_width_bits=width,
-                nb_ports=nb_ports,
-                area_mm2=area_mm2,
-                read_energy_pj=read_energy,
-                write_energy_pj=write_energy,
-                authored_read_energy_pj=None,
-                counted=counted,
-                shared_memory=shared,
-            )
-        )
-    return costs
+def _memory_cost(
+    name: str, views: list[tuple[int, dict[str, Any], str]], on_die: bool, density: _Density
+) -> MemoryCost:
+    """One memory priced once from its views, which agree on its size: its ports are those any view declares, a port
+    two views name alike counted once."""
+    levels = [_level(core, level) for _, core, level in views]
+    if len({(instances, bits) for instances, bits, _ in levels}) != 1:
+        raise ValueError(f"the views of memory {name} disagree on its size: {[lv[:2] for lv in levels]}")
+    instances, bits, _ = levels[0]
+    ports = {port: width for *_, widths in levels for port, width in widths.items()}
+    width = max(ports.values(), default=0)
+    if on_die:
+        read_energy, write_energy = width * density.read_pj_per_bit, width * density.write_pj_per_bit
+        area_mm2 = bits * instances * density.sram_um2_per_bit / 1e6
+    else:
+        read_energy = write_energy = width * DRAM_PJ_PER_BIT
+        area_mm2 = 0.0
+    return MemoryCost(
+        name=name,
+        core_ids=tuple(core_id for core_id, _, _ in views),
+        style="sram" if on_die else "off_die",
+        instances=instances,
+        bits_per_instance=bits,
+        total_bits=bits * instances,
+        access_width_bits=width,
+        nb_ports=max(len(ports), 1),
+        area_mm2=area_mm2,
+        read_energy_pj=read_energy,
+        write_energy_pj=write_energy,
+        authored_read_energy_pj=None,
+    )
 
 
 def _compute_cost(core_id: int, core_name: str, core: dict[str, Any], density: _Density) -> ComputeCost | None:

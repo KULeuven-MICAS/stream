@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
 
 if TYPE_CHECKING:
-    from stream.hardware.ports import PortSpec
+    from stream.hardware.ports import MemoryBanks, PortSpec
 
 
 class Core:
@@ -39,6 +39,7 @@ class Core:
         self.max_object_fifo_depth: int = max_object_fifo_depth
         self.col_id: int | None = col_id
         self.row_id: int | None = row_id
+        self.banks: MemoryBanks | None = None
 
         # ---- pluggable backend ----
         self._backend: AnyBackend | None = backend
@@ -144,10 +145,20 @@ class Core:
     # Stream-level memory interface  (delegates to backend)              #
     # ------------------------------------------------------------------ #
 
-    def get_memory_capacity(self) -> int:
-        """Total top-level memory capacity in bits."""
+    def top_instances(self) -> frozenset[str]:
+        """The core's top-level memory instances, each a view of one of the accelerator's memories."""
         assert self._backend is not None, f"{self} has no backend"
-        return self._backend.get_memory_capacity()
+        return self._backend.top_instances()
+
+    def top_instance(self, role: str) -> str:
+        """The top-level memory instance holding the operand of ``role`` ('input<k>' or 'output')."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.top_instance(role)
+
+    def top_memory_capacity(self, instance: str) -> int:
+        """Capacity in bits of the top-level memory instance ``instance``."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.top_memory_capacity(instance)
 
     def get_max_memory_bandwidth(self, type: str) -> int:
         """Top-level memory read/write bandwidth in bits/cycle."""
@@ -181,7 +192,7 @@ class Core:
             "utilization": self.utilization,
             "operator_types": getattr(self, "operator_types", None),
             "operand_precision": getattr(self, "operand_precision", {}),
-            "banks": asdict(self.banks) if getattr(self, "banks", None) else None,
+            "banks": asdict(self.banks) if self.banks else None,
         }
 
         # Merge backend-specific fields (uniform protocol)

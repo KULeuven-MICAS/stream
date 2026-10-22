@@ -7,12 +7,11 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
-from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.hardware.architecture.memory import Memory
 
 Box = tuple[tuple[int, int], ...]
 """Inclusive index range per axis of the data a demand moves; equal boxes are the same data."""
@@ -37,8 +36,8 @@ class MulticastPathPlan:
     """A transfer's route: which source serves which target (``pairs``, by position), the links the data crosses and
     the share of the transfer's bits each carries, one copy of the data per source however many targets it reaches."""
 
-    sources: tuple["Core", ...]
-    targets: tuple["Core", ...]
+    sources: tuple[Memory, ...]
+    targets: tuple[Memory, ...]
     total_hops_objective: int
     links_used: tuple["CommunicationLink", ...]
     pairs: tuple[tuple[int, int], ...] = ()
@@ -87,7 +86,7 @@ class CommunicationManager:
         self.accelerator = accelerator
         self._transfer_plans: dict[tuple, tuple[MulticastPathPlan, ...]] = {}
 
-    def _adjacency(self) -> dict["Memory", list[tuple["Memory", CommunicationLink]]]:
+    def _adjacency(self) -> dict[Memory, list[tuple[Memory, CommunicationLink]]]:
         """Each memory's outgoing links, computed once per accelerator."""
         adjacency = self.accelerator.__dict__.get("_route_adjacency")
         if adjacency is None:
@@ -99,7 +98,7 @@ class CommunicationManager:
             self.accelerator.__dict__["_route_adjacency"] = adjacency
         return adjacency
 
-    def _reverse_adjacency(self) -> dict["Memory", list[tuple["Memory", CommunicationLink]]]:
+    def _reverse_adjacency(self) -> dict[Memory, list[tuple[Memory, CommunicationLink]]]:
         """Each memory's incoming links, computed once per accelerator."""
         reverse = self.accelerator.__dict__.get("_route_reverse_adjacency")
         if reverse is None:
@@ -112,13 +111,13 @@ class CommunicationManager:
 
     def get_possible_transfer_plan(
         self,
-        src_allocs: Iterable["Core"],
-        dst_allocs: Iterable["Core"],
+        src_allocs: Iterable[Memory],
+        dst_allocs: Iterable[Memory],
         demand: tuple[DemandItem, ...],
         bitwidth: float,
-        shares_memory: Callable[["Core", "Core"], bool] = lambda one, other: False,
+        shares_memory: Callable[[Memory, Memory], bool],
     ) -> tuple[MulticastPathPlan, ...]:
-        """The route of a transfer between these cores that moves ``demand``, planned once per demand."""
+        """The route of a transfer between these memories that moves ``demand``, planned once per demand."""
         key = (tuple(src_allocs), tuple(dst_allocs), demand, bitwidth)
         plans = self._transfer_plans.get(key)
         if plans is None:
@@ -127,23 +126,21 @@ class CommunicationManager:
 
     def route(
         self,
-        sources: tuple["Core", ...],
-        targets: tuple["Core", ...],
+        sources: tuple[Memory, ...],
+        targets: tuple[Memory, ...],
         demand: tuple[DemandItem, ...],
         bitwidth: float,
-        shares_memory: Callable[["Core", "Core"], bool],
+        shares_memory: Callable[[Memory, Memory], bool],
     ) -> MulticastPathPlan:
         """Serve each demand from the nearest source holding it, then grow one Steiner tree per source over the
         targets it serves (the shortest-path heuristic of Takahashi and Matsuyama), the largest source first and each
         link weighted by the cycles it would then be busy, so later trees avoid what earlier ones load. A link carries
-        the union of the data its tree sends past it. A target in its source's memory needs no route; one that reaches
-        its source's memory otherwise, as a neighbouring tile does, is reached on a route that moves none of it. Routes
-        run between memories: every core sends and receives through the memory it computes out of. Partial sums are
-        then reduced on the way, see
-        :meth:`_reduce`. Each link's share is of all the data the transfer delivers, whether it moves or is already in
-        its target's memory."""
+        the union of the data its tree sends past it. A target that is its source needs no route; one that reaches its
+        source otherwise, as a neighbouring tile's memory does, is reached on a route that moves none of it. Partial
+        sums are then reduced on the way, see :meth:`_reduce`. Each link's share is of all the data the transfer
+        delivers, whether it moves or is already in its target."""
         served: dict[int, list[DemandItem]] = {}
-        in_place: dict[int, set[Core]] = {}
+        in_place: dict[int, set[Memory]] = {}
         pairs: set[tuple[int, int]] = set()
         reduced: dict[int, list[DemandItem]] = {}
         delivered: list[Box] = []
@@ -153,8 +150,7 @@ class CommunicationManager:
                 pairs.update((s, item.target) for s in item.sources)
                 reduced.setdefault(item.target, []).append(item)
                 continue
-            memory = self.accelerator.memory_of(target)
-            if same := [s for s in item.sources if self.accelerator.memory_of(sources[s]) == memory]:
+            if same := [s for s in item.sources if sources[s] is target]:
                 pairs.add((same[0], item.target))
                 delivered.append(item.box)
                 continue
@@ -162,22 +158,21 @@ class CommunicationManager:
                 pairs.add((local[0], item.target))
                 in_place.setdefault(local[0], set()).add(target)
                 continue
-            distance = self._distances(memory)
-            s = min(item.sources, key=lambda s: (distance.get(self.accelerator.memory_of(sources[s]), float("inf")), sources[s].id))
-            if self.accelerator.memory_of(sources[s]) not in distance:
+            distance = self._distances(target)
+            s = min(item.sources, key=lambda s: (distance.get(sources[s], float("inf")), sources[s].name))
+            if sources[s] not in distance:
                 raise nx.NetworkXNoPath(f"no route from {sources[s]} to {target}")
             pairs.add((s, item.target))
             served.setdefault(s, []).append(item)
 
         load: dict[CommunicationLink, float] = {}
         order: dict[CommunicationLink, None] = {}
-        ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s].id))
+        ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s].name))
         for s in ranked:
             delivered += [i.box for i in served[s]]
             order |= dict.fromkeys(self._multicast(sources[s], targets, served[s], bitwidth, load))
         for s, reached in sorted(in_place.items()):
-            reached_memories = {self.accelerator.memory_of(core) for core in reached}
-            for _, link in self._steiner_tree(self.accelerator.memory_of(sources[s]), reached_memories, 0.0, load, self._adjacency()):
+            for _, link in self._steiner_tree(sources[s], reached, 0.0, load, self._adjacency()):
                 load.setdefault(link, 0.0)
                 order[link] = None
         for t, items in sorted(reduced.items()):
@@ -194,7 +189,7 @@ class CommunicationManager:
             link_shares=shares,
         )
 
-    def _distances(self, target: "Memory") -> dict["Memory", float]:
+    def _distances(self, target: Memory) -> dict[Memory, float]:
         """Unloaded cycles per bit from every memory to ``target``, cached per target."""
         cache = self.accelerator.__dict__.setdefault("_route_distances", {})
         if target not in cache:
@@ -204,8 +199,8 @@ class CommunicationManager:
 
     def _multicast(
         self,
-        source: "Core",
-        targets: tuple["Core", ...],
+        source: Memory,
+        targets: tuple[Memory, ...],
         items: list[DemandItem],
         bitwidth: float,
         load: dict[CommunicationLink, float],
@@ -213,19 +208,19 @@ class CommunicationManager:
         """Load ``load`` with, and return, the links of a tree from ``source`` to the targets of ``items``, each
         carrying the union of the data sent past it."""
         sent = box_bits((i.box for i in items), bitwidth)
-        ends = {self.accelerator.memory_of(targets[i.target]) for i in items}
+        ends = {targets[i.target] for i in items}
         below: dict[CommunicationLink, set[Memory]] = {}
-        for (_, link), reached in self._steiner_tree(self.accelerator.memory_of(source), ends, sent, load, self._adjacency()).items():
+        for (_, link), reached in self._steiner_tree(source, ends, sent, load, self._adjacency()).items():
             below.setdefault(link, set()).update(reached)
         for link, reached in below.items():
-            bits = box_bits((i.box for i in items if self.accelerator.memory_of(targets[i.target]) in reached), bitwidth)
+            bits = box_bits((i.box for i in items if targets[i.target] in reached), bitwidth)
             load[link] = load.get(link, 0.0) + bits
         return list(below)
 
     def _reduce(
         self,
-        sources: tuple["Core", ...],
-        target: "Core",
+        sources: tuple[Memory, ...],
+        target: Memory,
         items: list[DemandItem],
         bitwidth: float,
         load: dict[CommunicationLink, float],
@@ -235,10 +230,10 @@ class CommunicationManager:
         carrying the sum once. Partial sums in one memory are added there. Off-chip memory cannot add, so a sum headed
         there is completed in one of the on-chip memories next to it; cut into a part per memory holding partial sums,
         each completed where it then loads the busiest link least and all links least, the reduction becomes a
-        reduce-scatter. A bus adds nothing, so each core sending over it sends its own sum."""
+        reduce-scatter. A bus adds nothing, so each memory sending over it sends its own sum."""
         reverse = self._reverse_adjacency()
-        root = self.accelerator.memory_of(target)
-        holders = [{self.accelerator.memory_of(sources[s]) for s in item.sources} - {root} for item in items]
+        root = target
+        holders = [{sources[s] for s in item.sources} - {root} for item in items]
         memories = set().union(*holders)
         if not memories:
             return []
@@ -254,7 +249,7 @@ class CommunicationManager:
             if not bits:
                 continue
 
-            def plan(collector: "Memory", last: CommunicationLink | None, bits: float = bits, boxes: list[Box] = boxes):
+            def plan(collector: Memory, last: CommunicationLink | None, bits: float = bits, boxes: list[Box] = boxes):
                 below = self._steiner_tree(collector, memories - {collector}, bits, load, reverse)
                 links = [
                     (link, box_bits((b for b, h in zip(boxes, holders, strict=True) if h & up), bitwidth))
@@ -278,12 +273,12 @@ class CommunicationManager:
 
     def _steiner_tree(
         self,
-        source: "Memory",
-        targets: set["Memory"],
+        source: Memory,
+        targets: set[Memory],
         bits: float,
         load: dict[CommunicationLink, float],
-        adjacency: dict["Memory", list[tuple["Memory", CommunicationLink]]],
-    ) -> dict[tuple["Memory", CommunicationLink], set["Memory"]]:
+        adjacency: dict[Memory, list[tuple[Memory, CommunicationLink]]],
+    ) -> dict[tuple[Memory, CommunicationLink], set[Memory]]:
         """Per edge of a tree from ``source`` over ``adjacency`` spanning ``targets``, keyed by the memory it leads to
         and its link, the targets reached through it."""
         parent: dict[Memory, tuple[Memory, CommunicationLink]] = {}
@@ -331,10 +326,10 @@ def _part(box: Box, parts: int, k: int) -> Box:
 
 
 def _dijkstra(
-    roots: set["Memory"],
-    adjacency: dict["Memory", list[tuple["Memory", CommunicationLink]]],
+    roots: set[Memory],
+    adjacency: dict[Memory, list[tuple[Memory, CommunicationLink]]],
     weight: Callable[[CommunicationLink], float],
-) -> tuple[dict["Memory", float], dict["Memory", tuple["Memory", CommunicationLink]]]:
+) -> tuple[dict[Memory, float], dict[Memory, tuple[Memory, CommunicationLink]]]:
     """Cheapest cost from any of ``roots`` to every memory, and the edge each is reached by; ties go to fewer hops,
     then the lower memory name. Off-chip memory ends a route but never relays one: data between two memories does not
     pass through DRAM."""

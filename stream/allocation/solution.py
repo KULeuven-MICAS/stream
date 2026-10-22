@@ -28,9 +28,9 @@ class AllocationSolution:
     transfer the iterations one firing serves and the cycles its route takes, the solver's metrics, and the reports,
     each None when it could not be computed."""
 
-    tensor_placements: Mapping[Tensor, tuple[Core, ...]]
+    tensor_placements: Mapping[Tensor, tuple[Memory, ...]]
     transfer_routes: Mapping[TransferNode, MulticastPathPlan]
-    memory_cores: Mapping[TransferNode, tuple[Core, ...]]
+    memory_placements: Mapping[TransferNode, tuple[Memory, ...]]
     reuse_levels: Mapping[Tensor, int]
     depths: Mapping[Tensor, int]
     single_buffered: frozenset[Tensor]

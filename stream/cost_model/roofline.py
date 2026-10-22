@@ -36,7 +36,6 @@ GAP = 0.5
 
 def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
     """The roofs and ceilings of ``accelerator``, each with the resources it sums."""
-    offchip = accelerator.offchip_core_id
     roofs: dict[tuple[str, Any], dict[str, Any]] = {}
     for core in accelerator.core_list:
         for name, served, units in _core_roofs(accelerator, core):
@@ -48,7 +47,8 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
             roof["name"] += "@" + ",".join(map(str, sorted(roof["cores"])))
     levels: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for port in accelerator.ports:
-        levels[OFFCHIP_MEMORY if offchip in port.core_ids else ONCHIP_MEMORY].append(
+        offchip = accelerator.memories[port.key.memory].offchip
+        levels[OFFCHIP_MEMORY if offchip else ONCHIP_MEMORY].append(
             {
                 "resource": _port_name(port_name(port.key), port.core_ids),
                 "cores": list(port.core_ids),
@@ -256,7 +256,7 @@ def _core_roofs(accelerator: Accelerator, core: Core) -> list[tuple[str, Any, fl
     """The roofs ``core`` adds operations per cycle to, each with the operators its cores serve when that splits it:
     its operational array to the MAC roof, or to the vector roof of the operators it serves; without one, its kernel
     library's MAC tile and vector rate to the MAC and vector roofs."""
-    if units := compute_units(accelerator, core):
+    if units := compute_units(core):
         return [("MAC", None, units) if runs_macs(core) else ("vector", frozenset(core.operator_types or ()), units)]
     library = accelerator.kernel_library
     if library is None or core.type != "compute":

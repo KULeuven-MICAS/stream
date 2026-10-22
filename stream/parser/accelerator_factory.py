@@ -9,8 +9,8 @@ from stream.hardware.architecture.accelerator import Accelerator, MemoryGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.hardware.ports import MemoryBanks
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.hardware.ports import MemoryBanks, PortKey
 from stream.parser.accelerator_validator import PORT_REF_REGEX, parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
@@ -24,40 +24,33 @@ class AcceleratorFactory:
 
     def create(self) -> Accelerator:
         """! Create an Accelerator instance from the user-provided data."""
-        coordinates = self.data.get("core_coordinates", {})
+        coordinates = self.data["core_coordinates"]
         cores = {
             core_id: self.create_core(core_data, core_id, coordinates.get(core_id))
             for core_id, core_data in self.data["cores"].items()
         }
-        offchip_core_id = self.data.get("offchip_core_id", None)
         memories = {
-            name: Memory(
-                name,
-                tuple((cores[core_id], instance) for core_id, instance in views),
-                offchip=any(core_id == offchip_core_id for core_id, _ in views),
-            )
+            name: Memory(name, tuple((cores[core_id], instance) for core_id, instance in views))
             for name, views in self.data["memories"].items()
         }
-        bandwidth = self.data.get("bandwidth", {})
+        measured: dict[Memory, BandwidthModel] = {}
+        port_models: dict[PortKey, BandwidthModel] = {}
+        for key, description in self.data["bandwidth"].items():
+            if re.match(PORT_REF_REGEX, key):
+                port_models[parse_port_ref(key)] = BandwidthModel.from_description(description)
+            else:
+                measured[memories[key]] = BandwidthModel.from_description(description)
 
         accelerator = Accelerator(
             name=self.data["name"],
             cores=list(cores.values()),
             memories=list(memories.values()),
             network=self.create_network(memories),
-            offchip_core_id=offchip_core_id,
+            offchip_core_id=self.data["offchip_core_id"],
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
-            bandwidth={
-                memories[key]: BandwidthModel.from_description(model)
-                for key, model in bandwidth.items()
-                if not re.match(PORT_REF_REGEX, key)
-            },
+            bandwidth=measured,
             reconfiguration=self.data.get("reconfiguration"),
-            port_bandwidth={
-                parse_port_ref(ref): BandwidthModel.from_description(model)
-                for ref, model in bandwidth.items()
-                if re.match(PORT_REF_REGEX, ref)
-            },
+            port_bandwidth=port_models,
         )
         if accelerator.port_bandwidth:
             # Building the registry rejects a port key that names no port a core's backend models.
@@ -118,7 +111,7 @@ class AcceleratorFactory:
             zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=core_id)
             # ZigZagCoreFactory returns a raw zigzag Accelerator — upgrade to
             # our ZigZagCoreBackend subclass so the backend protocol methods
-            # (get_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
+            # (top_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
             zigzag_core.__class__ = ZigZagCoreBackend
 
             core = Core(
@@ -142,32 +135,21 @@ class AcceleratorFactory:
         """The memories, with an edge each way for every link and between every two members of a bus, all of a bus's
         edges one shared `CommunicationLink`."""
         edges: list[tuple[Memory, Memory, dict[str, CommunicationLink]]] = []
-        seen: dict[tuple[str, tuple[Memory, ...]], int] = {}
-        default_unit_energy_cost = self.data.get("unit_energy_cost", 0)
+        seen: dict[tuple[str, tuple[str, ...]], int] = {}
         for connection in self.data["connections"]:
-            connection_type = connection.get("type", "link")
-            bw = connection["bandwidth"]
-            uec = connection.get("unit_energy_cost", default_unit_energy_cost)
-            ends = [memories[name] for name in connection["memories"]]
-            key = (connection_type, tuple(sorted(ends)))
+            kind, bandwidth, energy = connection["type"], connection["bandwidth"], connection["unit_energy_cost"]
+            ends = tuple(memories[name] for name in connection["memories"])
+            key = (kind, tuple(sorted(memory.name for memory in ends)))
             parallel = seen[key] = seen.get(key, -1) + 1
-            if connection_type == "link":
-                if len(ends) != 2:  # noqa: PLR2004
-                    raise ValueError(f"A link joins exactly two memories, not {ends}.")
-                edges += get_bidirectional_edges(
-                    *ends, bandwidth=bw, unit_energy_cost=uec, link_type="link", parallel=parallel
-                )
-            elif connection_type == "bus":
-                bus = CommunicationLink(
-                    "Any", "Any", bw, uec, bidirectional=True, members=tuple(ends), parallel=parallel
-                )
-                for i, memory_a in enumerate(ends):
-                    for memory_b in ends[i + 1 :]:
-                        edges += get_bidirectional_edges(
-                            memory_a, memory_b, bandwidth=bw, unit_energy_cost=uec, link_type="bus", bus_instance=bus
-                        )
+            if kind == "link":
+                a, b = ends
+                edges += [
+                    (a, b, {"cl": CommunicationLink.link(a, b, bandwidth, energy, parallel)}),
+                    (b, a, {"cl": CommunicationLink.link(b, a, bandwidth, energy, parallel)}),
+                ]
             else:
-                raise ValueError(f"Invalid connection type '{connection_type}' for {ends}. Expected 'link' or 'bus'.")
+                bus = CommunicationLink.bus(ends, bandwidth, energy, parallel)
+                edges += [(a, b, {"cl": bus}) for a in ends for b in ends if a is not b]
         return MemoryGraph(edges)
 
 

@@ -14,7 +14,7 @@
 #  * The VMEM is the top memory of the TensorCore's MXUs and VPU, shared between them and the
 #    TensorCore's VMEM core (one memory): its 64 MiB is the TensorCore's one residency limit,
 #    its ports at the vector load/store rate the bandwidth all of them share, and a block's operands
-#    reach the arrays from it in place. The VMEM core is where the chiplet's links land.
+#    reach the arrays from it in place. The chiplet's links join its VMEM.
 #  * Each chiplet's VMEM links to HBM at that chiplet's bandwidth; Stream has one off-chip core, and
 #    a route never passes through it, so data between TensorCores takes the die-to-die link or ICI.
 #  * The slice is two neighbouring chips joined by one ICI link between their second chiplets.

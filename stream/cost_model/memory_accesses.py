@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from stream.hardware.architecture.core import Core
+from stream.parser.core_validator import OFF_DIE_KINDS
 from stream.workload.tensor import Tensor
 
 
@@ -30,13 +31,13 @@ class CoreMemoryAccesses:
         """Add write accesses for a core-tensor pair."""
         self.accesses[core][tensor].write += count
 
-    def to_ir(self, offchip_core_id: int | None = None) -> dict:
+    def to_ir(self) -> dict:
         """Serialise the accesses for inspection: per core, per tensor, read/write counts.
 
         Counts are in *bandwidth-wide transfers* (a tensor tile's bits divided by the port bandwidth,
         times how many times it fires) -- the unit the cost model charges. Each tensor's ``size_bits``
         is carried alongside so a consumer can recover the bytes moved, and the port bandwidths and an
-        ``is_offchip`` flag let it separate off-chip (DRAM/HBM) traffic from on-chip.
+        ``is_offchip`` flag (an off-die core) let it separate off-chip (DRAM/HBM) traffic from on-chip.
         """
         cores: list[dict] = []
         for core, tensors in self.accesses.items():
@@ -64,14 +65,12 @@ class CoreMemoryAccesses:
                     }
                 )
             tensor_rows.sort(key=lambda t: -(t["read"] + t["write"]))
-            kind = getattr(core, "type", None) or getattr(core, "kind", None)
-            is_offchip = (offchip_core_id is not None and core.id == offchip_core_id) or kind in ("offchip", "shim")
             cores.append(
                 {
                     "core_id": core.id,
-                    "core_name": getattr(core, "name", f"core_{core.id}"),
-                    "kind": kind,
-                    "is_offchip": bool(is_offchip),
+                    "core_name": core.name,
+                    "kind": core.kind,
+                    "is_offchip": core.kind in OFF_DIE_KINDS,
                     "read_bandwidth": read_bw,
                     "write_bandwidth": write_bw,
                     "read": core_read,

@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.core import Core
-from stream.workload.node import ComputationNode
+from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import OUTPUT, input_role
+from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
+from stream.workload.tensor import Tensor
 from stream.workload.utils import get_equivalent_dimension
 from stream.workload.workload import Node, Workload
 
@@ -16,6 +19,7 @@ if TYPE_CHECKING:
     # annotation here and validated at runtime when a kernel is actually set (AIE mappings),
     # so importing it eagerly would force the AIE toolchain onto the base install.
     from stream.compiler.kernels.aie_kernel import AIEKernel
+    from stream.hardware.architecture.accelerator import Accelerator
 
 Resource: TypeAlias = Core | MulticastPathPlan
 
@@ -43,7 +47,7 @@ class NodeMapping:
 
     resource_allocation: tuple[tuple[Resource, ...], ...] = field(default_factory=tuple)
     inter_core_tiling: tuple[InterCoreTiling, ...] = field(default_factory=tuple)
-    memory_allocation: tuple[tuple[Core, ...], ...] = field(default_factory=tuple)
+    memory_allocation: tuple[tuple[Memory, ...], ...] = field(default_factory=tuple)
     kernel: AIEKernel | None = None
 
     def __post_init__(self) -> None:
@@ -110,7 +114,7 @@ class Mapping:
         node: Node,
         resource_allocation: tuple[tuple[Resource, ...], ...],
         inter_core_tiling: tuple[InterCoreTiling, ...],
-        memory_allocation: tuple[tuple[Core, ...], ...] = (),
+        memory_allocation: tuple[tuple[Memory, ...], ...] = (),
         kernel: AIEKernel | None = None,
     ) -> None:
         self.set(
@@ -193,8 +197,8 @@ class Mapping:
                         slot_ir.append(
                             {
                                 "type": "path",
-                                "sources": [c.id for c in resource.sources],
-                                "targets": [c.id for c in resource.targets],
+                                "sources": [m.name for m in resource.sources],
+                                "targets": [m.name for m in resource.targets],
                                 "hops": resource.total_hops_objective,
                             }
                         )
@@ -208,11 +212,7 @@ class Mapping:
                 slot_ir = [[str(dim), factor] for dim, factor in slot]
                 inter_core_tiling_ir.append(slot_ir)
 
-            # Serialize memory_allocation -> list of lists of core IDs (a slot may be a bare Core).
-            memory_allocation_ir = [
-                [core.id for core in (slot if isinstance(slot, tuple | list) else (slot,))]
-                for slot in nm.memory_allocation
-            ]
+            memory_allocation_ir = [[memory.name for memory in slot] for slot in nm.memory_allocation]
 
             nodes_ir[node_key] = {
                 "resource_allocation": resource_allocation_ir,
@@ -300,3 +300,35 @@ class Mapping:
     @property
     def runtime_args(self) -> dict[str, str]:
         return self._runtime_args
+
+
+def role_of(node: ComputationNode, tensor: Tensor) -> str:
+    """The operand role ``tensor`` has on ``node``: its output, or its k-th input."""
+    if tensor in node.outputs:
+        return OUTPUT
+    if tensor in node.inputs:
+        return input_role(node.inputs.index(tensor) + 1)
+    raise ValueError(f"{tensor.name} is no operand of {node.name}")
+
+
+def offchip_memory(accelerator: Accelerator) -> Memory:
+    """The memory the workload's edge tensors live in."""
+    if (memory := accelerator.offchip_memory) is None:
+        raise ValueError(f"{accelerator.name} has no off-chip memory to hold the workload's inputs and outputs")
+    return memory
+
+
+def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
+    """The memories ``node`` may hold the operand of ``role`` in, one per position: off-chip for an edge, the copies'
+    for a transfer, and for a computation the memory each of its cores keeps that operand in (:meth:`Accelerator
+    .memory_of`). Cores sharing a memory repeat it."""
+    if isinstance(node, InEdge | OutEdge):
+        return ((offchip_memory(accelerator),),)
+    if isinstance(node, TransferNode):
+        return mapping.get(node).memory_allocation
+    if isinstance(node, ComputationNode):
+        return tuple(
+            tuple(accelerator.memory_of(core, role) for core in cores)
+            for cores in mapping.get(node).resource_allocation
+        )
+    raise ValueError(f"{node} holds no operand to place")

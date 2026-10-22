@@ -383,7 +383,7 @@ class GenericMappingGenerator:
         for cn in cns:
             if len(cores := self._select_cores_for_node(cn)) <= 1:
                 continue
-            capacity = min(capacity, *(self.accelerator.memory_of(c).capacity_bits for c in cores))
+            capacity = min(capacity, *(m.capacity_bits for c in cores for m in self.accelerator.memories_of(c)))
             dims = sub_workload.get_dims(cn)
             for t in cn.tensors:
                 lead = frozenset(sub_workload.leading_dim(dims[p])[0] for p in map_dim_positions(cn.get_mapping(t)))
@@ -748,9 +748,10 @@ class GenericMappingGenerator:
         per_core = full // unroll if unroll > 1 and full % unroll == 0 else full
         capacity_bits = min(
             (
-                self.accelerator.memory_of(cores[0]).capacity_bits
+                memory.capacity_bits
                 for cn in cns
-                if (cores := self._select_cores_for_node(cn))
+                for core in self._select_cores_for_node(cn)
+                for memory in self.accelerator.memories_of(core)
             ),
             default=0,
         )

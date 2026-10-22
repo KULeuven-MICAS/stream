@@ -42,11 +42,20 @@ def operand_role(memory_operand: str) -> str:
     raise ValueError(f"memory operand {memory_operand!r} has no operand role.")
 
 
+def memory_operand(role: str) -> MemoryOperand:
+    """The ZigZag memory operand of a neutral role: the output is ``O``, input k ``I<k>``."""
+    if role == OUTPUT:
+        return MemoryOperand("O")
+    if role.startswith("input") and role[5:].isdigit():
+        return MemoryOperand(f"I{role[5:]}")
+    raise ValueError(f"role {role!r} has no memory operand.")
+
+
 class ZigZagCoreBackend(_ZigZagAccelerator):
     """Thin wrapper around the ZigZag ``Accelerator`` that adds the backend protocol.
 
     Inherits all ZigZag attributes (``operational_array``, ``memory_hierarchy``,
-    ``dataflows``, …) and adds ``get_memory_capacity()``, ``get_max_memory_bandwidth()``,
+    ``dataflows``, …) and adds ``top_memory_capacity()``, ``get_max_memory_bandwidth()``,
     and ``get_ir()`` so that :class:`~stream.hardware.architecture.core.Core` can
     delegate uniformly without ``isinstance`` checks.
     """
@@ -55,10 +64,21 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
     # Backend protocol — same interface as AIE2CoreBackend
     # ------------------------------------------------------------------
 
-    def get_memory_capacity(self) -> int:
-        """Total top-level memory capacity in bits."""
-        memory_operand = MemoryOperand("I1")
-        return self.get_top_memory_instance(memory_operand).size
+    def top_instances(self) -> frozenset[str]:
+        """The core's top-level memory instances: the highest level of each operand."""
+        hierarchy = self.memory_hierarchy
+        return frozenset(hierarchy.get_memory_levels(op)[-1].name for op in hierarchy.get_operands())
+
+    def top_instance(self, role: str) -> str:
+        """The top-level memory instance holding the operand of ``role``; a core with one top-level instance holds
+        every operand there, whether its hierarchy names the operand or not."""
+        hierarchy, operand = self.memory_hierarchy, memory_operand(role)
+        if operand in hierarchy.get_operands():
+            return hierarchy.get_memory_levels(operand)[-1].name
+        if len(tops := self.top_instances()) == 1:
+            (top,) = tops
+            return top
+        raise ValueError(f"{role} is held in none of the top-level memories {sorted(tops)}")
 
     def top_memory_capacity(self, instance: str) -> int:
         """Capacity in bits of the top-level memory instance ``instance``, the one the core's memory view binds."""

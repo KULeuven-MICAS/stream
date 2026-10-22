@@ -82,7 +82,7 @@ def _link_label(link: CommunicationLink) -> str:
 
 def _path_label(path: MulticastPathPlan) -> str:
     """Short but complete label for a path of CommunicationLinks used as a track name."""
-    return f"Path from core {path.sources[0].id}: {', '.join(map(str, path.links_used))}"
+    return f"Path from {path.sources[0].name}: {', '.join(map(str, path.links_used))}"
 
 
 def _resource_label(res) -> str:

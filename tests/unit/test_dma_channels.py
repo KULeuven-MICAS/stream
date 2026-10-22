@@ -9,13 +9,12 @@ back to the choice that caused it.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.families.aie2 import AIE2DmaChannels
-from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
+from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace, HardwareFacts
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
 from stream.workload.node import TransferType
 
@@ -30,6 +29,13 @@ def _core(core_id: int, kind: str, col: int | None, row: int | None, namespace: 
     return core
 
 
+def _memory(core: Core) -> Memory:
+    """The memory of a tile, its only view."""
+    memory = Memory.__new__(Memory)
+    memory.name, memory.views, memory.offchip, memory.capacity_bits = f"m{core.id}", ((core, "memory"),), False, 0
+    return memory
+
+
 @pytest.fixture
 def aie2():
     return AIE2Namespace()
@@ -38,8 +44,8 @@ def aie2():
 def test_a_compute_tile_has_the_two_dma_channels_the_hardware_gives_it():
     """``AIE2TargetModel`` answers 2 for ``WireBundle::DMA`` on a compute tile, 6 on a
     memory tile. Modelling more is what lets an infeasible design reach aiecc."""
-    assert AIE2DmaChannels().channels(_core(0, "compute", 0, 2), None) == 2
-    assert AIE2DmaChannels().channels(_core(1, "memory", 0, 1), None) == 6
+    assert AIE2DmaChannels().channels(_memory(_core(0, "compute", 0, 2))) == 2
+    assert AIE2DmaChannels().channels(_memory(_core(1, "memory", 0, 1))) == 6
 
 
 @pytest.mark.parametrize(
@@ -121,12 +127,11 @@ class _Transfer:
         self.transfer_type = transfer_type
 
 
-def _space(hardware, broadcast: bool = False) -> DecisionSpace:
+def _space(namespace, broadcast: bool = False) -> DecisionSpace:
     """A bare decision space carrying only what the shared-memory latency check reads. ``transfer_is_broadcast`` and
     ``overlaps`` inspect real tensors, so they are stubbed -- the plan and the transfer type drive everything else."""
     space = DecisionSpace.__new__(DecisionSpace)
-    space.hardware = hardware
-    space.accelerator = SimpleNamespace(memory_of=lambda core: core)
+    space.hardware = HardwareFacts(accelerator=None, mem_memories=[], namespaces=(namespace,))
     space.transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
     space.overlaps = lambda _tr: {}  # type: ignore[method-assign]
     return space
@@ -137,7 +142,7 @@ def test_a_neighbour_transfer_reads_in_place_so_its_path_latency_is_zero(aie2):
     channel (above) and moves no bytes over a link, so ``transfer_latency_for_path`` returns 0."""
     space = _space(aie2)
     tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
-    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])  # north neighbour
+    plan = _Plan([_memory(_core(0, "compute", 0, 2))], [_memory(_core(1, "compute", 0, 3))])  # north neighbour
     assert space.choice_shares_memory(tr, plan) is True
     assert space.transfer_latency_for_path(tr, plan) == 0
 
@@ -146,7 +151,7 @@ def test_a_transfer_across_the_array_is_not_shared(aie2):
     """Two rows apart share no memory, so the transfer keeps the normal bytes-over-bandwidth cost."""
     space = _space(aie2)
     tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
-    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 4)])  # two rows apart
+    plan = _Plan([_memory(_core(0, "compute", 0, 2))], [_memory(_core(1, "compute", 0, 4))])  # two rows apart
     assert space.choice_shares_memory(tr, plan) is False
 
 
@@ -154,7 +159,7 @@ def test_a_broadcast_is_on_the_dma_however_it_is_placed(aie2):
     """One source feeding several consumers goes on the DMA even between neighbours."""
     space = _space(aie2, broadcast=True)
     tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
-    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])
+    plan = _Plan([_memory(_core(0, "compute", 0, 2))], [_memory(_core(1, "compute", 0, 3))])
     assert space.choice_shares_memory(tr, plan) is False
 
 
@@ -162,5 +167,5 @@ def test_a_transfer_staged_on_a_memory_tile_is_not_shared(aie2):
     """A transfer routed through a memory tile is two legs on the DMA, not a core-to-core share."""
     space = _space(aie2)
     tr = _Transfer(TransferType.MEM_TO_COMPUTE)
-    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])
+    plan = _Plan([_memory(_core(0, "compute", 0, 2))], [_memory(_core(1, "compute", 0, 3))])
     assert space.choice_shares_memory(tr, plan) is False

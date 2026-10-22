@@ -7,6 +7,7 @@ from typing import Any
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.mapping.mapping import role_of
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import ComputationNode
@@ -282,7 +283,7 @@ class CapacityTiler:
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         unique, _ = self.sub_workload.unique_dimensions()
         full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
-        held: dict[int, dict[tuple, float]] = {}
+        held: dict[str, dict[tuple, float]] = {}
         produced = {t for cn in cns for t in cn.outputs}
         for cn in cns:
             cores = cores_per_node.get(cn, [])
@@ -299,21 +300,19 @@ class CapacityTiler:
                 buffers = 2 if stepping and not whole else 1  # an accumulating output stays put
                 tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
                 for core in cores:
-                    held.setdefault(core.id, {})[tile] = buffers * math.prod(shape) * t.operand_type.bitwidth
-        memories: dict[str, float] = {}
-        for core_id, tiles in held.items():
-            memory = self.accelerator.memory_of(self.accelerator.get_core(core_id)).name
-            memories[memory] = memories.get(memory, 0.0) + sum(tiles.values())
-        return memories
+                    memory = self.accelerator.memory_of(core, role_of(cn, t)).name
+                    held.setdefault(memory, {})[(core.id, tile)] = buffers * math.prod(shape) * t.operand_type.bitwidth
+        return {memory: sum(tiles.values()) for memory, tiles in held.items()}
 
     def _capacities(
         self, cns: tuple[ComputationNode, ...], cores_per_node: dict[ComputationNode, list[Core]]
     ) -> dict[str, int]:
         """Each memory the group's cores use, with its capacity."""
         return {
-            self.accelerator.memory_of(core).name: self.accelerator.memory_of(core).capacity_bits
+            memory.name: memory.capacity_bits
             for cn in cns
             for core in cores_per_node.get(cn, [])
+            for memory in self.accelerator.memories_of(core)
         }
 
     def _node_dims(self, cn: ComputationNode) -> set[LayerDim]:

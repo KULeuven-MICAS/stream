@@ -41,8 +41,9 @@ from stream.compiler.transforms.unroll import SpatialUnrollPass
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
-from stream.hardware.cost import OFF_DIE_KINDS
+from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import Mapping, NodeMapping
+from stream.parser.core_validator import OFF_DIE_KINDS
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.normalization import reduction_axes
@@ -65,6 +66,31 @@ from stream.workload.workload import (
     TransferNode,
     Workload,
 )
+
+
+def _tile(core: Core) -> StringAttr:
+    """The name of the AIE tile ``core`` is."""
+    assert isinstance(core, Core) and core.col_id is not None and core.row_id is not None
+    return StringAttr(f"tile_{core.col_id}_{core.row_id}")
+
+
+RUNTIME_TILE = "tile_0_0"
+"""Where the generated code puts what runs on the host: the AIE lowering moves its ops into the runtime sequence and
+reaches DRAM through the shim of the column each transfer's other end sits in."""
+
+
+def _memory_tile(memory: Memory) -> StringAttr:
+    """How the generated code names ``memory``: on AIE, DRAM by :data:`RUNTIME_TILE` and a tile's memory by its tile,
+    which the hardware description must name it after since the AIE lowering reads the tile off the name; any other
+    memory by its name, for the backend that reads it."""
+    if memory.namespace != "aie2":
+        return StringAttr(memory.name)
+    if memory.offchip:
+        return StringAttr(RUNTIME_TILE)
+    tile = _tile(memory.core)
+    if memory.name != tile.data:
+        raise ValueError(f"memory {memory.name} is the memory of tile {tile.data}: name it so")
+    return tile
 
 
 class AIECodeGenerationStage(Stage):
@@ -129,17 +155,13 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(input_type, StrensorType)
         path_plan = mapping.resource_allocation[0]
         assert isinstance(path_plan, MulticastPathPlan)
-        cores = []
-        for target in path_plan.targets:
-            assert target.row_id is not None
-            assert target.col_id is not None
-            cores.append(StringAttr(f"tile_{target.col_id}_{target.row_id}"))
+        cores = [_memory_tile(target) for target in path_plan.targets]
 
         if len(cores) == 1:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
                 raise ValueError("Spatial Strensor for single-core transfer found.")
 
-        if all(target.type in OFF_DIE_KINDS for target in path_plan.targets):
+        if all(target.kind in OFF_DIE_KINDS for target in path_plan.targets):
             shape = cast(ShapedType, node.output.subview.source.type).get_shape()
             layer_dims = (
                 x[0]
@@ -158,8 +180,10 @@ class AIECodeGenerationStage(Stage):
             result_types = []
             for (index, space), reader, output in zip(spaces, self._readers(node, workload), node.outputs, strict=True):
                 allocation = full_mapping.get(reader).resource_allocation[0]
-                reader_cores = allocation.sources if isinstance(allocation, MulticastPathPlan) else allocation
-                cores_attr = [StringAttr(f"tile_{c.col_id}_{c.row_id}") for c in reader_cores]
+                if isinstance(allocation, MulticastPathPlan):
+                    cores_attr = [_memory_tile(memory) for memory in allocation.sources]
+                else:
+                    cores_attr = [_tile(core) for core in allocation]
                 result_types.append(
                     StrensorType(input_type.element_type, space, cores_attr, index, self._buffers(output))
                 )
@@ -226,13 +250,7 @@ class AIECodeGenerationStage(Stage):
                 break
 
         # # add spatio-temporal dims to get only inner shape:
-        cores = mapping.resource_allocation[0]
-        cores_attrs = []
-        for core in cores:
-            assert isinstance(core, Core)
-            assert core.row_id is not None
-            assert core.col_id is not None
-            cores_attrs.append(StringAttr(f"tile_{core.col_id}_{core.row_id}"))
+        cores_attrs = [_tile(core) for core in mapping.resource_allocation[0]]
 
         result_type = StrensorType(
             node.output.operand_type,
@@ -351,7 +369,7 @@ class AIECodeGenerationStage(Stage):
                                 for (s, d) in zip(shape, layer_dims, strict=True)
                             )
                         ),
-                        [StringAttr("tile_0_0")],
+                        [StringAttr(RUNTIME_TILE)],
                     ),
                 )
             if isinstance(node, OutEdge):
@@ -427,24 +445,22 @@ class AIECodeGenerationStage(Stage):
         return descriptors - 1 if descriptors and self.trace_size else descriptors, iterations
 
     def _fifo_depths(self) -> FifoDepths | None:
-        """A depth policy funded by the capacity the solved allocation left unused."""
+        """A depth policy funded by the capacity the solved allocation left unused on chip."""
         allocation = self.ctx.get("allocation")
         slack = allocation.solution.capacity_slack
         if not slack:
             return None
         accelerator = allocation.problem.accelerator
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in accelerator.core_list:
-            per_core, per_memory = slack.get(core), slack.get(accelerator.memory_of(core))
-            if (per_core is None and per_memory is None) or core.col_id is None or core.row_id is None:
+        for memory in accelerator.memories.values():
+            if memory.offchip or (free := slack.get(memory)) is None:
                 continue
-            per_core, per_memory = per_core or {}, per_memory or {}
-            slots = min(
-                per_core.get("object_fifo_depth", float("inf")),
-                per_core.get("buffer_descriptors", float("inf")),
-            )
-            budgets[(core.col_id, core.row_id)] = TileBudget(
-                bytes_free=per_memory.get("memory_bytes", 0.0),
+            tile = memory.core
+            if tile.col_id is None or tile.row_id is None:
+                continue
+            slots = min(free.get("object_fifo_depth", float("inf")), free.get("buffer_descriptors", float("inf")))
+            budgets[(tile.col_id, tile.row_id)] = TileBudget(
+                bytes_free=free.get("memory_bytes", 0.0),
                 bds_free=0.0 if slots == float("inf") else slots,
             )
         return FifoDepths(budgets)

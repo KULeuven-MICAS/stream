@@ -60,7 +60,7 @@ unit_energy_cost: 0
 technology_node: n3
 
 # The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one physical
-# scratchpad -- the modelling split described above: one memory, priced once, by its first view.
+# scratchpad -- the modelling split described above: one memory, priced once, its views agreeing on its size.
 memories:
   vmem_0: [8.vmem, 0.operand_buffer, 1.operand_buffer]
   vmem_1: [9.vmem, 2.operand_buffer, 3.operand_buffer]

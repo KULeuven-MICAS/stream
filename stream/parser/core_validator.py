@@ -24,6 +24,9 @@ ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory", "shim", "offchip
 * ``offchip`` — off-chip DRAM or external memory controller
 """
 
+OFF_DIE_KINDS: frozenset[str] = frozenset({"offchip", "shim"})
+"""The core kinds that sit outside the die: the memory such a core views is the accelerator's off-chip memory."""
+
 
 def core_kind_from_type(core_type: str | None) -> str:
     """Extract the kind suffix from a fully-qualified core type string.

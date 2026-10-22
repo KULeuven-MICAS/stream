@@ -12,7 +12,7 @@ from stream.workload.node import TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType
 
 if TYPE_CHECKING:
-    from stream.hardware.architecture.core import Core
+    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.solver import LinExpr, SolverVar
     from stream.workload.workload import Tensor
@@ -23,7 +23,7 @@ class MemoryReuseEntry:
     """One staged tensor's residency on a memory tile, held against its reader's."""
 
     name: str
-    core: Core
+    memory: Memory
     mem_level: LinExpr
     compute_level: LinExpr
     unexpressible: tuple[tuple[SolverVar, SolverVar], ...]
@@ -146,7 +146,7 @@ class ReuseCompatibility:
         q = ctx.quantities
         space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
         memory_reuse: list[MemoryReuseEntry] = []
-        namespace_cores = list({c.namespace: c for c in space.mem_cores}.values())
+        namespace_memories = list({m.namespace: m for m in space.mem_memories}.values())
         for tr in space.transfer_nodes:
             inputs = tr.inputs
             outputs = tr.outputs
@@ -179,12 +179,12 @@ class ReuseCompatibility:
                     memory_reuse.extend(
                         MemoryReuseEntry(
                             tr.name,
-                            core,
+                            memory,
                             _reuse_level_expr(ctx, input_tensor),
                             _reuse_level_expr(ctx, output_tensor),
                             unexpressible,
                         )
-                        for core in namespace_cores
+                        for memory in namespace_memories
                     )
         q.add("memory_reuse", tuple(memory_reuse))
 

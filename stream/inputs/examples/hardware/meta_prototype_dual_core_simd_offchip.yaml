@@ -11,11 +11,12 @@ cores:
 offchip_core_id: 4         # which core fronts external memory
 unit_energy_cost: 0        # default energy per transferred word
 
-# Each meta_prototype core's view is its activation SRAM, the top level of its activations and outputs; its weight
-# SRAM, the top level of its weights, stays private to it.
+# Each meta_prototype core has two top-level SRAMs: one for its activations and outputs, one for its weights.
 memories:
   meta_prototype_0: [0.sram_1MB_A]
   meta_prototype_1: [1.sram_1MB_A]
+  meta_prototype_0_weights: [0.sram_1MB_W]
+  meta_prototype_1_weights: [1.sram_1MB_W]
   pooling: [2.sram_128KB]
   simd: [3.sram_128KB_2rw]
   offchip: [4.dram]
@@ -42,7 +43,8 @@ connections:
     memories: [meta_prototype_1, simd]
     bandwidth: 64
 
-  # ─── shared bus to off-chip memory (all on-chip cores + controller) ───
+  # ─── shared bus to off-chip memory (all on-chip memories + controller) ───
   - type: bus
-    memories: [meta_prototype_0, meta_prototype_1, pooling, simd, offchip]
+    memories: [meta_prototype_0, meta_prototype_1, meta_prototype_0_weights, meta_prototype_1_weights, pooling, simd,
+      offchip]
     bandwidth: 128        # wider than on-chip point-to-point links

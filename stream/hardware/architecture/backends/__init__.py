@@ -1,5 +1,5 @@
 """Core backends: the hardware details a :class:`~stream.hardware.architecture.core.Core` delegates to. Each
-implements ``get_memory_capacity``, ``top_memory_capacity``, ``get_max_memory_bandwidth``, ``get_ir`` and
+implements ``top_memory_capacity``, ``get_max_memory_bandwidth``, ``get_ir`` and
 ``port_specs``, the top-level memory ports as :class:`~stream.hardware.ports.PortSpec` (empty when the backend models
 none)."""
 

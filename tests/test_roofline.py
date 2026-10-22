@@ -43,7 +43,7 @@ def test_aie_tiles_have_a_mac_and_a_vector_roof_and_keep_an_on_chip_measured_ban
     roofline = hardware_roofline(accelerator)
     assert [(r["name"], r["ops_per_cycle"]) for r in roofline["roofs"]] == [("MAC", 32 * 512), ("vector", 32 * 16)]
     levels = {level["name"]: {r["resource"] for r in level["resources"]} for level in roofline["levels"]}
-    assert "tile_0_0@0" in levels["off-chip memory"] and "tile_0_1@1" in levels["on-chip memory"]
+    assert "dram@0,6,12,18,24,30,36,42" in levels["off-chip memory"] and "tile_0_1@1" in levels["on-chip memory"]
 
 
 def _onnx(path: Path, nodes: list[onnx.NodeProto], inputs: dict[str, list[int]], output: str, shape: list[int]) -> str:

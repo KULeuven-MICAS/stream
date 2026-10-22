@@ -4,39 +4,74 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from stream.parser.core_validator import OFF_DIE_KINDS
+
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
 
 
 class Memory:
-    """A physical memory, seen by each of its cores as one of that core's top-level memory instances: ``views`` pairs
-    each core with the instance's name in it. Every core reads and writes it directly through its own view, with its
-    own ports into it; none of them owns it. Data in it moves between them in place, links and buses connect memories,
-    and its capacity bounds what all its cores hold together. ``offchip`` for the memory outside the chip, which data
-    never passes through on its way between two others."""
+    """A physical memory, which no core owns: ``views`` pairs each core using it with the top-level instance that core
+    sees it as, in declaration order. ``offchip`` where its cores sit off the die (:data:`OFF_DIE_KINDS`)."""
 
-    def __init__(self, name: str, views: tuple[tuple[Core, str], ...], offchip: bool = False) -> None:
+    def __init__(self, name: str, views: tuple[tuple[Core, str], ...]) -> None:
         if not views:
             raise ValueError(f"memory {name} has no views")
-        capacities = {f"{core.id}.{instance}": core.top_memory_capacity(instance) for core, instance in views}
-        if len(set(capacities.values())) != 1:
-            raise ValueError(
-                f"memory {name}: its views declare different capacities {capacities}; they are one memory, so they "
-                "must agree"
-            )
+        capacities = {core.top_memory_capacity(instance) for core, instance in views}
+        assert len(capacities) == 1, f"memory {name}: its views declare different capacities (the validator checks)"
+        if len(banks := {core.banks for core, _ in views}) != 1:
+            raise ValueError(f"memory {name}: its views declare different banks {banks}")
         self.name = name
-        self.views = tuple(sorted(views, key=lambda view: view[0].id))
-        self.offchip = offchip
-        (self.capacity_bits,) = set(capacities.values())
+        self.views = views
+        (self.capacity_bits,) = capacities
+        (self.banks,) = banks
+        self.offchip = self.kind in OFF_DIE_KINDS
 
     @property
     def cores(self) -> tuple[Core, ...]:
-        """The cores that see this memory, by id."""
         return tuple(core for core, _ in self.views)
 
+    @property
+    def core(self) -> Core:
+        """The one core it is a view of, as an AIE tile's memory is; raises for a memory several cores share."""
+        if len(cores := self.cores) != 1:
+            raise ValueError(f"memory {self.name} is shared by {len(cores)} cores")
+        return cores[0]
+
+    @property
+    def kind(self) -> str:
+        """``compute`` for a memory a core computes out of, else its cores' one kind (``memory``, ``shim``,
+        ``offchip``)."""
+        kinds = {core.kind for core in self.cores}
+        if "compute" in kinds:
+            return "compute"
+        if len(kinds) != 1:
+            raise ValueError(f"memory {self.name} is seen by cores of kinds {sorted(kinds)}")
+        (kind,) = kinds
+        return kind
+
+    @property
+    def namespace(self) -> str:
+        """Its cores' one namespace."""
+        if len(namespaces := {core.namespace for core in self.cores}) != 1:
+            raise ValueError(f"memory {self.name} is seen by cores of namespaces {sorted(namespaces)}")
+        (namespace,) = namespaces
+        return namespace
+
+    @property
+    def col_id(self) -> int | None:
+        """The column its cores sit in, None where they declare none."""
+        if len(columns := {core.col_id for core in self.cores}) != 1:
+            raise ValueError(f"memory {self.name} spans columns {sorted(columns, key=str)}")
+        (column,) = columns
+        return column
+
     def instance(self, core: Core) -> str:
-        """The name ``core`` gives this memory: its view's top-level instance."""
-        return next(instance for viewer, instance in self.views if viewer is core)
+        """The top-level instance ``core`` sees this memory as."""
+        for viewer, instance in self.views:
+            if viewer is core:
+                return instance
+        raise ValueError(f"{core} is no view of memory {self.name}")
 
     def __lt__(self, other: Memory) -> bool:
         return self.name < other.name

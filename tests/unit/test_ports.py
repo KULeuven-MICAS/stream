@@ -115,7 +115,7 @@ def test_port_keys_naming_no_top_level_port_are_rejected_at_parse_time(key: Any)
 
 def test_aie2_port_keys_are_rejected_at_parse_time():
     data = open_yaml(AIE2)
-    data["bandwidth"] = {"tile_0_0.port": MEASURED}
+    data["bandwidth"] = {"dram.port": MEASURED}
     validator = AcceleratorValidator(data, AIE2)
     assert validator.validate()
     with pytest.raises(ValueError, match="model no memory ports"):

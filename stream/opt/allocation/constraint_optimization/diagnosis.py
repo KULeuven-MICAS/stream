@@ -8,10 +8,11 @@ import logging
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeAlias
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.ir.infeasibility import (
     ConstraintTermIR,
     ImplicatedResourceIR,
@@ -24,11 +25,13 @@ from stream.ir.infeasibility import (
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 
 if TYPE_CHECKING:
-    from stream.mapping.mapping import Resource
     from stream.opt.allocation.constraint_optimization.formulation import ResourceLedger
     from stream.opt.solver import SolverModel
 
 _logger = logging.getLogger(__name__)
+
+HardwareResource: TypeAlias = Core | Memory | CommunicationLink
+"""What a constraint binds or is attributed to."""
 
 
 @dataclass(frozen=True)
@@ -59,7 +62,7 @@ class ConstraintTag(NamedTuple):
     """What one constraint stands for: the ``resource`` it binds or is attributed to, the hardware limit ``kind``
     it is part of, the tensor ``subject`` whose demand on the resource it carries, or the ``rule`` it enforces."""
 
-    resource: Resource | None = None
+    resource: HardwareResource | None = None
     kind: ResourceKind | None = None
     subject: str | None = None
     rule: StructuralRule | None = None
@@ -130,7 +133,7 @@ def infeasibility_report(
     conflicts = _structural_conflicts(ledger, structural_names)
 
     quantified = next((r for r in resources if r.unmet is not None), None)
-    involved_cores = ", ".join(r.resource.label for r in resources if r.resource.kind in ("core", "memory"))
+    involved = ", ".join(r.resource.label for r in resources if r.resource.kind in ("core", "memory"))
     if quantified is not None and quantified.unmet is not None:
         nature = "capacity"
         summary = f"Infeasible mapping — {quantified.resource.label}: {quantified.unmet.statement}"
@@ -138,15 +141,15 @@ def infeasibility_report(
         nature = "structural"
         lead = conflicts[0]
         summary = f"Infeasible mapping — structural conflict: {lead.title.lower()}. {lead.explanation}" + (
-            f" Involves {involved_cores}." if involved_cores else ""
+            f" Involves {involved}." if involved else ""
         )
     elif resources:
         nature = "unknown"
-        summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved_cores}" if involved_cores else "")
+        summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved}" if involved else "")
     elif not iis_available:
         nature = "unknown"
         summary = (
-            f"Infeasible mapping ({status}); no single per-core capacity is over its recorded budget, "
+            f"Infeasible mapping ({status}); no single core or memory limit is over its recorded budget, "
             f"so the conflict is structural (e.g. transfer routing). The {stats.backend} backend cannot "
             "compute an IIS -- re-run with the Gurobi backend for the minimal conflict set."
         )
@@ -185,12 +188,10 @@ def _structural_conflicts(ledger: ResourceLedger, names: list[str]) -> list[Stru
     return list(buckets.values())
 
 
-def resource_ref(resource: Resource) -> ResourceRefIR:
+def resource_ref(resource: HardwareResource) -> ResourceRefIR:
     """A physical resource as the IR the architecture view highlights."""
     if isinstance(resource, Core):
         detail = {"core_type": str(resource.core_type)}
-        with suppress(AssertionError):
-            detail["memory_capacity_bits"] = str(resource.get_memory_capacity())
         return ResourceRefIR(kind="core", id=str(resource.id), label=_label(resource), detail=detail)
     if isinstance(resource, Memory):
         detail = {"cores": ",".join(str(c.id) for c in resource.cores), "capacity_bits": str(resource.capacity_bits)}
@@ -259,7 +260,7 @@ def _unmet(
         return None
     demand = sum(_term_value(v) for v in forced.values())
     gap = demand - bound
-    core = _label(resource)
+    named = _label(resource)
     terms = []
     for label, info in sorted(forced.items(), key=lambda kv: -_term_value(kv[1])):
         dims, dtype = _term_meta(info)
@@ -275,20 +276,20 @@ def _unmet(
     return UnmetConstraintIR(
         family=kind.name,
         statement=(
-            f"{kind.demand_label} {core} need {_fmt_qty(demand, kind.unit)}, but the "
-            f"{kind.bound_label} {core} is {_fmt_qty(bound, kind.unit)} (short by {_fmt_qty(gap, kind.unit)})"
+            f"{kind.demand_label} {named} need {_fmt_qty(demand, kind.unit)}, but the "
+            f"{kind.bound_label} {named} is {_fmt_qty(bound, kind.unit)} (short by {_fmt_qty(gap, kind.unit)})"
         ),
-        demand_label=f"{kind.demand_label} {core}",
+        demand_label=f"{kind.demand_label} {named}",
         demand_value=demand,
         demand_input=kind.demand_input,
-        bound_label=f"{kind.bound_label} {core}",
+        bound_label=f"{kind.bound_label} {named}",
         bound_value=bound,
         bound_input=kind.bound_input,
         operator="<=",
         gap=gap,
         unit=kind.unit,
         terms=terms,
-        levers=[lever.format(core=core) for lever in kind.levers],
+        levers=[lever.format(resource=named) for lever in kind.levers],
     )
 
 

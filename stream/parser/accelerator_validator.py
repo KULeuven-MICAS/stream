@@ -101,6 +101,7 @@ class AcceleratorValidator:
         "bandwidth": {
             "type": "dict",
             "required": False,
+            "default": {},
             "keysrules": {
                 "anyof": [
                     {"type": "string", "regex": PORT_REF_REGEX},
@@ -109,7 +110,7 @@ class AcceleratorValidator:
             },
         },
         # The physical memories, by name, each with its views: the top-level memory instance of each core that uses it,
-        # as "<core id>.<instance>". No core owns one, and every core uses exactly one.
+        # as "<core id>.<instance>". No core owns one; a core views one memory per top-level instance.
         "memories": {
             "type": "dict",
             "required": True,
@@ -382,32 +383,25 @@ class AcceleratorValidator:
         return core_data
 
     def validate_connections(self):
-        """Each connection joins known memories, a link two different ones, and every memory has one: a memory no
-        connection reaches holds nothing a transfer can bring."""
+        """Each connection joins known memories, a link exactly two, none a memory to itself, and every memory has one:
+        a memory no connection reaches holds nothing a transfer can bring. A connection without its own unit energy
+        cost takes the accelerator's."""
         connections = self.data["connections"]
         for idx, conn in enumerate(connections):
-            bw = conn["bandwidth"]
-            ue = conn.get("unit_energy_cost", self.data.get("unit_energy_cost", 0))
-
-            # basic semantic checks (most syntactic ones are done by Cerberus)
             memories = tuple(conn["memories"])
             if unknown := [m for m in memories if m not in self.data["memories"]]:
                 self.invalidate(f"`connections[{idx}].memories` names unknown memories {unknown}.")
-                continue
+            if conn["type"] == "link" and len(memories) != 2:  # noqa: PLR2004
+                self.invalidate(f"`connections[{idx}]` is a link, which joins exactly two memories, not {memories}.")
             if len(set(memories)) != len(memories):
                 self.invalidate(
                     f"`connections[{idx}]` joins a memory to itself ({list(memories)}): cores sharing a "
                     f"memory move data between them in place, not over a connection."
                 )
-            if bw <= 0:
+            if conn["bandwidth"] <= 0:
                 self.invalidate(f"`connections[{idx}].bandwidth` must be > 0.")
-            if ue < 0:
-                self.invalidate(f"`connections[{idx}].unit_energy_cost` must be ≥ 0.")
-
-            # normalise: store the memories joined as an immutable tuple & fill in defaults
             conn["memories"] = memories
-            conn.setdefault("type", "link")
-            conn.setdefault("unit_energy_cost", self.data.get("unit_energy_cost", 0))
+            conn.setdefault("unit_energy_cost", self.data["unit_energy_cost"])
         connected = {name for conn in connections for name in conn["memories"]}
         if unreached := [name for name in self.data["memories"] if name not in connected]:
             self.invalidate(f"memories {unreached} have no connection: nothing can reach them.")
@@ -415,10 +409,10 @@ class AcceleratorValidator:
     def validate_bandwidth(self) -> None:
         """Every ``bandwidth:`` key names an existing memory, or a port of one without a measured model; the
         accelerator factory checks that a port key names a modelled port."""
-        keys = self.data.get("bandwidth", {})
+        keys = self.data["bandwidth"]
         for key, model in keys.items():
             self._validate_bandwidth_model(key, model)
-        for key in (key for key in keys if isinstance(key, str)):  # the schema rejects any other key
+        for key in keys:
             memory = parse_port_ref(key).memory if re.match(PORT_REF_REGEX, key) else key
             if memory not in self.data["memories"]:
                 self.invalidate(f"`bandwidth.{key}` names unknown memory {memory}.")
@@ -441,29 +435,40 @@ class AcceleratorValidator:
             self.invalidate(f"`bandwidth.{key}.burst` must be a positive whole number of bytes.")
 
     def validate_memories(self):
-        """Every view names a core and an instance that core declares, and every core is a view of exactly one memory;
-        normalised to (core id, instance) pairs. Whether the instance is a top level of its core is the factory's to
-        check: the backend knows the hierarchy."""
+        """Every view names a core and an instance that core declares, no instance is a view of two memories, the views
+        of a memory agree on its size, and every core sees a memory; normalised to (core id, instance) pairs. That the
+        views are the core's top levels, all of them, is the factory's to check: the backend knows the hierarchy."""
         views: dict[int, list[str]] = {core_id: [] for core_id in self.data["cores"]}
+        bound: dict[tuple[int, str], str] = {}
         for name, entries in self.data["memories"].items():
             parsed = [parse_memory_view(entry) for entry in entries]
+            sizes: dict[str, int] = {}
             for core_id, instance in parsed:
                 if core_id not in self.data["cores"]:
                     self.invalidate(f"`memories.{name}` has a view of unknown core {core_id}.")
                     continue
                 views[core_id].append(name)
+                if (other := bound.get((core_id, instance))) is not None:
+                    self.invalidate(f"`{core_id}.{instance}` is a view of both {other} and {name}.")
+                bound[(core_id, instance)] = name
                 core_data = self.data["cores"][core_id]
                 if not isinstance(core_data, dict):
                     continue  # the core failed to load; that error is recorded already
-                declared = set(core_data.get("memories") or {}) | ({"memory"} if "memory" in core_data else set())
+                declared = {"memory": core_data["memory"]} if "memory" in core_data else core_data["memories"]
                 if instance not in declared:
                     self.invalidate(
                         f"`memories.{name}`: core {core_id} declares no memory `{instance}`. Known: {sorted(declared)}."
                     )
+                    continue
+                size = declared[instance].get("capacity" if "memory" in core_data else "size")
+                if size is not None:  # a core missing it failed its own validation already
+                    sizes[f"{core_id}.{instance}"] = size
+            if len(set(sizes.values())) > 1:
+                self.invalidate(f"`memories.{name}`: its views are one memory but declare different sizes {sizes}.")
             self.data["memories"][name] = tuple(parsed)
         for core_id, names in views.items():
-            if len(names) != 1:
-                self.invalidate(f"core {core_id} must be a view of exactly one memory, not {names}.")
+            if not names:
+                self.invalidate(f"core {core_id} is a view of no memory.")
 
     @property
     def normalized_data(self) -> dict[str, Any]:

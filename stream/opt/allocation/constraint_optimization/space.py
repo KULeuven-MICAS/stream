@@ -12,9 +12,11 @@ import numpy as np
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.hardware.ports import OUTPUT, READ, input_role
 from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.mapping.mapping import placements_of, role_of
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
@@ -26,12 +28,12 @@ from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge,
 if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.cost_model.layout import Rate
-    from stream.hardware.architecture.memory import Memory
     from stream.hardware.ports import Port
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
 
-Placement: TypeAlias = tuple[Core, ...]
+Placement: TypeAlias = tuple[Memory, ...]
+"""The memory a tensor sits in at each position of its node; cores sharing a memory repeat it."""
 Choice: TypeAlias = tuple[TransferNode, MulticastPathPlan]
 
 
@@ -45,7 +47,6 @@ class DecisionSpace:
         self.slot_of = problem.timeslots
         self.accelerator = problem.accelerator
         self.hardware = problem.hardware
-        self.offchip_core_id = self.hardware.offchip_core_id
         self.shared_bandwidth: dict[Memory, BandwidthModel] = dict(self.accelerator.bandwidth)
         self.iterations = problem.iterations
         self.ssis = problem.ssis
@@ -53,7 +54,7 @@ class DecisionSpace:
         self.cost_lut = problem.cost_lut
         self.max_slot = max(self.slot_of.values()) if self.slot_of else 0
         self.big_m = len(self.workload.nodes()) + 5
-        self.mem_cores = list(self.hardware.mem_cores)
+        self.mem_memories = list(self.hardware.mem_memories)
         self.ssc_nodes: tuple[ComputationNode, ...] = tuple(self.workload.get_computation_nodes())
         self.transfer_nodes: tuple[TransferNode, ...] = tuple(self.workload.get_transfer_nodes())
 
@@ -63,10 +64,11 @@ class DecisionSpace:
         self.path_choices: dict[TransferNode, tuple[MulticastPathPlan, ...]] = {}
         self._init_option_sets()
         self._fixed = frozenset(self.tensor_fixed)
-        self._candidates: dict[Tensor, set[Core]] = {}
+        self._candidates: dict[Tensor, set[Memory]] = {}
         self._broadcast: dict[TransferNode, bool] = {}
         self._one_memory: dict[TransferNode, bool] = {}
         self._overlaps: dict[TransferNode, dict[tuple[int, int], int]] = {}
+        self._compute_cores: dict[TransferNode, frozenset[Core]] = {}
 
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
@@ -78,8 +80,8 @@ class DecisionSpace:
 
         self.link_set: set[CommunicationLink] = set()
         self.links_in_choice: dict[Choice, set[CommunicationLink]] = {}
-        self.choice_src_cores: dict[Choice, set[Core]] = {}
-        self.choice_dst_cores: dict[Choice, set[Core]] = {}
+        self.choice_src_memories: dict[Choice, set[Memory]] = {}
+        self.choice_dst_memories: dict[Choice, set[Memory]] = {}
         self.choice_has_empty_path: dict[Choice, bool] = {}
         self._index_choice_metadata()
 
@@ -93,14 +95,15 @@ class DecisionSpace:
             for tensor in (*node.outputs, *carried):
                 if tensor in self.tensor_choices:
                     continue
+                raw = self.placements(node, tensor)
                 try:
-                    normalized = _normalize_tensor_choices(self.core_allocation(node))
+                    normalized = _normalize_tensor_choices(raw)
                     if isinstance(node, TransferNode):
                         normalized = self._reader_placements(node, tensor, normalized)
                 except ValueError as exc:
                     raise InfeasibleAllocationError(
                         structural_infeasibility(
-                            f"node '{getattr(node, 'name', node)}' has no core it can be placed on"
+                            f"node '{getattr(node, 'name', node)}' has no memory it can hold {tensor.name} in"
                         )
                     ) from exc
                 self.tensor_choices[tensor] = normalized
@@ -151,8 +154,8 @@ class DecisionSpace:
                 key = (tr, choice)
                 self.links_in_choice[key] = set() if self.in_one_memory(choice) else set(choice.links_used)
                 self.link_set.update(self.links_in_choice[key])
-                self.choice_src_cores[key] = set(choice.sources)
-                self.choice_dst_cores[key] = set(choice.targets)
+                self.choice_src_memories[key] = set(choice.sources)
+                self.choice_dst_memories[key] = set(choice.targets)
                 self.choice_has_empty_path[key] = not choice.links_used and not self.in_one_memory(choice)
 
     def is_fixed(self, t: Tensor) -> bool:
@@ -163,11 +166,11 @@ class DecisionSpace:
         assert len(choices) == 1, f"Tensor {t.name} is not fixed."
         return choices[0]
 
-    def candidate_cores(self, t: Tensor) -> set[Core]:
-        """Every core one of ``t``'s placements uses; the set is shared, so callers do not change it."""
-        if (cores := self._candidates.get(t)) is None:
-            cores = self._candidates[t] = {core for choice in self.tensor_choices[t] for core in choice}
-        return cores
+    def candidate_memories(self, t: Tensor) -> set[Memory]:
+        """Every memory one of ``t``'s placements uses; the set is shared, so callers do not change it."""
+        if (memories := self._candidates.get(t)) is None:
+            memories = self._candidates[t] = {memory for choice in self.tensor_choices[t] for memory in choice}
+        return memories
 
     def runtime(self, n: ComputationNode) -> int:
         """Cycles ``n`` takes on the slowest core it may run on, before its active fraction."""
@@ -183,22 +186,36 @@ class DecisionSpace:
         return range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
 
     def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
-        """A transfer's copy lives on the cores of the computation node it reaches, not on every target of the
-        transfer; a copy for another transfer or an edge keeps the transfer's placements."""
+        """A transfer's copy lives in the memories the computation node it reaches reads it in, not in every target
+        of the transfer; a copy for another transfer or an edge keeps the transfer's placements."""
         reader = next(n for n in self.workload.successors(tr) if t in n.inputs)
         if not isinstance(reader, ComputationNode):
             return choices
-        cores = {core for choice in _normalize_tensor_choices(self.core_allocation(reader)) for core in choice}
-        narrowed = (tuple(core for core in choice if core in cores) for choice in choices)
-        return tuple(dict.fromkeys(choice for choice in narrowed if choice)) or choices
+        memories = {memory for choice in self.placements(reader, t) for memory in choice}
+        narrowed = (tuple(memory for memory in choice if memory in memories) for choice in choices)
+        if not (kept := tuple(dict.fromkeys(choice for choice in narrowed if choice))):
+            raise ValueError(f"{tr.name} lands {t.name} in none of the memories {reader.name} reads it in")
+        return kept
 
-    def core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
-        if isinstance(node, InEdge | OutEdge):
-            assert self.offchip_core_id is not None
-            return ((self.accelerator.get_core(self.offchip_core_id),),)
-        if isinstance(node, TransferNode):
-            return self.mapping.get(node).memory_allocation
-        return self.mapping.get(node).resource_allocation
+    def placements(self, node: Node, tensor: Tensor) -> tuple[Placement, ...]:
+        """The memories ``node`` may hold or read ``tensor`` in, see :func:`placements_of`."""
+        role = role_of(node, tensor) if isinstance(node, ComputationNode) else OUTPUT
+        return placements_of(self.accelerator, self.mapping, node, role)
+
+    def cores(self, node: ComputationNode) -> tuple[Core, ...]:
+        """The cores ``node`` runs on."""
+        (cores,) = self.mapping.get(node).resource_allocation
+        return cores
+
+    def compute_cores(self, tr: TransferNode) -> frozenset[Core]:
+        """The cores at ``tr``'s positions: those of the computation producing its tensor and of the computations
+        reading its copies straight from it; a staged or off-chip side sits on no core."""
+        if (found := self._compute_cores.get(tr)) is None:
+            nodes = (*self.workload.predecessors(tr), *self.workload.successors(tr))
+            found = self._compute_cores[tr] = frozenset(
+                core for node in nodes if isinstance(node, ComputationNode) for core in self.cores(node)
+            )
+        return found
 
     @cached_property
     def sole_outputs(self) -> set[Tensor]:
@@ -224,8 +241,8 @@ class DecisionSpace:
         return max(tiles, 2) if self.rotation_levels.get((t, stop)) and not single else tiles
 
     def memory_capacity_bits(self, memory: Memory) -> int:
-        """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims on each core using it."""
-        return memory.capacity_bits - sum(self.hardware.reserved_memory_bits(c) for c in memory.cores)
+        """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims in it."""
+        return memory.capacity_bits - self.hardware.reserved_memory_bits(memory)
 
     def is_const_i(self, tr: TransferNode) -> bool:
         return is_const_input(self.workload, tr)
@@ -255,9 +272,9 @@ class DecisionSpace:
 
     def direction(self, memory: Memory, path: MulticastPathPlan) -> str | None:
         """'read' for a transfer out of this memory, 'write' for one into it, None for one it takes no part in."""
-        if any(self.accelerator.memory_of(c) == memory for c in path.sources):
+        if memory in path.sources:
             return "read"
-        if any(self.accelerator.memory_of(c) == memory for c in path.targets):
+        if memory in path.targets:
             return "write"
         return None
 
@@ -274,24 +291,23 @@ class DecisionSpace:
         """The layout of every tensor copy, and the contiguous runs each transfer moves them in."""
         return CopyLayouts(self)
 
-    def side_rate(self, tr: TransferNode, core: Core, direction: str) -> Rate:
-        """Bits per cycle ``core`` moves one side of ``tr`` at per contiguous run length: its measured shared
+    def side_rate(self, tr: TransferNode, memory: Memory, direction: str) -> Rate:
+        """Bits per cycle ``memory`` moves one side of ``tr`` at per contiguous run length: its measured shared
         bandwidth, else that of the port the transfer's operand passes, else unbounded."""
-        model = self.side_bandwidth(tr, core, direction)
+        model = self.side_bandwidth(tr, memory, direction)
         if model is None:
             return lambda span: float("inf")
         return lambda span: model.contiguous * model.efficiency(span, direction)
 
-    def side_port(self, tr: TransferNode, core: Core, direction: str) -> Port | None:
-        """The port of ``core``'s top memory the operand of ``tr`` passes in ``direction``, None where none is."""
-        return self.accelerator.ports.port_for(core, direction, self.operand_role(tr, read_side=direction == READ))
+    def side_port(self, tr: TransferNode, memory: Memory, direction: str) -> Port | None:
+        """The port of ``memory`` the operand of ``tr`` passes in ``direction``, None where none is."""
+        return self.accelerator.ports.memory_port(memory, direction, self.operand_role(tr, read_side=direction == READ))
 
-    def side_bandwidth(self, tr: TransferNode, core: Core, direction: str) -> BandwidthModel | None:
-        """What bounds ``core``'s side of ``tr``: its memory's measured shared bandwidth, else its port's, else
-        nothing."""
-        if (model := self.shared_bandwidth.get(self.accelerator.memory_of(core))) is not None:
+    def side_bandwidth(self, tr: TransferNode, memory: Memory, direction: str) -> BandwidthModel | None:
+        """What bounds ``memory``'s side of ``tr``: its measured shared bandwidth, else its port's, else nothing."""
+        if (model := self.shared_bandwidth.get(memory)) is not None:
             return model
-        port = self.side_port(tr, core, direction)
+        port = self.side_port(tr, memory, direction)
         return port.bandwidth if port is not None else None
 
     def operand_role(self, tr: TransferNode, read_side: bool) -> str:
@@ -314,7 +330,7 @@ class DecisionSpace:
         return float(sum(link.bandwidth for link in self.link_set if link.receiver == off or off in link.members))
 
     def placement_width(self, tensors: Iterable[Tensor]) -> int:
-        """How many cores one side of a transfer occupies."""
+        """How many positions one side of a transfer occupies."""
         return max((len(choice) for t in tensors for choice in self.tensor_choices[t]), default=1)
 
     def distinct_slice_width(self, tensors: Iterable[Tensor]) -> int:
@@ -337,10 +353,10 @@ class DecisionSpace:
             broadcast = self._broadcast[tr] = self.distinct_slice_width(tensors) < self.placement_width(tensors)
         return broadcast
 
-    def transfer_shares_memory(self, tr: TransferNode, core: Core, incoming: bool) -> bool:
-        """Whether this core is served this transfer out of memory it already shares: the object-fifo lowering keeps
-        a single-consumer fifo off the DMA, and Stream routes core to core only where the layouts agree, so what is
-        left to check is whether the cores this one hands to, or takes from, are its neighbours."""
+    def transfer_shares_memory(self, tr: TransferNode, memory: Memory, incoming: bool) -> bool:
+        """Whether this memory is served this transfer out of memory it already shares: the object-fifo lowering
+        keeps a single-consumer fifo off the DMA, and Stream routes core to core only where the layouts agree, so what
+        is left to check is whether the memories this one hands to, or takes from, are its neighbours."""
         if self.within_one_memory(tr):
             return True
         choices = self.path_choices.get(tr) or ()
@@ -349,7 +365,7 @@ class DecisionSpace:
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
             return False
         for choice in choices:
-            touching = [(a, b) for a, b in self.pairs(tr, choice) if (b if incoming else a) == core]
+            touching = [(a, b) for a, b in self.pairs(tr, choice) if (b if incoming else a) is memory]
             if not touching:
                 return False
             if any(not self.hardware.shares_memory(one, other) for one, other in touching):
@@ -374,26 +390,27 @@ class DecisionSpace:
         return found
 
     def moved_bits(
-        self, tr: TransferNode, choice: MulticastPathPlan, source: Core | None = None, target: Core | None = None
+        self, tr: TransferNode, choice: MulticastPathPlan, source_at: int | None = None, target_at: int | None = None
     ) -> float:
-        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of ``source`` or into ``target``: what
-        sources hand targets they share no memory with where windows overlap neighbouring tiles, else its tensor (a
-        source's even share, a target's tile) less the halo a sliding loop keeps resident."""
+        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of the source at position ``source_at``
+        or into the target at position ``target_at`` (a position, not a memory: cores sharing a memory hold it at
+        several): what sources hand targets they share no memory with where windows overlap neighbouring tiles, else
+        its tensor (a source's even share, a target's tile) less the halo a sliding loop keeps resident."""
         tensor, out = tr.inputs[0], tr.outputs[0]
         if overlaps := self.overlaps(tr):
             moved = sum(
                 n
                 for (i, j), n in overlaps.items()
-                if not self.hardware.shares_memory(a := choice.sources[i], b := choice.targets[j])
-                and source in (None, a)
-                and target in (None, b)
+                if not self.hardware.shares_memory(choice.sources[i], choice.targets[j])
+                and source_at in (None, i)
+                and target_at in (None, j)
             )
             return moved * tensor.operand_type.bitwidth
-        sources = len(choice.sources) if source is not None else 1
-        if not (sliding := self.workload.sliding_halo(out, tr, self.mapping, self.ssis.get(out))) and target is None:
+        sources = len(choice.sources) if source_at is not None else 1
+        if not (sliding := self.workload.sliding_halo(out, tr, self.mapping, self.ssis.get(out))) and target_at is None:
             return tensor.size_bits() / sources
         tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis.get(out))
-        if target is not None:
+        if target_at is not None:
             return tile.size_bits()
         return (
             tensor.size_bits()
@@ -411,7 +428,7 @@ class DecisionSpace:
             return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
         return self.moved_bits(tr, self.path_choices[tr][0])
 
-    def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
+    def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Memory, Memory], ...]:
         """The sources and targets of ``choice`` that hand ``tr``'s data to each other: those its route pairs up."""
         if choice.pairs:
             return tuple((choice.sources[i], choice.targets[j]) for i, j in choice.pairs)
@@ -429,11 +446,10 @@ class DecisionSpace:
 
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
         """Whether each source of this choice hands its targets data already in their memory, so none of it moves:
-        every pair its route makes shares a memory, or, without pairs, every core of it does."""
-        memory_of = self.accelerator.memory_of
+        every pair its route makes is one memory, or, without pairs, all of it is."""
         if choice.pairs:
-            return all(memory_of(choice.sources[i]) == memory_of(choice.targets[j]) for i, j in choice.pairs)
-        return len({memory_of(c) for c in (*choice.sources, *choice.targets)}) == 1
+            return all(choice.sources[i] is choice.targets[j] for i, j in choice.pairs)
+        return len({*choice.sources, *choice.targets}) == 1
 
     def within_one_memory(self, tr: TransferNode) -> bool:
         """Whether every placement of this transfer stays in one memory."""
@@ -443,11 +459,12 @@ class DecisionSpace:
         return within
 
     @cached_property
-    def handovers(self) -> tuple[tuple[Core, Core, int], ...]:
-        """Cores that pass a kernel's state (such as a running reduction's scale) to the core consuming its output,
-        in a buffer both ends hold, and the bits each holds; which core meets which is the relation the transfer
-        between them uses, read off the mapping's allocation."""
-        found: list[tuple[Core, Core, int]] = []
+    def handovers(self) -> tuple[tuple[Memory, Memory, int], ...]:
+        """Memories in which cores pass a kernel's state (such as a running reduction's scale) to the core consuming
+        its output, in a buffer both ends hold, and the bits each holds: the state's memory on the passing core and the
+        memory the consuming core reads the output in; which core meets which is the relation the transfer between
+        them uses, read off the mapping's allocation."""
+        found: list[tuple[Memory, Memory, int]] = []
         for node in self.ssc_nodes:
             kernel = self.mapping.get(node).kernel
             for state in kernel.state_operands() if kernel else ():
@@ -457,9 +474,10 @@ class DecisionSpace:
                 if held is None:
                     continue
                 bits = self.workload.get_tensor_single_core(held, node, self.mapping).size_bits()
-                sources = self.core_allocation(node)[0]
-                for consumer in self._consumers(node):
-                    pairs = communicating_pairs(sources, self.core_allocation(consumer)[0])
+                (sources,) = self.placements(node, held)
+                for consumer, read in self._reads_of(node):
+                    (targets,) = self.placements(consumer, read)
+                    pairs = communicating_pairs(sources, targets)
                     found += [(one, other, state.handover * bits) for one, other in pairs]
         return tuple(found)
 
@@ -486,20 +504,21 @@ class DecisionSpace:
         """Whether a reader of ``node``'s output waits for its tiles: one on a core ``node`` does not run on, or behind
         a transfer that takes cycles on some route."""
         after = [tr for tr in self.workload.successors(node) if tr in self.path_choices]
-        cores = set(self.core_allocation(node)[0])
+        cores = set(self.cores(node))
         return any(self.transfer_latency_for_path(tr, c) for tr in after for c in self.path_choices[tr]) or any(
-            not cores.issuperset(self.core_allocation(c)[0]) for c in self._consumers(node)
+            not cores.issuperset(self.cores(c)) for c, _ in self._reads_of(node)
         )
 
-    def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
-        """The computation nodes this one's output reaches, across the transfer between them."""
+    def _reads_of(self, node: ComputationNode) -> list[tuple[ComputationNode, Tensor]]:
+        """The computation nodes this one's output reaches, across the transfer between them, each with the tensor
+        it reads it as."""
         reached = []
         for succ in self.workload.successors(node):
-            reached += (
-                [succ]
-                if isinstance(succ, ComputationNode)
-                else [x for x in self.workload.successors(succ) if isinstance(x, ComputationNode)]
-            )
+            if isinstance(succ, ComputationNode):
+                reached.append((succ, next(t for t in succ.inputs if t in node.outputs)))
+            elif isinstance(succ, TransferNode):
+                readers = (x for x in self.workload.successors(succ) if isinstance(x, ComputationNode))
+                reached += [(x, next(t for t in x.inputs if t in succ.outputs)) for x in readers]
         return reached
 
 
@@ -519,11 +538,11 @@ def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
 
 
 def communicating_pairs(
-    src: Sequence[Core], dst: Sequence[Core], overlaps: Mapping[tuple[int, int], int] | None = None
-) -> tuple[tuple[Core, Core], ...]:
-    """Which ``src`` cores hand to which ``dst`` cores: those whose tiles ``overlaps`` the targets' windows, else by
-    spatial index as codegen pairs them, its contract and why overlaps only pair windowed transfers: the target at
-    ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
+    src: Sequence[Memory], dst: Sequence[Memory], overlaps: Mapping[tuple[int, int], int] | None = None
+) -> tuple[tuple[Memory, Memory], ...]:
+    """Which ``src`` positions hand to which ``dst`` positions: those whose tiles ``overlaps`` the targets' windows,
+    else by spatial index as codegen pairs them, its contract and why overlaps only pair windowed transfers: the
+    target at ``j`` is fed by the sources at ``j``, ``j + m``, ..., ``m`` being the narrower side."""
     if not src or not dst:
         return ()
     if overlaps:
@@ -533,20 +552,20 @@ def communicating_pairs(
 
 
 def _normalize_tensor_choices(raw: Any) -> tuple[Placement, ...]:
-    """The placements a node's allocation offers, as a tuple of core tuples."""
+    """The placements a node's allocation offers, as a tuple of memory tuples."""
     if raw is None:
         raise ValueError("Tensor allocation options cannot be None.")
     raw_tuple = tuple(raw)
     if not raw_tuple:
         raise ValueError("Tensor allocation options cannot be empty.")
-    if all(isinstance(x, Core) for x in raw_tuple):
+    if all(isinstance(x, Memory) for x in raw_tuple):
         return (tuple(raw_tuple),)
     out: list[Placement] = []
     for choice in raw_tuple:
         choice_tuple = tuple(choice)
         if not choice_tuple:
             raise ValueError("Empty tensor placement choice encountered.")
-        if not all(isinstance(c, Core) for c in choice_tuple):
+        if not all(isinstance(c, Memory) for c in choice_tuple):
             raise TypeError(f"Invalid tensor placement choice: {choice_tuple}")
         out.append(choice_tuple)
     return tuple(out)

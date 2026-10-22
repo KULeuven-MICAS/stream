@@ -46,9 +46,13 @@ class AIE2CoreBackend:
     # Backend protocol — same interface as ZigZagCoreBackend
     # ------------------------------------------------------------------
 
-    def get_memory_capacity(self) -> int:
-        """Total top-level memory capacity in bits."""
-        return self.memory_capacity_bits
+    def top_instances(self) -> frozenset[str]:
+        """A tile's one memory."""
+        return frozenset({"memory"})
+
+    def top_instance(self, role: str) -> str:
+        """A tile holds every operand in its one memory."""
+        return "memory"
 
     def top_memory_capacity(self, instance: str) -> int:
         """Capacity in bits of the tile memory, the one instance a tile has, ``memory``."""

@@ -13,7 +13,7 @@ from stream.workload.workload import Tensor
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
-    from stream.hardware.architecture.core import Core
+    from stream.hardware.architecture.memory import Memory
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.workload.workload import TransferNode
@@ -44,7 +44,7 @@ class PathChoice:
     provides: ClassVar[tuple[str, ...]] = ()
 
     def build(self, ctx: FormulationContext) -> None:
-        colocated: dict[tuple[Tensor, Tensor, Core], SolverVar] = {}
+        colocated: dict[tuple[Tensor, Tensor, Memory], SolverVar] = {}
         for tr in ctx.space.transfer_nodes:
             choices = ctx.space.path_choices[tr]
             ctx.model.add_constr(
@@ -71,11 +71,11 @@ def _source_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[
     for src_tensor in src_tensors:
         for i, choice in enumerate(choices):
             y = ctx.vars.y[(tr, choice)]
-            for src_core in ctx.space.choice_src_cores[(tr, choice)]:
+            for source in ctx.space.choice_src_memories[(tr, choice)]:
                 ctx.add_constr(
-                    y <= ctx.tensor_on_core_expr(src_tensor, src_core),
-                    name=f"path_src_match_{tr.name}_{src_tensor.name}_{resource_key(src_core)}_choice_{i}",
-                    resource=src_core,
+                    y <= ctx.tensor_in_memory_expr(src_tensor, source),
+                    name=f"path_src_match_{tr.name}_{src_tensor.name}_{resource_key(source)}_choice_{i}",
+                    resource=source,
                 )
 
 
@@ -87,24 +87,24 @@ def destination_coherence(ctx: FormulationContext, tr: TransferNode, choices: tu
         assert isinstance(dst_tensor, Tensor), f"Expected {dst_tensor} to be a Tensor."
         for i, choice in enumerate(choices):
             y = ctx.vars.y[(tr, choice)]
-            for dst_core in space.choice_dst_cores[(tr, choice)] & space.candidate_cores(dst_tensor):
+            for target in space.choice_dst_memories[(tr, choice)] & space.candidate_memories(dst_tensor):
                 ctx.add_constr(
-                    y <= ctx.tensor_on_core_expr(dst_tensor, dst_core),
-                    name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{resource_key(dst_core)}_choice_{i}",
-                    resource=dst_core,
+                    y <= ctx.tensor_in_memory_expr(dst_tensor, target),
+                    name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{resource_key(target)}_choice_{i}",
+                    resource=target,
                 )
         if space.is_fixed(dst_tensor):
             continue
-        for core in space.candidate_cores(dst_tensor):
+        for memory in space.candidate_memories(dst_tensor):
             delivering = [
                 ctx.vars.y[(tr, choice)]._raw
                 for choice in choices
-                if core in space.choice_dst_cores[(tr, choice)] or space.choice_has_empty_path[(tr, choice)]
+                if memory in space.choice_dst_memories[(tr, choice)] or space.choice_has_empty_path[(tr, choice)]
             ]
             ctx.add_constr(
-                ctx.tensor_on_core_expr(dst_tensor, core) <= model.quicksum(delivering),
-                name=f"dst_delivered_{tr.name}_{dst_tensor.name}_{resource_key(core)}",
-                resource=core,
+                ctx.tensor_in_memory_expr(dst_tensor, memory) <= model.quicksum(delivering),
+                name=f"dst_delivered_{tr.name}_{dst_tensor.name}_{resource_key(memory)}",
+                resource=memory,
             )
 
 
@@ -112,9 +112,9 @@ def _empty_path_coherence(
     ctx: FormulationContext,
     tr: TransferNode,
     choices: tuple[MulticastPathPlan, ...],
-    colocated: dict[tuple[Tensor, Tensor, Core], SolverVar],
+    colocated: dict[tuple[Tensor, Tensor, Memory], SolverVar],
 ) -> None:
-    """A route of only empty paths needs its source and destination tensors on a common candidate core."""
+    """A route of only empty paths needs its source and destination tensors in a common candidate memory."""
     if len(tr.inputs) != 1 or len(tr.outputs) == 0:
         return
     space, model = ctx.space, ctx.model
@@ -128,36 +128,36 @@ def _empty_path_coherence(
         y = ctx.vars.y[(tr, choice)]
         for dst_tensor in tr.outputs:
             assert isinstance(dst_tensor, Tensor)
-            common_cores = space.candidate_cores(src_tensor) & space.candidate_cores(dst_tensor)
-            if not common_cores:
+            common = space.candidate_memories(src_tensor) & space.candidate_memories(dst_tensor)
+            if not common:
                 model.add_constr(y == 0, name=f"empty_path_infeasible_{tr.name}_{dst_tensor.name}_choice_{i}")
                 continue
-            coloc_terms = [_same_core_var(ctx, src_tensor, dst_tensor, core, colocated) for core in common_cores]
+            coloc_terms = [_same_memory_var(ctx, src_tensor, dst_tensor, memory, colocated) for memory in common]
             model.add_constr(
                 y <= model.quicksum(t._raw for t in coloc_terms),
                 name=f"empty_path_match_{tr.name}_{dst_tensor.name}_choice_{i}",
             )
 
 
-def _same_core_var(
+def _same_memory_var(
     ctx: FormulationContext,
     src_tensor: Tensor,
     dst_tensor: Tensor,
-    core: Core,
-    colocated: dict[tuple[Tensor, Tensor, Core], SolverVar],
+    memory: Memory,
+    colocated: dict[tuple[Tensor, Tensor, Memory], SolverVar],
 ) -> SolverVar:
-    """A binary that is 1 only where both tensors sit on ``core``."""
-    key = (src_tensor, dst_tensor, core)
+    """A binary that is 1 only where both tensors sit in ``memory``."""
+    key = (src_tensor, dst_tensor, memory)
     if key in colocated:
         return colocated[key]
     model = ctx.model
-    suffix = f"{src_tensor.name}_{dst_tensor.name}_{resource_key(core)}"
+    suffix = f"{src_tensor.name}_{dst_tensor.name}_{resource_key(memory)}"
     v = colocated[key] = model.add_var(vtype=SolverVarType.BINARY, name=f"same_{suffix}")
-    src_occ = ctx.tensor_on_core_expr(src_tensor, core)
-    dst_occ = ctx.tensor_on_core_expr(dst_tensor, core)
-    ctx.add_constr(v <= src_occ, name=f"same_src_ub_{suffix}", resource=core)
-    ctx.add_constr(v <= dst_occ, name=f"same_dst_ub_{suffix}", resource=core)
-    ctx.add_constr(v >= src_occ + dst_occ - 1, name=f"same_lb_{suffix}", resource=core)
+    src_occ = ctx.tensor_in_memory_expr(src_tensor, memory)
+    dst_occ = ctx.tensor_in_memory_expr(dst_tensor, memory)
+    ctx.add_constr(v <= src_occ, name=f"same_src_ub_{suffix}", resource=memory)
+    ctx.add_constr(v <= dst_occ, name=f"same_dst_ub_{suffix}", resource=memory)
+    ctx.add_constr(v >= src_occ + dst_occ - 1, name=f"same_lb_{suffix}", resource=memory)
     return v
 
 

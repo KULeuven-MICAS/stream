@@ -1,4 +1,4 @@
-"""The DMA channels each core's transfers drive in and out."""
+"""The DMA channels each memory's transfers drive in and out."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.workload import Tensor
 
 if TYPE_CHECKING:
-    from stream.hardware.architecture.core import Core
+    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import TransferNode
@@ -23,9 +23,9 @@ DMA_CHANNELS = ResourceKind("dma_channels", "DMA channel limit exceeded")
 
 
 class DmaChannels:
-    """The DMA channels each core's transfers drive in and out, whose peaks an objective level after the off-chip
-    traffic keeps low; a namespace family bounds them. Incoming channels follow the transfer outputs a core holds,
-    outgoing ones the inputs; a fifo carries every slice its core works through, so a core pays its fan, not slices."""
+    """The DMA channels each memory's transfers drive in and out, whose peaks an objective level after the off-chip
+    traffic keeps low; a namespace family bounds them. Incoming channels follow the transfer outputs a memory holds,
+    outgoing ones the inputs; a fifo carries every slice its memory serves, so a memory pays its fan, not slices."""
 
     name: ClassVar[str] = "dma_channels"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -34,38 +34,39 @@ class DmaChannels:
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
         space, model = ctx.space, ctx.model
-        handover_out: dict[Core, int] = defaultdict(int)
-        handover_in: dict[Core, int] = defaultdict(int)
+        handover_out: dict[Memory, int] = defaultdict(int)
+        handover_in: dict[Memory, int] = defaultdict(int)
         for one, other, _ in space.handovers:
             if not space.hardware.shares_memory(one, other):
                 handover_out[one] += 1
                 handover_in[other] += 1
 
-        dma_cores = _dma_candidate_cores(space)
-        core_dma_in: dict[Core, SolverVar] = {}
-        core_dma_out: dict[Core, SolverVar] = {}
-        for core in dma_cores:
-            v_in = model.add_var(vtype=SolverVarType.INTEGER, name=f"coreDmaIn_{resource_key(core)}")
-            v_out = model.add_var(vtype=SolverVarType.INTEGER, name=f"coreDmaOut_{resource_key(core)}")
-            in_expr = model.quicksum(_channels(ctx, tr, core, True) for tr in space.transfer_nodes)
-            out_expr = model.quicksum(_channels(ctx, tr, core, False) for tr in space.transfer_nodes)
-            in_expr = in_expr + handover_in[core]
-            out_expr = out_expr + handover_out[core]
-            ctx.add_constr(v_in == in_expr, name=f"coreDmaInConstr_{resource_key(core)}", resource=core)
-            ctx.add_constr(v_out == out_expr, name=f"coreDmaOutConstr_{resource_key(core)}", resource=core)
-            core_dma_in[core] = v_in
-            core_dma_out[core] = v_out
+        dma_memories = _dma_candidate_memories(space)
+        memory_dma_in: dict[Memory, SolverVar] = {}
+        memory_dma_out: dict[Memory, SolverVar] = {}
+        for memory in dma_memories:
+            v_in = model.add_var(vtype=SolverVarType.INTEGER, name=f"memoryDmaIn_{resource_key(memory)}")
+            v_out = model.add_var(vtype=SolverVarType.INTEGER, name=f"memoryDmaOut_{resource_key(memory)}")
+            in_expr = model.quicksum(_channels(ctx, tr, memory, True) for tr in space.transfer_nodes)
+            out_expr = model.quicksum(_channels(ctx, tr, memory, False) for tr in space.transfer_nodes)
+            in_expr = in_expr + handover_in[memory]
+            out_expr = out_expr + handover_out[memory]
+            ctx.add_constr(v_in == in_expr, name=f"memoryDmaInConstr_{resource_key(memory)}", resource=memory)
+            ctx.add_constr(v_out == out_expr, name=f"memoryDmaOutConstr_{resource_key(memory)}", resource=memory)
+            memory_dma_in[memory] = v_in
+            memory_dma_out[memory] = v_out
 
-        max_in = model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaIn")
-        max_out = model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaOut")
-        for core in dma_cores:
-            ctx.add_constr(max_in >= core_dma_in[core], name=f"maxCoreDmaIn_lb_{resource_key(core)}", resource=core)
-            ctx.add_constr(max_out >= core_dma_out[core], name=f"maxCoreDmaOut_lb_{resource_key(core)}", resource=core)
+        max_in = model.add_var(vtype=SolverVarType.INTEGER, name="maxMemoryDmaIn")
+        max_out = model.add_var(vtype=SolverVarType.INTEGER, name="maxMemoryDmaOut")
+        for memory in dma_memories:
+            key = resource_key(memory)
+            ctx.add_constr(max_in >= memory_dma_in[memory], name=f"maxMemoryDmaIn_lb_{key}", resource=memory)
+            ctx.add_constr(max_out >= memory_dma_out[memory], name=f"maxMemoryDmaOut_lb_{key}", resource=memory)
 
-        for core, usage in core_dma_in.items():
-            q.add("dma_in", usage, index=core)
-        for core, usage in core_dma_out.items():
-            q.add("dma_out", usage, index=core)
+        for memory, usage in memory_dma_in.items():
+            q.add("dma_in", usage, index=memory)
+        for memory, usage in memory_dma_out.items():
+            q.add("dma_out", usage, index=memory)
         q.add("dma_peak_in", max_in._raw)
         q.add("dma_peak_out", max_out._raw)
 
@@ -75,29 +76,29 @@ class DmaChannels:
         return [ObjectiveLevel(expr=peaks, priority=DMA_PEAKS, name="dma_peaks")]
 
 
-def _dma_candidate_cores(space: DecisionSpace) -> set[Core]:
-    """The on-chip cores that may hold a tensor a transfer moves; the off-chip core spends no channel."""
+def _dma_candidate_memories(space: DecisionSpace) -> set[Memory]:
+    """The on-chip memories that may hold a tensor a transfer moves; off-chip memory spends no channel."""
     return {
-        core
+        memory
         for t in space.workload.tensors
         if isinstance(t, Tensor)
-        for core in space.candidate_cores(t)
-        if core.id != space.offchip_core_id
+        for memory in space.candidate_memories(t)
+        if not memory.offchip
     }
 
 
-def _channels(ctx: FormulationContext, tr: TransferNode, core: Core, incoming: bool) -> Any:
-    """The channels one transfer drives on one core: its fan wherever the core holds a tensor it moves, none
-    where the core is served out of memory it shares."""
+def _channels(ctx: FormulationContext, tr: TransferNode, memory: Memory, incoming: bool) -> Any:
+    """The channels one transfer drives on one memory: its fan wherever the memory holds a tensor it moves, none
+    where the memory is served out of memory it shares."""
     space = ctx.space
-    if space.transfer_shares_memory(tr, core, incoming=incoming):
+    if space.transfer_shares_memory(tr, memory, incoming=incoming):
         return 0
-    return _fan(space, tr, incoming) * _side_uses_core_var(ctx, tr, core, incoming)._raw
+    return _fan(space, tr, incoming) * _side_uses_memory_var(ctx, tr, memory, incoming)._raw
 
 
 def _fan(space: DecisionSpace, tr: TransferNode, incoming: bool) -> int:
-    """DMA channels a destination core is fed by (a fifo per source gathering into it), or a source core
-    drives (a fifo per destination it feeds a distinct slice to), or per core it shares no memory with whose tile
+    """DMA channels a destination memory is fed by (a fifo per source gathering into it), or a source memory
+    drives (a fifo per destination it feeds a distinct slice to), or per memory it shares nothing with whose tile
     overlaps a window."""
     if space.overlaps(tr):
         counts = [
@@ -113,18 +114,18 @@ def _fan(space: DecisionSpace, tr: TransferNode, incoming: bool) -> int:
     return max(1, space.distinct_slice_width(unique_tensors(tr.outputs)) // n_src)
 
 
-def _side_uses_core_var(ctx: FormulationContext, tr: TransferNode, core: Core, incoming: bool) -> SolverVar:
-    """Whether any tensor this transfer brings to (or takes from) this core sits on it."""
+def _side_uses_memory_var(ctx: FormulationContext, tr: TransferNode, memory: Memory, incoming: bool) -> SolverVar:
+    """Whether any tensor this transfer brings to (or takes from) this memory sits in it."""
     model = ctx.model
     side = "in" if incoming else "out"
-    name = f"{tr.name}_{resource_key(core)}_{side}"
+    name = f"{tr.name}_{resource_key(memory)}_{side}"
     u = model.add_var(vtype=SolverVarType.BINARY, name=f"us_{name}")
     tensors = unique_tensors(tr.outputs if incoming else tr.inputs)
-    occ_exprs = [ctx.tensor_on_core_expr(t, core) for t in tensors]
+    occ_exprs = [ctx.tensor_in_memory_expr(t, memory) for t in tensors]
     if not occ_exprs:
-        ctx.add_constr(u == 0, name=f"us_zero_{name}", resource=core)
+        ctx.add_constr(u == 0, name=f"us_zero_{name}", resource=memory)
         return u
     for i, occ in enumerate(occ_exprs):
-        ctx.add_constr(u >= occ, name=f"us_lb_{name}_{i}", resource=core)
-    ctx.add_constr(u <= model.quicksum(occ_exprs), name=f"us_ub_{name}", resource=core)
+        ctx.add_constr(u >= occ, name=f"us_lb_{name}_{i}", resource=memory)
+    ctx.add_constr(u <= model.quicksum(occ_exprs), name=f"us_ub_{name}", resource=memory)
     return u

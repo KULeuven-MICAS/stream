@@ -2,10 +2,9 @@
 #
 # 64 MiB per TensorCore (Cloud TPU Ironwood docs; 128 MiB per chip). Tensors are staged into VMEM
 # from the chiplet's HBM and streamed into the arrays from there, and a block's intermediates live
-# here between the MXUs and the VPU. It is the top memory of the TensorCore's two MXUs and its VPU,
-# shared with them (one memory), so its 64 MiB is the TensorCore's one residency limit and its
-# ports, at the vector load/store rate, are what all three read and write through. This core is where
-# the chiplet's HBM, die-to-die and ICI links land. Bits per cycle at 2.2 GHz.
+# here between the MXUs and the VPU. It is the top memory of the TensorCore's two MXUs and its VPU
+# as well (one memory), so its 64 MiB is the TensorCore's one residency limit and its ports, at the
+# vector load/store rate, are what all three read and write through. Bits per cycle at 2.2 GHz.
 #
 # Energies are a 3 nm estimate: about 4 pJ/bit for HBM3E, 0.24 pJ/bit to read the 64 MiB VMEM, 0.05 pJ/bit for a
 # vector register and 0.015 pJ/bit for a PE register, 0.076 pJ per bf16 multiply-accumulate and 0.52 pJ per fp32

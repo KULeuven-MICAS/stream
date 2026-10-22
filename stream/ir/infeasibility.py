@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ResourceRefIR(BaseModel):
     """A physical hardware resource a constraint binds -- the thing to highlight on the architecture view."""
 
-    kind: str = Field(description="Physical resource kind, e.g. 'core' or 'link'")
+    kind: str = Field(description="Physical resource kind: 'core', 'memory' or 'link'")
     id: str = Field(description="Stable id matching the accelerator IR (e.g. a core id as a string)")
     label: str = Field(description="Human label, e.g. 'Core 0'")
     detail: dict[str, str] = Field(default_factory=dict, description="Tooltip facts, e.g. capacity vs. required")
@@ -46,7 +46,7 @@ class UnmetConstraintIR(BaseModel):
 
     family: str = Field(description="Constraint family, e.g. 'memory_capacity'")
     statement: str = Field(description="One-line intuitive inequality with numbers")
-    demand_label: str = Field(description="What is demanded, e.g. 'tensors resident on Core 3'")
+    demand_label: str = Field(description="What is demanded, e.g. 'tensors resident in Memory l1'")
     demand_value: float
     demand_input: str = Field(description="Input(s) that set the demand, e.g. 'workload tensor sizes x mapping tiling'")
     bound_label: str = Field(description="The hardware limit, e.g. 'Core 3 on-chip memory'")

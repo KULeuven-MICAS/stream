@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
 
 # ---------------------------------------------------------------------------
@@ -31,15 +32,22 @@ def make_core(core_id: int, name: str = "") -> Core:
     )
 
 
+def make_memory(name: str) -> Memory:
+    """A bare memory carrying only its name."""
+    memory = Memory.__new__(Memory)
+    memory.name = name
+    return memory
+
+
 def make_multicast_path(sources: list[int], targets: list[int], hops: int) -> MulticastPathPlan:
-    """Create a minimal mock MulticastPathPlan with real Core objects."""
+    """Create a minimal mock MulticastPathPlan between memories ``m<i>``."""
     from unittest.mock import MagicMock
 
     from stream.cost_model.communication_manager import MulticastPathPlan
 
     plan = MagicMock(spec=MulticastPathPlan)
-    plan.sources = tuple(make_core(c) for c in sources)
-    plan.targets = tuple(make_core(c) for c in targets)
+    plan.sources = tuple(make_memory(f"m{c}") for c in sources)
+    plan.targets = tuple(make_memory(f"m{c}") for c in targets)
     plan.total_hops_objective = hops
     # Make isinstance(plan, MulticastPathPlan) work
     plan.__class__ = MulticastPathPlan
@@ -82,7 +90,7 @@ class TestMappingGetIr:
         node_mapping = NodeMapping(
             resource_allocation=((core0, core1),),
             inter_core_tiling=(((k_dim, 2),),),
-            memory_allocation=((core0,),),
+            memory_allocation=((make_memory("m0"),),),
         )
         mapping = Mapping(initial={node: node_mapping})
         result = mapping.get_ir()
@@ -98,9 +106,9 @@ class TestMappingGetIr:
         assert alloc_slot[0] == {"type": "core", "id": 0}
         assert alloc_slot[1] == {"type": "core", "id": 1}
 
-        # memory_allocation: list of lists of core IDs
+        # memory_allocation: list of lists of memory names
         mem_slot = node_ir["memory_allocation"][0]
-        assert mem_slot == [0]
+        assert mem_slot == ["m0"]
 
     def test_mapping_with_fused_groups(self):
         """Test 3: Mapping with FusedGroups returns correct fused_groups list."""
@@ -135,7 +143,7 @@ class TestMappingGetIr:
         node_mapping = NodeMapping(
             resource_allocation=((core0, core1),),
             inter_core_tiling=(((m_dim, 2),),),
-            memory_allocation=((core0,),),
+            memory_allocation=((make_memory("m0"),),),
         )
         mapping = Mapping(
             initial={node: node_mapping},
@@ -167,8 +175,8 @@ class TestMappingGetIr:
         resource_slot = node_ir["resource_allocation"][0]
         path_ir = resource_slot[0]
         assert path_ir["type"] == "path"
-        assert path_ir["sources"] == [0, 1]
-        assert path_ir["targets"] == [2, 3]
+        assert path_ir["sources"] == ["m0", "m1"]
+        assert path_ir["targets"] == ["m2", "m3"]
         assert path_ir["hops"] == 5
 
     def test_mapping_runtime_args_preserved(self):
@@ -188,7 +196,7 @@ class TestAllocationGetIr:
         solution = AllocationSolution(
             tensor_placements={},
             transfer_routes={},
-            memory_cores={},
+            memory_placements={},
             reuse_levels={},
             depths={},
             single_buffered=frozenset(),

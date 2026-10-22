@@ -172,8 +172,8 @@ def _shared_rows(
         bits = sum(b for s, b in streams if space.direction(memory, s.choice) is not None)
         cores = tuple(c.id for c in memory.cores)
         row = _activity_row(ctx, "shared_bandwidth", memory.name, cores, model.ceiling, bits, interval)
-        if ("shared_busy" in q) and memory.name in q.indexed("shared_busy"):
-            busy = ctx.model.value(q.get("shared_busy", memory.name).expr)
+        if ("shared_busy" in q) and memory in q.indexed("shared_busy"):
+            busy = ctx.model.value(q.get("shared_busy", memory).expr)
             row |= {
                 "real_cycle": busy,
                 "stall_or_slack": busy - interval,

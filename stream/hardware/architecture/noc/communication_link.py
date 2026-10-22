@@ -1,82 +1,54 @@
-from typing import TYPE_CHECKING, Literal
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.memory import Memory
 
 
-def get_bidirectional_edges(
-    memory_a: "Memory",
-    memory_b: "Memory",
-    bandwidth: float,
-    unit_energy_cost: float,
-    link_type: Literal["bus"] | Literal["link"],
-    bus_instance: "CommunicationLink | None" = None,
-    parallel: int = 0,
-) -> list[tuple["Memory", "Memory", dict[str, "CommunicationLink"]]]:
-    """Create a list with two edges: from A to B and B to A, the ``parallel``-th link between them."""
-    bus = bus_instance or CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bidirectional=True)
-    link_a_to_b = CommunicationLink(memory_a, memory_b, bandwidth, unit_energy_cost, parallel=parallel)
-    link_b_to_a = CommunicationLink(memory_b, memory_a, bandwidth, unit_energy_cost, parallel=parallel)
-
-    return [
-        #  A -> B
-        (
-            memory_a,
-            memory_b,
-            {"cl": bus if link_type == "bus" else link_a_to_b},
-        ),
-        # B -> A
-        (
-            memory_b,
-            memory_a,
-            {"cl": bus if link_type == "bus" else link_b_to_a},
-        ),
-    ]
-
-
 class CommunicationLink:
-    """A fixed-bandwidth connection moving data between memories: a link from ``sender`` to ``receiver``, or a bus
-    between ``members`` (its ends then "Any"). ``parallel`` tells apart the connections between the same memories,
-    each its own resource."""
+    """A fixed-bandwidth connection between memories: a link carrying data from ``sender`` to ``receiver`` (a declared
+    link is one each way), or a bus its ``members`` share in every direction. ``parallel`` tells apart the connections
+    declared between the same memories, each its own resource. Build one with :meth:`link` or :meth:`bus`."""
 
     def __init__(
         self,
-        sender: "Memory | str",
-        receiver: "Memory | str",
+        sender: Memory | None,
+        receiver: Memory | None,
+        members: tuple[Memory, ...],
         bandwidth: int | float,
         unit_energy_cost: float,
-        bidirectional: bool = False,
-        members: tuple["Memory", ...] = (),
-        parallel: int = 0,
+        parallel: int,
     ) -> None:
         self.sender = sender
         self.receiver = receiver
+        self.members = members
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
-        self.bidirectional = bidirectional  # TODO this property is not in use?
-        self.members = members
         self.parallel = parallel
-        self._hash = hash(
-            (
-                self.sender,
-                self.receiver,
-                self.bandwidth,
-                self.unit_energy_cost,
-                self.bidirectional,
-                self.members,
-                self.parallel,
-            )
-        )
+        self._key = (sender, receiver, members, bandwidth, unit_energy_cost, parallel)
+
+    @classmethod
+    def link(
+        cls, sender: Memory, receiver: Memory, bandwidth: int | float, unit_energy_cost: float, parallel: int
+    ) -> CommunicationLink:
+        return cls(sender, receiver, (), bandwidth, unit_energy_cost, parallel)
+
+    @classmethod
+    def bus(
+        cls, members: tuple[Memory, ...], bandwidth: int | float, unit_energy_cost: float, parallel: int
+    ) -> CommunicationLink:
+        return cls(None, None, members, bandwidth, unit_energy_cost, parallel)
 
     @property
-    def memories(self) -> tuple["Memory", ...]:
-        """The memories the link connects: a bus's members, else its two ends."""
-        return self.members or tuple(end for end in (self.sender, self.receiver) if not isinstance(end, str))
+    def memories(self) -> tuple[Memory, ...]:
+        """The memories the connection joins: a bus's members, else the link's two ends."""
+        return self.members or (self.sender, self.receiver)
 
     @property
-    def cores(self) -> tuple["Core", ...]:
-        """The cores of the memories the link connects."""
+    def cores(self) -> tuple[Core, ...]:
+        """The cores of the memories the connection joins."""
         return tuple(sorted({core for memory in self.memories for core in memory.cores}, key=lambda core: core.id))
 
     def __str__(self) -> str:
@@ -89,21 +61,15 @@ class CommunicationLink:
         return str(self)
 
     def __hash__(self) -> int:
-        return self._hash
+        return hash(self._key)
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, CommunicationLink) and (
-            self.sender,
-            self.receiver,
-            self.bandwidth,
-            self.members,
-            self.parallel,
-        ) == (other.sender, other.receiver, other.bandwidth, other.members, other.parallel)
-
-    def _order(self) -> tuple[str, ...]:
-        return (str(self.sender), str(self.receiver), *(memory.name for memory in self.members), str(self.parallel))
+        return isinstance(other, CommunicationLink) and self._key == other._key
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, CommunicationLink):
             return NotImplemented
         return self._order() < other._order()
+
+    def _order(self) -> tuple[str, ...]:
+        return (*(memory.name for memory in self.memories), str(self.parallel))

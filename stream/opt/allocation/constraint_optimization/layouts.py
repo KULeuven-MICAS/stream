@@ -11,7 +11,6 @@ from stream.workload.workload import ComputationNode, InEdge, OutEdge, Tensor, T
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
-    from stream.hardware.architecture.core import Core
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 
 
@@ -151,7 +150,7 @@ class CopyLayouts:
         return full if off_chip else tuple(copy.shape)
 
     def _rate(self, tr: TransferNode, choice: MulticastPathPlan, direction: str) -> Rate:
-        """The rate of the slowest core on one side of ``choice``."""
-        cores: tuple[Core, ...] = choice.sources if direction == READ else choice.targets
-        sides = [self.space.side_rate(tr, core, direction) for core in cores]
+        """The rate of the slowest memory on one side of ``choice``."""
+        memories = choice.sources if direction == READ else choice.targets
+        sides = [self.space.side_rate(tr, memory, direction) for memory in dict.fromkeys(memories)]
         return lambda span: min((side(span) for side in sides), default=float("inf"))

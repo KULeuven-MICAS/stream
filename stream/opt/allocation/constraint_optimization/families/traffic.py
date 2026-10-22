@@ -54,7 +54,8 @@ def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None)
     route by default): 1 for a broadcast, every target receiving the whole tensor."""
     choice = choice or ctx.space.path_choices[tr][0]
     moved = ctx.space.moved_bits(tr, choice)
-    return sum(ctx.space.moved_bits(tr, choice, target=t) for t in choice.targets) / moved / len(choice.targets)
+    targets = range(len(choice.targets))
+    return sum(ctx.space.moved_bits(tr, choice, target_at=j) for j in targets) / moved / len(targets)
 
 
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
@@ -63,15 +64,15 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortS
     runs = dict(zip((READ, WRITE), ctx.space.layouts.runs(tr, choice), strict=True))
     moved = ctx.space.moved_bits(tr, choice)
     broadcast = _target_share(ctx, tr, choice) == 1.0
-    for cores, direction in ((choice.sources, READ), (choice.targets, WRITE)):
+    for memories, direction in ((choice.sources, READ), (choice.targets, WRITE)):
         operand = ctx.space.operand_role(tr, read_side=direction == READ)
-        for core in cores:
-            side = {"source": core} if direction == READ else {"target": core}
+        for position, memory in enumerate(memories):
+            side = {"source_at": position} if direction == READ else {"target_at": position}
             share = ctx.space.moved_bits(tr, choice, **side) / moved
-            port = ports.port_for(core, direction, operand)
+            port = ports.memory_port(memory, direction, operand)
             if port is None:
                 continue
-            # Targets sharing one memory receive a broadcast once, into it.
+            # Targets in one memory receive a broadcast once, into it.
             broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
             if direction == WRITE and broadcast and broadcast_again:
                 continue

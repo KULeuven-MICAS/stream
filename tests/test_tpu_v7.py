@@ -77,7 +77,7 @@ def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_l
     )
     routes = estimate.context.get("allocation").solution.transfer_routes
     reduction = next(plan for plan in routes.values() if ICI & {str(link) for link in plan.links_used})
-    assert sorted(c.id for c in reduction.targets) == [3, 7, 11, 15]
+    assert sorted(m.name for m in reduction.targets) == ["vmem_0", "vmem_1", "vmem_2", "vmem_3"]
     assert {str(link): round(share, 2) for link, share in reduction.link_shares if str(link) in ICI} == dict.fromkeys(
         ICI, 0.5
     )

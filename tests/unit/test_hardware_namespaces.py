@@ -133,10 +133,10 @@ def test_from_config_maps_the_aie2_reconfiguration():
 def test_compute_tiles_reserve_the_toolchain_stack():
     accelerator = _accelerator(_AIE)
     context = build_hardware_facts(accelerator, 4)
-    compute = next(c for c in accelerator.core_list if c.type == "compute")
-    memory = next(c for c in accelerator.core_list if c.type == "memory")
+    compute = next(m for m in accelerator.memories.values() if m.kind == "compute")
+    memory_tile = next(m for m in accelerator.memories.values() if m.kind == "memory")
     assert context.reserved_memory_bits(compute) == AIE2Namespace.DEFAULT_CORE_STACK_BYTES * 8
-    assert context.reserved_memory_bits(memory) == 0
+    assert context.reserved_memory_bits(memory_tile) == 0
 
 
 def test_an_entry_point_in_the_removed_group_is_ignored_with_a_warning(monkeypatch, caplog):

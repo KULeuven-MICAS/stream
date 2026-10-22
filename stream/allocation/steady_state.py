@@ -61,7 +61,7 @@ def _tensors(allocation: Allocation) -> list[dict[str, Any]]:
             "shape": _shape(t),
             "bits": int(t.size_bits()),
             "loops": _loops(ssis),
-            "placement": [core.id for core in solution.tensor_placements.get(t, ())],
+            "placement": [memory.name for memory in solution.tensor_placements.get(t, ())],
             "reuse_level": solution.reuse_levels.get(t),
             "depth": solution.depths.get(t),
             "single_buffered": t in solution.single_buffered,
@@ -109,7 +109,7 @@ class _NodeDetail:
         return {
             "dims": [str(dim) for dim in self.workload.get_dims(cn)],
             "loops": _loops(self.allocation.ssis.get(cn)),
-            "cores": [core.id for core in self.space.core_allocation(cn)[0]],
+            "cores": [core.id for core in self.space.cores(cn)],
             "tiles": [_shape(tile(cn.outputs[0], cn, self.mapping, p)) for p in range(self._positions(cn))],
             "waited_on": self.space.is_waited_on(cn),
             **self._sliding(cn),
@@ -121,7 +121,7 @@ class _NodeDetail:
         runs, each at its position among that copy's targets modulo the positions, as sources pair with targets."""
         space, solution = self.space, self.allocation.solution
         route, n = solution.transfer_routes[tn], self._positions(tn)
-        held = [(copy, c) for copy in tn.outputs for c in route.targets if c in space.candidate_cores(copy)]
+        held = [(copy, m) for copy in tn.outputs for m in route.targets if m in space.candidate_memories(copy)]
         held += [(tn.outputs[0], c) for c in route.targets if all(c != target for _, target in held)]
         at = [(copy, [other for other, _ in held[:j]].count(copy) % n) for j, (copy, _) in enumerate(held)]
         moved = [
@@ -129,8 +129,8 @@ class _NodeDetail:
             for copy, p in at
         ]
         return {
-            "sources": [c.id for c in route.sources],
-            "targets": [c.id for _, c in held],
+            "sources": [m.name for m in route.sources],
+            "targets": [m.name for _, m in held],
             "links": [link_name(link) for link in route.links_used],
             "windows": [_shape(self.workload.get_tensor_single_core(copy, tn, self.mapping, p)) for copy, p in at],
             "moved": [_shape(tile) for tile in moved],
@@ -140,7 +140,7 @@ class _NodeDetail:
                 if loop.halo
             ],
             "handed": [
-                {"source": route.sources[i].id, "target": route.targets[j].id, "elements": elements}
+                {"source": route.sources[i].name, "target": route.targets[j].name, "elements": elements}
                 for (i, j), elements in space.overlaps(tn).items()
             ],
             "moved_bits": 0 if space.choice_shares_memory(tn, route) else space.moved_bits(tn, route),
