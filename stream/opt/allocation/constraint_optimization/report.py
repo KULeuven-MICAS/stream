@@ -21,6 +21,7 @@ from stream.workload.utils import is_mac_operator_type
 from stream.workload.workload import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
+    from stream.hardware.architecture.memory import Memory
     from stream.cost_model.layout import Layout
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.opt.allocation.constraint_optimization.families import FamilySelection
@@ -175,7 +176,8 @@ def _layout_side(
     full = tuple(copy.subview.source.type.get_shape())
     extent = space.layouts.extent(copy, full)
     core = cores[0]
-    port = None if core.id in space.shared_bandwidth else space.side_port(tr, core, direction)
+    measured = space.accelerator.memory_of(core) in space.shared_bandwidth
+    port = None if measured else space.side_port(tr, core, direction)
     model = space.side_bandwidth(tr, core, direction)
     banks = getattr(core, "banks", None)
     return {
@@ -183,7 +185,7 @@ def _layout_side(
         "strides": list(layout.strides(extent)),
         "access": [list(loop) for loop in layout.access(tuple(copy.shape), extent, walk)],
         "memory": port.key.memory if port is not None else None,
-        "port": "measured" if core.id in space.shared_bandwidth else port.key.port if port is not None else None,
+        "port": "measured" if measured else port.key.port if port is not None else None,
         "bits_per_cycle": _json_scalar(model.contiguous) if model is not None else None,
         "burst_bytes": model.burst if model is not None else None,
         "banks": asdict(banks) if banks is not None else None,
@@ -405,25 +407,21 @@ def tensor_reuse_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
 def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
     """Per memory: the bits the solved placement keeps resident against its capacity, largest tensors first."""
     ledger = ctx.ledger
-    cores = {c.id: c for c in ctx.space.accelerator.core_list}
     rows: list[dict[str, Any]] = []
-    for core_id, terms in sorted(ledger.memory.items()):
-        core = cores.get(core_id)
-        if core is None:
-            continue
+    for memory, terms in sorted(ledger.memory.items(), key=lambda item: item[0].name):
         per_tensor: dict[str, int] = defaultdict(int)
         for indicator, bits, tensor_name in terms:
             if indicator.X > VAR_THRESHOLD:
                 per_tensor[tensor_name] += bits
         per_tensor = {name: bits for name, bits in per_tensor.items() if bits > 0}
-        if handed := ledger.handover_bits.get(core_id, 0):
+        if handed := ledger.handover_bits.get(memory, 0):
             per_tensor["handover"] = handed
         resident = sum(per_tensor.values())
-        capacity = int(ledger.bounds[(MEMORY_CAPACITY, core_id)] * 8)
+        capacity = int(ledger.bounds[(MEMORY_CAPACITY, memory)] * 8)
         rows.append(
             {
-                "core_id": core_id,
-                "core_name": str(getattr(core, "type", "")) or str(core),
+                "memory": memory.name,
+                "cores": [c.id for c in memory.cores],
                 "resident_bits": resident,
                 "capacity_bits": capacity,
                 "utilization": resident / capacity if capacity else None,
@@ -436,18 +434,22 @@ def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
     return rows
 
 
-def capacity_slack(ctx: FormulationContext, occupancy: list[dict[str, Any]] | None) -> dict[int, dict[str, float]]:
-    """Unused capacity per core: memory in bytes, and each bounded limit (fifo depth, buffer descriptors) in slots."""
-    ledger = ctx.ledger
-    slack: dict[int, dict[str, float]] = {}
+def capacity_slack(
+    ctx: FormulationContext, occupancy: list[dict[str, Any]] | None
+) -> dict[Core | Memory, dict[str, float]]:
+    """Unused capacity per resource: per memory its bytes, and per core each bounded limit (fifo depth, buffer
+    descriptors) in slots."""
+    ledger, memories = ctx.ledger, ctx.space.accelerator.memories
+    slack: dict[Core | Memory, dict[str, float]] = {}
     for row in occupancy or ():
-        slack.setdefault(row["core_id"], {})["memory_bytes"] = (row["capacity_bits"] - row["resident_bits"]) / 8
-    for (kind, core_id), terms in ledger.loads.items():
-        bound = ledger.bounds.get((kind, core_id))
+        free = (row["capacity_bits"] - row["resident_bits"]) / 8
+        slack.setdefault(memories[row["memory"]], {})["memory_bytes"] = free
+    for (kind, resource), terms in ledger.loads.items():
+        bound = ledger.bounds.get((kind, resource))
         if bound is None:
             continue
         used = sum(count for var, count in terms if var.X > VAR_THRESHOLD)
-        slack.setdefault(core_id, {})[kind.name] = bound - used
+        slack.setdefault(resource, {})[kind.name] = bound - used
     return slack
 
 

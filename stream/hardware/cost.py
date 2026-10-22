@@ -41,7 +41,7 @@ class MemoryCost:
     write_energy_pj: float
     authored_read_energy_pj: float | None
     counted: bool
-    alias_group: str | None
+    shared_memory: str | None
 
 
 @dataclass(frozen=True)
@@ -136,13 +136,13 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
 
     data = bundle.validated_data()
     cores_data = data["cores"]
-    alias_of, alias_owner = _alias_maps(bundle, data)
+    memory_of_view, billing_view = _view_maps(data)
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
         core_name = str(core.get("name", f"core_{core_id}"))
         on_die = (core_kind_from_type(core.get("type")) or "compute") not in OFF_DIE_KINDS
-        memories = _memory_costs(core_id, core_name, core, density, on_die, alias_of, alias_owner)
+        memories = _memory_costs(core_id, core_name, core, density, on_die, memory_of_view, billing_view)
         compute = _compute_cost(core_id, core_name, core, density) if on_die else None
         core_costs.append(
             CoreCost(
@@ -182,22 +182,17 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
     )
 
 
-def _alias_maps(
-    bundle: HardwareBundle, data: dict[str, Any]
-) -> tuple[dict[tuple[int, str], str], dict[str, tuple[int, str]]]:
-    """Each group of memory views that are one physical macro, owned by its first view: the declared
-    `memory_aliases`, and the top-level memory of each `core_memory_sharing` group."""
-    groups = [[(int(r.split(".")[0]), r.split(".", 1)[1]) for r in group] for group in bundle.memory_aliases]
-    for group in data.get("core_memory_sharing", []):
-        groups.append([(i, list(data["cores"][i]["memories"])[-1]) for i in group if "memories" in data["cores"][i]])
-    alias_of: dict[tuple[int, str], str] = {}
-    alias_owner: dict[str, tuple[int, str]] = {}
-    for refs in groups:
-        label = "+".join(f"{cid}.{name}" for cid, name in refs)
-        alias_owner[label] = refs[0]
-        for ref in refs:
-            alias_of[ref] = label
-    return alias_of, alias_owner
+def _view_maps(data: dict[str, Any]) -> tuple[dict[tuple[int, str], str], dict[str, tuple[int, str]]]:
+    """The views of each memory several cores see, one physical macro: per view the memory's name, and per memory the
+    view that bills it, its first."""
+    memory_of_view: dict[tuple[int, str], str] = {}
+    billing_view: dict[str, tuple[int, str]] = {}
+    for name, views in data["memories"].items():
+        if len(views) > 1:
+            billing_view[name] = views[0]
+            for view in views:
+                memory_of_view[view] = name
+    return memory_of_view, billing_view
 
 
 def _memory_costs(
@@ -206,8 +201,8 @@ def _memory_costs(
     core: dict[str, Any],
     density: _Density,
     on_die: bool,
-    alias_of: dict[tuple[int, str], str],
-    alias_owner: dict[str, tuple[int, str]],
+    memory_of_view: dict[tuple[int, str], str],
+    billing_view: dict[str, tuple[int, str]],
 ) -> list[MemoryCost]:
     is_zigzag = "memories" in core
     declared: dict[str, dict[str, Any]] = dict(core["memories"]) if is_zigzag else {"memory": core.get("memory", {})}
@@ -230,8 +225,8 @@ def _memory_costs(
             width = int(mem.get("bandwidth_max", 0))
             bits = int(mem.get("capacity", 0))
 
-        group_label = alias_of.get((core_id, mem_name))
-        counted = on_die and (group_label is None or alias_owner[group_label] == (core_id, mem_name))
+        shared = memory_of_view.get((core_id, mem_name))
+        counted = on_die and (shared is None or billing_view[shared] == (core_id, mem_name))
 
         if on_die:
             style = "sram"
@@ -260,7 +255,7 @@ def _memory_costs(
                 write_energy_pj=write_energy,
                 authored_read_energy_pj=None,
                 counted=counted,
-                alias_group=group_label,
+                shared_memory=shared,
             )
         )
     return costs

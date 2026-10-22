@@ -31,8 +31,8 @@ SWIGLU = "stream/inputs/examples/workload/swiglu_256_4096_14336.onnx"
 SMALL_SWIGLU = "stream/inputs/aie/workload/swiglu_256_512_2048.onnx"
 LAYERS = ["Gemm_Left", "Gemm_Right", "Silu", "Elt_Mul", "Gemm_Down"]
 ICI = {
-    "CL(Core(7, zigzag.memory), Core(15, zigzag.memory), bw=364)",
-    "CL(Core(15, zigzag.memory), Core(7, zigzag.memory), bw=364)",
+    "CL(vmem_1, vmem_3, bw=364)",
+    "CL(vmem_3, vmem_1, bw=364)",
 }
 
 
@@ -207,8 +207,8 @@ def test_a_copy_in_memory_holds_what_every_reader_of_it_needs(tmp_path):
     assert problem.mapping.get(into_vmem).inter_core_tiling == ((),) * len(
         problem.mapping.get(into_vmem).inter_core_tiling
     )
-    hbm = problem.accelerator.offchip_core_id
-    assert {link.sender.id for link in allocation.solution.transfer_routes[into_vmem].links_used} == {hbm}
+    hbm = problem.accelerator.offchip_memory
+    assert {link.sender for link in allocation.solution.transfer_routes[into_vmem].links_used} == {hbm}
 
 
 def test_the_key_projection_sits_out_the_query_tiles(tmp_path):

@@ -9,19 +9,16 @@ cores:
 offchip_core_id: 2          # core that fronts external memory
 unit_energy_cost: 512       # default energy per transferred word
 
-core_connectivity:
-  # Each compute core links to the DRAM controller (core 2). Cores 0 and 1 are NOT
-  # connected to each other here — they communicate through the shared top-level memory
-  # (see core_memory_sharing below). The validator forbids a memory-sharing pair from also
-  # appearing together in a connectivity link, so this is two point-to-point links, not one
-  # [0, 1, 2] bus.
-  - type: link
-    cores: [0, 2]
-    bandwidth: 512
-  - type: link
-    cores: [1, 2]
-    bandwidth: 512
+memories:
+  sram: [0.sram, 1.sram]
+  dram: [2.dram]
 
-core_memory_sharing:
-  # The SIMD core re-uses the array core’s top-level memory, so no direct link is listed above
-  - 0, 1
+connections:
+  # Each compute core's DMA to the DRAM controller: two links between the SRAM that cores 0 and 1
+  # share and DRAM. The two cores move data between them in place, in their shared SRAM.
+  - type: link
+    memories: [sram, dram]
+    bandwidth: 512
+  - type: link
+    memories: [sram, dram]
+    bandwidth: 512

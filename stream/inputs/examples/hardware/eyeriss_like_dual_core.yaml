@@ -11,21 +11,28 @@ cores:
 offchip_core_id: 4       # core that fronts external memory
 unit_energy_cost: 0      # default energy per transferred word
 
-core_connectivity:
+memories:
+  eyeriss_like_0: [0.sram_1M]
+  eyeriss_like_1: [1.sram_1M]
+  pooling: [2.sram_128KB]
+  simd: [3.sram_128KB_2rw]
+  offchip: [4.dram]
+
+connections:
   # ─── direct link between the two compute cores ───
   - type: link
-    cores: [0, 1]
+    memories: [eyeriss_like_0, eyeriss_like_1]
     bandwidth: 32
 
   # ─── pooling core connected to each compute core ───
-  - {type: link, cores: [0, 2], bandwidth: 32}
-  - {type: link, cores: [1, 2], bandwidth: 32}
+  - {type: link, memories: [eyeriss_like_0, pooling], bandwidth: 32}
+  - {type: link, memories: [eyeriss_like_1, pooling], bandwidth: 32}
 
   # ─── SIMD core connected to each compute core ───
-  - {type: link, cores: [0, 3], bandwidth: 32}
-  - {type: link, cores: [1, 3], bandwidth: 32}
+  - {type: link, memories: [eyeriss_like_0, simd], bandwidth: 32}
+  - {type: link, memories: [eyeriss_like_1, simd], bandwidth: 32}
 
   # ─── shared bus to off-chip DRAM ───
   - type: bus
-    cores: [0, 1, 2, 3, 4]   # all on-chip cores + controller
+    memories: [eyeriss_like_0, eyeriss_like_1, pooling, simd, offchip]   # all on-chip cores + controller
     bandwidth: 128           # wider than point-to-point links

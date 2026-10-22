@@ -432,17 +432,19 @@ class AIECodeGenerationStage(Stage):
         slack = allocation.solution.capacity_slack
         if not slack:
             return None
+        accelerator = allocation.problem.accelerator
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in allocation.problem.accelerator.core_list:
-            per_core = slack.get(core.id)
-            if per_core is None or core.col_id is None or core.row_id is None:
+        for core in accelerator.core_list:
+            per_core, per_memory = slack.get(core), slack.get(accelerator.memory_of(core))
+            if (per_core is None and per_memory is None) or core.col_id is None or core.row_id is None:
                 continue
+            per_core, per_memory = per_core or {}, per_memory or {}
             slots = min(
                 per_core.get("object_fifo_depth", float("inf")),
                 per_core.get("buffer_descriptors", float("inf")),
             )
             budgets[(core.col_id, core.row_id)] = TileBudget(
-                bytes_free=per_core.get("memory_bytes", 0.0),
+                bytes_free=per_memory.get("memory_bytes", 0.0),
                 bds_free=0.0 if slots == float("inf") else slots,
             )
         return FifoDepths(budgets)

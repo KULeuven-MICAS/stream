@@ -48,7 +48,7 @@ class AcceleratorHardwareView(BaseModel):
     name: str = Field(description="Accelerator name")
     num_cores: int = Field(description="Total number of cores including offchip")
     cores: list[CoreIR] = Field(description="All cores with full resource info (including extra_fields)")
-    core_connectivity: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between cores")
+    connections: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between memories")
 
 
 class AcceleratorCompilerView(BaseModel):
@@ -61,7 +61,7 @@ class AcceleratorCompilerView(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     name: str = Field(description="Accelerator name")
     cores: list[CoreIR] = Field(description="All cores — use id, core_type, row_id, col_id for placement")
-    core_connectivity: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between cores")
+    connections: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between memories")
 
 
 class AcceleratorIR(BaseModel):
@@ -84,12 +84,12 @@ class AcceleratorIR(BaseModel):
     offchip_core_id: int | None = Field(
         description="ID of the offchip memory core, or None if the accelerator has no offchip core"
     )
-    nb_shared_mem_groups: int = Field(description="Number of shared memory groups in the accelerator")
-    core_memory_sharing: list[list[int]] = Field(
-        default_factory=list, description="The ids of each group of cores that share one top-level memory"
+    memories: dict[str, list[str]] = Field(
+        description="Each memory by name, with its views: the top-level instance of each core that uses it, as "
+        "'<core id>.<instance>'"
     )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
-    core_connectivity: list[dict[str, Any]] = Field(
+    connections: list[dict[str, Any]] = Field(
         description="Connectivity entries: bus (bidirectional, multiple cores) or link (directed pair)"
     )
 
@@ -122,10 +122,9 @@ class AcceleratorIR(BaseModel):
             name=raw["name"],
             num_cores=raw["num_cores"],
             offchip_core_id=raw["offchip_core_id"],
-            nb_shared_mem_groups=raw["nb_shared_mem_groups"],
-            core_memory_sharing=raw["core_memory_sharing"],
+            memories=raw["memories"],
             cores=cores,
-            core_connectivity=raw["core_connectivity"],
+            connections=raw["connections"],
         )
 
     def hardware_view(self) -> AcceleratorHardwareView:
@@ -134,7 +133,7 @@ class AcceleratorIR(BaseModel):
             name=self.name,
             num_cores=self.num_cores,
             cores=self.cores,
-            core_connectivity=self.core_connectivity,
+            connections=self.connections,
         )
 
     def compiler_view(self) -> AcceleratorCompilerView:
@@ -142,5 +141,5 @@ class AcceleratorIR(BaseModel):
         return AcceleratorCompilerView(
             name=self.name,
             cores=self.cores,
-            core_connectivity=self.core_connectivity,
+            connections=self.connections,
         )

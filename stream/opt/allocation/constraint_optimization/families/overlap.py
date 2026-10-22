@@ -26,6 +26,7 @@ from stream.workload.node import ComputationNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
+    from stream.hardware.architecture.memory import Memory
     from stream.mapping.mapping import Resource
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
@@ -279,11 +280,8 @@ def _skipped_step_floor(
 
 
 def _is_offchip_link(space: DecisionSpace, res: Resource) -> bool:
-    """A link with the off-chip core at either end."""
-    off = space.offchip_core_id
-    if off is None or not isinstance(res, CommunicationLink):
-        return False
-    return any(core.id == off for core in res.cores)
+    """A link with the off-chip memory at either end."""
+    return isinstance(res, CommunicationLink) and any(memory.offchip for memory in res.memories)
 
 
 def _recurrence_bound(space: DecisionSpace) -> int:
@@ -294,36 +292,36 @@ def _recurrence_bound(space: DecisionSpace) -> int:
 
 
 def _shared_bandwidth_bounds(ctx: FormulationContext, overlap: SolverVar, iteration: Any) -> None:
-    """Bound the step by the time each shared-bandwidth core spends on one iteration's transfers."""
+    """Bound the step by the time each shared-bandwidth memory spends on one iteration's transfers."""
     q = ctx.quantities
     space, model = ctx.space, ctx.model
-    for core in space.shared_bandwidth:
+    for memory in space.shared_bandwidth:
         terms = [
-            _active_shared_latency(ctx, core, tr, choice, y)._raw
+            _active_shared_latency(ctx, memory, tr, choice, y)._raw
             for (tr, choice), y in ctx.vars.y.items()
-            if space.direction(core, choice) is not None and not space.choice_shares_memory(tr, choice)
+            if space.direction(memory, choice) is not None and not space.choice_shares_memory(tr, choice)
         ]
         if not terms:
             continue
-        busy = model.add_var(vtype=SolverVarType.CONTINUOUS, name=f"shared_busy_{core}")
-        model.add_constr(busy == model.quicksum(terms), name=f"shared_busy_{core}_def")
-        model.add_constr(overlap <= iteration - busy, name=f"shared_bound_{core}")
-        q.add("shared_busy", busy._raw, index=core)
+        busy = model.add_var(vtype=SolverVarType.CONTINUOUS, name=f"shared_busy_{memory.name}")
+        model.add_constr(busy == model.quicksum(terms), name=f"shared_busy_{memory.name}_def")
+        model.add_constr(overlap <= iteration - busy, name=f"shared_bound_{memory.name}")
+        q.add("shared_busy", busy._raw, index=memory.name)
 
 
 def _active_shared_latency(
-    ctx: FormulationContext, core: int, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
+    ctx: FormulationContext, memory: Memory, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
 ) -> SolverVar:
-    """Cycles this transfer holds a shared-bandwidth core per iteration, at its read and write ceiling."""
+    """Cycles this transfer holds a shared-bandwidth memory per iteration, at its read and write ceiling."""
     q = ctx.quantities
     space = ctx.space
-    constant = float(space.shared_cycles(core, tr, choice, space.shared_bandwidth[core].ceiling))
+    constant = float(space.shared_cycles(memory, tr, choice, space.shared_bandwidth[memory].ceiling))
     return ctx.binary_times_const_over_linexpr(
         binary_var=y,
         numerator=get_active_latency(tr, constant, space.ssis),
         denominator_expr=q.get("reuse_factor", tr).expr,
         denominator_lb=1.0,
-        base_name=f"shared_latency_{core}_{tr}",
+        base_name=f"shared_latency_{memory.name}_{tr}",
         selectors=reuse_selectors(ctx, tr.outputs[0]),
     )
 
@@ -344,13 +342,13 @@ def _drain(space: DecisionSpace) -> int:
 
 def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:
     """Cycles each run waits for the off-chip windows it holds in one buffer to fill: such a window fills
-    before the iteration that reads it, overlapping none. The fills share each path and shared-bandwidth core
+    before the iteration that reads it, overlapping none. The fills share each path and shared-bandwidth memory
     as one iteration's transfers do. ``drain`` adds the cycles the last iteration's results take to leave the
     systolic arrays."""
     q = ctx.quantities
     space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
     fill = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
-    shared: dict[int, list[Any]] = defaultdict(list)
+    shared: dict[Memory, list[Any]] = defaultdict(list)
     singles: dict[Tensor, list[tuple[int, Any]]] = defaultdict(list)
     for (t, s), single in ctx.vars.z_single.items():
         singles[t].append((s, single))
@@ -381,11 +379,11 @@ def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:
             fill >= model.quicksum(tiles * cycles * w._raw for tiles, w in held),
             name=f"fill_{tr.name}_{hash(choice)}",
         )
-        for core, bandwidth in space.shared_bandwidth.items():
-            share = space.shared_cycles(core, tr, choice, bandwidth.ceiling)
-            shared[core] += [tiles * share * w._raw for tiles, w in held]
-    for core, terms in shared.items():
-        model.add_constr(fill >= model.quicksum(terms), name=f"fill_shared_{core}")
+        for memory, bandwidth in space.shared_bandwidth.items():
+            share = space.shared_cycles(memory, tr, choice, bandwidth.ceiling)
+            shared[memory] += [tiles * share * w._raw for tiles, w in held]
+    for memory, terms in shared.items():
+        model.add_constr(fill >= model.quicksum(terms), name=f"fill_shared_{memory.name}")
     fill_cycles = fill._raw + drain
     q.add("fill", fill_cycles + warmup if (warmup := _warmup(ctx)) is not None else fill_cycles)
 

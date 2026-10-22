@@ -11,22 +11,29 @@ cores:
 offchip_core_id: 4        # core that fronts external memory
 unit_energy_cost: 0       # default energy per transferred word
 
-core_connectivity:
+memories:
+  simba_chiplet_0: [0.global_buffer]
+  simba_chiplet_1: [1.global_buffer]
+  simba_chiplet_2: [2.global_buffer]
+  simba_chiplet_3: [3.global_buffer]
+  simba_offchip: [4.dram]
+
+connections:
   # ───── 2-D mesh links between chiplets ─────
   - type: link
-    cores: [0, 1]
+    memories: [simba_chiplet_0, simba_chiplet_1]
     bandwidth: 32
   - type: link
-    cores: [0, 2]
+    memories: [simba_chiplet_0, simba_chiplet_2]
     bandwidth: 32
   - type: link
-    cores: [1, 3]
+    memories: [simba_chiplet_1, simba_chiplet_3]
     bandwidth: 32
   - type: link
-    cores: [2, 3]
+    memories: [simba_chiplet_2, simba_chiplet_3]
     bandwidth: 32
 
   # ───── Shared bus to off-chip memory ─────
   - type: bus
-    cores: [0, 1, 2, 3, 4]   # all chiplets + DRAM controller
+    memories: [simba_chiplet_0, simba_chiplet_1, simba_chiplet_2, simba_chiplet_3, simba_offchip]   # all chiplets + DRAM controller
     bandwidth: 128           # wider than on-chip links

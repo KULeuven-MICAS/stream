@@ -14,7 +14,8 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
 
 Service = tuple[str, str]
-MemoryRef = tuple[int, str]
+MemoryView = tuple[int, str]
+"""A core's view of a memory: (core id, the name of its top-level memory instance)."""
 
 OUTPUT = "output"
 READ = "read"
@@ -24,17 +25,9 @@ WRITE_BY_DATAPATH = "write_by_datapath"
 
 
 class PortKey(NamedTuple):
-    """A physical port: the share group and name of the memory that owns it, and the port name."""
+    """A physical port: the memory it belongs to (`Memory.name`) and the port's name, the same on every view of the
+    memory that reaches it."""
 
-    share_group: int
-    memory: str
-    port: str
-
-
-class PortRef(NamedTuple):
-    """A port as one core names it, as in a ``bandwidth:`` port key."""
-
-    core_id: int
     memory: str
     port: str
 
@@ -62,10 +55,9 @@ class MemoryBanks:
 
 @dataclass(frozen=True)
 class PortSpec:
-    """One port of a core's top-level memory as its backend declares it. ``serves`` holds (operand role,
-    direction), ``bits_per_cycle`` is the declared peak rate and the energies are in pJ per bit."""
+    """One port of a core's top-level memory instance ``memory`` as its backend declares it. ``serves`` holds
+    (operand role, direction), ``bits_per_cycle`` is the declared peak rate and the energies are in pJ per bit."""
 
-    share_group: int
     memory: str
     name: str
     bits_per_cycle: float
@@ -76,7 +68,7 @@ class PortSpec:
 
 @dataclass(frozen=True)
 class Port:
-    """One port of a top-level memory, keyed by (share group, memory, port name), with the cores that reach it.
+    """One port of a memory, keyed by (memory, port name), with the cores that reach it.
     ``serves`` holds (operand role, direction) and the energies are in pJ per bit."""
 
     key: PortKey
@@ -107,31 +99,36 @@ class PortRegistry:
 
     @classmethod
     def from_accelerator(cls, accelerator: Accelerator) -> PortRegistry:
-        """Ports of every core, one per port of each physical memory; a core with a measured bandwidth has none,
-        as that already covers its traffic. An aliased memory takes the ports of its group's first memory."""
-        specs = {core.id: core.port_specs() for core in accelerator.cores.node_list}
-        share_group = {(core_id, spec.memory): spec.share_group for core_id in specs for spec in specs[core_id]}
+        """The ports of every memory: those each core's backend declares on the instance its view of the memory
+        binds, the same port when two views name it alike. A core's other instances are its own, and a memory with a
+        measured bandwidth has no ports, as that already covers its traffic."""
         found: dict[PortKey, PortSpec] = {}
         core_ids: dict[PortKey, set[int]] = defaultdict(set)
         serves: dict[PortKey, set[Service]] = defaultdict(set)
-        key_of: dict[PortRef, PortKey] = {}
-        for core_id, core_specs in specs.items():
-            if core_id in accelerator.bandwidth:
+        for core in accelerator.core_list:
+            memory = accelerator.memory_of(core)
+            if memory in accelerator.bandwidth:
                 continue
-            for spec in core_specs:
-                owner = accelerator.memory_aliases.get((core_id, spec.memory), (core_id, spec.memory))
-                key = PortKey(share_group.get(owner, spec.share_group), owner[1], spec.name)
-                if key not in found or owner == (core_id, spec.memory):
-                    found[key] = spec
-                core_ids[key].add(core_id)
+            instance = memory.instance(core)
+            for spec in (spec for spec in core.port_specs() if spec.memory == instance):
+                key = PortKey(memory.name, spec.name)
+                if found.setdefault(key, spec).bits_per_cycle != spec.bits_per_cycle:
+                    raise ValueError(
+                        f"the views of memory {memory.name} declare port {spec.name} at different rates: "
+                        f"{found[key].bits_per_cycle} and {spec.bits_per_cycle} bits per cycle"
+                    )
+                core_ids[key].add(core.id)
                 serves[key].update(spec.serves)
-                key_of[PortRef(core_id, spec.memory, spec.name)] = key
-        overrides = _overrides_by_key(accelerator.port_bandwidth, key_of)
+        if unknown := sorted(set(accelerator.port_bandwidth) - set(found)):
+            raise ValueError(
+                f"`bandwidth` names ports {['.'.join(key) for key in unknown]} that no core models: the memory has no "
+                f"such port, or its cores' backends model no memory ports."
+            )
         ports = {
             key: Port(
                 key=key,
                 core_ids=tuple(sorted(core_ids[key])),
-                bandwidth=overrides.get(key, BandwidthModel.flat(spec.bits_per_cycle)),
+                bandwidth=accelerator.port_bandwidth.get(key, BandwidthModel.flat(spec.bits_per_cycle)),
                 serves=frozenset(serves[key]),
                 read_energy_per_bit=spec.read_energy_per_bit,
                 write_energy_per_bit=spec.write_energy_per_bit,
@@ -153,18 +150,3 @@ class PortRegistry:
         ports = self.ports_of(core)
         own = next((p for p in ports if (operand, direction) in p.serves), None)
         return own or next((p for p in ports if any(d == direction for _, d in p.serves)), None)
-
-
-def _overrides_by_key(
-    port_bandwidth: dict[PortRef, BandwidthModel], key_of: dict[PortRef, PortKey]
-) -> dict[PortKey, BandwidthModel]:
-    overrides: dict[PortKey, BandwidthModel] = {}
-    for ref, model in port_bandwidth.items():
-        if ref not in key_of:
-            raise ValueError(
-                f"`bandwidth.{ref.core_id}.{ref.memory}.{ref.port}`: core {ref.core_id} declares no port "
-                f"`{ref.port}` on a top-level memory `{ref.memory}`, or its backend models no memory ports."
-            )
-        if overrides.setdefault(key_of[ref], model) != model:
-            raise ValueError(f"bandwidth entries disagree on shared port {key_of[ref]}.")
-    return overrides

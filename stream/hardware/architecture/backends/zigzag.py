@@ -20,7 +20,6 @@ from stream.hardware.ports import (
     READ_BY_DATAPATH,
     WRITE,
     WRITE_BY_DATAPATH,
-    PortKey,
     PortSpec,
     Service,
     input_role,
@@ -61,6 +60,14 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         memory_operand = MemoryOperand("I1")
         return self.get_top_memory_instance(memory_operand).size
 
+    def top_memory_capacity(self, instance: str) -> int:
+        """Capacity in bits of the top-level memory instance ``instance``, the one the core's memory view binds."""
+        hierarchy = self.memory_hierarchy
+        tops = {level.name: level for op in hierarchy.get_operands() for level in hierarchy.get_memory_levels(op)[-1:]}
+        if instance not in tops:
+            raise ValueError(f"{instance} is no top-level memory of {self}: its top levels are {sorted(tops)}")
+        return tops[instance].memory_instance.size
+
     def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
         """Top-level memory read/write bandwidth in bits/cycle."""
         wanted_type = MemoryPortType.READ if type == "read" else MemoryPortType.WRITE
@@ -74,12 +81,12 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         """Ports of each operand's top memory level, with the (role, direction) pairs they serve at that level."""
         hierarchy = self.memory_hierarchy
         tops = {op: len(hierarchy.get_memory_levels(op)) - 1 for op in hierarchy.get_operands()}
-        found: dict[PortKey, tuple[MemoryLevel, MemoryPort]] = {}
-        serves: dict[PortKey, set[Service]] = {}
+        found: dict[tuple[str, str], tuple[MemoryLevel, MemoryPort]] = {}
+        serves: dict[tuple[str, str], set[Service]] = {}
         for op in tops:
             level = hierarchy.get_memory_levels(op)[-1]
             for port in level.ports:
-                key = PortKey(level.memory_instance.shared_memory_group_id, level.name, port.name)
+                key = (level.name, port.name)
                 found.setdefault(key, (level, port))
                 serves.setdefault(key, set()).update(
                     (operand_role(str(served)), ZIGZAG_DIRECTION_NAMES[direction])
@@ -88,7 +95,6 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
                 )
         return tuple(
             PortSpec(
-                share_group=key[0],
                 memory=level.name,
                 name=port.name,
                 bits_per_cycle=float(port.bw_max),

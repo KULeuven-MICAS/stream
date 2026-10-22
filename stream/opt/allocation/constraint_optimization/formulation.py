@@ -13,6 +13,7 @@ from stream.opt.solver import SolverModel, SolverVar, SolverVarType
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
+    from stream.hardware.architecture.memory import Memory
     from stream.mapping.mapping import Resource
     from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, StructuralRule
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
@@ -40,13 +41,13 @@ class ResourceLedger:
     memory the residency terms of what it holds and the handover bits it holds."""
 
     tags: dict[str, ConstraintTag] = field(default_factory=dict)
-    bounds: dict[tuple[ResourceKind, int], float] = field(default_factory=dict)
-    terms: dict[tuple[ResourceKind, int], dict[str, Any]] = field(default_factory=lambda: defaultdict(dict))
-    loads: dict[tuple[ResourceKind, int], list[tuple[SolverVar, int]]] = field(
+    bounds: dict[tuple[ResourceKind, Core | Memory], float] = field(default_factory=dict)
+    terms: dict[tuple[ResourceKind, Core | Memory], dict[str, Any]] = field(default_factory=lambda: defaultdict(dict))
+    loads: dict[tuple[ResourceKind, Core | Memory], list[tuple[SolverVar, int]]] = field(
         default_factory=lambda: defaultdict(list)
     )
-    memory: dict[int, list[tuple[SolverVar, int, str]]] = field(default_factory=lambda: defaultdict(list))
-    handover_bits: dict[int, int] = field(default_factory=dict)
+    memory: dict[Memory, list[tuple[SolverVar, int, str]]] = field(default_factory=lambda: defaultdict(list))
+    handover_bits: dict[Memory, int] = field(default_factory=dict)
 
 
 class FormulationContext:
@@ -87,7 +88,7 @@ class FormulationContext:
         self.ledger.tags[name] = ConstraintTag(resource, kind, subject, rule)
         if bound is not None:
             assert kind is not None and resource is not None
-            self.ledger.bounds[(kind, resource.id)] = bound
+            self.ledger.bounds[(kind, resource)] = bound
 
     def _add_tagged(self, expr: Any, name: str, tag: ConstraintTag | None) -> None:
         self.model.add_constr(expr, name=name)

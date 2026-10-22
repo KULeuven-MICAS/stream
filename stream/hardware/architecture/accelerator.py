@@ -1,51 +1,53 @@
 from functools import cached_property
 from typing import Any
 
-from zigzag.utils import DiGraphWrapper
+import networkx as nx
 
 from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
-from stream.hardware.ports import MemoryRef, PortRef, PortRegistry
+from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import PortKey, PortRegistry
 
 
-class CoreGraph(DiGraphWrapper[Core]):
-    """Represents the core structure of an accelerator"""
+class MemoryGraph(nx.MultiDiGraph):
+    """The memories of an accelerator, with directed edges for the links and buses that move data between them; two
+    memories may be joined by several, each its own resource."""
 
 
 class Accelerator:
-    """
-    The Accelerator class houses a set of Cores with an additional Global Buffer.
-    This Global Buffer sits above the cores, and can optionally be disabled.
-    In this Stream version, the cores are actually a graph with directed edges representing communication links.
-    """
+    """A set of cores and the memories they compute out of. Each core reads and writes one memory directly, which
+    several cores may share; the memories are a graph whose edges are the links and buses that move data between
+    them, one of them off-chip."""
 
     def __init__(  # noqa: PLR0913
         self,
         name: str,
-        cores: CoreGraph,
-        shared_mem_group_ids: dict[int, int],
+        cores: list[Core],
+        memories: list[Memory],
+        network: MemoryGraph,
         offchip_core_id: int | None = None,
         kernel_library: KernelLibrary | None = None,
-        bandwidth: dict[int, BandwidthModel] | None = None,
+        bandwidth: dict[Memory, BandwidthModel] | None = None,
         *,
         reconfiguration: dict | None = None,
-        port_bandwidth: dict[PortRef, BandwidthModel] | None = None,
-        memory_aliases: dict[MemoryRef, MemoryRef] | None = None,
+        port_bandwidth: dict[PortKey, BandwidthModel] | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
-        self.cores = cores
+        self._cores = {core.id: core for core in sorted(cores, key=lambda core: core.id)}
+        self.memories = {memory.name: memory for memory in sorted(memories)}
+        self._memory_of = {core.id: memory for memory in memories for core in memory.cores}
+        if missing := [core_id for core_id in self._cores if core_id not in self._memory_of]:
+            raise ValueError(f"cores {missing} are in no memory")
+        self.network = network
         self.offchip_core_id = offchip_core_id
+        # memory -> the measured bandwidth every transfer into or out of it shares
         self.bandwidth = bandwidth or {}
-        # (core id, memory instance, port name) -> measured model replacing the port's declared width
+        # (memory, port name) -> measured model replacing the port's declared width
         self.port_bandwidth = port_bandwidth or {}
-        # (core id, memory instance) -> the first memory of its `memory_aliases` group, the physical one
-        self.memory_aliases = memory_aliases or {}
         self.reconfiguration = reconfiguration or {}
-        # core id -> the first core of its `core_memory_sharing` group, whose top-level memory it uses
-        self.shared_mem_group_ids = shared_mem_group_ids
         self.communication_manager = CommunicationManager(self)
 
     def get_core(self, core_id: int) -> Core:
@@ -53,23 +55,17 @@ class Accelerator:
         Return the core with id 'core_id'.
         Raises ValueError() when a core_id is not found in the available cores.
         """
-        return self.cores.get_node_with_id(core_id)
+        if core_id not in self._cores:
+            raise ValueError(f"no core with id {core_id} in {self}")
+        return self._cores[core_id]
+
+    def memory_of(self, core: Core) -> Memory:
+        """The memory ``core`` reads and writes directly, its top-level memory."""
+        return self._memory_of[core.id]
 
     @property
-    def nb_shared_mem_groups(self) -> int:
-        return len(set(self.shared_mem_group_ids.values()))
-
-    @property
-    def core_memory_sharing(self) -> list[list[int]]:
-        """The ids of each group of cores that share one top-level memory."""
-        groups: dict[int, list[int]] = {}
-        for core_id, owner in sorted(self.shared_mem_group_ids.items()):
-            groups.setdefault(owner, []).append(core_id)
-        return [ids for ids in groups.values() if len(ids) > 1]
-
-    def memory_of(self, core: Core) -> Core:
-        """The core owning the top-level memory ``core`` uses: the first of its `core_memory_sharing` group."""
-        return self.get_core(self.shared_mem_group_ids.get(core.id, core.id))
+    def offchip_memory(self) -> Memory | None:
+        return None if self.offchip_core_id is None else self.memory_of(self.get_core(self.offchip_core_id))
 
     @cached_property
     def ports(self) -> PortRegistry:
@@ -78,46 +74,34 @@ class Accelerator:
 
     @property
     def core_list(self) -> list[Core]:
-        return list(self.cores.node_list)
+        return list(self._cores.values())
 
     def get_ir(self) -> dict:
         """Return a dictionary representation of the accelerator for serialization.
 
         Captures:
-        - Top-level accelerator metadata (name, offchip core, shared memory groups).
+        - Top-level accelerator metadata (name, offchip core, its memories and the cores of each).
         - Per-core IR produced by :meth:`~stream.hardware.architecture.core.Core.get_ir`,
           which includes type-specific fields keyed by ``core_type`` namespace.
-        - Core connectivity expressed as a list of ``bus`` or directed ``link`` entries,
+        - The connections between memories as a list of ``bus`` or directed ``link`` entries,
           mirroring the structure of the hardware YAML input.
         """
-        # --- cores ---
-        cores_ir: list[dict] = [core.get_ir() for core in self.cores.node_list]
+        cores_ir: list[dict] = [core.get_ir() for core in self.core_list]
 
-        # --- connectivity ---
-        # Buses: all edges that share the same CommunicationLink object (bidirectional=True)
-        # are collected into a single bus entry listing every participating core.
-        # Point-to-point links (bidirectional=False) are emitted as directed pairs.
+        # Buses: every edge of one CommunicationLink object (bidirectional) is one bus entry listing its memories.
+        # Point-to-point links are emitted as directed pairs.
         links_ir: list[dict] = []
-        seen_bus_ids: set[int] = set()
-        for src, dst, data in self.cores.edges(data=True):
-            cl = data.get("cl")
-            if cl is None:
-                continue
+        seen_buses: set[int] = set()
+        for src, dst, data in self.network.edges(data=True):
+            cl = data["cl"]
             if cl.bidirectional:
-                bus_id = id(cl)
-                if bus_id in seen_bus_ids:
+                if id(cl) in seen_buses:
                     continue
-                seen_bus_ids.add(bus_id)
-                # Collect every core that participates in this shared bus instance
-                connected_ids: set[int] = set()
-                for u, v, edge_data in self.cores.edges(data=True):
-                    if edge_data.get("cl") is cl:
-                        connected_ids.add(u.id)
-                        connected_ids.add(v.id)
+                seen_buses.add(id(cl))
                 links_ir.append(
                     {
                         "type": "bus",
-                        "cores": sorted(connected_ids),
+                        "memories": sorted(memory.name for memory in cl.members),
                         "bandwidth": cl.bandwidth,
                         "unit_energy_cost": cl.unit_energy_cost,
                     }
@@ -126,8 +110,8 @@ class Accelerator:
                 links_ir.append(
                     {
                         "type": "link",
-                        "from_core": src.id,
-                        "to_core": dst.id,
+                        "from_memory": src.name,
+                        "to_memory": dst.name,
                         "bandwidth": cl.bandwidth,
                         "unit_energy_cost": cl.unit_energy_cost,
                     }
@@ -135,12 +119,14 @@ class Accelerator:
 
         return {
             "name": self.name,
-            "num_cores": len(list(self.cores.nodes)),
+            "num_cores": len(self.core_list),
             "offchip_core_id": self.offchip_core_id,
-            "nb_shared_mem_groups": self.nb_shared_mem_groups,
-            "core_memory_sharing": self.core_memory_sharing,
+            "memories": {
+                memory.name: [f"{core.id}.{instance}" for core, instance in memory.views]
+                for memory in self.memories.values()
+            },
             "cores": cores_ir,
-            "core_connectivity": links_ir,
+            "connections": links_ir,
         }
 
     def __str__(self) -> str:
@@ -153,4 +139,4 @@ class Accelerator:
         """
         JSON representation used for saving this object to a json file.
         """
-        return {"name": self.name, "cores": self.cores}
+        return {"name": self.name, "cores": self.core_list}

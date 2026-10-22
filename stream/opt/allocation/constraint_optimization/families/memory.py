@@ -21,6 +21,7 @@ from stream.opt.solver import ObjectiveLevel, SolverModel, SolverVar, SolverVarT
 from stream.workload.iterator_type import is_state_operand
 
 if TYPE_CHECKING:
+    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import Tensor, TransferNode
@@ -35,10 +36,10 @@ MEMORY_CAPACITY = ResourceKind(
     demand_label="tensors resident on",
     bound_label="on-chip memory of",
     demand_input="workload tensor sizes × mapping intra-core tiling",
-    bound_input="hardware spec: core memory size",
+    bound_input="hardware spec: memory size",
     term_detail="min resident (1 tile)",
     levers=(
-        "Increase {core} on-chip memory (hardware spec)",
+        "Increase {core} (hardware spec)",
         "Tile the fused group finer so fewer / smaller tiles are resident (mapping intra_core_tiling)",
         "Reduce the workload's tensor sizes (fewer channels, smaller spatial, shorter sequence)",
     ),
@@ -83,7 +84,7 @@ def _held_bits(terms: Held) -> Any:
 def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
     """Fail before the model is built when a memory cannot fit the tensors pinned to it under any reuse choice; a copy
     pinned with its source counts only what it holds beyond it, as in :func:`_memory_loads`."""
-    held: dict[Tensor, tuple[Core, int]] = {}
+    held: dict[Tensor, tuple[Memory, int]] = {}
     for node in space.workload.get_iteration_space_nodes():
         carried = [x for x in node.inputs if is_state_operand(node, x)]
         for t in (*node.outputs, *carried):
@@ -93,7 +94,7 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
             (c,) = candidates
             tile = space.workload.get_tensor_single_core(t, node, space.mapping)
             held[t] = (space.accelerator.memory_of(c), _min_resident_bits(space, t, tile.size_bits()))
-    pinned: dict[Core, int] = defaultdict(int)
+    pinned: dict[Memory, int] = defaultdict(int)
     for memory, bits in held.values():
         pinned[memory] += bits
     for tr in space.transfer_nodes:
@@ -102,13 +103,13 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
             for copy in tr.outputs:
                 if copy in held and held[copy][0] == source_memory:
                     pinned[source_memory] -= min(held[copy][1], source_bits)
-    for c, bits in pinned.items():
-        cap = space.memory_capacity_bits(c)
+    for memory, bits in pinned.items():
+        cap = space.memory_capacity_bits(memory)
         if bits > cap:
             raise InfeasibleAllocationError(
                 structural_infeasibility(
-                    f"Core {c.id}: tensors pinned to it need at least {bits / 8192:.1f} KB "
-                    f"under every reuse choice, but its memory is {cap / 8192:.1f} KB",
+                    f"Memory {memory.name}: tensors pinned to it need at least {bits / 8192:.1f} KB "
+                    f"under every reuse choice, but it has {cap / 8192:.1f} KB",
                     model,
                 )
             )
@@ -122,19 +123,19 @@ class MemoryCapacity:
     provides: ClassVar[tuple[str, ...]] = ()
 
     def build(self, ctx: FormulationContext) -> None:
-        """What each memory holds, keyed by the core owning it, so cores sharing one memory share its capacity: a
-        whole tensor once however many of its cores hold it, a handover by its writer and by a reader that cannot
+        """What each memory holds, so cores sharing one memory share its capacity: a whole tensor once however many
+        of its cores hold it, a handover by its writer and by a reader that cannot
         reach it, and an in-place copy only what it holds beyond its source."""
         space, ledger = ctx.space, ctx.ledger
         z_stop, z_single = ctx.vars.z_stop, ctx.vars.z_single
-        held: dict[tuple[Tensor, Core], Held] = defaultdict(list)
+        held: dict[tuple[Tensor, Memory], Held] = defaultdict(list)
         for node in space.workload.get_iteration_space_nodes():
             carried = [x for x in node.inputs if is_state_operand(node, x)]
             for t in (*node.outputs, *carried):
                 tile = space.workload.get_tensor_single_core(t, node, space.mapping)
                 tensor_size = tile.size_bits()
                 tile_dims, tile_dtype = _tile_shape(space, node, t, tile)
-                sharing: dict[Core, list[Core]] = defaultdict(list)
+                sharing: dict[Memory, list[Core]] = defaultdict(list)
                 for c in space.candidate_cores(t):
                     sharing[space.accelerator.memory_of(c)].append(c)
                 whole = tensor_size == t.size_bits()
@@ -143,7 +144,7 @@ class MemoryCapacity:
                     for memory, cores in sharing.items()
                     for holder in ([memory] if whole else cores)
                 ]
-                least_bytes: dict[Core, float] = defaultdict(float)
+                least_bytes: dict[Memory, float] = defaultdict(float)
                 for memory, holder, u in holders:
                     min_req: int | None = None
                     for stop in space.stops(t):
@@ -169,7 +170,7 @@ class MemoryCapacity:
                     if min_req is not None:
                         least_bytes[memory] += min_req / 8
                 for memory, value in least_bytes.items():
-                    ledger.terms[(MEMORY_CAPACITY, memory.id)][t.name] = {
+                    ledger.terms[(MEMORY_CAPACITY, memory)][t.name] = {
                         "value": value,
                         "dims": tile_dims,
                         "dtype": tile_dtype,
@@ -181,8 +182,8 @@ class MemoryCapacity:
             readers = (one,) if space.hardware.shares_memory(one, other) else (one, other)
             for memory in dict.fromkeys(space.accelerator.memory_of(c) for c in readers):
                 load[memory] = load[memory] + bits
-                ledger.handover_bits[memory.id] = ledger.handover_bits.get(memory.id, 0) + bits
-                terms = ledger.terms[(MEMORY_CAPACITY, memory.id)]
+                ledger.handover_bits[memory] = ledger.handover_bits.get(memory, 0) + bits
+                terms = ledger.terms[(MEMORY_CAPACITY, memory)]
                 handed = terms.get("handover", {}).get("value", 0) + bits / 8
                 terms["handover"] = {"value": handed, "dims": (), "dtype": ""}
 
@@ -204,14 +205,14 @@ def _min_resident_bits(space: DecisionSpace, t: Tensor, tensor_size: int) -> int
     )
 
 
-def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Core], Held]) -> dict[Core, Any]:
+def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Memory], Held]) -> dict[Memory, Any]:
     """Bits each memory holds: every tensor's residency, a copy in the memory of its source (in place, even where the
     transfer also reaches other memories) only what it holds beyond the source."""
     space, ledger = ctx.space, ctx.ledger
-    load: dict[Core, Any] = defaultdict(int)
+    load: dict[Memory, Any] = defaultdict(int)
     copies = {copy: tr.inputs[0] for tr in space.transfer_nodes for copy in tr.outputs}
     for (t, memory), terms in held.items():
-        ledger.memory[memory.id] += terms
+        ledger.memory[memory] += terms
         source = held.get((copies[t], memory)) if t in copies else None
         if not source:
             load[memory] = load[memory] + _held_bits(terms)
@@ -220,7 +221,7 @@ def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Core], Held]
         extra = ctx.model.add_var(vtype=SolverVarType.CONTINUOUS, name=name)
         ctx.add_constr(extra >= _held_bits(terms) - _held_bits(source), name=f"{name}_ge", resource=memory)
         load[memory] = load[memory] + extra._raw
-        ledger.memory[memory.id] += [(indicator, -bits, t.name) for indicator, bits, _ in source]
+        ledger.memory[memory] += [(indicator, -bits, t.name) for indicator, bits, _ in source]
     return load
 
 
@@ -275,9 +276,9 @@ class ObjectFifoDepth:
                             tag=ConstraintTag(c, OBJECT_FIFO_DEPTH, t.name),
                         )
                         depth[c] = depth[c] + tiles_needed * uz._raw
-                        ledger.loads[(OBJECT_FIFO_DEPTH, c.id)].append((uz, tiles_needed))
+                        ledger.loads[(OBJECT_FIFO_DEPTH, c)].append((uz, tiles_needed))
                     if min_tiles is not None:
-                        ledger.terms[(OBJECT_FIFO_DEPTH, c.id)][t.name] = min_tiles
+                        ledger.terms[(OBJECT_FIFO_DEPTH, c)][t.name] = min_tiles
         for core, expr in depth.items():
             q.add("object_fifo_depth", expr, index=core)
 
@@ -313,9 +314,9 @@ class BufferDescriptors:
                     terms = _descriptor_terms(ctx, tr, t, c, u)
                     for indicator, bds_needed in terms:
                         bd_depth[c] = bd_depth[c] + bds_needed * indicator._raw
-                        ledger.loads[(BUFFER_DESCRIPTORS, c.id)].append((indicator, bds_needed))
+                        ledger.loads[(BUFFER_DESCRIPTORS, c)].append((indicator, bds_needed))
                     if terms:
-                        ledger.terms[(BUFFER_DESCRIPTORS, c.id)][t.name] = min(n for _, n in terms)
+                        ledger.terms[(BUFFER_DESCRIPTORS, c)][t.name] = min(n for _, n in terms)
         for core, expr in bd_depth.items():
             q.add("buffer_descriptor_depth", expr, index=core)
 

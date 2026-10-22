@@ -24,14 +24,14 @@ from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.stage import LeafStage, MainStage
 
 TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
-# The aliased Ironwood variant: VMEM is seen as `vmem` on a memory core AND as `operand_buffer` on
-# each of that TensorCore's two compute cores. `memory_aliases` names the three as one physical macro.
-TPU_V7_ALIASED = "tests/fixtures/hardware/tpu_v7_aliased.yaml"
+# An Ironwood variant whose VMEM is seen as `vmem` on a memory core AND as `operand_buffer` on each of that
+# TensorCore's two compute cores: three views of one memory.
+TPU_V7_VIEWS = "tests/fixtures/hardware/tpu_v7_views.yaml"
 QUAD_CORE = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 AIE2_STRIX = "stream/inputs/aie/hardware/whole_array_strix.yaml"
 
 # 128 MiB VMEM, the aliased fixture's per-TensorCore scratchpad size in bits.
-_ALIASED_VMEM_BITS = 1024 * 1024 * 1024
+_VIEWS_VMEM_BITS = 1024 * 1024 * 1024
 
 # One 64 MiB TensorCore VMEM, from the ZigZag declaration in cores/tpu_v7_vmem.yaml.
 _VMEM_BITS = 512 * 1024 * 1024
@@ -101,10 +101,10 @@ def test_inline_core_rejected_when_invalid():
         bundle.validated_data()
 
 
-def test_memory_alias_typo_is_rejected():
-    """A mistyped alias would stop deduplicating and quietly inflate the modelled area."""
+def test_a_view_naming_no_memory_of_its_core_is_rejected():
+    """A mistyped view would split one memory and quietly inflate the modelled area."""
     data = HardwareBundle.from_yaml(TPU_V7).to_data()
-    data["memory_aliases"] = [["3.vmem", "0.not_a_memory"]]
+    data["memories"]["vmem_0"] = ["0.not_a_memory", "1.vmem", "2.vmem", "3.vmem"]
     validator = AcceleratorValidator(data, TPU_V7)
     assert not validator.validate()
     assert any("not_a_memory" in e for e in validator.errors)
@@ -140,14 +140,14 @@ def test_asymmetric_bundle_runs_end_to_end():
 # ── C4: the built-in cost model ───────────────────────────────────────────────────────────────────
 
 
-def test_simple_model_reports_positive_cost_and_counts_aliases_once():
-    """The built-in model prices a bundle with positive area and energy, and an aliased macro seen as
-    twelve views is billed exactly once per physical scratchpad."""
-    report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7_ALIASED))
+def test_simple_model_reports_positive_cost_and_counts_each_memory_once():
+    """The built-in model prices a bundle with positive area and energy, and four memories seen through
+    twelve views are billed exactly once each."""
+    report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7_VIEWS))
     assert report.total_area_mm2 > 0
     assert report.peak_access_energy_pj_per_cycle > 0
 
-    views = [m for c in report.cores for m in c.memories if m.bits_per_instance == _ALIASED_VMEM_BITS]
+    views = [m for c in report.cores for m in c.memories if m.bits_per_instance == _VIEWS_VMEM_BITS]
     assert len(views) == 12  # 4 vmem cores + 8 operand_buffer views (2 compute cores per TensorCore)
     counted = [m for m in views if m.counted]
     assert len(counted) == 4, "exactly the four physical VMEMs, one per TensorCore"
@@ -158,40 +158,47 @@ def test_simple_model_reports_positive_cost_and_counts_aliases_once():
     assert report.authored_disagreements == []
 
 
-def test_mutating_a_non_counted_alias_view_does_not_change_area():
-    """Growing an aliased view (not the billed owner) must not move priced area; growing the owner does."""
-    bundle = HardwareBundle.from_yaml(TPU_V7_ALIASED)
+def test_mutating_a_view_that_does_not_bill_its_memory_does_not_change_area():
+    """Growing a view that does not bill its memory must not move priced area; growing the billing view does."""
+    bundle = HardwareBundle.from_yaml(TPU_V7_VIEWS)
     baseline = evaluate_bundle_cost(bundle).total_area_mm2
 
     view = bundle.copy()
-    view.cores[0]["memories"]["operand_buffer"]["size"] *= 2  # 0.operand_buffer is a non-owner view
+    view.cores[0]["memories"]["operand_buffer"]["size"] *= 2  # 0.operand_buffer does not bill vmem_0
     assert evaluate_bundle_cost(view).total_area_mm2 == pytest.approx(baseline)
 
     owner = bundle.copy()
-    owner.cores[8]["memories"]["vmem"]["size"] *= 2  # 8.vmem is the billed owner of that group
+    owner.cores[8]["memories"]["vmem"]["size"] *= 2  # 8.vmem, vmem_0's first view, bills it
     assert evaluate_bundle_cost(owner).total_area_mm2 > baseline
 
 
-def test_memory_aliases_do_not_change_scheduling_capacity():
-    """`memory_aliases` is cost-only: per-core capacity is identical with and without the aliases."""
-    bundle = HardwareBundle.from_yaml(TPU_V7_ALIASED)
-    assert bundle.memory_aliases  # the fixture declares them
-    with_aliases = {c.id: c.get_memory_capacity() for c in bundle.to_accelerator().core_list}
+def test_the_views_of_a_memory_hold_its_capacity_once():
+    """The MXU, VPU and VMEM views of one scratchpad are one memory, of one scratchpad's capacity."""
+    accelerator = HardwareBundle.from_yaml(TPU_V7_VIEWS).to_accelerator()
+    vmem = accelerator.memories["vmem_0"]
+    assert [(core.id, instance) for core, instance in vmem.views] == [
+        (0, "operand_buffer"),
+        (1, "operand_buffer"),
+        (8, "vmem"),
+    ]
+    assert vmem.capacity_bits == _VIEWS_VMEM_BITS
+    assert all(accelerator.memory_of(accelerator.get_core(i)) is vmem for i in (0, 1, 8))
 
-    stripped = bundle.copy()
-    stripped.accelerator.pop("memory_aliases")
-    without = {c.id: c.get_memory_capacity() for c in stripped.to_accelerator().core_list}
 
-    assert with_aliases == without
+def test_views_of_one_memory_that_disagree_on_its_size_are_rejected():
+    bundle = HardwareBundle.from_yaml(TPU_V7_VIEWS)
+    bundle.cores[0]["memories"]["operand_buffer"]["size"] *= 2
+    with pytest.raises(ValueError, match="different capacities"):
+        bundle.to_accelerator()
 
 
 def test_a_shared_vmem_is_priced_once_per_tensorcore():
     """Each TensorCore's 64 MiB VMEM is the top memory of its VMEM core, both MXUs and its VPU
-    (core_memory_sharing): four views of one macro, priced once, by the VMEM core that owns it."""
+    (one memory): four views of one macro, priced once."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
     vmems = [m for c in report.cores for m in c.memories if m.total_bits == _VMEM_BITS]
     assert len(vmems) == 16
-    assert sorted(m.core_id for m in vmems if m.counted) == [3, 7, 11, 15]
+    assert sorted(m.core_id // 4 for m in vmems if m.counted) == [0, 1, 2, 3]
 
     grown = HardwareBundle.from_yaml(TPU_V7)
     _grow_vmem(grown)

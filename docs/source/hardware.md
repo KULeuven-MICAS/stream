@@ -37,19 +37,28 @@ core_coordinates:
 offchip_core_id: 6      # core that fronts external memory
 unit_energy_cost: 0     # default per-transfer energy for the links below
 
-core_connectivity:
+memories:               # each memory, with its views: "<core id>.<that core's top-level instance>"
+  tpu_like_0: [0.sram_2MB]
+  tpu_like_1: [1.sram_2MB]
+  tpu_like_2: [2.sram_2MB]
+  tpu_like_3: [3.sram_2MB]
+  pooling: [4.sram_128KB]
+  simd: [5.sram_128KB_2rw]
+  offchip: [6.dram]
+
+connections:
   # 2-D mesh among the four compute cores
   - type: link
-    cores: [0, 1]
+    memories: [tpu_like_0, tpu_like_1]
     bandwidth: 32
   - type: link
-    cores: [1, 2]
+    memories: [tpu_like_1, tpu_like_2]
     bandwidth: 32
   # … more links …
 
   # shared bus to off-chip memory (all cores ↔ DRAM)
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6]
+    memories: [tpu_like_0, tpu_like_1, tpu_like_2, tpu_like_3, pooling, simd, offchip]
     bandwidth: 128
 ```
 
@@ -59,35 +68,41 @@ core_connectivity:
 | `cores` | yes | Map of integer **core id → core file**. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
 | `offchip_core_id` | yes | The id of the core that fronts external memory (DRAM). Must appear in `cores`. No computation is ever placed here. |
 | `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
-| `bandwidth` | no | Map of core id to the measured bandwidth every transfer through that core shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes, or, where nothing is measured, `burst`, the bytes the memory moves per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). The allocation then runs no transfer through the core faster than its access pattern allows, and bounds every step by the time the core spends on one iteration's transfers. A key can also name one memory port, see [Memory ports](#memory-ports). |
+| `bandwidth` | no | Map of memory name to the measured bandwidth every transfer into or out of that memory shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes, or, where nothing is measured, `burst`, the bytes the memory moves per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). The allocation then runs no transfer through the memory faster than its access pattern allows, and bounds every step by the time the memory spends on one iteration's transfers. Two keys must not name the same memory. A key can also name one memory port, see [Memory ports](#memory-ports). |
 | `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
-| `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
+| `memories` | yes | Map of memory name → its views, `<core id>.<instance>`, see [Memories](#memories). |
+| `connections` | yes | List of links and buses connecting the memories (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
-| `core_memory_sharing` | no | Groups of core ids that share their top-level memory, e.g. `["0, 1", "2, 3"]`. Its capacity bounds everything the group's cores hold in it together: split tiles add up, a tensor each core holds whole counts once. Data between the group's cores moves in place, without a route; the group sends and receives through its first core where that one has links, and the shared memory is priced once. |
+
+### Memories
+
+Data lives in memories, not in cores: a core computes out of its top-level memory, and several cores may compute out of the same one. `memories` names each such memory and lists its views: for each core using it, `<core id>.<instance>`, the name the core's file gives the top-level memory instance it sees the memory as, e.g. `{l1: [0.l1, 1.tcdm], l3: [6.dram]}`. Everything outside the core files refers to the memory by its name; a core's own names stay inside it.
+
+Every core is a view of exactly one memory, through one of its top-level instances. Any other memory of the core, an inner level or another top-level instance, is the core's own: no transfer reaches it and Stream models none of its ports. The views of one memory declare the same capacity, and every memory has a connection: one nothing reaches holds nothing a transfer can bring.
+
+A memory belongs to none of its cores. Its capacity bounds everything its cores hold in it together: split tiles add up, a tensor each core holds whole counts once. Data between its cores moves in place, without a route. Connections join memories, and a `bandwidth` model of a memory bounds every transfer into or out of it, whichever of its cores the transfer serves; its macro is priced once.
 
 ### Memory ports
 
-A `bandwidth` key `<core id>.<memory>.<port>` (e.g. `2.dram.rw_port_1`) gives the measured model to one port of a top-level memory of a ZigZag core. It replaces that port's `bandwidth_max`, in bits per cycle. A core with a core-id key has no per-port model, so it takes no port key.
-
-A port belongs to a physical memory: cores in one `core_memory_sharing` group share it, and memories listed in one `memory_aliases` group share the ports of the group's first memory.
+A memory's ports are those its views declare, by name: a port two views name alike is one port both cores reach, such as a DMA port, and the views must agree on its width; a port only one view names is that core's own way into the memory, such as an operand streamer. A `bandwidth` key `<memory>.<port>` (e.g. `dram.rw_port_1`) gives the measured model to one port. It replaces that port's `bandwidth_max`, in bits per cycle. A memory with a measured model has no per-port model, so it takes no port key.
 
 The `memory_ports` [constraint family](stages.md#constraint-families), in the default set, uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
 ### Connections: `link` vs `bus`
 
-Each entry in `core_connectivity` is one connection:
+Each entry in `connections` is one connection:
 
 | Field | Required | Meaning |
 |-------|:---:|---------|
-| `type` | no | `link` (point-to-point between exactly two cores) or `bus` (shared medium between two or more cores). Defaults to `link`. |
-| `cores` | yes | The connected core ids. Exactly two for a `link`; two or more for a `bus`. |
+| `type` | no | `link` (point-to-point between exactly two memories) or `bus` (shared medium between two or more memories). Defaults to `link`. |
+| `memories` | yes | The connected memory names. Exactly two for a `link`; two or more for a `bus`. |
 | `bandwidth` | yes | Peak bandwidth of the connection (bits per cycle), `> 0`. |
 | `unit_energy_cost` | no | Per-word energy for this connection; inherits the accelerator-level default if omitted. |
 
-Connections are how the MILP allocator routes tensors between cores. A typical accelerator has fast point-to-point `link`s on-chip and one wider `bus` to the off-chip core.
+Connections are how the MILP allocator routes tensors between memories. A typical accelerator has fast point-to-point `link`s on-chip and one wider `bus` to the off-chip memory.
 
-A transfer's route serves each target from the nearest core holding the data it reads, then joins each source's targets in one tree (a Steiner tree, grown from the shortest paths with each link weighted by the time the transfer already keeps it busy), so data shared by several targets crosses each link once. Partial sums, of a computation split over a dimension it reduces, are added up on their way to their target; one headed off-chip is completed in the on-chip memories next to it, a slice each, as a reduce-scatter. A route never passes through the off-chip core, and a bus carries what each core sends over it separately. Each link is charged the share of the transfer's data crossing it.
+A transfer's route serves each target from the nearest memory holding the data it reads, then joins each source's targets in one tree (a Steiner tree, grown from the shortest paths with each link weighted by the time the transfer already keeps it busy), so data shared by several targets crosses each link once. Partial sums, of a computation split over a dimension it reduces, are added up on their way to their target; one headed off-chip is completed in the on-chip memories next to it, a slice each, as a reduce-scatter. A route never passes through the off-chip memory, and a bus carries what each memory sends over it separately. Each link is charged the share of the transfer's data crossing it.
 
 ---
 

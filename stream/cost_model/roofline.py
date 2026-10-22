@@ -55,13 +55,14 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
                 "bytes_per_cycle": port.bits_per_cycle / 8,
             }
         )
-    for core_id, model in accelerator.bandwidth.items():
-        levels[OFFCHIP_MEMORY if core_id == offchip else ONCHIP_MEMORY].append(
-            {"resource": _port_name("measured", (core_id,)), "cores": [core_id], "bytes_per_cycle": model.ceiling / 8}
+    for memory, model in accelerator.bandwidth.items():
+        cores = [c.id for c in memory.cores]
+        levels[OFFCHIP_MEMORY if memory.offchip else ONCHIP_MEMORY].append(
+            {"resource": _port_name(memory.name, cores), "cores": cores, "bytes_per_cycle": model.ceiling / 8}
         )
-    for link in dict.fromkeys(data["cl"] for _, _, data in accelerator.cores.edges(data=True) if "cl" in data):
+    for link in dict.fromkeys(data["cl"] for _, _, data in accelerator.network.edges(data=True)):
         cores = sorted(link_cores(link))
-        levels[OFFCHIP_LINKS if offchip in cores else CORE_LINKS].append(
+        levels[OFFCHIP_LINKS if any(m.offchip for m in link.memories) else CORE_LINKS].append(
             {"resource": link_name(link), "cores": cores, "bytes_per_cycle": link.bandwidth / 8}
         )
     return {

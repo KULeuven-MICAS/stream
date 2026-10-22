@@ -14,7 +14,7 @@ from stream.stages.parsing.accelerator_parser import parse_accelerator
 
 FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
 AIE2 = "stream/inputs/aie/hardware/whole_array.yaml"
-ALIASED = "tests/fixtures/hardware/tpu_v7_aliased.yaml"
+VIEWS = "tests/fixtures/hardware/tpu_v7_views.yaml"
 MEASURED = {
     "ceiling": 296.6,
     "contiguous": 148.3,
@@ -44,7 +44,7 @@ def fusemax() -> Accelerator:
 def test_cores_sharing_a_memory_share_its_ports(fusemax: Accelerator):
     registry = fusemax.ports
     sram = [port for port in registry if port.key.memory == "sram"]
-    assert {port.key for port in sram} == {(0, "sram", "r_port_1"), (0, "sram", "w_port_1")}
+    assert {port.key for port in sram} == {("sram", "r_port_1"), ("sram", "w_port_1")}
     assert all(port.core_ids == (0, 1) for port in sram)
     assert registry.ports_of(fusemax.get_core(0)) == registry.ports_of(fusemax.get_core(1))
 
@@ -70,7 +70,7 @@ def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fu
 
 def test_declared_port_width_becomes_the_port_model(fusemax: Accelerator):
     # fusemax_dram.yaml: rw ports of 3200 b/cc
-    port = next(p for p in fusemax.ports if p.key == (2, "dram", "rw_port_1"))
+    port = next(p for p in fusemax.ports if p.key == ("dram", "rw_port_1"))
     assert port.bits_per_cycle == 3200
     assert port.bandwidth.efficiency(4, "read") == 1.0
 
@@ -84,46 +84,46 @@ def test_aie2_tiles_expose_their_dma_channels_as_ports():
     assert accelerator.ports.port_for(compute, READ_BY_DATAPATH, input_role(1)) is None
 
 
-def test_a_core_with_measured_bandwidth_has_no_ports():
-    accelerator = fusemax_accelerator({2: MEASURED})
+def test_the_cores_of_a_measured_memory_have_no_ports():
+    accelerator = fusemax_accelerator({"dram": MEASURED})
     registry = accelerator.ports
     assert registry.ports_of(accelerator.get_core(2)) == ()
     assert {port.key.memory for port in registry} == {"sram"}
-    assert set(accelerator.bandwidth) == {2}
+    assert set(accelerator.bandwidth) == {accelerator.memories["dram"]}
 
 
 def test_a_port_key_replaces_that_ports_declared_width():
-    accelerator = fusemax_accelerator({"2.dram.rw_port_1": MEASURED, "1.sram.r_port_1": MEASURED})
+    accelerator = fusemax_accelerator({"dram.rw_port_1": MEASURED, "sram.r_port_1": MEASURED})
     ports = {port.key: port for port in accelerator.ports}
     measured = BandwidthModel.from_description(MEASURED)
-    assert ports[(2, "dram", "rw_port_1")].bandwidth == measured
-    assert ports[(0, "sram", "r_port_1")].bandwidth == measured
-    assert ports[(2, "dram", "rw_port_2")].bits_per_cycle == 3200
+    assert ports[("dram", "rw_port_1")].bandwidth == measured
+    assert ports[("sram", "r_port_1")].bandwidth == measured
+    assert ports[("dram", "rw_port_2")].bits_per_cycle == 3200
     assert accelerator.bandwidth == {}
 
 
-@pytest.mark.parametrize("key", [9, "9.dram.rw_port_1", "2.dram"])
-def test_bandwidth_keys_naming_no_core_are_rejected(key: Any):
+@pytest.mark.parametrize("key", [2, "hbm", "hbm.rw_port_1", "2.rw_port_1", "dram.dram.rw_port_1"])
+def test_bandwidth_keys_naming_no_memory_are_rejected(key: Any):
     assert not fusemax_with_bandwidth({key: MEASURED})[0]
 
 
-@pytest.mark.parametrize("key", ["2.sram.rw_port_1", "2.dram.rw_port_9", "0.rf_I.r_port_1"])
+@pytest.mark.parametrize("key", ["dram.rw_port_9", "sram.rw_port_1"])
 def test_port_keys_naming_no_top_level_port_are_rejected_at_parse_time(key: Any):
-    with pytest.raises(ValueError, match="declares no port"):
+    with pytest.raises(ValueError, match="that no core models"):
         fusemax_accelerator({key: MEASURED})
 
 
 def test_aie2_port_keys_are_rejected_at_parse_time():
     data = open_yaml(AIE2)
-    data["bandwidth"] = {"0.mem.port": MEASURED}
+    data["bandwidth"] = {"tile_0_0.port": MEASURED}
     validator = AcceleratorValidator(data, AIE2)
     assert validator.validate()
-    with pytest.raises(ValueError, match="models no memory ports"):
+    with pytest.raises(ValueError, match="model no memory ports"):
         AcceleratorFactory(validator.normalized_data).create()
 
 
-def test_a_port_key_on_a_measured_core_is_rejected():
-    assert not fusemax_with_bandwidth({2: MEASURED, "2.dram.rw_port_1": MEASURED})[0]
+def test_a_port_key_on_a_measured_memory_is_rejected():
+    assert not fusemax_with_bandwidth({"dram": MEASURED, "dram.rw_port_1": MEASURED})[0]
 
 
 class _BackendWithoutPortTraffic:
@@ -137,11 +137,11 @@ def test_a_cost_backend_without_port_traffic_reports_none():
     assert port_traffic(ZIGZAG_BACKEND, entry) == ()
 
 
-def test_aliased_memories_share_one_physical_port():
-    # tpu_v7_aliased.yaml: `8.vmem`, `0.operand_buffer` and `1.operand_buffer` are one scratchpad.
-    accelerator = parse_accelerator(ALIASED)
+def test_views_of_one_memory_share_its_ports():
+    # tpu_v7_views.yaml: `8.vmem`, `0.operand_buffer` and `1.operand_buffer` are one scratchpad.
+    accelerator = parse_accelerator(VIEWS)
     vmem = [port for port in accelerator.ports if 8 in port.core_ids]
-    assert {port.key for port in vmem} == {(8, "vmem", "r_port_1"), (8, "vmem", "w_port_1")}
+    assert {port.key for port in vmem} == {("vmem_0", "r_port_1"), ("vmem_0", "w_port_1")}
     assert all(port.core_ids == (0, 1, 8) for port in vmem)
     assert all(port.bits_per_cycle == 262144 for port in vmem)
     assert accelerator.ports.ports_of(accelerator.get_core(0)) == tuple(vmem)

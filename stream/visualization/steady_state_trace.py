@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.space import is_const_input, is_const_output
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_active_transfer_latency_for_path
@@ -76,17 +77,12 @@ def _core_label(core: Core) -> str:
 
 
 def _link_label(link: CommunicationLink) -> str:
-    bw = getattr(link, "bandwidth", "?")
-    sender_id = getattr(link.sender, "id", "?")
-    receiver_id = getattr(link.receiver, "id", "?")
-    return f"Link {sender_id}→{receiver_id} (bw={bw})"
+    return f"Link {link}"
 
 
 def _path_label(path: MulticastPathPlan) -> str:
     """Short but complete label for a path of CommunicationLinks used as a track name."""
-    hops = "→".join(str(getattr(lnk.receiver, "id", "?")) for lnk in path.links_used)
-    src = getattr(path.sources[0], "id", "?") if path.links_used else "?"
-    return f"Path {src}→{hops}"
+    return f"Path from core {path.sources[0].id}: {', '.join(map(str, path.links_used))}"
 
 
 def _resource_label(res) -> str:
@@ -107,12 +103,13 @@ def _resource_sort_key(res) -> int:
         col = getattr(res, "col_id", 0) or 0
         row = getattr(res, "row_id", 0) or 0
         return col * 1000 + row
-    # Links sorted after all cores, then by sender id
-    return (
-        1_000_000
-        + getattr(getattr(res, "sender", None), "id", 0) * 1000
-        + getattr(getattr(res, "receiver", None), "id", 0)
-    )
+    # Links sorted after all cores, then by the first core of the sender's and the receiver's memory
+    return 1_000_000 + _first_core(getattr(res, "sender", None)) * 1000 + _first_core(getattr(res, "receiver", None))
+
+
+def _first_core(end) -> int:
+    """The lowest core id of a link end's memory, 0 for a bus's ends."""
+    return min(core.id for core in end.cores) if isinstance(end, Memory) else 0
 
 
 def _core_group_label(cores: tuple[Core, ...]) -> str:

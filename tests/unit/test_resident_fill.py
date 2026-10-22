@@ -37,7 +37,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
     model = create_solver(SolverBackend.ORTOOLS_GSCIP, "fill")
     model.set_param(SolverParams.VERBOSITY, 0)
     space = object.__new__(DecisionSpace)
-    space.shared_bandwidth = {0: SimpleNamespace(ceiling=1.0)}
+    space.shared_bandwidth = {_Node("memory"): SimpleNamespace(ceiling=1.0)}
     cycles = {}
     y, z_stop, z_single = {}, {}, {}
     space.tensors_to_optimize_reuse_for, space.ssis = [], {}
@@ -66,7 +66,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
             z_single[(tensor, 0)] = z
     space.is_const_i = lambda transfer: True  # type: ignore[method-assign]
     space.transfer_latency_for_path = lambda transfer, path: cycles[transfer][0]  # type: ignore[method-assign]
-    space.shared_cycles = lambda core, transfer, path, rate: cycles[transfer][1]  # type: ignore[method-assign]
+    space.shared_cycles = lambda memory, transfer, path, rate: cycles[transfer][1]  # type: ignore[method-assign]
     q = QuantityRegistry()
     ctx = FormulationContext(space, DecisionVariables({}, y, z_stop, z_single, {}), model, q, ResourceLedger())
     overlap._resident_fill(ctx)

@@ -392,12 +392,12 @@ class ResidentTensorIR(BaseModel):
 
 
 class MemoryOccupancyIR(BaseModel):
-    """How full one core's memory actually is under the solved placement."""
+    """How full one memory actually is under the solved placement."""
 
-    core_id: int
-    core_name: str
-    resident_bits: int = Field(description="Bits the solved placement keeps on this core in the steady state")
-    capacity_bits: int = Field(description="The core's declared top-level memory capacity")
+    memory: str = Field(description="The memory's name")
+    cores: list[int] = Field(description="The cores computing out of it")
+    resident_bits: int = Field(description="Bits the solved placement keeps in this memory in the steady state")
+    capacity_bits: int = Field(description="Its capacity, less what the toolchain reserves on its cores")
     utilization: float | None = Field(default=None, description="resident_bits / capacity_bits")
     tensors: list[ResidentTensorIR] = Field(
         default_factory=list, description="Largest resident tensors first: what sets the floor on a shrink"
@@ -408,7 +408,9 @@ class ResourceActivityIR(BaseModel):
     """One resource under the memory_ports family, in ZigZag's port-activity terms."""
 
     kind: str = Field(default="memory_port", description="'memory_port', 'shared_bandwidth' or 'link'")
-    resource: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
+    resource: str = Field(
+        description="'<memory>.<port>', the memory's name for a measured one, or '<sender>-><receiver>' for a link"
+    )
     core_ids: list[int] = Field(description="Cores sharing the resource")
     core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
     bw_bits_per_cycle: float = Field(description="Port bandwidth")

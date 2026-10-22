@@ -383,7 +383,7 @@ class GenericMappingGenerator:
         for cn in cns:
             if len(cores := self._select_cores_for_node(cn)) <= 1:
                 continue
-            capacity = min(capacity, *(c.get_memory_capacity() for c in cores))
+            capacity = min(capacity, *(self.accelerator.memory_of(c).capacity_bits for c in cores))
             dims = sub_workload.get_dims(cn)
             for t in cn.tensors:
                 lead = frozenset(sub_workload.leading_dim(dims[p])[0] for p in map_dim_positions(cn.get_mapping(t)))
@@ -747,7 +747,11 @@ class GenericMappingGenerator:
         unroll = self._inter_core_unrolling(sub_workload, cns).get(fusion_dim, 1)
         per_core = full // unroll if unroll > 1 and full % unroll == 0 else full
         capacity_bits = min(
-            (cores[0].get_memory_capacity() for cn in cns if (cores := self._select_cores_for_node(cn))),
+            (
+                self.accelerator.memory_of(cores[0]).capacity_bits
+                for cn in cns
+                if (cores := self._select_cores_for_node(cn))
+            ),
             default=0,
         )
         budget = capacity_bits // 2  # the fusion intermediate shares L1 with weights + activations

@@ -101,8 +101,7 @@ ACCELERATOR_RAW: dict = {
     "name": "test_aie2_accel",
     "num_cores": 3,
     "offchip_core_id": 2,
-    "nb_shared_mem_groups": 1,
-    "core_memory_sharing": [],
+    "memories": {"tile0": ["0.memory"], "tile1": ["1.memory"], "offchip": ["2.memory"]},
     "cores": [
         {
             "id": 0,
@@ -136,17 +135,17 @@ ACCELERATOR_RAW: dict = {
             "utilization": 0.0,
         },
     ],
-    "core_connectivity": [
+    "connections": [
         {
             "type": "bus",
-            "cores": [0, 1],
+            "memories": ["tile0", "tile1"],
             "bandwidth": 32.0,
             "unit_energy_cost": 0.5,
         },
         {
             "type": "link",
-            "from_core": 1,
-            "to_core": 2,
+            "from_memory": "tile1",
+            "to_memory": "offchip",
             "bandwidth": 64.0,
             "unit_energy_cost": 1.0,
         },
@@ -324,9 +323,9 @@ class TestAcceleratorIR:
             name=raw["name"],
             num_cores=raw["num_cores"],
             offchip_core_id=raw["offchip_core_id"],
-            nb_shared_mem_groups=raw["nb_shared_mem_groups"],
+            memories=raw["memories"],
             cores=cores,
-            core_connectivity=raw["core_connectivity"],
+            connections=raw["connections"],
         )
         assert ir.name == "test_aie2_accel"
         assert ir.num_cores == 3
@@ -358,7 +357,7 @@ class TestAcceleratorIR:
         assert view.name == "test_aie2_accel"
         assert view.num_cores == 3
         assert len(view.cores) == 3
-        assert len(view.core_connectivity) == 2
+        assert len(view.connections) == 2
         assert view.schema_version == "1.0"
 
     def test_compiler_view(self):
@@ -777,6 +776,6 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
 def test_the_hardware_ir_names_the_cores_sharing_a_memory_and_what_a_specialized_core_runs():
     """FuseMax's array and vector core share one memory; only the vector core restricts its operators."""
     ir = AcceleratorIR.from_internal(parse_accelerator("stream/inputs/examples/hardware/fusemax.yaml"))
-    assert ir.core_memory_sharing == [[0, 1]]
+    assert ir.memories["sram"] == ["0.sram", "1.sram"]
     served = {core.id: core.extra_fields["operator_types"] for core in ir.cores}
     assert served[0] is None and "MaxPool" in served[1]

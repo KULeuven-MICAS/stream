@@ -270,7 +270,7 @@ class CapacityTiler:
         resident: dict[LayerDim, int],
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
         accumulated_over: frozenset[LayerDim] = frozenset(),
-    ) -> dict[int, float]:
+    ) -> dict[str, float]:
         """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: per node a core
         runs, the tile of each operand the node touches under its own split (``node_unroll``, else the group's
         ``unroll`` on a multi-core node), windows included, a tensor the group produces once and one it reads from
@@ -300,18 +300,18 @@ class CapacityTiler:
                 tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
                 for core in cores:
                     held.setdefault(core.id, {})[tile] = buffers * math.prod(shape) * t.operand_type.bitwidth
-        memories: dict[int, float] = {}
+        memories: dict[str, float] = {}
         for core_id, tiles in held.items():
-            memory = self.accelerator.memory_of(self.accelerator.get_core(core_id)).id
+            memory = self.accelerator.memory_of(self.accelerator.get_core(core_id)).name
             memories[memory] = memories.get(memory, 0.0) + sum(tiles.values())
         return memories
 
     def _capacities(
         self, cns: tuple[ComputationNode, ...], cores_per_node: dict[ComputationNode, list[Core]]
-    ) -> dict[int, int]:
+    ) -> dict[str, int]:
         """Each memory the group's cores use, with its capacity."""
         return {
-            self.accelerator.memory_of(core).id: core.get_memory_capacity()
+            self.accelerator.memory_of(core).name: self.accelerator.memory_of(core).capacity_bits
             for cn in cns
             for core in cores_per_node.get(cn, [])
         }

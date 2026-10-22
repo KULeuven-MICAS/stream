@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from stream.api import SolveOptions, default_families
-from stream.hardware.architecture.core import Core
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.ir.infeasibility import InfeasibleAllocationError
@@ -91,7 +90,7 @@ def test_the_capacity_screen_runs_whatever_the_families(solve: Solve):
     """A memory too small for its pinned tensors fails the solve before the model is built, with memory_capacity
     left out too, as on 1.x."""
     with (
-        patch.object(Core, "get_memory_capacity", return_value=1),
+        patch.object(DecisionSpace, "memory_capacity_bits", return_value=1),
         pytest.raises(InfeasibleAllocationError, match="pinned to it"),
     ):
         solve(default_families(ACCELERATOR, ["memory_capacity"]), hook="_build_model")
@@ -121,12 +120,18 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
 
 @pytest.mark.parametrize(
     ("shared_bandwidth", "bandwidth", "charged"),
-    [({}, 512.0, True), ({}, 0.0, False), ({0: object()}, 512.0, False)],
-    ids=["offchip_links", "no_offchip_core", "shared_bandwidth_model"],
+    [({}, 512.0, True), ({}, 0.0, False), ({"l3": object()}, 512.0, False), ({"l1": object()}, 512.0, True)],
+    ids=["offchip_links", "no_offchip_core", "offchip_shared_bandwidth_model", "onchip_shared_bandwidth_model"],
 )
 def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
-    """No off-chip core charges nothing, and with a shared-bandwidth model the bytes are in the latency already."""
-    space = SimpleNamespace(shared_bandwidth=shared_bandwidth, iterations=4, offchip_bandwidth=lambda: bandwidth)
+    """No off-chip core charges nothing, and with a shared-bandwidth model of the off-chip memory the bytes are in
+    the latency already."""
+    space = SimpleNamespace(
+        shared_bandwidth=shared_bandwidth,
+        iterations=4,
+        offchip_bandwidth=lambda: bandwidth,
+        accelerator=SimpleNamespace(offchip_memory="l3"),
+    )
     q = QuantityRegistry()
     _offchip_traffic().build(SimpleNamespace(space=space, quantities=q))
     assert ("offchip_traffic_weight" in q) is charged
@@ -136,7 +141,12 @@ def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
 
 def test_offchip_traffic_without_its_charge_keeps_its_level():
     """``charge`` False drops only the latency charge, as ConstraintSelection(offchip_traffic_cost=False) did."""
-    space = SimpleNamespace(shared_bandwidth={}, iterations=4, offchip_bandwidth=lambda: 512.0)
+    space = SimpleNamespace(
+        shared_bandwidth={},
+        iterations=4,
+        offchip_bandwidth=lambda: 512.0,
+        accelerator=SimpleNamespace(offchip_memory="l3"),
+    )
     q = QuantityRegistry()
     _offchip_traffic(charge=False).build(SimpleNamespace(space=space, quantities=q))
     assert "offchip_traffic_weight" not in q

@@ -9,13 +9,18 @@ core_coordinates:
   1: [0, 1]
   2: [0, 2]
 offchip_core_id: 0
-core_connectivity:
+memories:
+  tile_0_0: [0.memory]
+  tile_0_1: [1.memory]
+  tile_0_2: [2.memory]
+
+connections:
   # ───── Connect shim_dma to mem_tile ─────
   - type: link
-    cores: [0, 1]
+    memories: [tile_0_0, tile_0_1]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile ─────
   - type: link
-    cores: [1, 2]
+    memories: [tile_0_1, tile_0_2]
     bandwidth: 64
 unit_energy_cost: 0

@@ -11,8 +11,8 @@
 #  * A TensorCore becomes two Stream cores. Stream gives a core one operational array, and a
 #    TensorCore has two very different ones (a 256x256 matrix array and a 2-D vector machine).
 #    Splitting them is what lets the mapper send SiLU and the gate multiply to vector hardware
-#    instead of spending MXU rows on elementwise work. The pair shares VMEM, modelled as a
-#    wide link between them.
+#    instead of spending MXU rows on elementwise work. The pair shares VMEM: the MXU's and
+#    VPU's operand buffers are views of the VMEM core's memory.
 #  * SparseCores are omitted. They accelerate embeddings and sparse lookups, which none of the
 #    dense workloads modelled here touch.
 #
@@ -59,58 +59,30 @@ unit_energy_cost: 0
 # `stream.hardware.cost`, so they follow a mutation instead of going stale.
 technology_node: n3
 
-# The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one
-# physical scratchpad -- the modelling split described above. Without this the cost model would bill
-# the same 128 MiB three times over. The first entry of a group is the one billed.
-memory_aliases:
-  - [8.vmem, 0.operand_buffer, 1.operand_buffer]
-  - [9.vmem, 2.operand_buffer, 3.operand_buffer]
-  - [10.vmem, 4.operand_buffer, 5.operand_buffer]
-  - [11.vmem, 6.operand_buffer, 7.operand_buffer]
+# The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one physical
+# scratchpad -- the modelling split described above: one memory, priced once, by its first view.
+memories:
+  vmem_0: [8.vmem, 0.operand_buffer, 1.operand_buffer]
+  vmem_1: [9.vmem, 2.operand_buffer, 3.operand_buffer]
+  vmem_2: [10.vmem, 4.operand_buffer, 5.operand_buffer]
+  vmem_3: [11.vmem, 6.operand_buffer, 7.operand_buffer]
+  hbm: [12.hbm3e]
 
-core_connectivity:
-  # ── Inside a TensorCore: MXU and VPU share VMEM, so this link is wide. ──
-  - type: link
-    cores: [0, 1]
-    bandwidth: 262144
-  - type: link
-    cores: [2, 3]
-    bandwidth: 262144
-  - type: link
-    cores: [4, 5]
-    bandwidth: 262144
-  - type: link
-    cores: [6, 7]
-    bandwidth: 262144
-
-  # ── Each TensorCore's MXU and VPU both read from that core's VMEM. ──
-  - type: bus
-    cores: [0, 1, 8]
-    bandwidth: 262144
-  - type: bus
-    cores: [2, 3, 9]
-    bandwidth: 262144
-  - type: bus
-    cores: [4, 5, 10]
-    bandwidth: 262144
-  - type: bus
-    cores: [6, 7, 11]
-    bandwidth: 262144
-
+connections:
   # ── Within a chip, the two TensorCores' scratchpads exchange directly (die-to-die). ──
   - type: link
-    cores: [8, 9]
+    memories: [vmem_0, vmem_1]
     bandwidth: 131072
   - type: link
-    cores: [10, 11]
+    memories: [vmem_2, vmem_3]
     bandwidth: 131072
 
   # ── Between chips: the inter-chip interconnect, 1200 GB/s -> 5486 bits/cc. ──
   - type: link
-    cores: [9, 10]
+    memories: [vmem_1, vmem_2]
     bandwidth: 5486
 
-  # ── HBM: every core reaches it, at the published 2 x 7380 GB/s. ──
+  # ── HBM: every scratchpad reaches it, at the published 2 x 7380 GB/s. ──
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    memories: [vmem_0, vmem_1, vmem_2, vmem_3, hbm]
     bandwidth: 65536

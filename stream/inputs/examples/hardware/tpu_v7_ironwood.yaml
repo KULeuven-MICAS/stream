@@ -12,7 +12,7 @@
 #  * A TensorCore is four Stream cores: two MXUs, its VPU and its VMEM. Stream gives a core one
 #    operational array, and a matrix unit and a vector machine are very different arrays.
 #  * The VMEM is the top memory of the TensorCore's MXUs and VPU, shared between them and the
-#    TensorCore's VMEM core (core_memory_sharing): its 64 MiB is the TensorCore's one residency limit,
+#    TensorCore's VMEM core (one memory): its 64 MiB is the TensorCore's one residency limit,
 #    its ports at the vector load/store rate the bandwidth all of them share, and a block's operands
 #    reach the arrays from it in place. The VMEM core is where the chiplet's links land.
 #  * Each chiplet's VMEM links to HBM at that chiplet's bandwidth; Stream has one off-chip core, and
@@ -70,18 +70,11 @@ core_coordinates:
 offchip_core_id: 16
 unit_energy_cost: 0
 
-# Each TensorCore's VMEM core, MXUs and VPU share the VMEM; the VMEM core is listed first, as its owner.
-core_memory_sharing:
-  - 3, 0, 1, 2
-  - 7, 4, 5, 6
-  - 11, 8, 9, 10
-  - 15, 12, 13, 14
-
 # HBM3E is read and written 32 bytes at a time (a 32-bit pseudo-channel, burst length 8), so a
 # transfer whose contiguous runs are shorter, a tile of a tensor laid out another way, uses only part
 # of each access.
 bandwidth:
-  16.hbm3e.rw_port_1:
+  hbm.rw_port_1:
     ceiling: 53600
     contiguous: 53600
     burst: 32
@@ -91,30 +84,38 @@ bandwidth:
 # capacities, widths, port counts and array dimensions by `stream.hardware.cost`.
 technology_node: n3
 
-core_connectivity:
+# Each TensorCore's VMEM core, MXUs and VPU share its VMEM.
+memories:
+  vmem_0: [0.vmem, 1.vmem, 2.vmem, 3.vmem]
+  vmem_1: [4.vmem, 5.vmem, 6.vmem, 7.vmem]
+  vmem_2: [8.vmem, 9.vmem, 10.vmem, 11.vmem]
+  vmem_3: [12.vmem, 13.vmem, 14.vmem, 15.vmem]
+  hbm: [16.hbm3e]
+
+connections:
   # ── Within a chip, the two chiplets' VMEMs meet over the die-to-die link, ~600 GB/s each way. ──
   - type: link
-    cores: [3, 7]
+    memories: [vmem_0, vmem_1]
     bandwidth: 2182
   - type: link
-    cores: [11, 15]
+    memories: [vmem_2, vmem_3]
     bandwidth: 2182
 
   # ── Between the chips: one ICI link between their second chiplets, 100 GB/s each way. ──
   - type: link
-    cores: [7, 15]
+    memories: [vmem_1, vmem_3]
     bandwidth: 364
 
   # ── HBM: each chiplet's VMEM reaches its own four stacks at 3.69 TB/s. ──
   - type: link
-    cores: [3, 16]
+    memories: [vmem_0, hbm]
     bandwidth: 13400
   - type: link
-    cores: [7, 16]
+    memories: [vmem_1, hbm]
     bandwidth: 13400
   - type: link
-    cores: [11, 16]
+    memories: [vmem_2, hbm]
     bandwidth: 13400
   - type: link
-    cores: [15, 16]
+    memories: [vmem_3, hbm]
     bandwidth: 13400

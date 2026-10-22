@@ -26,6 +26,7 @@ from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge,
 if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.cost_model.layout import Rate
+    from stream.hardware.architecture.memory import Memory
     from stream.hardware.ports import Port
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
@@ -45,7 +46,7 @@ class DecisionSpace:
         self.accelerator = problem.accelerator
         self.hardware = problem.hardware
         self.offchip_core_id = self.hardware.offchip_core_id
-        self.shared_bandwidth: dict[int, BandwidthModel] = dict(self.accelerator.bandwidth)
+        self.shared_bandwidth: dict[Memory, BandwidthModel] = dict(self.accelerator.bandwidth)
         self.iterations = problem.iterations
         self.ssis = problem.ssis
         self.mapping = problem.mapping
@@ -222,10 +223,9 @@ class DecisionSpace:
         tiles = self.tiles_needed_levels[(t, stop)]
         return max(tiles, 2) if self.rotation_levels.get((t, stop)) and not single else tiles
 
-    def memory_capacity_bits(self, memory: Core) -> int:
+    def memory_capacity_bits(self, memory: Memory) -> int:
         """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims on each core using it."""
-        users = [c for c in self.accelerator.core_list if self.accelerator.memory_of(c) == memory]
-        return memory.get_memory_capacity() - sum(self.hardware.reserved_memory_bits(c) for c in users)
+        return memory.capacity_bits - sum(self.hardware.reserved_memory_bits(c) for c in memory.cores)
 
     def is_const_i(self, tr: TransferNode) -> bool:
         return is_const_input(self.workload, tr)
@@ -248,25 +248,26 @@ class DecisionSpace:
         if self.choice_shares_memory(tr, path):
             return 0
         link = get_transfer_latency_for_path(tr, path, self.moved_bits(tr, path))
-        shared = (self.shared_cycles(core, tr, path, model.contiguous) for core, model in self.shared_bandwidth.items())
+        shared = (
+            self.shared_cycles(memory, tr, path, model.contiguous) for memory, model in self.shared_bandwidth.items()
+        )
         return max(link, *shared) if self.shared_bandwidth else link
 
-    @staticmethod
-    def direction(core_id: int, path: MulticastPathPlan) -> str | None:
-        """'read' for a transfer out of this core, 'write' for one into it, None for one it takes no part in."""
-        if any(c.id == core_id for c in path.sources):
+    def direction(self, memory: Memory, path: MulticastPathPlan) -> str | None:
+        """'read' for a transfer out of this memory, 'write' for one into it, None for one it takes no part in."""
+        if any(self.accelerator.memory_of(c) == memory for c in path.sources):
             return "read"
-        if any(c.id == core_id for c in path.targets):
+        if any(self.accelerator.memory_of(c) == memory for c in path.targets):
             return "write"
         return None
 
-    def shared_cycles(self, core_id: int, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
-        """Cycles one firing holds a shared-bandwidth core at ``rate``, slowed by its access pattern."""
-        direction = self.direction(core_id, path)
+    def shared_cycles(self, memory: Memory, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
+        """Cycles one firing holds a shared-bandwidth memory at ``rate``, slowed by its access pattern."""
+        direction = self.direction(memory, path)
         if direction is None:
             return 0
         span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
-        return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
+        return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[memory].efficiency(span, direction)))
 
     @cached_property
     def layouts(self) -> CopyLayouts:
@@ -286,8 +287,9 @@ class DecisionSpace:
         return self.accelerator.ports.port_for(core, direction, self.operand_role(tr, read_side=direction == READ))
 
     def side_bandwidth(self, tr: TransferNode, core: Core, direction: str) -> BandwidthModel | None:
-        """What bounds ``core``'s side of ``tr``: its measured shared bandwidth, else its port's, else nothing."""
-        if (model := self.shared_bandwidth.get(core.id)) is not None:
+        """What bounds ``core``'s side of ``tr``: its memory's measured shared bandwidth, else its port's, else
+        nothing."""
+        if (model := self.shared_bandwidth.get(self.accelerator.memory_of(core))) is not None:
             return model
         port = self.side_port(tr, core, direction)
         return port.bandwidth if port is not None else None
@@ -306,16 +308,10 @@ class DecisionSpace:
 
     def offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""
-        off = self.offchip_core_id
+        off = self.accelerator.offchip_memory
         if off is None:
             return 0.0
-        return float(
-            sum(
-                link.bandwidth
-                for link in self.link_set
-                if core_id(link.receiver) == off or any(core.id == off for core in link.members)
-            )
-        )
+        return float(sum(link.bandwidth for link in self.link_set if link.receiver == off or off in link.members))
 
     def placement_width(self, tensors: Iterable[Tensor]) -> int:
         """How many cores one side of a transfer occupies."""
@@ -515,11 +511,6 @@ def is_const_input(workload: Workload, tr: TransferNode) -> bool:
 def is_const_output(workload: Workload, tr: TransferNode) -> bool:
     """Whether ``tr`` moves a tensor the workload puts out."""
     return isinstance(next(iter(workload.successors(tr))), OutEdge)
-
-
-def core_id(end: Core | str) -> int | None:
-    """A link end's core id, None for an end that is not a core."""
-    return end.id if isinstance(end, Core) else None
 
 
 def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:

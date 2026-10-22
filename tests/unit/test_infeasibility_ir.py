@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from stream.hardware.architecture.backends.aie2 import AIE2CoreBackend
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.ir.infeasibility import (
     ImplicatedResourceIR,
     InfeasibilityReportIR,
@@ -71,7 +73,12 @@ def test_resource_kind_is_open_for_new_hardware():
 
 
 def _core(core_id: int) -> Core:
-    return Core(core_id=core_id, name=f"core_{core_id}", core_type="aie2.compute")
+    backend = AIE2CoreBackend(memory_capacity_bits=8 * 1_000_000)
+    return Core(core_id=core_id, name=f"core_{core_id}", core_type="aie2.compute", backend=backend)
+
+
+def _memory(core: Core) -> Memory:
+    return Memory(f"tile_{core.id}", ((core, "memory"),))
 
 
 def _diagnose(ledger: ResourceLedger, iis: list[str]) -> InfeasibilityReportIR:
@@ -83,13 +90,13 @@ def _diagnose(ledger: ResourceLedger, iis: list[str]) -> InfeasibilityReportIR:
     return infeasibility_report(model, ledger, "INFEASIBLE")  # type: ignore[arg-type]
 
 
-def _bound(ledger: ResourceLedger, name: str, core: Core, kind: ResourceKind, bound: float) -> None:
-    ledger.tags[name] = ConstraintTag(core, kind)
-    ledger.bounds[(kind, core.id)] = bound
+def _bound(ledger: ResourceLedger, name: str, resource: Core | Memory, kind: ResourceKind, bound: float) -> None:
+    ledger.tags[name] = ConstraintTag(resource, kind)
+    ledger.bounds[(kind, resource)] = bound
 
 
-def _held(ledger: ResourceLedger, name: str, core: Core, kind: ResourceKind, tensor: str) -> None:
-    ledger.tags[name] = ConstraintTag(core, kind, tensor)
+def _held(ledger: ResourceLedger, name: str, resource: Core | Memory, kind: ResourceKind, tensor: str) -> None:
+    ledger.tags[name] = ConstraintTag(resource, kind, tensor)
 
 
 def test_unmet_generalizes_beyond_memory():
@@ -97,7 +104,7 @@ def test_unmet_generalizes_beyond_memory():
     witness -- proving the diagnosis is not memory-specific."""
     ledger, core = ResourceLedger(), _core(2)
     _bound(ledger, "fifo_bound", core, OBJECT_FIFO_DEPTH, 4.0)
-    ledger.terms[(OBJECT_FIFO_DEPTH, 2)] = {"tA": 3, "tB": 3}
+    ledger.terms[(OBJECT_FIFO_DEPTH, core)] = {"tA": 3, "tB": 3}
     _held(ledger, "a", core, OBJECT_FIFO_DEPTH, "tA")
     _held(ledger, "b", core, None, "tB")
 
@@ -115,11 +122,12 @@ def test_unmet_generalizes_beyond_memory():
 
 def test_unmet_forced_terms_avoid_partition_double_count():
     """Only the tensors the IIS constraints carry count, not every tensor whose name starts the same."""
-    ledger, core = ResourceLedger(), _core(3)
-    _bound(ledger, "mem_cap_Core 3", core, MEMORY_CAPACITY, 1_000_000.0)
-    ledger.terms[(MEMORY_CAPACITY, 3)] = {"conv_out": 1_600_000, "conv_out_1": 1_600_000}
-    _held(ledger, "memload_conv_out_1_Core_3_L-1__lb", core, MEMORY_CAPACITY, "conv_out_1")
-    (resource,) = _diagnose(ledger, ["mem_cap_Core 3", "memload_conv_out_1_Core_3_L-1__lb"]).resources
+    ledger, memory = ResourceLedger(), _memory(_core(3))
+    _bound(ledger, "mem_cap_Memory tile_3", memory, MEMORY_CAPACITY, 1_000_000.0)
+    ledger.terms[(MEMORY_CAPACITY, memory)] = {"conv_out": 1_600_000, "conv_out_1": 1_600_000}
+    _held(ledger, "memload_conv_out_1_Memory_tile_3_L-1__lb", memory, MEMORY_CAPACITY, "conv_out_1")
+    (resource,) = _diagnose(ledger, ["mem_cap_Memory tile_3", "memload_conv_out_1_Memory_tile_3_L-1__lb"]).resources
+    assert resource.resource.kind == "memory" and resource.resource.label == "Memory tile_3"
     assert resource.unmet is not None
     assert {t.label for t in resource.unmet.terms} == {"conv_out_1"}
     assert resource.unmet.demand_value == 1_600_000
@@ -129,12 +137,12 @@ def test_unmet_memory_term_carries_tile_shape():
     """A memory term recorded as a {value, dims, dtype} record surfaces the per-dimension tile sizes and
     dtype, and the value still drives the demand -- so the designer sees which tile (and why) fills the
     core, not just the total."""
-    ledger, core = ResourceLedger(), _core(3)
-    _bound(ledger, "cap", core, MEMORY_CAPACITY, 1_000_000.0)
-    ledger.terms[(MEMORY_CAPACITY, 3)] = {
+    ledger, memory = ResourceLedger(), _memory(_core(3))
+    _bound(ledger, "cap", memory, MEMORY_CAPACITY, 1_000_000.0)
+    ledger.terms[(MEMORY_CAPACITY, memory)] = {
         "conv_out": {"value": 1_600_000, "dims": [("z32", 64), ("z3", 112), ("z4", 112)], "dtype": "f32"}
     }
-    _held(ledger, "load", core, MEMORY_CAPACITY, "conv_out")
+    _held(ledger, "load", memory, MEMORY_CAPACITY, "conv_out")
     report = _diagnose(ledger, ["cap", "load"])
     assert report.nature == "capacity"
     (term,) = report.resources[0].unmet.terms  # type: ignore[union-attr]

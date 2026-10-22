@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from stream.opt.allocation.constraint_optimization.families.traffic import link_name
 from stream.opt.allocation.constraint_optimization.report import guarded
-from stream.opt.allocation.constraint_optimization.space import core_id
 from stream.workload.node import Tensor
 
 if TYPE_CHECKING:
@@ -130,8 +129,8 @@ class _NodeDetail:
             for copy, p in at
         ]
         return {
-            "sources": [core_id(c) for c in route.sources],
-            "targets": [core_id(c) for _, c in held],
+            "sources": [c.id for c in route.sources],
+            "targets": [c.id for _, c in held],
             "links": [link_name(link) for link in route.links_used],
             "windows": [_shape(self.workload.get_tensor_single_core(copy, tn, self.mapping, p)) for copy, p in at],
             "moved": [_shape(tile) for tile in moved],
@@ -141,7 +140,7 @@ class _NodeDetail:
                 if loop.halo
             ],
             "handed": [
-                {"source": core_id(route.sources[i]), "target": core_id(route.targets[j]), "elements": elements}
+                {"source": route.sources[i].id, "target": route.targets[j].id, "elements": elements}
                 for (i, j), elements in space.overlaps(tn).items()
             ],
             "moved_bits": 0 if space.choice_shares_memory(tn, route) else space.moved_bits(tn, route),

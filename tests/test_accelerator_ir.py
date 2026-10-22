@@ -90,7 +90,7 @@ def test_get_ir_top_level_keys(hardware_path, expected):
     """Top-level IR must contain all mandatory keys."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    required_keys = {"name", "num_cores", "offchip_core_id", "nb_shared_mem_groups", "cores", "core_connectivity"}
+    required_keys = {"name", "num_cores", "offchip_core_id", "memories", "cores", "connections"}
     assert required_keys.issubset(ir.keys()), f"Missing keys: {required_keys - ir.keys()}"
 
 
@@ -102,7 +102,8 @@ def test_get_ir_name_and_metadata(hardware_path, expected):
     assert ir["name"] == expected["name"]
     assert ir["offchip_core_id"] == expected["offchip_core_id"]
     assert ir["num_cores"] == expected["expected_num_cores"]
-    assert ir["nb_shared_mem_groups"] >= 1
+    viewers = sorted(int(view.split(".")[0]) for views in ir["memories"].values() for view in views)
+    assert viewers == [c["id"] for c in ir["cores"]]
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
@@ -234,34 +235,34 @@ def test_get_ir_type_specific_aie2_fields(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_connectivity_structure(hardware_path, expected):
-    """Every connectivity entry must be a dict with 'type', 'bandwidth', and core references."""
+    """Every connectivity entry must be a dict with 'type', 'bandwidth', and memory references."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    for entry in ir["core_connectivity"]:
+    for entry in ir["connections"]:
         assert "type" in entry, f"Connectivity entry missing 'type': {entry}"
         assert entry["type"] in {"link", "bus"}, f"Unknown connectivity type: {entry['type']}"
         assert "bandwidth" in entry, f"Connectivity entry missing 'bandwidth': {entry}"
         if entry["type"] == "bus":
-            assert "cores" in entry, f"Bus entry missing 'cores': {entry}"
-            assert isinstance(entry["cores"], list) and len(entry["cores"]) >= 2  # noqa: PLR2004
+            assert "memories" in entry, f"Bus entry missing 'memories': {entry}"
+            assert isinstance(entry["memories"], list) and len(entry["memories"]) >= 2  # noqa: PLR2004
         else:
-            assert "from_core" in entry, f"Link entry missing 'from_core': {entry}"
-            assert "to_core" in entry, f"Link entry missing 'to_core': {entry}"
+            assert "from_memory" in entry, f"Link entry missing 'from_memory': {entry}"
+            assert "to_memory" in entry, f"Link entry missing 'to_memory': {entry}"
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
-def test_get_ir_connectivity_references_valid_core_ids(hardware_path, expected):
-    """Every core id referenced in connectivity must exist in the cores list."""
+def test_get_ir_connectivity_references_valid_memories(hardware_path, expected):
+    """Every memory referenced in connectivity must exist in the memories."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    valid_ids = {core["id"] for core in ir["cores"]}
-    for entry in ir["core_connectivity"]:
+    valid = set(ir["memories"])
+    for entry in ir["connections"]:
         if entry["type"] == "bus":
-            for cid in entry["cores"]:
-                assert cid in valid_ids, f"Bus references unknown core id {cid}"
+            for name in entry["memories"]:
+                assert name in valid, f"Bus references unknown memory {name}"
         else:
-            assert entry["from_core"] in valid_ids, f"Link 'from_core' {entry['from_core']} not in cores"
-            assert entry["to_core"] in valid_ids, f"Link 'to_core' {entry['to_core']} not in cores"
+            assert entry["from_memory"] in valid, f"Link 'from_memory' {entry['from_memory']} not in memories"
+            assert entry["to_memory"] in valid, f"Link 'to_memory' {entry['to_memory']} not in memories"
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)

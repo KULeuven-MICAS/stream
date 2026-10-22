@@ -254,7 +254,7 @@ def test_a_burst_is_a_positive_whole_number_of_bytes(burst):
     from stream.parser.accelerator_validator import AcceleratorValidator  # noqa: PLC0415
 
     data = open_yaml(TPU_V7)
-    data["bandwidth"]["16.hbm3e.rw_port_1"]["burst"] = burst
+    data["bandwidth"]["hbm.rw_port_1"]["burst"] = burst
     validator = AcceleratorValidator(data, accelerator_path=TPU_V7)
     assert not validator.validate()
     assert any("burst" in error for error in validator.errors)

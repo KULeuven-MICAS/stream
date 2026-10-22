@@ -71,7 +71,7 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortS
             port = ports.port_for(core, direction, operand)
             if port is None:
                 continue
-            # Targets in one core_memory_sharing group receive a broadcast once, into their shared memory.
+            # Targets sharing one memory receive a broadcast once, into it.
             broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
             if direction == WRITE and broadcast and broadcast_again:
                 continue
@@ -122,10 +122,12 @@ def port_name(key: PortKey) -> str:
 
 
 def link_name(link: Any) -> str:
-    """How reports name a link: ``bus <cores>`` for a bus, else ``<sender>-><receiver>``."""
+    """How reports name a link: ``bus <memories>`` for a bus, else ``<sender>-><receiver>``, with ``#<n>`` for the
+    n-th of several between the same memories."""
+    nth = f"#{link.parallel}" if link.parallel else ""
     if link.members:
-        return "bus " + ",".join(str(core.id) for core in link.members)
-    return "->".join(str(getattr(end, "id", end)) for end in (link.sender, link.receiver))
+        return f"bus{nth} " + ",".join(memory.name for memory in link.members)
+    return f"{link.sender.name}->{link.receiver.name}{nth}"
 
 
 def link_cores(link: Any) -> tuple[int, ...]:

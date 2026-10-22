@@ -11,63 +11,72 @@ cores:
 
 offchip_core_id: 6
 
-core_connectivity:
+memories:
+  tpu_like_0: [0.sram_2MB]
+  tpu_like_1: [1.sram_2MB]
+  tpu_like_2: [2.sram_2MB]
+  tpu_like_3: [3.sram_2MB]
+  pooling: [4.sram_128KB]
+  simd: [5.sram_128KB_2rw]
+  offchip: [6.dram]
+
+connections:
   # -------- 2-D mesh among compute cores (point-to-point links) ------------- #
   - type: link
-    cores: [0, 1]
+    memories: [tpu_like_0, tpu_like_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [1, 2]
+    memories: [tpu_like_1, tpu_like_2]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [2, 3]
+    memories: [tpu_like_2, tpu_like_3]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [3, 0]
+    memories: [tpu_like_3, tpu_like_0]
     bandwidth: 128
     unit_energy_cost: 0
 
   # -------------- Pooling core (id 4) linked to each compute core ----------- #
   - type: link
-    cores: [0, 4]
+    memories: [tpu_like_0, pooling]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [1, 4]
+    memories: [tpu_like_1, pooling]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [2, 4]
+    memories: [tpu_like_2, pooling]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [3, 4]
+    memories: [tpu_like_3, pooling]
     bandwidth: 128
     unit_energy_cost: 0
 
   # -------------- SIMD core (id 5) linked to each compute core -------------- #
   - type: link
-    cores: [0, 5]
+    memories: [tpu_like_0, simd]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [1, 5]
+    memories: [tpu_like_1, simd]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [2, 5]
+    memories: [tpu_like_2, simd]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [3, 5]
+    memories: [tpu_like_3, simd]
     bandwidth: 128
     unit_energy_cost: 0
 
   # -------- Shared off-chip memory bus: all cores share one medium ---------- #
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6]  # includes the DRAM controller itself
+    memories: [tpu_like_0, tpu_like_1, tpu_like_2, tpu_like_3, pooling, simd, offchip]  # includes the DRAM controller itself
     bandwidth: 512               # fatter than on-chip links
     unit_energy_cost: 0

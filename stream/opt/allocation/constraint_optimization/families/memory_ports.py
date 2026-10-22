@@ -165,14 +165,15 @@ def _stream_bits(ctx: FormulationContext) -> list[tuple[DmaStream, float]]:
 def _shared_rows(
     ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, float]]
 ) -> list[dict[str, Any]]:
-    """A core with a measured bandwidth: its solved busy time, which counts the access pattern's slow down."""
-    q = ctx.quantities
+    """A memory with a measured bandwidth: its solved busy time, which counts the access pattern's slow down."""
+    q, space = ctx.quantities, ctx.space
     rows = []
-    for core_id, model in ctx.space.shared_bandwidth.items():
-        bits = sum(b for s, b in streams if any(c.id == core_id for c in (*s.choice.sources, *s.choice.targets)))
-        row = _activity_row(ctx, "shared_bandwidth", "measured", (core_id,), model.ceiling, bits, interval)
-        if ("shared_busy" in q) and core_id in q.indexed("shared_busy"):
-            busy = ctx.model.value(q.get("shared_busy", core_id).expr)
+    for memory, model in space.shared_bandwidth.items():
+        bits = sum(b for s, b in streams if space.direction(memory, s.choice) is not None)
+        cores = tuple(c.id for c in memory.cores)
+        row = _activity_row(ctx, "shared_bandwidth", memory.name, cores, model.ceiling, bits, interval)
+        if ("shared_busy" in q) and memory.name in q.indexed("shared_busy"):
+            busy = ctx.model.value(q.get("shared_busy", memory.name).expr)
             row |= {
                 "real_cycle": busy,
                 "stall_or_slack": busy - interval,
