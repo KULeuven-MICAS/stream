@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from xdsl.dialects.builtin import bf16
+from xdsl.ir.affine import AffineMap
 
 from stream.allocation.lowering import reader_positions
 from stream.api import evaluate_mapping
@@ -14,6 +16,7 @@ from stream.cost_model.communication_manager import DemandItem
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, READ, input_role
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.mapping.mapping import role_of
 from stream.opt.allocation.constraint_optimization.families import available_families
 from stream.opt.allocation.constraint_optimization.families.memory import (
     OBJECT_FIFO_DEPTH,
@@ -30,7 +33,8 @@ from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.opt.solver import SolverBackend, SolverParams, SolverVarType, create_solver
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.stages.parsing.accelerator_parser import parse_accelerator
-from stream.workload.node import TransferNode
+from stream.workload.node import ComputationNode, TransferNode
+from stream.workload.tensor import Tensor
 
 TWO_L1S = """
 name: two-l1s
@@ -366,3 +370,44 @@ def test_every_aie_column_reaches_dram_through_its_own_shim(name):
     columns = {core.col_id for core in accelerator.core_list}
     assert sorted(core.col_id for core in shims) == sorted(columns) and all(core.row_id == 0 for core in shims)
     assert set(accelerator.offchip_memory.cores) == set(shims)
+
+
+def _node(op_type: str, inputs: int) -> ComputationNode:
+    tensors = [Tensor.create(f"t{i}", bf16, (8, 8)) for i in range(inputs + 1)]
+    maps = tuple(AffineMap.from_callable(lambda m, n: (m, n)) for _ in tensors)
+    return ComputationNode(
+        type=op_type, name=op_type, inputs=tuple(tensors[:-1]), outputs=(tensors[-1],), operand_mapping=maps
+    )
+
+
+def test_a_multiply_accumulates_bias_lands_where_its_output_does():
+    """A Gemm's operands are its first two inputs; its bias is added into the output, on a core with an activation and
+    a weights SRAM in the activations', as ZigZag, which prices no third operand, leaves it."""
+    gemm = _node("Gemm", 3)
+    assert [role_of(gemm, t) for t in (*gemm.inputs, *gemm.outputs)] == ["input1", "input2", OUTPUT, OUTPUT]
+    accelerator = parse_accelerator(META_PROTOTYPE)
+    core = accelerator.get_core(0)
+    assert accelerator.memory_of(core, role_of(gemm, gemm.inputs[2])).name == "meta_prototype_0"
+
+
+def test_every_input_of_an_elementwise_node_is_an_operand():
+    add = _node("Add", 3)
+    assert [role_of(add, t) for t in add.inputs] == ["input1", "input2", "input3"]
+
+
+def test_views_declaring_a_shared_port_differently_are_rejected_when_parsed(tmp_path):
+    """The disagreement surfaces when the description is read, not when a solve first asks for the ports."""
+    core = yaml.safe_load(open("stream/inputs/testing/hardware/cores/shared_testing_core2.yaml"))
+    core["memories"]["sram_64KB"]["ports"][0]["bandwidth_max"] = 256
+    data = yaml.safe_load(TWO_L1S)
+    data["cores"][1] = core
+    with pytest.raises(ValueError, match="declare port r_port_1 differently"):
+        _accelerator(tmp_path, yaml.safe_dump(data))
+
+
+def test_carried_state_lands_where_the_output_does():
+    """A linear-attention state update reads two operands and carries its state, updated in place each step."""
+    from stream.workload.blocks import build_block  # noqa: PLC0415
+
+    node = next(n for n in build_block("linear_attention").get_computation_nodes() if n.name == "state_update")
+    assert [role_of(node, t) for t in node.inputs] == ["input1", "input2", OUTPUT]

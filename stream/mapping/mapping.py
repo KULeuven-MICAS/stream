@@ -9,9 +9,10 @@ from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, input_role
+from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
 from stream.workload.tensor import Tensor
-from stream.workload.utils import get_equivalent_dimension
+from stream.workload.utils import get_equivalent_dimension, operand_inputs
 from stream.workload.workload import Node, Workload
 
 if TYPE_CHECKING:
@@ -303,11 +304,16 @@ class Mapping:
 
 
 def role_of(node: ComputationNode, tensor: Tensor) -> str:
-    """The operand role ``tensor`` has on ``node``: its output, or its k-th input."""
-    if tensor in node.outputs:
+    """The operand role ``tensor`` has on ``node``: its k-th operand (:func:`operand_inputs`), else the output's, for
+    its output, the state it carries (updated in place, as an accumulator is) and a further input such as a
+    multiply-accumulate's bias (added into the output)."""
+    if tensor in node.outputs or (tensor in node.inputs and is_state_operand(node, tensor)):
         return OUTPUT
+    operands = operand_inputs(node)
+    if tensor in operands:
+        return input_role(operands.index(tensor) + 1)
     if tensor in node.inputs:
-        return input_role(node.inputs.index(tensor) + 1)
+        return OUTPUT
     raise ValueError(f"{tensor.name} is no operand of {node.name}")
 
 

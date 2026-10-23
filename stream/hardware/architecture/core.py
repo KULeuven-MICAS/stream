@@ -39,7 +39,8 @@ class Core:
         self.max_object_fifo_depth: int = max_object_fifo_depth
         self.col_id: int | None = col_id
         self.row_id: int | None = row_id
-        self.banks: MemoryBanks | None = None
+        # memory level -> its banks, for the levels that declare them
+        self.memory_banks: dict[str, MemoryBanks] = {}
 
         # ---- pluggable backend ----
         self._backend: AnyBackend | None = backend
@@ -192,7 +193,7 @@ class Core:
             "utilization": self.utilization,
             "operator_types": getattr(self, "operator_types", None),
             "operand_precision": getattr(self, "operand_precision", {}),
-            "banks": asdict(self.banks) if self.banks else None,
+            "banks": {name: asdict(banks) for name, banks in self.memory_banks.items()},
         }
 
         # Merge backend-specific fields (uniform protocol)

@@ -24,7 +24,7 @@ from stream.datatypes import ELEMENT_BITS, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
-from stream.workload.utils import affine_bounds, is_mac_operator_type
+from stream.workload.utils import affine_bounds, is_mac_operator_type, operand_inputs
 from stream.workload.workload import ComputationNode, Tensor, Workload
 
 ZigZagLayerNode = zigzag_layer_node.LayerNode
@@ -157,8 +157,8 @@ class ZigZagCostEstimator:
 
     @staticmethod
     def _operands(node: ComputationNode) -> tuple[Tensor, ...]:
-        """The inputs ZigZag prices: a multiply-accumulate's two operands, so not a further input such as a bias."""
-        return node.inputs[:2] if is_mac_operator_type(node.type) else node.inputs
+        """The inputs ZigZag prices, its memory operands ``I1``, ``I2``, ...: :func:`operand_inputs`."""
+        return operand_inputs(node)
 
     def _per_core_sizes(self, node: ComputationNode) -> dict[LayerDim, int]:
         """Each unique dim's extent on one core of the node's inter-core split, a split that does not divide its dim

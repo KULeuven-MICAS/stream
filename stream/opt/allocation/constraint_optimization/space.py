@@ -14,7 +14,7 @@ from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.ports import OUTPUT, READ, input_role
+from stream.hardware.ports import OUTPUT, READ
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import placements_of, role_of
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
@@ -319,7 +319,7 @@ class DecisionSpace:
             if isinstance(consumer, ComputationNode):
                 for tensor in tr.outputs:
                     if tensor in consumer.inputs:
-                        return input_role(consumer.inputs.index(tensor) + 1)
+                        return role_of(consumer, tensor)
         return OUTPUT
 
     def offchip_bandwidth(self) -> float:

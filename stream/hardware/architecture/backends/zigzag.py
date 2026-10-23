@@ -71,14 +71,14 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
 
     def top_instance(self, role: str) -> str:
         """The top-level memory instance holding the operand of ``role``; a core with one top-level instance holds
-        every operand there, whether its hierarchy names the operand or not."""
+        every operand there, its hierarchy naming the operand or not, as it has nowhere else to."""
         hierarchy, operand = self.memory_hierarchy, memory_operand(role)
         if operand in hierarchy.get_operands():
             return hierarchy.get_memory_levels(operand)[-1].name
         if len(tops := self.top_instances()) == 1:
             (top,) = tops
             return top
-        raise ValueError(f"{role} is held in none of the top-level memories {sorted(tops)}")
+        raise ValueError(f"{self} holds {role}'s operand {operand} in none of its top levels {sorted(tops)}")
 
     def top_memory_capacity(self, instance: str) -> int:
         """Capacity in bits of the top-level memory instance ``instance``, the one the core's memory view binds."""

@@ -309,7 +309,7 @@ class AcceleratorValidator:
 
     # Stream-level extension fields that are not known to namespace validators
     # (e.g. ZigZag) and must be stripped before validation then re-injected.
-    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision", "banks")
+    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision")
 
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
@@ -322,6 +322,14 @@ class AcceleratorValidator:
         """Validate and normalize one core description. ``label`` only names it in error messages."""
         # Extract Stream-level extension fields before namespace validation strips them.
         extension_fields = {k: core_data.pop(k) for k in self._STREAM_EXTENSION_FIELDS if k in core_data}
+        if "banks" in core_data:
+            core_data.pop("banks")
+            self.invalidate(f"Core {label}: `banks` belongs to the memory level it banks, as `memories.<level>.banks`.")
+        # Each memory level's banks, a Stream field the namespace validators do not know
+        levels = {"memory": core_data["memory"]} if "memory" in core_data else core_data.get("memories") or {}
+        memory_banks = {
+            name: level.pop("banks") for name, level in levels.items() if isinstance(level, dict) and "banks" in level
+        }
 
         raw_type = core_data.get("type")
         default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
@@ -350,19 +358,21 @@ class AcceleratorValidator:
         elif unknown := {str(v) for v in precision.values()} - ELEMENT_BITS.keys():
             self.invalidate(f"Core {label}: unknown element types {sorted(unknown)} in `operand_precision`.")
 
-        banks = extension_fields.get("banks")
-        if banks is not None and (
-            not isinstance(banks, dict)
-            or not {"count", "width"} <= set(banks) <= {"count", "width", "stripe"}
-            or any(type(v) is not int or v <= 0 for v in banks.values())
-        ):
-            self.invalidate(
-                f"Core {label}: `banks` takes whole positive `count`, `width` in bytes and optional `stripe` in words."
-            )
+        for name, banks in memory_banks.items():
+            if (
+                not isinstance(banks, dict)
+                or not {"count", "width"} <= set(banks) <= {"count", "width", "stripe"}
+                or any(type(v) is not int or v <= 0 for v in banks.values())
+            ):
+                self.invalidate(
+                    f"Core {label}: memory `{name}`'s `banks` takes whole positive `count`, `width` in bytes and "
+                    "optional `stripe` in words."
+                )
 
         # Fill in default values and re-inject Stream-level extension fields.
         normalized_core_data = core_validator.normalized_data
         normalized_core_data.update(extension_fields)
+        normalized_core_data["memory_banks"] = memory_banks
         return normalized_core_data
 
     def open_core(self, core_file_name: str) -> dict[str, Any] | None:

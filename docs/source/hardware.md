@@ -79,7 +79,7 @@ connections:
 
 Data lives in memories, not in cores: a core computes out of its top-level memories, and several cores may compute out of the same one. `memories` names each such memory and lists its views: for each core using it, `<core id>.<instance>`, the name the core's file gives the top-level memory instance it sees the memory as, e.g. `{l1: [0.l1, 1.tcdm], l3: [6.dram]}`. Everything outside the core files refers to the memory by its name; a core's own names stay inside it.
 
-Each top-level instance of a core, the highest level of some operand, is a view of exactly one memory; a core with an activation and a weights SRAM, such as `meta_prototype`, binds both, to two memories. A node reads each input, and writes its output, in the memory its core's top-level instance for that operand is a view of: input `k` in the one holding `I<k>`, the output in the one holding `O`; a core with one top-level instance holds every operand there. Inner levels are the core's own: no transfer reaches them and Stream models none of their ports. The views of one memory declare the same capacity, and every memory has a connection: one nothing reaches holds nothing a transfer can bring.
+Each top-level instance of a core, the highest level of some operand, is a view of exactly one memory; a core with an activation and a weights SRAM, such as `meta_prototype`, binds both, to two memories. A node reads each input, and writes its output, in the memory its core's top-level instance for that operand is a view of: its `k`-th operand in the one holding `I<k>`, the output in the one holding `O`. A multiply-accumulate's operands are its first two inputs; a further input, such as a bias, is added into the output, and state a node carries is updated in place as an accumulator is, so both land in the output's memory. A core with one top-level instance holds every operand there. Inner levels are the core's own: no transfer reaches them and Stream models none of their ports. The views of one memory declare the same capacity, and every memory has a connection: one nothing reaches holds nothing a transfer can bring.
 
 The memory an off-die core (kind `offchip` or `shim`) views is the off-chip memory, where the workload's inputs and outputs live; an accelerator has one, and `offchip_core_id` names one of its cores. A memory belongs to none of its cores. The allocation places tensors in memories, a placement naming the memory at each of its node's positions, the same memory repeated for cores that share it. A memory's capacity bounds everything its cores hold in it together: split tiles add up, a tensor each core holds whole counts once. Data between its cores moves in place, without a route. Connections join memories, and a `bandwidth` model of a memory bounds every transfer into or out of it, whichever of its cores the transfer serves; its macro is priced once.
 
@@ -238,13 +238,17 @@ type. `input` names the multiplier format; it is recorded in the core's hardware
 
 ### Memory banks
 
-A core can declare how its memory is banked, for the layout report to place each tile's bytes in banks:
+A memory level can declare how it is banked, for the layout report to place each tile's bytes in banks: in a ZigZag
+core under `memories.<level>`, in an AIE tile under `memory`. The views of one memory must agree on its banks.
 
 ```yaml
-banks:
-  count: 8     # banks
-  width: 16    # bytes per bank word
-  stripe: 512  # words a bank holds before the next one does; 1 (the default) interleaves words
+memories:
+  sram:
+    # size, ports, ...
+    banks:
+      count: 8     # banks
+      width: 16    # bytes per bank word
+      stripe: 512  # words a bank holds before the next one does; 1 (the default) interleaves words
 ```
 
 Byte address `a` sits in bank `a // width // stripe % count`. An AIE-ML tile's eight banks are each one contiguous

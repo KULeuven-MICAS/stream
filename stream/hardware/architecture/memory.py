@@ -19,7 +19,7 @@ class Memory:
             raise ValueError(f"memory {name} has no views")
         capacities = {core.top_memory_capacity(instance) for core, instance in views}
         assert len(capacities) == 1, f"memory {name}: its views declare different capacities (the validator checks)"
-        if len(banks := {core.banks for core, _ in views}) != 1:
+        if len(banks := {core.memory_banks.get(instance) for core, instance in views}) != 1:
             raise ValueError(f"memory {name}: its views declare different banks {banks}")
         self.name = name
         self.views = views

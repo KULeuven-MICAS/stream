@@ -68,7 +68,7 @@ loop the copy does not index), and describes both sides (`read`, `write`):
 | `access` | The `[size, stride]` loops, outermost first, in elements, the DMA walks the tile in on that side, in the order it streams; loops of one element dropped and a loop continuing the one inside it merged, as a DMA descriptor writes them |
 | `memory`, `port` | The memory and port the side passes (`measured` for a core's measured bandwidth) |
 | `bits_per_cycle`, `burst_bytes` | That port's contiguous rate and the bytes it moves per access, where declared |
-| `banks` | The banks of the core's memory, where it declares them (see [Hardware](hardware.md)) |
+| `banks` | The banks of the memory, where its level declares them (see [Hardware](hardware.md)) |
 
 A 64x64 weight tile of a 512x64 row-major tensor transposed into a core reads `[[64, 1], [64, 64]]`, one element
 at a stride of 64 per step, and writes `[[4096, 1]]`, one contiguous run.

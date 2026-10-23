@@ -52,9 +52,9 @@ class AcceleratorFactory:
             reconfiguration=self.data.get("reconfiguration"),
             port_bandwidth=port_models,
         )
-        if accelerator.port_bandwidth:
-            # Building the registry rejects a port key that names no port a core's backend models.
-            _ = accelerator.ports
+        # Building the registry rejects views declaring a port of their memory differently, and a port key that names
+        # no port a core's backend models.
+        _ = accelerator.ports
         return accelerator
 
     def create_core(
@@ -155,8 +155,8 @@ class AcceleratorFactory:
 
 def _with_stream_fields(core: Core, core_data: dict[str, Any], operator_types: list[str] | None) -> Core:
     """``core`` with the fields Stream reads beside any backend's: the operators it runs, its operand precision and
-    the banks of its memory."""
+    the banks of each of its memory levels that declares them."""
     core.operator_types = operator_types
     core.operand_precision = core_data.get("operand_precision") or {}
-    core.banks = MemoryBanks(**core_data["banks"]) if core_data.get("banks") else None
+    core.memory_banks = {name: MemoryBanks(**banks) for name, banks in core_data["memory_banks"].items()}
     return core

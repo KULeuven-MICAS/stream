@@ -37,6 +37,12 @@ def is_mac_operator_type(op_type: object) -> bool:
     return any(k in lowered for k in MAC_OPERATOR_TYPES)
 
 
+def operand_inputs(node: ComputationNode) -> tuple[Tensor, ...]:
+    """The inputs a core holds as its operands ``I1``, ``I2``, ... in order: a multiply-accumulate's two, so not a
+    further input such as a bias, which is added into its output."""
+    return node.inputs[:2] if is_mac_operator_type(node.type) else node.inputs
+
+
 def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[LayerDim, int]:
     """
     Determine the best dimension to fuse the layers on.
