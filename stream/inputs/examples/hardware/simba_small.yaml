@@ -6,34 +6,70 @@ cores:
   1: simba_chiplet.yaml   # chiplet B
   2: simba_chiplet.yaml   # chiplet C
   3: simba_chiplet.yaml   # chiplet D
-  4: simba_offchip.yaml   # package-level DRAM controller
 
-offchip_core_id: 4        # core that fronts external memory
 unit_energy_cost: 0       # default energy per transferred word
 
 memories:
-  simba_chiplet_0: [0.global_buffer]
-  simba_chiplet_1: [1.global_buffer]
-  simba_chiplet_2: [2.global_buffer]
-  simba_chiplet_3: [3.global_buffer]
-  simba_offchip: [4.dram]
+  simba_chiplet_0:
+    offchip: false
+    views: [0.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  simba_chiplet_1:
+    offchip: false
+    views: [1.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  simba_chiplet_2:
+    offchip: false
+    views: [2.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  simba_chiplet_3:
+    offchip: false
+    views: [3.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [3]}
+      w_port_1: {from: w_port_1, cores: [3]}
+  simba_offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 1.5625, write_energy: 1.5625}
 
 connections:
   # ───── 2-D mesh links between chiplets ─────
   - type: link
-    memories: [simba_chiplet_0, simba_chiplet_1]
+    ends:
+      simba_chiplet_0: [r_port_1, w_port_1]
+      simba_chiplet_1: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    memories: [simba_chiplet_0, simba_chiplet_2]
+    ends:
+      simba_chiplet_0: [r_port_1, w_port_1]
+      simba_chiplet_2: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    memories: [simba_chiplet_1, simba_chiplet_3]
+    ends:
+      simba_chiplet_1: [r_port_1, w_port_1]
+      simba_chiplet_3: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    memories: [simba_chiplet_2, simba_chiplet_3]
+    ends:
+      simba_chiplet_2: [r_port_1, w_port_1]
+      simba_chiplet_3: [r_port_1, w_port_1]
     bandwidth: 32
 
   # ───── Shared bus to off-chip memory ─────
   - type: bus
-    memories: [simba_chiplet_0, simba_chiplet_1, simba_chiplet_2, simba_chiplet_3, simba_offchip]   # all chiplets + DRAM controller
+    ends:   # all chiplets + DRAM controller
+      simba_chiplet_0: [r_port_1, w_port_1]
+      simba_chiplet_1: [r_port_1, w_port_1]
+      simba_chiplet_2: [r_port_1, w_port_1]
+      simba_chiplet_3: [r_port_1, w_port_1]
+      simba_offchip: [rw_port_1]
     bandwidth: 128           # wider than on-chip links

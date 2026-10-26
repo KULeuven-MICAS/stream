@@ -6,7 +6,7 @@ import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +21,7 @@ from stream.workload.utils import is_mac_operator_type
 from stream.workload.workload import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
+    from stream.cost_model.communication_manager import MulticastPathPlan
     from stream.cost_model.layout import Layout
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.hardware.architecture.memory import Memory
@@ -166,18 +167,23 @@ def _iterations(
 _NO_PARENS = str.maketrans("", "", "()")
 
 
-def _layout_side(
-    space: DecisionSpace, tr: TransferNode, memories: Sequence[Memory], direction: str, layout: Layout, walk: Layout
+def _layout_side(  # noqa: PLR0913
+    space: DecisionSpace,
+    tr: TransferNode,
+    choice: MulticastPathPlan,
+    direction: str,
+    layout: Layout,
+    walk: Layout,
 ) -> dict[str, Any]:
     """One side of a transfer: the buffer its copy sits in and that buffer's strides, the loops the DMA walks it in,
     and the memory, port, rate, burst and banks it goes through at its first position."""
     copy = tr.inputs[0] if direction == READ else tr.outputs[0]
     full = tuple(copy.subview.source.type.get_shape())
     extent = space.layouts.extent(copy, full)
-    memory = memories[0]
+    memory = (choice.sources if direction == READ else choice.targets)[0]
     measured = memory in space.shared_bandwidth
-    port = None if measured else space.side_port(tr, memory, direction)
-    model = space.side_bandwidth(tr, memory, direction)
+    port = None if measured else space.side_port(tr, choice, memory, direction)
+    model = space.side_bandwidth(tr, choice, memory, direction)
     return {
         "extent": list(extent),
         "strides": list(layout.strides(extent)),
@@ -222,8 +228,8 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
                 "streams_in": "source" if walk == source else "target",
                 "axes": _axis_dims(touch),
                 "iterations": _iterations(space, tr, touch),
-                "read": _layout_side(space, tr, choice.sources, READ, source, walk),
-                "write": _layout_side(space, tr, choice.targets, WRITE, target, walk),
+                "read": _layout_side(space, tr, choice, READ, source, walk),
+                "write": _layout_side(space, tr, choice, WRITE, target, walk),
             }
         )
     return rows

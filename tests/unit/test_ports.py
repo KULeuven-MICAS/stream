@@ -6,7 +6,7 @@ from zigzag.utils import open_yaml
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.ports import OUTPUT, READ_BY_DATAPATH, WRITE, WRITE_BY_DATAPATH, input_role
+from stream.hardware.ports import OUTPUT, READ, READ_BY_DATAPATH, WRITE, input_role
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.stages.estimation.core_cost_backends import ZIGZAG_BACKEND, port_traffic
@@ -50,26 +50,23 @@ def test_cores_sharing_a_memory_share_its_ports(fusemax: Accelerator):
 
 
 def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
-    registry = fusemax.ports
-    dram = fusemax.get_core(2)
-    assert len(registry.ports_of(dram)) == 3
+    """The one link to DRAM passes all three of its ports; which one a transfer takes is the operand's."""
+    registry, dram = fusemax.ports, fusemax.offchip_memory
+    assert all(port.core_ids == () for port in registry if port.key.memory == "dram")
+    links = [d["cl"] for u, v, d in fusemax.network.edges(data=True) if dram in (u, v)]
+    assert {link.ports[dram] for link in links} == {("rw_port_1", "rw_port_2", "rw_port_3")}
     roles = (input_role(1), input_role(2), OUTPUT)
-    names = {role: registry.port_for(dram, READ_BY_DATAPATH, role) for role in roles}
-    assert {role: port and port.key.port for role, port in names.items()} == {
-        "input1": "rw_port_1",
-        "input2": "rw_port_2",
-        "output": "rw_port_3",
-    }
-
-
-def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fusemax: Accelerator):
-    registry = fusemax.ports
-    port = registry.port_for(fusemax.get_core(2), WRITE_BY_DATAPATH, input_role(1))
-    assert port is not None and port.key.port == "rw_port_3"
+    for direction in (READ, WRITE):
+        names = {role: registry.memory_port(dram, direction, role, links) for role in roles}
+        assert {role: port and port.key.port for role, port in names.items()} == {
+            "input1": "rw_port_1",
+            "input2": "rw_port_2",
+            "output": "rw_port_3",
+        }
 
 
 def test_declared_port_width_becomes_the_port_model(fusemax: Accelerator):
-    # fusemax_dram.yaml: rw ports of 3200 b/cc
+    # fusemax.yaml: DRAM's rw ports of 3200 b/cc
     port = next(p for p in fusemax.ports if p.key == ("dram", "rw_port_1"))
     assert port.bits_per_cycle == 3200
     assert port.bandwidth.efficiency(4, "read") == 1.0
@@ -84,10 +81,9 @@ def test_aie2_tiles_expose_their_dma_channels_as_ports():
     assert accelerator.ports.port_for(compute, READ_BY_DATAPATH, input_role(1)) is None
 
 
-def test_the_cores_of_a_measured_memory_have_no_ports():
+def test_a_measured_memory_has_no_ports():
     accelerator = fusemax_accelerator({"dram": MEASURED})
     registry = accelerator.ports
-    assert registry.ports_of(accelerator.get_core(2)) == ()
     assert {port.key.memory for port in registry} == {"sram"}
     assert set(accelerator.bandwidth) == {accelerator.memories["dram"]}
 
@@ -108,17 +104,17 @@ def test_bandwidth_keys_naming_no_memory_are_rejected(key: Any):
 
 
 @pytest.mark.parametrize("key", ["dram.rw_port_9", "sram.rw_port_1"])
-def test_port_keys_naming_no_top_level_port_are_rejected_at_parse_time(key: Any):
-    with pytest.raises(ValueError, match="that no core models"):
+def test_port_keys_naming_no_declared_port_are_rejected_at_parse_time(key: Any):
+    with pytest.raises(ValueError, match="no memory declares"):
         fusemax_accelerator({key: MEASURED})
 
 
-def test_aie2_port_keys_are_rejected_at_parse_time():
+def test_an_aie2_port_key_naming_no_declared_port_is_rejected_at_parse_time():
     data = open_yaml(AIE2)
     data["bandwidth"] = {"dram.port": MEASURED}
     validator = AcceleratorValidator(data, AIE2)
     assert validator.validate()
-    with pytest.raises(ValueError, match="model no memory ports"):
+    with pytest.raises(ValueError, match="no memory declares"):
         AcceleratorFactory(validator.normalized_data).create()
 
 
@@ -145,3 +141,34 @@ def test_views_of_one_memory_share_its_ports():
     assert all(port.core_ids == (0, 1, 8) for port in vmem)
     assert all(port.bits_per_cycle == 262144 for port in vmem)
     assert accelerator.ports.ports_of(accelerator.get_core(0)) == tuple(vmem)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        lambda data: data["memories"]["dram"]["ports"]["rw_port_1"].pop("serves"),
+        lambda data: data["memories"]["sram"]["ports"]["r_port_1"].pop("cores"),
+        lambda data: data["memories"]["sram"]["ports"]["r_port_1"].update(bandwidth=3),
+        lambda data: data["memories"]["dram"]["ports"]["rw_port_1"].update(serves={"weights": ["read"]}),
+        lambda data: data["memories"]["dram"]["ports"]["rw_port_1"].update(serves={"any": ["fetch"]}),
+        lambda data: data["memories"]["sram"].pop("offchip"),
+        lambda data: data["memories"]["sram"].pop("ports"),
+        lambda data: data["memories"].update(sram=["0.sram", "1.sram"]),
+        lambda data: data.update(offchip_core_id=0),
+    ],
+    ids=[
+        "own port without serves",
+        "view port without cores",
+        "view and own port mixed",
+        "unknown operand role",
+        "unknown direction",
+        "no offchip flag",
+        "no ports",
+        "views alone",
+        "offchip core",
+    ],
+)
+def test_a_memory_written_out_in_part_is_rejected(malformed: Any):
+    data = open_yaml(FUSEMAX)
+    malformed(data)
+    assert not AcceleratorValidator(data, FUSEMAX).validate()

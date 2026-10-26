@@ -1,10 +1,11 @@
-"""The memory ports each core's backend declares, keyed by the physical memory they belong to."""
+"""The ports each memory declares, keyed by the memory: ports its cores' backends declare on their views of it, or
+its own."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
 
 from stream.cost_model.bandwidth import BandwidthModel
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.memory import Memory
+    from stream.hardware.architecture.noc.communication_link import CommunicationLink
 
 Service = tuple[str, str]
 MemoryView = tuple[int, str]
@@ -26,8 +28,7 @@ WRITE_BY_DATAPATH = "write_by_datapath"
 
 
 class PortKey(NamedTuple):
-    """A physical port: the memory it belongs to (`Memory.name`) and the port's name, the same on every view of the
-    memory that reaches it."""
+    """A physical port: the memory it belongs to (`Memory.name`) and the name that memory declares it by."""
 
     memory: str
     port: str
@@ -68,6 +69,25 @@ class PortSpec:
 
 
 @dataclass(frozen=True)
+class ViewPort:
+    """A memory's port that is the port ``source`` the backends of ``core_ids`` declare on their views of it, one
+    physical port they all reach."""
+
+    source: str
+    core_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class OwnPort:
+    """A memory's port no core declares, as an off-chip memory's is; ``serves`` holds (operand role, direction)."""
+
+    bits_per_cycle: float
+    serves: frozenset[Service]
+    read_energy_per_bit: float
+    write_energy_per_bit: float
+
+
+@dataclass(frozen=True)
 class Port:
     """One port of a memory, keyed by (memory, port name), with the cores that reach it.
     ``serves`` holds (operand role, direction) and the energies are in pJ per bit."""
@@ -102,35 +122,25 @@ class PortRegistry:
 
     @classmethod
     def from_accelerator(cls, accelerator: Accelerator) -> PortRegistry:
-        """The ports of every memory: those each core's backend declares on the instances that are its views of it,
-        the same port when two views name it alike. A memory with a measured bandwidth has no ports, as that already
-        covers its traffic."""
-        found: dict[PortKey, PortSpec] = {}
-        core_ids: dict[PortKey, set[int]] = defaultdict(set)
-        serves: dict[PortKey, set[Service]] = defaultdict(set)
+        """The ports every memory declares: one a port its views' cores declare, reached by the cores it names, or
+        one of its own. Every port a view's core declares is in exactly one of its memory's. A memory with a measured
+        bandwidth has no ports, as that already covers its traffic."""
+        ports: dict[PortKey, Port] = {}
         for memory in accelerator.memories.values():
-            if memory in accelerator.bandwidth:
-                continue
-            for core, instance in memory.views:
-                for spec in (spec for spec in core.port_specs() if spec.memory == instance):
-                    _add_port(found, core_ids, serves, memory, core, spec)
-        if unknown := sorted(set(accelerator.port_bandwidth) - set(found)):
+            built = declared_ports(memory)
+            if memory not in accelerator.bandwidth:
+                ports |= {port.key: port for port in built}
+        if unknown := sorted(set(accelerator.port_bandwidth) - set(ports)):
             raise ValueError(
-                f"`bandwidth` names ports {['.'.join(key) for key in unknown]} that no core models: the memory has no "
-                f"such port, or its cores' backends model no memory ports."
+                f"`bandwidth` names ports {['.'.join(key) for key in unknown]} no memory declares, or of a memory with "
+                "a measured bandwidth."
             )
-        ports = {
-            key: Port(
-                key=key,
-                core_ids=tuple(sorted(core_ids[key])),
-                bandwidth=accelerator.port_bandwidth.get(key, BandwidthModel.flat(spec.bits_per_cycle)),
-                serves=frozenset(serves[key]),
-                read_energy_per_bit=spec.read_energy_per_bit,
-                write_energy_per_bit=spec.write_energy_per_bit,
-            )
-            for key, spec in sorted(found.items())
-        }
-        return cls(ports)
+        return cls(
+            {
+                key: replace(port, bandwidth=model) if (model := accelerator.port_bandwidth.get(key)) else port
+                for key, port in ports.items()
+            }
+        )
 
     def __iter__(self) -> Iterator[Port]:
         return iter(self._ports.values())
@@ -143,9 +153,15 @@ class PortRegistry:
         """The port ``operand``'s top level uses for ``direction`` on ``core``, as its datapath reaches it."""
         return _serving(self.ports_of(core), direction, operand, f"core {core.id}")
 
-    def memory_port(self, memory: Memory, direction: str, operand: str) -> Port | None:
-        """The port of ``memory`` a transfer moving ``operand`` uses for ``direction``."""
-        return _serving(self._ports_of_memory.get(memory.name, ()), direction, operand, f"memory {memory.name}")
+    def memory_port(
+        self, memory: Memory, direction: str, operand: str, links: Iterable[CommunicationLink]
+    ) -> Port | None:
+        """The port of ``memory`` a transfer moving ``operand`` passes in ``direction`` over ``links``: of the ports
+        those links enter and leave ``memory`` through, the one serving it. None where no link reaches it."""
+        links = tuple(links)
+        names = {name for link in links for name in link.ports[memory]}
+        through = tuple(port for port in self._ports_of_memory.get(memory.name, ()) if port.key.port in names)
+        return _serving(through, direction, operand, f"memory {memory.name} over {sorted(map(str, links))}")
 
 
 def _serving(ports: tuple[Port, ...], direction: str, operand: str, where: str) -> Port | None:
@@ -161,22 +177,69 @@ def _serving(ports: tuple[Port, ...], direction: str, operand: str, where: str) 
     return serving[0] if serving else None
 
 
-def _add_port(
-    found: dict[PortKey, PortSpec],
-    core_ids: dict[PortKey, set[int]],
-    serves: dict[PortKey, set[Service]],
-    memory: Memory,
-    core: Core,
-    spec: PortSpec,
-) -> None:
-    """Add a view's port to ``memory``'s, the same port as one another view names alike."""
-    key = PortKey(memory.name, spec.name)
-    first = found.setdefault(key, spec)
-    rates = (spec.bits_per_cycle, spec.read_energy_per_bit, spec.write_energy_per_bit)
-    if (first.bits_per_cycle, first.read_energy_per_bit, first.write_energy_per_bit) != rates:
-        raise ValueError(
-            f"the views of memory {memory.name} declare port {spec.name} differently: its width and energies per bit "
-            "must agree"
+def declared_ports(memory: Memory) -> tuple[Port, ...]:
+    """The ports ``memory`` declares, at their declared widths, after checking every port a view's core declares is
+    in exactly one of them."""
+    _check_covered(memory)
+    return tuple(_built(memory, name, declared) for name, declared in memory.ports.items())
+
+
+def _built(memory: Memory, name: str, declared: ViewPort | OwnPort) -> Port:
+    """The port ``name`` of ``memory`` as declared: its own, or the port its cores' backends declare on their views of
+    it, which they must declare alike."""
+    key = PortKey(memory.name, name)
+    if isinstance(declared, OwnPort):
+        return Port(
+            key=key,
+            core_ids=(),
+            bandwidth=BandwidthModel.flat(declared.bits_per_cycle),
+            serves=declared.serves,
+            read_energy_per_bit=declared.read_energy_per_bit,
+            write_energy_per_bit=declared.write_energy_per_bit,
         )
-    core_ids[key].add(core.id)
-    serves[key].update(spec.serves)
+    specs = [_view_spec(memory, core_id, declared.source) for core_id in declared.core_ids]
+    rates = {(spec.bits_per_cycle, spec.read_energy_per_bit, spec.write_energy_per_bit) for spec in specs}
+    if len(rates) != 1:
+        raise ValueError(
+            f"memory {memory.name} port {name}: cores {list(declared.core_ids)} declare {declared.source} differently; "
+            "one port's width and energies per bit must agree"
+        )
+    return Port(
+        key=key,
+        core_ids=tuple(sorted(declared.core_ids)),
+        bandwidth=BandwidthModel.flat(specs[0].bits_per_cycle),
+        serves=frozenset(service for spec in specs for service in spec.serves),
+        read_energy_per_bit=specs[0].read_energy_per_bit,
+        write_energy_per_bit=specs[0].write_energy_per_bit,
+    )
+
+
+def _view_spec(memory: Memory, core_id: int, source: str) -> PortSpec:
+    """The port ``source`` core ``core_id``'s backend declares on its view of ``memory``."""
+    views = {core.id: (core, instance) for core, instance in memory.views}
+    if core_id not in views:
+        raise ValueError(f"memory {memory.name}: a port names core {core_id}, which is no view of it")
+    core, instance = views[core_id]
+    declared = {spec.name: spec for spec in core.port_specs() if spec.memory == instance}
+    if source not in declared:
+        raise ValueError(
+            f"memory {memory.name}: core {core_id} declares no port {source} on {instance}; it declares "
+            f"{sorted(declared)}"
+        )
+    return declared[source]
+
+
+def _check_covered(memory: Memory) -> None:
+    """Every port a view's core declares is in exactly one of the memory's ports."""
+    taken: dict[tuple[int, str], list[str]] = defaultdict(list)
+    for name, declared in memory.ports.items():
+        if isinstance(declared, ViewPort):
+            for core_id in declared.core_ids:
+                taken[(core_id, declared.source)].append(name)
+    for core, instance in memory.views:
+        for spec in (spec for spec in core.port_specs() if spec.memory == instance):
+            if len(names := taken.get((core.id, spec.name), [])) != 1:
+                raise ValueError(
+                    f"memory {memory.name}: core {core.id}'s port {spec.name} is in ports {names}; each port a view's "
+                    "core declares belongs to exactly one of its memory's ports"
+                )

@@ -78,7 +78,7 @@ def _core(core_id: int) -> Core:
 
 
 def _memory(core: Core) -> Memory:
-    return Memory(f"tile_{core.id}", ((core, "memory"),))
+    return Memory(f"tile_{core.id}", ((core, "memory"),), {}, offchip=False, capacity_bits=None)
 
 
 def _diagnose(ledger: ResourceLedger, iis: list[str]) -> InfeasibilityReportIR:

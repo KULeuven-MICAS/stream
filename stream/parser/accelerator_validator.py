@@ -28,6 +28,28 @@ MEMORY_NAME_REGEX = r"^[A-Za-z_][A-Za-z0-9_\-]*$"
 PORT_REF_REGEX = r"^[A-Za-z_][A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+$"
 # "<core id>.<memory instance name>", e.g. "8.vmem": a core's view of a memory, its top-level memory instance
 MEMORY_VIEW_REGEX = r"^\d+\.[A-Za-z0-9_\-]+$"
+# A port's name within its memory, e.g. "rw_port_1"
+PORT_NAME_REGEX = r"^[A-Za-z0-9_\-]+$"
+
+# A port that is a port the backends of `cores` declare on their views of the memory, by that port's name
+VIEW_PORT_SCHEMA: dict[str, Any] = {
+    "from": {"type": "string", "required": True, "regex": PORT_NAME_REGEX},
+    "cores": {"type": "list", "required": True, "minlength": 1, "schema": {"type": "integer", "min": 0}},
+}
+# A port of the memory's own, as an off-chip memory's: its width in bits per cycle, the directions it serves per operand
+# role ("input<k>", "output", or "any" for every operand), and its energies in pJ per bit
+OWN_PORT_SCHEMA: dict[str, Any] = {
+    "bandwidth": {"type": "number", "required": True, "min": 0},
+    "serves": {
+        "type": "dict",
+        "required": True,
+        "minlength": 1,
+        "keysrules": {"type": "string", "regex": r"^(any|output|input\d+)$"},
+        "valuesrules": {"type": "list", "minlength": 1, "schema": {"type": "string", "allowed": ["read", "write"]}},
+    },
+    "read_energy": {"type": "number", "required": True, "min": 0},
+    "write_energy": {"type": "number", "required": True, "min": 0},
+}
 
 
 def parse_port_ref(ref: str) -> PortKey:
@@ -94,8 +116,6 @@ class AcceleratorValidator:
                 ]
             },
         },
-        # Id of the core that acts as the off-chip memory controller
-        "offchip_core_id": {"type": "integer", "min": 0, "required": True},
         # Memory name -> measured bandwidth every transfer into or out of that memory shares, or a port key -> measured
         # bandwidth replacing that top-level port's declared width
         "bandwidth": {
@@ -109,13 +129,32 @@ class AcceleratorValidator:
                 ]
             },
         },
-        # The physical memories, by name, each with its views: the top-level memory instance of each core that uses it,
-        # as "<core id>.<instance>". No core owns one; a core views one memory per top-level instance.
+        # The physical memories, by name. No core owns one: its views are the top-level memory instance of each core
+        # that uses it, as "<core id>.<instance>", and a core views one memory per top-level instance. A memory no core
+        # views declares its capacity in bits. Its ports, by name, are each one it declares or one its views' cores
+        # declare.
         "memories": {
             "type": "dict",
             "required": True,
             "keysrules": {"type": "string", "regex": MEMORY_NAME_REGEX},
-            "valuesrules": {"type": "list", "minlength": 1, "schema": {"type": "string", "regex": MEMORY_VIEW_REGEX}},
+            "valuesrules": {
+                "type": "dict",
+                "schema": {
+                    "offchip": {"type": "boolean", "required": True},
+                    "views": {
+                        "type": "list",
+                        "required": True,
+                        "schema": {"type": "string", "regex": MEMORY_VIEW_REGEX},
+                    },
+                    "capacity_bits": {"type": "integer", "min": 1},
+                    "ports": {
+                        "type": "dict",
+                        "required": True,
+                        "keysrules": {"type": "string", "regex": PORT_NAME_REGEX},
+                        "valuesrules": {"type": "dict", "anyof_schema": [VIEW_PORT_SCHEMA, OWN_PORT_SCHEMA]},
+                    },
+                },
+            },
         },
         # What reconfiguring the array between designs costs, read by the namespace constraints
         "reconfiguration": {"type": "dict", "required": False},
@@ -139,12 +178,14 @@ class AcceleratorValidator:
                         "allowed": ["link", "bus"],
                         "default": "link",
                     },
-                    # The memories this connection joins, by name
-                    "memories": {
-                        "type": "list",
+                    # The memories this connection joins, by name, each with the ports of it the connection enters and
+                    # leaves it through
+                    "ends": {
+                        "type": "dict",
                         "minlength": 2,
                         "required": True,
-                        "schema": {"type": "string", "regex": MEMORY_NAME_REGEX},
+                        "keysrules": {"type": "string", "regex": MEMORY_NAME_REGEX},
+                        "valuesrules": {"type": "list", "schema": {"type": "string", "regex": PORT_NAME_REGEX}},
                     },
                     # Peak bandwidth for the link / bus (GB/s or chosen units)
                     "bandwidth": {"type": "float", "min": 0, "required": True},
@@ -216,10 +257,6 @@ class AcceleratorValidator:
         core_ids = list(self.data["cores"].keys())
         if not all(isinstance(core_id, int) and core_id >= 0 for core_id in core_ids):
             self.invalidate("Invalid core id in `cores`: id is not a positive integer.")
-        if len(core_ids) != max(core_ids) + 1:
-            self.invalidate("Invalid core id in `cores`: not all core ids in range are in use.")
-        if self.data["offchip_core_id"] not in core_ids:
-            self.invalidate("offchip_core_id does not correspond to any entry in `cores`.")
 
     def validate_all_cores(self) -> None:
         """Parse, normalize and validate each core entry (file reference or inline dict) into normalized data."""
@@ -393,26 +430,28 @@ class AcceleratorValidator:
         return core_data
 
     def validate_connections(self):
-        """Each connection joins known memories, a link exactly two, none a memory to itself, and every memory has one:
-        a memory no connection reaches holds nothing a transfer can bring. A connection without its own unit energy
-        cost takes the accelerator's."""
+        """Each connection joins known memories, a link exactly two, through ports each end's memory declares, and
+        every memory has one: a memory no connection reaches holds nothing a transfer can bring. A memory appears once
+        per connection, as its ends are keyed by it. A connection without its own unit energy cost takes the
+        accelerator's."""
         connections = self.data["connections"]
         for idx, conn in enumerate(connections):
-            memories = tuple(conn["memories"])
-            if unknown := [m for m in memories if m not in self.data["memories"]]:
-                self.invalidate(f"`connections[{idx}].memories` names unknown memories {unknown}.")
-            if conn["type"] == "link" and len(memories) != 2:  # noqa: PLR2004
-                self.invalidate(f"`connections[{idx}]` is a link, which joins exactly two memories, not {memories}.")
-            if len(set(memories)) != len(memories):
-                self.invalidate(
-                    f"`connections[{idx}]` joins a memory to itself ({list(memories)}): cores sharing a "
-                    f"memory move data between them in place, not over a connection."
-                )
+            ends = conn["ends"]
+            if unknown := [m for m in ends if m not in self.data["memories"]]:
+                self.invalidate(f"`connections[{idx}].ends` names unknown memories {unknown}.")
+            if conn["type"] == "link" and len(ends) != 2:  # noqa: PLR2004
+                self.invalidate(f"`connections[{idx}]` is a link, which joins exactly two memories, not {list(ends)}.")
+            for memory, ports in ends.items():
+                declared = self.data["memories"].get(memory, {}).get("ports", {})
+                if memory in self.data["memories"] and (undeclared := sorted(set(ports) - set(declared))):
+                    self.invalidate(f"`connections[{idx}].ends.{memory}` names ports {undeclared} it does not declare.")
+                if len(set(ports)) != len(ports):
+                    self.invalidate(f"`connections[{idx}].ends.{memory}` names a port twice: {ports}.")
             if conn["bandwidth"] <= 0:
                 self.invalidate(f"`connections[{idx}].bandwidth` must be > 0.")
-            conn["memories"] = memories
+            conn["ends"] = {memory: tuple(ports) for memory, ports in ends.items()}
             conn.setdefault("unit_energy_cost", self.data["unit_energy_cost"])
-        connected = {name for conn in connections for name in conn["memories"]}
+        connected = {name for conn in connections for name in conn["ends"]}
         if unreached := [name for name in self.data["memories"] if name not in connected]:
             self.invalidate(f"memories {unreached} have no connection: nothing can reach them.")
 
@@ -446,12 +485,14 @@ class AcceleratorValidator:
 
     def validate_memories(self):
         """Every view names a core and an instance that core declares, no instance is a view of two memories, the views
-        of a memory agree on its size, and every core sees a memory; normalised to (core id, instance) pairs. That the
-        views are the core's top levels, all of them, is the factory's to check: the backend knows the hierarchy."""
+        of a memory agree on its size, a memory no core views declares its capacity and one viewed declares none, a
+        port's cores view its memory, at most one memory is off-chip, and every core sees a memory; views normalised to
+        (core id, instance) pairs. That the views are the core's top levels, all of them, and that a memory's ports
+        cover the ports its views' cores declare, is the factory's to check: the backend knows both."""
         views: dict[int, list[str]] = {core_id: [] for core_id in self.data["cores"]}
         bound: dict[tuple[int, str], str] = {}
-        for name, entries in self.data["memories"].items():
-            parsed = [parse_memory_view(entry) for entry in entries]
+        for name, memory in self.data["memories"].items():
+            parsed = [parse_memory_view(entry) for entry in memory["views"]]
             sizes: dict[str, int] = {}
             for core_id, instance in parsed:
                 if core_id not in self.data["cores"]:
@@ -475,10 +516,23 @@ class AcceleratorValidator:
                     sizes[f"{core_id}.{instance}"] = size
             if len(set(sizes.values())) > 1:
                 self.invalidate(f"`memories.{name}`: its views are one memory but declare different sizes {sizes}.")
-            self.data["memories"][name] = tuple(parsed)
+            self._validate_capacity_and_ports(name, memory, {core_id for core_id, _ in parsed})
+            memory["views"] = tuple(parsed)
+        if len(offchip := [name for name, memory in self.data["memories"].items() if memory["offchip"]]) > 1:
+            self.invalidate(f"memories {offchip} are all off-chip; an accelerator has at most one off-chip memory.")
         for core_id, names in views.items():
             if not names:
                 self.invalidate(f"core {core_id} is a view of no memory.")
+
+    def _validate_capacity_and_ports(self, name: str, memory: dict[str, Any], viewers: set[int]) -> None:
+        """A memory no core views declares its capacity and one viewed declares none, and a port's cores view it."""
+        if viewers and "capacity_bits" in memory:
+            self.invalidate(f"`memories.{name}`: its views declare its capacity, so `capacity_bits` is not given.")
+        if not viewers and "capacity_bits" not in memory:
+            self.invalidate(f"`memories.{name}`: no core views it, so it declares `capacity_bits`.")
+        for port_name, port in memory["ports"].items():
+            if strangers := sorted(set(port.get("cores", ())) - viewers):
+                self.invalidate(f"`memories.{name}.ports.{port_name}` names cores {strangers}, no views of it.")
 
     @property
     def normalized_data(self) -> dict[str, Any]:

@@ -24,6 +24,7 @@ print(allocation.solution.latency.total)
 
 ## Files written to disk
 
+- **Once per run**, in the output folder: a picture of the accelerator as Stream reads it (`hardware_graph.svg`): each core with the memory each of its top-level instances is a view of and the operands it holds there, each memory with its capacity, views, banks, measured bandwidth and ports (their width, the operands and directions they serve, the cores reaching them), and each link and bus between the memories. `python -m stream.visualization.hardware_graph <hardware.yaml> <out.svg>` draws one without solving.
 - **Per fused group**, in its `group_<index>/` folder: a picture of its tiled workload (`tiled_workload.svg`), the cost of each node on each core (`core_cost_lut.yaml`, with its `core_cost_lut.pickle` cache) and its allocation artifacts; under a tile search, those of the candidate it chose.
 
 ## Allocation artifacts

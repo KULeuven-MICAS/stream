@@ -19,7 +19,7 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 
 `evaluate_mapping`, `select_mapping` and `generate_code` run one pipeline:
 
-1. **`AcceleratorParserStage`** - the accelerator model (cores, memories, interconnect), already parsed from the hardware YAML so the plugins below can be chosen for it. The workload comes from the frontend that loads it (see [Workload](workload.md)).
+1. **`AcceleratorParserStage`** - the accelerator model (cores, memories, interconnect), already parsed from the hardware YAML so the plugins below can be chosen for it, drawn as `hardware_graph.svg` in the output folder. The workload comes from the frontend that loads it (see [Workload](workload.md)).
 2. **Mapping** - either:
    - **`FixedMappingGenerationStage`** (a mapping was given) - split the workload at the mapping's fused groups and build each group's mapping; or
    - the stages of the **mapping generator** that claims the accelerator (no mapping given) - for any accelerator, `ExpandNormalizationStage` + `GenericMappingGenerationStage` propose one.
@@ -84,7 +84,7 @@ The allocation model is built from constraint families, each a group of constrai
 | `offchip_traffic` | the bits crossing the off-chip boundary, an objective level and charged in the latency objective | `charge` (without it only the level) |
 | `aie2_object_fifo_depth`, `aie2_buffer_descriptors` | an AIE2 tile's fifo depth and buffer descriptors stay within `max_object_fifo_depth` | |
 | `aie2_memory_reuse` | a memory tile outlives its reader only where one replay expresses the re-read | |
-| `aie2_dma_channels` | a tile drives at most its DMA channels in each direction | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6), `max_shim_tile_dma_channels` (2) |
+| `aie2_dma_channels` | a tile drives at most its DMA channels in each direction | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6) |
 | `memory_ports` | each memory port's bits fit in its rate, see [Memory ports](hardware.md#memory-ports) | `interval`, `burst` |
 | `energy` | the energy one iteration takes: each node's on its cores, and each transfer's bits times the energy per bit of the ports and links it uses; it only reports | |
 
@@ -141,7 +141,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | Stage | `reads` | `optional_reads` | `writes` | `result_reads` | `result_writes` |
 |-------|---------|------------------|----------|----------------|-----------------|
 | `AIECodeGenerationStage` |  | `trace_size`, `trace_max_tiles`, `trace_tiles`, `trace_group`, `npu`, `group_index` |  | `allocation`, `workload`, `accelerator`, `output_path` | `module` |
-| `AcceleratorParserStage` | `accelerator` | `kernel_library` | `accelerator` |  |  |
+| `AcceleratorParserStage` | `accelerator` | `kernel_library`, `output_path` | `accelerator` |  |  |
 | `AllocationStage` | `allocation_problem`, `output_path`, `backend`, `families`, `time_limit_s`, `solver_log`, `artifacts` | `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
 | `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |

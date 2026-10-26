@@ -1,7 +1,6 @@
 from collections import defaultdict
 
 from stream.hardware.architecture.core import Core
-from stream.parser.core_validator import OFF_DIE_KINDS
 from stream.workload.tensor import Tensor
 
 
@@ -15,13 +14,14 @@ class AccessCount:
 
 class CoreMemoryAccesses:
     """
-    Tracks read/write access counts for different Core and Tensor combinations.
-    Uses nested defaultdict for automatic handling of missing keys.
+    Tracks read/write access counts for different Core and Tensor combinations, and those of the off-chip memory per
+    Tensor. Uses nested defaultdict for automatic handling of missing keys.
     """
 
     def __init__(self):
         # Structure: {core: {tensor: AccessCount}}
         self.accesses: dict[Core, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
+        self.offchip: dict[Tensor, AccessCount] = defaultdict(AccessCount)
 
     def add_read(self, core: Core, tensor: Tensor, count: int = 1) -> None:
         """Add read accesses for a core-tensor pair."""
@@ -31,13 +31,21 @@ class CoreMemoryAccesses:
         """Add write accesses for a core-tensor pair."""
         self.accesses[core][tensor].write += count
 
+    def add_offchip_read(self, tensor: Tensor, count: int) -> None:
+        """Add read accesses of the off-chip memory for a tensor."""
+        self.offchip[tensor].read += count
+
+    def add_offchip_write(self, tensor: Tensor, count: int) -> None:
+        """Add write accesses of the off-chip memory for a tensor."""
+        self.offchip[tensor].write += count
+
     def to_ir(self) -> dict:
         """Serialise the accesses for inspection: per core, per tensor, read/write counts.
 
         Counts are in *bandwidth-wide transfers* (a tensor tile's bits divided by the port bandwidth,
         times how many times it fires) -- the unit the cost model charges. Each tensor's ``size_bits``
-        is carried alongside so a consumer can recover the bytes moved, and the port bandwidths and an
-        ``is_offchip`` flag (an off-die core) let it separate off-chip (DRAM/HBM) traffic from on-chip.
+        is carried alongside so a consumer can recover the bytes moved; ``offchip`` holds the off-chip
+        memory's per tensor, accesses being as wide as its widest port serving the direction.
         """
         cores: list[dict] = []
         for core, tensors in self.accesses.items():
@@ -70,7 +78,6 @@ class CoreMemoryAccesses:
                     "core_id": core.id,
                     "core_name": core.name,
                     "kind": core.kind,
-                    "is_offchip": core.kind in OFF_DIE_KINDS,
                     "read_bandwidth": read_bw,
                     "write_bandwidth": write_bw,
                     "read": core_read,
@@ -80,7 +87,11 @@ class CoreMemoryAccesses:
                 }
             )
         cores.sort(key=lambda c: c["core_id"])
-        return {"cores": cores}
+        offchip = [
+            {"tensor": getattr(tensor, "name", str(tensor)), "read": counts.read, "write": counts.write}
+            for tensor, counts in self.offchip.items()
+        ]
+        return {"cores": cores, "offchip": offchip}
 
     def __repr__(self) -> str:
         """String representation of all accesses."""

@@ -268,4 +268,5 @@ def _core_roofs(accelerator: Accelerator, core: Core) -> list[tuple[str, Any, fl
 
 
 def _port_name(port: str, core_ids: Any) -> str:
-    return f"{port}@{','.join(map(str, sorted(core_ids)))}"
+    """``port`` with the cores that reach it, as ``<port>@<ids>``; alone for a port no core reaches."""
+    return f"{port}@{','.join(map(str, sorted(core_ids)))}" if core_ids else port

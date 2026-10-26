@@ -598,11 +598,11 @@ class _Lowering:
             dst_type = self._effective_allocation_type(landing)
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
-        elif src_type == "compute" and dst_type in ("memory", "shim", "offchip"):
+        elif src_type == "compute" and dst_type in ("memory", "offchip"):
             return TransferType.COMPUTE_TO_MEM
-        elif src_type in ("memory", "shim", "offchip") and dst_type == "compute":
+        elif src_type in ("memory", "offchip") and dst_type == "compute":
             return TransferType.MEM_TO_COMPUTE
-        elif src_type in ("memory", "shim", "offchip") and dst_type in ("memory", "shim", "offchip"):
+        elif src_type in ("memory", "offchip") and dst_type in ("memory", "offchip"):
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
@@ -624,7 +624,7 @@ class _Lowering:
             return alloc_types.pop()
         if "compute" in alloc_types:
             return "compute"
-        for preferred in ("offchip", "shim", "memory"):
+        for preferred in ("offchip", "memory"):
             if preferred in alloc_types:
                 return preferred
         return alloc_types.pop()

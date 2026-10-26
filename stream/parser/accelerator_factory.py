@@ -10,7 +10,7 @@ from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBac
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.ports import MemoryBanks, PortKey
+from stream.hardware.ports import READ, WRITE, MemoryBanks, OwnPort, PortKey, ViewPort
 from stream.parser.accelerator_validator import PORT_REF_REGEX, parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
@@ -30,8 +30,14 @@ class AcceleratorFactory:
             for core_id, core_data in self.data["cores"].items()
         }
         memories = {
-            name: Memory(name, tuple((cores[core_id], instance) for core_id, instance in views))
-            for name, views in self.data["memories"].items()
+            name: Memory(
+                name,
+                tuple((cores[core_id], instance) for core_id, instance in memory["views"]),
+                {port_name: _port(port) for port_name, port in memory["ports"].items()},
+                offchip=memory["offchip"],
+                capacity_bits=memory.get("capacity_bits"),
+            )
+            for name, memory in self.data["memories"].items()
         }
         measured: dict[Memory, BandwidthModel] = {}
         port_models: dict[PortKey, BandwidthModel] = {}
@@ -46,14 +52,13 @@ class AcceleratorFactory:
             cores=list(cores.values()),
             memories=list(memories.values()),
             network=self.create_network(memories),
-            offchip_core_id=self.data["offchip_core_id"],
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
             bandwidth=measured,
             reconfiguration=self.data.get("reconfiguration"),
             port_bandwidth=port_models,
         )
-        # Building the registry rejects views declaring a port of their memory differently, and a port key that names
-        # no port a core's backend models.
+        # Building the registry rejects a port its cores declare differently, a port a view's core declares that no
+        # port of its memory is, and a port key naming no port.
         _ = accelerator.ports
         return accelerator
 
@@ -133,24 +138,41 @@ class AcceleratorFactory:
 
     def create_network(self, memories: dict[str, Memory]) -> MemoryGraph:
         """The memories, with an edge each way for every link and between every two members of a bus, all of a bus's
-        edges one shared `CommunicationLink`."""
+        edges one shared `CommunicationLink`, each knowing the ports it enters and leaves every memory through."""
         edges: list[tuple[Memory, Memory, dict[str, CommunicationLink]]] = []
         seen: dict[tuple[str, tuple[str, ...]], int] = {}
         for connection in self.data["connections"]:
             kind, bandwidth, energy = connection["type"], connection["bandwidth"], connection["unit_energy_cost"]
-            ends = tuple(memories[name] for name in connection["memories"])
+            ports = {memories[name]: names for name, names in connection["ends"].items()}
+            ends = tuple(ports)
             key = (kind, tuple(sorted(memory.name for memory in ends)))
             parallel = seen[key] = seen.get(key, -1) + 1
             if kind == "link":
                 a, b = ends
                 edges += [
-                    (a, b, {"cl": CommunicationLink.link(a, b, bandwidth, energy, parallel)}),
-                    (b, a, {"cl": CommunicationLink.link(b, a, bandwidth, energy, parallel)}),
+                    (a, b, {"cl": CommunicationLink.link(a, b, bandwidth, energy, parallel, ports)}),
+                    (b, a, {"cl": CommunicationLink.link(b, a, bandwidth, energy, parallel, ports)}),
                 ]
             else:
-                bus = CommunicationLink.bus(ends, bandwidth, energy, parallel)
+                bus = CommunicationLink.bus(ends, bandwidth, energy, parallel, ports)
                 edges += [(a, b, {"cl": bus}) for a in ends for b in ends if a is not b]
         return MemoryGraph(edges)
+
+
+def _port(port: dict[str, Any]) -> ViewPort | OwnPort:
+    """A ``memories.<name>.ports`` entry: a port the views' cores declare, or the memory's own."""
+    if "from" in port:
+        return ViewPort(port["from"], tuple(port["cores"]))
+    return OwnPort(
+        bits_per_cycle=port["bandwidth"],
+        serves=frozenset(
+            (role, READ if direction == "read" else WRITE)
+            for role, directions in port["serves"].items()
+            for direction in directions
+        ),
+        read_energy_per_bit=port["read_energy"],
+        write_energy_per_bit=port["write_energy"],
+    )
 
 
 def _with_stream_fields(core: Core, core_data: dict[str, Any], operator_types: list[str] | None) -> Core:

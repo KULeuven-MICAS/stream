@@ -30,7 +30,6 @@ _TIGHT_DMA = {
     "aie2_dma_channels": {
         "max_compute_tile_dma_channels": 1,
         "max_mem_tile_dma_channels": 1,
-        "max_shim_tile_dma_channels": 1,
     }
 }
 

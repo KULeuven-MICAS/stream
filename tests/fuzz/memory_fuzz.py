@@ -28,7 +28,6 @@ TESTING_CORES = Path("stream/inputs/testing/hardware/cores")
 MAC = [CORES / "tpu_like.yaml", CORES / "eyeriss_like.yaml", CORES / "simba_chiplet.yaml", CORES / "fusemax_array.yaml"]
 DUAL_TOP = [TESTING_CORES / "testing_core1.yaml", CORES / "meta_prototype.yaml"]
 VECTOR = [CORES / "simd.yaml", CORES / "fusemax_vec.yaml"]
-OFFCHIP = CORES / "offchip.yaml"
 # a TensorCore: two arrays and a memory core, views of one VMEM that the memory core stages tensors in
 TENSORCORE = [CORES / "tpu_v7_mxu.yaml", CORES / "tpu_v7_vpu.yaml", CORES / "tpu_v7_vmem.yaml"]
 SCALES = (1 / 1024, 1 / 128, 1 / 32, 1 / 8, 1 / 2, 1, 2)
@@ -50,6 +49,32 @@ def _tops(core: dict[str, Any]) -> dict[str, list[str]]:
             tops = {n: [o for o in ops if o != operand] for n, ops in tops.items()}
             tops.setdefault(name, []).append(operand)
     return {name: ops for name, ops in tops.items() if ops}
+
+
+def _onchip(cores: list[dict[str, Any]], views: list[tuple[int, str]]) -> dict[str, Any]:
+    """An on-chip memory of ``views``, each port its views' cores declare one they all reach (the views of one memory
+    declare their ports alike)."""
+    core_id, instance = views[0]
+    names = [port["name"] for port in cores[core_id]["memories"][instance]["ports"]]
+    ids = [c for c, _ in views]
+    return {
+        "offchip": False,
+        "views": [f"{c}.{i}" for c, i in views],
+        "ports": {name: {"from": name, "cores": ids} for name in names},
+    }
+
+
+def _dram(r: random.Random) -> dict[str, Any]:
+    """The off-chip memory: one port serving every operand, or one per operand as FuseMax's."""
+    energy = {"read_energy": 15.625, "write_energy": 15.625}
+    if r.random() < 0.3:
+        ports = {
+            f"rw_port_{k}": {"bandwidth": r.choice([64, 256]), "serves": {role: ["read", "write"]}} | energy
+            for k, role in enumerate(("input1", "input2", "output"), start=1)
+        }
+    else:
+        ports = {"rw_port_1": {"bandwidth": r.choice([64, 256]), "serves": {"any": ["read", "write"]}} | energy}
+    return {"offchip": True, "views": [], "capacity_bits": 10_000_000_000, "ports": ports}
 
 
 def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw per choice
@@ -94,11 +119,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
                 else:
                     level.pop(key, None)
             memories[group[0]].append((core_id, instance))
-    offchip_id = len(cores)
-    cores.append(yaml.safe_load(OFFCHIP.read_text()))
-    memories["dram"] = [(offchip_id, "dram")]
-
-    onchip = [name for name in memories if name != "dram"]
+    onchip = list(memories)
     r.shuffle(onchip)
     connections: list[dict[str, Any]] = []
     for i in range(1, len(onchip)):
@@ -118,24 +139,28 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
     else:
         for name in r.sample(onchip, r.randint(1, len(onchip))):
             connections.append({"type": "link", "memories": [name, "dram"], "bandwidth": r.choice([32, 64, 128])})
+    declared = {name: _onchip(cores, views) for name, views in memories.items()} | {"dram": _dram(r)}
     bandwidth = {}
     if r.random() < 0.3:
         measured = r.choice([*onchip, "dram"])
         bandwidth[measured] = {"ceiling": r.choice([64.0, 256.0]), "contiguous": r.choice([32.0, 128.0])}
     elif r.random() < 0.3:
-        # a measured model of one port of one memory, as its views name it
+        # a measured model of one port of one memory
         name = r.choice([*onchip, "dram"])
-        core_id, instance = memories[name][0]
-        port = r.choice(cores[core_id]["memories"][instance]["ports"])["name"]
+        port = r.choice(sorted(declared[name]["ports"]))
         bandwidth[f"{name}.{port}"] = {"ceiling": 64.0, "contiguous": r.choice([16.0, 64.0])}
 
     data = {
         "name": f"fuzz_{seed}",
         "cores": dict(enumerate(cores)),
-        "offchip_core_id": offchip_id,
         "unit_energy_cost": 0,
-        "memories": {name: [f"{c}.{i}" for c, i in views] for name, views in memories.items()},
-        "connections": connections,
+        "memories": declared,
+        # each connection through every port of each memory it joins
+        "connections": [
+            {key: value for key, value in c.items() if key != "memories"}
+            | {"ends": {name: list(declared[name]["ports"]) for name in c["memories"]}}
+            for c in connections
+        ],
         **({"bandwidth": bandwidth} if bandwidth else {}),
     }
     block = r.choice(sorted(BLOCKS))
@@ -149,11 +174,23 @@ def reordered(data: dict[str, Any], seed: int) -> dict[str, Any]:
     out = copy.deepcopy(data)
     items = list(out["memories"].items())
     r.shuffle(items)
-    out["memories"] = {name: r.sample(views, len(views)) for name, views in items}
+    out["memories"] = {}
+    for name, memory in items:
+        memory["views"] = r.sample(memory["views"], len(memory["views"]))
+        ports = list(memory["ports"].items())
+        r.shuffle(ports)
+        memory["ports"] = {port: _shuffled(r, declared) for port, declared in ports}
+        out["memories"][name] = memory
     for connection in out["connections"]:
         if connection["type"] == "bus":
-            r.shuffle(connection["memories"])
+            ends = list(connection["ends"].items())
+            r.shuffle(ends)
+            connection["ends"] = dict(ends)
     return out
+
+
+def _shuffled(r: random.Random, port: dict[str, Any]) -> dict[str, Any]:
+    return port | {"cores": r.sample(port["cores"], len(port["cores"]))} if "cores" in port else port
 
 
 def renamed(data: dict[str, Any], seed: int) -> dict[str, Any]:
@@ -166,7 +203,7 @@ def renamed(data: dict[str, Any], seed: int) -> dict[str, Any]:
     out["memories"] = {new[name]: views for name, views in data["memories"].items()}
     out["connections"] = r.sample(out["connections"], len(out["connections"]))
     for connection in out["connections"]:
-        connection["memories"] = [new[m] for m in connection["memories"]]
+        connection["ends"] = {new[m]: ports for m, ports in connection["ends"].items()}
     out["bandwidth"] = {
         ".".join((new[key.split(".")[0]], *key.split(".")[1:])): value
         for key, value in data.get("bandwidth", {}).items()

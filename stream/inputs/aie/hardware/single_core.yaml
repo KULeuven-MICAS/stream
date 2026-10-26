@@ -1,26 +1,43 @@
 name: single_core
 kernel_library: ../kernels/aie2p.toml
 cores:
-  0: shim_dma.yaml
   1: mem_tile_256KB.yaml
   2: aie_tile.yaml
 core_coordinates:
-  0: [0, 0]
   1: [0, 1]
   2: [0, 2]
-offchip_core_id: 0
 memories:
-  dram: [0.memory]
-  tile_0_1: [1.memory]
-  tile_0_2: [2.memory]
+  dram:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:  # one shim tile's DMA: two 64-bit channels each way
+      mm2s: {bandwidth: 128, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm: {bandwidth: 128, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+  tile_0_1:
+    offchip: false
+    views: [1.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [1]}
+      s2mm: {from: s2mm, cores: [1]}
+  tile_0_2:
+    offchip: false
+    views: [2.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [2]}
+      s2mm: {from: s2mm, cores: [2]}
 
 connections:
-  # ───── Connect shim_dma to mem_tile ─────
+  # ───── Connect DRAM to mem_tile ─────
   - type: link
-    memories: [dram, tile_0_1]
+    ends:
+      dram: [mm2s, s2mm]
+      tile_0_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile ─────
   - type: link
-    memories: [tile_0_1, tile_0_2]
+    ends:
+      tile_0_1: [mm2s, s2mm]
+      tile_0_2: [mm2s, s2mm]
     bandwidth: 64
 unit_energy_cost: 0

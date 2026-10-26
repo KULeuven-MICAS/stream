@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ from stream.allocation.lowering import reader_positions
 from stream.api import evaluate_mapping
 from stream.cost_model.communication_manager import DemandItem
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.ports import OUTPUT, READ, input_role
+from stream.hardware.ports import OUTPUT, READ, WRITE, declared_ports, input_role
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.mapping.mapping import role_of
 from stream.opt.allocation.constraint_optimization.families import available_families
@@ -36,26 +37,57 @@ from stream.stages.parsing.accelerator_parser import parse_accelerator
 from stream.workload.node import ComputationNode, TransferNode
 from stream.workload.tensor import Tensor
 
-TWO_L1S = """
+L3 = """
+  l3:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+"""
+TWO_L1S = (
+    """
 name: two-l1s
 cores:
   0: shared_testing_core1.yaml
   1: shared_testing_core2.yaml
   2: shared_testing_core1.yaml
   3: shared_testing_core2.yaml
-  4: offchip.yaml
-offchip_core_id: 4
 unit_energy_cost: 0
 memories:
-  l1_a: [0.sram_64KB, 1.sram_64KB]
-  l1_b: [2.sram_64KB, 3.sram_64KB]
-  l3: [4.dram]
-connections:
-  - {type: link, memories: [l1_a, l3], bandwidth: 64}
-  - {type: link, memories: [l1_b, l3], bandwidth: 64}
-  - {type: link, memories: [l1_a, l1_b], bandwidth: 32}
+  l1_a:
+    offchip: false
+    views: [0.sram_64KB, 1.sram_64KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0, 1]}
+      w_port_1: {from: w_port_1, cores: [0, 1]}
+  l1_b:
+    offchip: false
+    views: [2.sram_64KB, 3.sram_64KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2, 3]}
+      w_port_1: {from: w_port_1, cores: [2, 3]}"""
+    + L3
+    + """connections:
+  - {type: link, ends: {l1_a: [r_port_1, w_port_1], l3: [rw_port_1]}, bandwidth: 64}
+  - {type: link, ends: {l1_b: [r_port_1, w_port_1], l3: [rw_port_1]}, bandwidth: 64}
+  - {type: link, ends: {l1_a: [r_port_1, w_port_1], l1_b: [r_port_1, w_port_1]}, bandwidth: 32}
 """
+)
 """Two L1s of two cores each, joined to each other and to L3."""
+
+
+def _l1(*views: str) -> dict:
+    """An on-chip memory of shared testing cores' ``views``, each port one all of them reach."""
+    cores = [int(view.split(".")[0]) for view in views]
+    ports = {name: {"from": name, "cores": cores} for name in ("r_port_1", "w_port_1")}
+    return {"offchip": False, "views": list(views), "ports": ports}
+
+
+def _memories(**views: list[str]) -> dict:
+    """The memories ``views`` names, each an on-chip memory of them, and L3."""
+    return {name: _l1(*entries) for name, entries in views.items()} | yaml.safe_load(L3)
+
 
 WHOLE = ((0, 15), (0, 15))
 
@@ -118,25 +150,31 @@ def test_a_port_key_of_a_measured_memory_is_rejected(tmp_path):
 
 def test_an_instance_in_two_memories_is_rejected(tmp_path):
     views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["1.sram_64KB", "2.sram_64KB", "3.sram_64KB"]}
-    errors = _errors(tmp_path, memories=views | {"l3": ["4.dram"]})
+    errors = _errors(tmp_path, memories=_memories(**views))
     assert any("`1.sram_64KB` is a view of both l1_a and l1_b" in error for error in errors)
 
 
 def test_a_core_in_no_memory_is_rejected(tmp_path):
-    views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["2.sram_64KB"], "l3": ["4.dram"]}
-    errors = _errors(tmp_path, memories=views)
+    views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["2.sram_64KB"]}
+    errors = _errors(tmp_path, memories=_memories(**views))
     assert any("core 3 is a view of no memory" in error for error in errors)
 
 
 def test_a_memory_no_connection_reaches_is_rejected(tmp_path):
     views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["2.sram_64KB"], "spare": ["3.sram_64KB"]}
-    errors = _errors(tmp_path, memories=views | {"l3": ["4.dram"]})
+    errors = _errors(tmp_path, memories=_memories(**views))
     assert any("spare" in error and "no connection" in error for error in errors)
 
 
-def test_a_link_from_a_memory_to_itself_is_rejected(tmp_path):
-    links = [{"type": "link", "memories": ["l1_a", "l1_a"], "bandwidth": 64}]
-    assert any("joins a memory to itself" in error for error in _errors(tmp_path, connections=links))
+def test_a_connection_through_a_port_its_memory_does_not_declare_is_rejected(tmp_path):
+    links = [{"type": "link", "ends": {"l1_a": ["rw_port_9"], "l3": ["rw_port_1"]}, "bandwidth": 64}]
+    errors = _errors(tmp_path, connections=links)
+    assert any("ends.l1_a` names ports ['rw_port_9'] it does not declare" in error for error in errors)
+
+
+def test_a_connection_naming_its_memories_without_their_ports_is_rejected(tmp_path):
+    links = [{"type": "link", "memories": ["l1_a", "l3"], "bandwidth": 64}]
+    assert _errors(tmp_path, connections=links)
 
 
 def test_a_connection_naming_cores_is_rejected(tmp_path):
@@ -145,32 +183,35 @@ def test_a_connection_naming_cores_is_rejected(tmp_path):
 
 
 def test_a_view_of_an_instance_its_core_does_not_declare_is_rejected(tmp_path):
-    views = {"l1_a": ["0.sram_64KB", "1.l1"], "l1_b": ["2.sram_64KB", "3.sram_64KB"], "l3": ["4.dram"]}
-    assert any("core 1 declares no memory `l1`" in error for error in _errors(tmp_path, memories=views))
+    views = {"l1_a": ["0.sram_64KB", "1.l1"], "l1_b": ["2.sram_64KB", "3.sram_64KB"]}
+    assert any("core 1 declares no memory `l1`" in error for error in _errors(tmp_path, memories=_memories(**views)))
 
 
 def test_a_view_of_an_inner_level_is_rejected(tmp_path):
     """A view binds a core's top-level instance: an inner level is the core's own, not where transfers land."""
-    text = """
+    text = (
+        """
 name: inner
-cores: {0: testing_core1.yaml, 1: offchip.yaml}
-offchip_core_id: 1
-memories: {l1: [0.sram_64KB], l3: [1.dram]}
-connections: [{type: link, memories: [l1, l3], bandwidth: 64}]
+cores: {0: testing_core1.yaml}
+memories:
+  l1: {offchip: false, views: [0.sram_64KB], ports: {}}"""
+        + L3
+        + """connections: [{type: link, ends: {l1: [], l3: [rw_port_1]}, bandwidth: 64}]
 """
+    )
     with pytest.raises(ValueError, match="is no top-level memory"):
         _accelerator(tmp_path, text)
 
 
 def test_a_link_joins_exactly_two_memories(tmp_path):
-    links = [{"type": "link", "memories": ["l1_a", "l1_b", "l3"], "bandwidth": 64}]
+    links = [{"type": "link", "ends": {"l1_a": [], "l1_b": [], "l3": []}, "bandwidth": 64}]
     assert any("joins exactly two memories" in error for error in _errors(tmp_path, connections=links))
 
 
 def test_parallel_links_between_two_memories_are_distinct_resources(tmp_path):
     """Two links declared between the same memories are two resources each way, told apart by their index."""
     data = yaml.safe_load(TWO_L1S)
-    data["connections"].append({"type": "link", "memories": ["l1_a", "l3"], "bandwidth": 64})
+    data["connections"].append({"type": "link", "ends": {"l1_a": ["r_port_1"], "l3": ["rw_port_1"]}, "bandwidth": 64})
     accelerator = _accelerator(tmp_path, yaml.safe_dump(data))
     a, l3 = accelerator.memories["l1_a"], accelerator.memories["l3"]
     links = [d["cl"] for u, v, d in accelerator.network.edges(data=True) if (u, v) == (a, l3)]
@@ -183,16 +224,16 @@ def test_views_sharing_a_port_must_agree_on_it(tmp_path):
     core["memories"]["sram_64KB"]["ports"][0]["bandwidth_max"] = 256
     data = yaml.safe_load(TWO_L1S)
     data["cores"][1] = core
-    with pytest.raises(ValueError, match="declare port r_port_1 differently"):
+    with pytest.raises(ValueError, match="declare r_port_1 differently"):
         _ = _accelerator(tmp_path, yaml.safe_dump(data)).ports
 
 
 def test_the_ir_lists_each_memory_with_its_views(tmp_path):
     memories = _accelerator(tmp_path).get_ir()["memories"]
     assert memories == {
-        "l1_a": ["0.sram_64KB", "1.sram_64KB"],
-        "l1_b": ["2.sram_64KB", "3.sram_64KB"],
-        "l3": ["4.dram"],
+        "l1_a": {"offchip": False, "views": ["0.sram_64KB", "1.sram_64KB"]},
+        "l1_b": {"offchip": False, "views": ["2.sram_64KB", "3.sram_64KB"]},
+        "l3": {"offchip": True, "views": []},
     }
 
 
@@ -228,7 +269,7 @@ def test_a_top_level_instance_no_memory_binds_is_rejected(tmp_path):
     data = yaml.safe_load(open(META_PROTOTYPE))
     del data["memories"]["meta_prototype_0_weights"]
     bus = next(c for c in data["connections"] if c["type"] == "bus")
-    bus["memories"].remove("meta_prototype_0_weights")
+    del bus["ends"]["meta_prototype_0_weights"]
     with pytest.raises(ValueError, match=r"top-level memories \['sram_1MB_W'\] are views of no memory"):
         _accelerator(tmp_path, yaml.safe_dump(data))
 
@@ -263,12 +304,100 @@ def test_weights_land_in_the_weights_memory(tmp_path):
         assert placed and all(memory.name.endswith("_weights") for memory in placed), (copy.name, placed)
 
 
-def test_the_off_chip_memory_is_the_one_an_off_die_core_views(tmp_path):
-    """Off-chip follows from the kind of a memory's cores; ``offchip_core_id`` must name one of them."""
+def test_the_off_chip_memory_is_the_one_declared_so(tmp_path):
+    """A memory says whether it is off-chip; an accelerator has at most one."""
     accelerator = _accelerator(tmp_path)
     assert [memory.name for memory in accelerator.memories.values() if memory.offchip] == ["l3"]
-    with pytest.raises(ValueError, match=r"offchip_core_id 0 views \(Memory\(l1_a\),\), not the off-chip memory"):
-        _accelerator(tmp_path, offchip_core_id=0)
+    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    memories["l1_a"]["offchip"] = True
+    assert any("at most one off-chip memory" in error for error in _errors(tmp_path, memories=memories))
+
+
+def test_a_memory_declares_its_capacity_only_where_no_core_views_it(tmp_path):
+    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    memories["l1_a"]["capacity_bits"] = 8
+    del memories["l3"]["capacity_bits"]
+    errors = _errors(tmp_path, memories=memories)
+    assert any("`memories.l1_a`: its views declare its capacity" in error for error in errors)
+    assert any("`memories.l3`: no core views it" in error for error in errors)
+
+
+def test_a_port_naming_a_core_that_is_no_view_is_rejected(tmp_path):
+    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    memories["l1_a"]["ports"]["r_port_1"]["cores"] = [0, 1, 2]
+    assert any("names cores [2], no views of it" in error for error in _errors(tmp_path, memories=memories))
+
+
+@pytest.mark.parametrize(
+    ("ports", "missing"),
+    [
+        ({"w_port_1": {"from": "w_port_1", "cores": [0, 1]}}, "core 0's port r_port_1 is in ports []"),
+        (
+            {
+                "r_port_1": {"from": "r_port_1", "cores": [0, 1]},
+                "r_again": {"from": "r_port_1", "cores": [1]},
+                "w_port_1": {"from": "w_port_1", "cores": [0, 1]},
+            },
+            "core 1's port r_port_1 is in ports ['r_again', 'r_port_1']",
+        ),
+    ],
+)
+def test_every_port_a_view_declares_is_in_exactly_one_port_of_its_memory(tmp_path, ports, missing):
+    data = yaml.safe_load(TWO_L1S)
+    _declare_ports(data, "l1_a", ports)
+    with pytest.raises(ValueError, match=re.escape(missing)):
+        _accelerator(tmp_path, yaml.safe_dump(data))
+
+
+def _declare_ports(data: dict, memory: str, ports: dict) -> None:
+    """Give ``memory`` ``ports``, each connection reaching it through all of them."""
+    data["memories"][memory]["ports"] = ports
+    for connection in data["connections"]:
+        if memory in connection["ends"]:
+            connection["ends"][memory] = list(ports)
+
+
+def _link(accelerator, sender: str, receiver: str, parallel: int = 0):
+    """The link from memory ``sender`` to ``receiver``, the ``parallel``-th declared between them."""
+    a, b = accelerator.memories[sender], accelerator.memories[receiver]
+    (link,) = [
+        d["cl"] for u, v, d in accelerator.network.edges(data=True) if (u, v) == (a, b) and d["cl"].parallel == parallel
+    ]
+    return link
+
+
+def test_cores_of_one_memory_may_each_have_their_own_port(tmp_path):
+    """One port per core: each reaches its own. A transfer over a connection through both cannot tell which it
+    passes; one over a connection through one of them passes that one."""
+    data = yaml.safe_load(TWO_L1S)
+    _declare_ports(
+        data,
+        "l1_a",
+        {
+            f"{direction}_{core}": {"from": f"{direction}_port_1", "cores": [core]}
+            for direction in ("r", "w")
+            for core in (0, 1)
+        },
+    )
+    data["connections"].append(
+        {"type": "link", "ends": {"l1_a": ["r_1", "w_1"], "l1_b": ["r_port_1", "w_port_1"]}, "bandwidth": 32}
+    )
+    accelerator = _accelerator(tmp_path, yaml.safe_dump(data, sort_keys=False))
+    l1_a = [port for port in accelerator.ports if port.key.memory == "l1_a"]
+    assert sorted((port.key.port, port.core_ids) for port in l1_a) == [
+        ("r_0", (0,)),
+        ("r_1", (1,)),
+        ("w_0", (0,)),
+        ("w_1", (1,)),
+    ]
+    assert [port.key.port for port in accelerator.ports.ports_of(accelerator.get_core(1))] == ["r_1", "w_1"]
+    l1_a, l1_b = accelerator.memories["l1_a"], accelerator.memories["l1_b"]
+    through_both, through_one = _link(accelerator, "l1_a", "l1_b"), _link(accelerator, "l1_a", "l1_b", 1)
+    with pytest.raises(ValueError, match=r"memory l1_a over .*: ports \['r_0', 'r_1'\] all serve output read"):
+        accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_both])
+    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_one]).key.port == "r_1"
+    assert accelerator.ports.memory_port(l1_b, WRITE, OUTPUT, [through_one]).key.port == "w_port_1"
+    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, []) is None
 
 
 def test_views_naming_their_ports_apart_leave_a_transfer_no_port(tmp_path):
@@ -279,10 +408,20 @@ def test_views_naming_their_ports_apart_leave_a_transfer_no_port(tmp_path):
         port["name"] = port["name"].replace("_1", "_2")
     data = yaml.safe_load(TWO_L1S)
     data["cores"][1] = core
+    _declare_ports(
+        data,
+        "l1_a",
+        {
+            f"{direction}_port_{core}": {"from": f"{direction}_port_{core}", "cores": [core - 1]}
+            for direction in ("r", "w")
+            for core in (1, 2)
+        },
+    )
     accelerator = _accelerator(tmp_path, yaml.safe_dump(data))
-    with pytest.raises(ValueError, match=r"memory l1_a: ports \['r_port_1', 'r_port_2'\] all serve output read"):
-        accelerator.ports.memory_port(accelerator.memories["l1_a"], READ, OUTPUT)
-    assert accelerator.ports.memory_port(accelerator.memories["l1_b"], READ, OUTPUT).key.port == "r_port_1"
+    link = _link(accelerator, "l1_a", "l1_b")
+    with pytest.raises(ValueError, match=r"memory l1_a over .*: ports \['r_port_1', 'r_port_2'\] all serve output"):
+        accelerator.ports.memory_port(accelerator.memories["l1_a"], READ, OUTPUT, [link])
+    assert accelerator.ports.memory_port(accelerator.memories["l1_b"], WRITE, OUTPUT, [link]).key.port == "w_port_1"
 
 
 class _Stub:
@@ -324,6 +463,7 @@ def test_fifo_depth_and_descriptors_count_a_tensor_once_per_position():
     memory = Memory.__new__(Memory)
     core = _Stub(id=0, kind="compute", core_type="zigzag.compute")
     memory.name, memory.views, memory.offchip, memory.capacity_bits = "l1_a", ((core, "sram"),), False, 0
+    memory.ports = {}
     tensor = _Stub(name="x")
     transfer = _Stub(name="Transfer(x)", inputs=[_Stub(name="x0")], outputs=[tensor])
     transfer.tensors = [*transfer.inputs, *transfer.outputs]
@@ -364,12 +504,19 @@ def test_every_core_a_hardware_file_declares_is_in_its_accelerator(path):
 
 
 @pytest.mark.parametrize("name", ["whole_array", "whole_array_strix"])
-def test_every_aie_column_reaches_dram_through_its_own_shim(name):
+def test_aie_dram_is_an_off_chip_memory_with_a_shim_dma_and_every_mem_tile_reaches_it(name):
+    """No core views DRAM: its ports are one shim tile's DMA, two 64-bit channels each way."""
     accelerator = parse_accelerator(f"stream/inputs/aie/hardware/{name}.yaml")
-    shims = [core for core in accelerator.core_list if core.kind == "shim"]
-    columns = {core.col_id for core in accelerator.core_list}
-    assert sorted(core.col_id for core in shims) == sorted(columns) and all(core.row_id == 0 for core in shims)
-    assert set(accelerator.offchip_memory.cores) == set(shims)
+    dram = accelerator.offchip_memory
+    assert dram.views == () and {core.kind for core in accelerator.core_list} == {"compute", "memory"}
+    assert {
+        name: (port.bits_per_cycle, port.core_ids) for port in declared_ports(dram) for name in [port.key.port]
+    } == {
+        "mm2s": (128, ()),
+        "s2mm": (128, ()),
+    }
+    mem_tiles = {memory for memory in accelerator.memories.values() if memory.kind == "memory"}
+    assert {v for u, v in accelerator.network.edges() if u is dram} == mem_tiles
 
 
 def _node(op_type: str, inputs: int) -> ComputationNode:
@@ -401,7 +548,7 @@ def test_views_declaring_a_shared_port_differently_are_rejected_when_parsed(tmp_
     core["memories"]["sram_64KB"]["ports"][0]["bandwidth_max"] = 256
     data = yaml.safe_load(TWO_L1S)
     data["cores"][1] = core
-    with pytest.raises(ValueError, match="declare port r_port_1 differently"):
+    with pytest.raises(ValueError, match="declare r_port_1 differently"):
         _accelerator(tmp_path, yaml.safe_dump(data))
 
 

@@ -105,7 +105,7 @@ def test_inline_core_rejected_when_invalid():
 def test_a_view_naming_no_memory_of_its_core_is_rejected():
     """A mistyped view would split one memory and quietly inflate the modelled area."""
     data = HardwareBundle.from_yaml(TPU_V7).to_data()
-    data["memories"]["vmem_0"] = ["0.not_a_memory", "1.vmem", "2.vmem", "3.vmem"]
+    data["memories"]["vmem_0"]["views"] = ["0.not_a_memory", "1.vmem", "2.vmem", "3.vmem"]
     validator = AcceleratorValidator(data, TPU_V7)
     assert not validator.validate()
     assert any("not_a_memory" in e for e in validator.errors)
@@ -203,12 +203,10 @@ def test_a_shared_vmem_is_priced_once_per_tensorcore():
     assert growth == _VMEM_BITS
 
 
-def test_offchip_and_shim_cores_carry_no_die_area():
-    """An HBM stack and an AIE shim front external memory; billing their capacity as SRAM would
-    swamp everything else."""
+def test_offchip_memory_carries_no_die_area():
+    """An HBM stack is external memory; billing its capacity as SRAM would swamp everything else."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    hbm = next(c for c in report.cores if c.core_id == 16)
-    assert not hbm.on_die
+    (hbm,) = [m for m in report.memories if m.style == "off_die"]
     assert hbm.area_mm2 == 0.0
     assert report.off_die_access_energy_pj_per_cycle > 0
 
@@ -222,7 +220,7 @@ def test_aie_bundle_is_priceable_and_reports_what_it_cannot_model():
     assert report.memory_area_mm2 > 0
     assert not report.technology_declared
     assert report.technology_node == "n16"
-    compute_tiles = [c for c in report.cores if c.compute and c.on_die]
+    compute_tiles = [c for c in report.cores if c.compute]
     assert compute_tiles and all(not c.compute.modelled for c in compute_tiles)
 
 

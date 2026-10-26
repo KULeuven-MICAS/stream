@@ -99,9 +99,12 @@ WORKLOAD_RAW: dict = {
 
 ACCELERATOR_RAW: dict = {
     "name": "test_aie2_accel",
-    "num_cores": 3,
-    "offchip_core_id": 2,
-    "memories": {"tile0": ["0.memory"], "tile1": ["1.memory"], "offchip": ["2.memory"]},
+    "num_cores": 2,
+    "memories": {
+        "tile0": {"offchip": False, "views": ["0.memory"]},
+        "tile1": {"offchip": False, "views": ["1.memory"]},
+        "offchip": {"offchip": True, "views": []},
+    },
     "cores": [
         {
             "id": 0,
@@ -125,20 +128,11 @@ ACCELERATOR_RAW: dict = {
             "memory": {"capacity_bits": 65536},
             "max_object_fifo_depth": 4,
         },
-        {
-            "id": 2,
-            "name": "offchip",
-            "core_type": "offchip",
-            "type": "offchip",
-            "row_id": -1,
-            "col_id": -1,
-            "utilization": 0.0,
-        },
     ],
     "connections": [
         {
             "type": "bus",
-            "memories": ["tile0", "tile1"],
+            "ends": {"tile0": ["mm2s", "s2mm"], "tile1": ["mm2s", "s2mm"]},
             "bandwidth": 32.0,
             "unit_energy_cost": 0.5,
         },
@@ -294,11 +288,11 @@ class TestWorkloadIR:
 
 class TestAcceleratorIR:
     def test_json_schema(self):
-        """AcceleratorIR.model_json_schema() must include schema_version const '1.0'."""
+        """AcceleratorIR.model_json_schema() must include schema_version const '2.0'."""
         schema = AcceleratorIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "1.0", f"Expected const='1.0', got: {sv}"
+        assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
 
     def test_from_dict(self):
         """AcceleratorIR constructed from raw get_ir() dict validates without error."""
@@ -322,14 +316,13 @@ class TestAcceleratorIR:
         ir = AcceleratorIR(
             name=raw["name"],
             num_cores=raw["num_cores"],
-            offchip_core_id=raw["offchip_core_id"],
             memories=raw["memories"],
             cores=cores,
             connections=raw["connections"],
         )
         assert ir.name == "test_aie2_accel"
-        assert ir.num_cores == 3
-        assert ir.schema_version == "1.0"
+        assert ir.num_cores == 2
+        assert ir.schema_version == "2.0"
 
     def test_from_internal(self):
         """AcceleratorIR.from_internal(mock_accelerator) constructs a valid model."""
@@ -340,10 +333,9 @@ class TestAcceleratorIR:
 
         mock_accelerator.get_ir.assert_called_once()
         assert ir.name == "test_aie2_accel"
-        assert ir.num_cores == 3
-        assert ir.offchip_core_id == 2
-        assert ir.schema_version == "1.0"
-        assert len(ir.cores) == 3
+        assert ir.num_cores == 2
+        assert ir.schema_version == "2.0"
+        assert len(ir.cores) == 2
 
     def test_hardware_view(self):
         """AcceleratorIR.hardware_view() returns AcceleratorHardwareView with cores and connectivity."""
@@ -355,10 +347,10 @@ class TestAcceleratorIR:
 
         assert isinstance(view, AcceleratorHardwareView)
         assert view.name == "test_aie2_accel"
-        assert view.num_cores == 3
-        assert len(view.cores) == 3
+        assert view.num_cores == 2
+        assert len(view.cores) == 2
         assert len(view.connections) == 2
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
 
     def test_compiler_view(self):
         """AcceleratorIR.compiler_view() returns AcceleratorCompilerView with topology info."""
@@ -370,11 +362,11 @@ class TestAcceleratorIR:
 
         assert isinstance(view, AcceleratorCompilerView)
         assert view.name == "test_aie2_accel"
-        assert len(view.cores) == 3
+        assert len(view.cores) == 2
         # compiler view should have core topology data
         assert view.cores[0].id == 0
         assert view.cores[0].core_type == "aie2.compute"
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
 
     def test_json_round_trip(self):
         """model_dump_json() on AcceleratorIR produces valid JSON that round-trips through json.loads."""
@@ -386,8 +378,8 @@ class TestAcceleratorIR:
         parsed = json.loads(json_str)
 
         assert parsed["name"] == "test_aie2_accel"
-        assert parsed["schema_version"] == "1.0"
-        assert len(parsed["cores"]) == 3
+        assert parsed["schema_version"] == "2.0"
+        assert len(parsed["cores"]) == 2
 
     def test_extra_fields_for_core_types(self):
         """AcceleratorIR cores with extra_fields dict for type-specific data validate correctly."""
@@ -401,17 +393,12 @@ class TestAcceleratorIR:
         assert "max_object_fifo_depth" in compute_core.extra_fields
         assert compute_core.extra_fields["memory"]["capacity_bits"] == 65536
 
-        # offchip core should have empty extra_fields
-        offchip_core = ir.cores[2]
-        assert offchip_core.extra_fields == {}
-
-    def test_offchip_core_id_none(self):
-        """AcceleratorIR with offchip_core_id=None validates correctly."""
-        raw = {**ACCELERATOR_RAW, "offchip_core_id": None}
+    def test_memories_say_whether_off_chip(self):
+        """Each memory carries whether it is off-chip and its views; an off-chip memory no core views has none."""
         mock_accelerator = MagicMock()
-        mock_accelerator.get_ir.return_value = raw
+        mock_accelerator.get_ir.return_value = ACCELERATOR_RAW
         ir = AcceleratorIR.from_internal(mock_accelerator)
-        assert ir.offchip_core_id is None
+        assert ir.memories["offchip"] == {"offchip": True, "views": []}
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +763,6 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
 def test_the_hardware_ir_names_the_cores_sharing_a_memory_and_what_a_specialized_core_runs():
     """FuseMax's array and vector core share one memory; only the vector core restricts its operators."""
     ir = AcceleratorIR.from_internal(parse_accelerator("stream/inputs/examples/hardware/fusemax.yaml"))
-    assert ir.memories["sram"] == ["0.sram", "1.sram"]
+    assert ir.memories["sram"] == {"offchip": False, "views": ["0.sram", "1.sram"]}
     served = {core.id: core.extra_fields["operator_types"] for core in ir.cores}
     assert served[0] is None and "MaxPool" in served[1]

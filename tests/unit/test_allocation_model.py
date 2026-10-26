@@ -121,10 +121,10 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
 @pytest.mark.parametrize(
     ("shared_bandwidth", "bandwidth", "charged"),
     [({}, 512.0, True), ({}, 0.0, False), ({"l3": object()}, 512.0, False), ({"l1": object()}, 512.0, True)],
-    ids=["offchip_links", "no_offchip_core", "offchip_shared_bandwidth_model", "onchip_shared_bandwidth_model"],
+    ids=["offchip_links", "no_offchip_links", "offchip_shared_bandwidth_model", "onchip_shared_bandwidth_model"],
 )
 def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
-    """No off-chip core charges nothing, and with a shared-bandwidth model of the off-chip memory the bytes are in
+    """No off-chip bandwidth charges nothing, and with a shared-bandwidth model of the off-chip memory the bytes are in
     the latency already."""
     space = SimpleNamespace(
         shared_bandwidth=shared_bandwidth,

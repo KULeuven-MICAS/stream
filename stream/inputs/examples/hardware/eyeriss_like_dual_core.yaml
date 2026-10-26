@@ -6,33 +6,63 @@ cores:
   1: eyeriss_like.yaml   # compute B
   2: pooling.yaml        # pooling engine
   3: simd.yaml           # SIMD unit
-  4: offchip.yaml        # DRAM controller
 
-offchip_core_id: 4       # core that fronts external memory
 unit_energy_cost: 0      # default energy per transferred word
 
 memories:
-  eyeriss_like_0: [0.sram_1M]
-  eyeriss_like_1: [1.sram_1M]
-  pooling: [2.sram_128KB]
-  simd: [3.sram_128KB_2rw]
-  offchip: [4.dram]
+  eyeriss_like_0:
+    offchip: false
+    views: [0.sram_1M]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [0]}
+      rw_port_2: {from: rw_port_2, cores: [0]}
+  eyeriss_like_1:
+    offchip: false
+    views: [1.sram_1M]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [1]}
+      rw_port_2: {from: rw_port_2, cores: [1]}
+  pooling:
+    offchip: false
+    views: [2.sram_128KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  simd:
+    offchip: false
+    views: [3.sram_128KB_2rw]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [3]}
+      rw_port_2: {from: rw_port_2, cores: [3]}
+  offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
 
 connections:
   # ─── direct link between the two compute cores ───
   - type: link
-    memories: [eyeriss_like_0, eyeriss_like_1]
+    ends:
+      eyeriss_like_0: [rw_port_1, rw_port_2]
+      eyeriss_like_1: [rw_port_1, rw_port_2]
     bandwidth: 32
 
   # ─── pooling core connected to each compute core ───
-  - {type: link, memories: [eyeriss_like_0, pooling], bandwidth: 32}
-  - {type: link, memories: [eyeriss_like_1, pooling], bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_0: [rw_port_1, rw_port_2], pooling: [r_port_1, w_port_1]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_1: [rw_port_1, rw_port_2], pooling: [r_port_1, w_port_1]}, bandwidth: 32}
 
   # ─── SIMD core connected to each compute core ───
-  - {type: link, memories: [eyeriss_like_0, simd], bandwidth: 32}
-  - {type: link, memories: [eyeriss_like_1, simd], bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_0: [rw_port_1, rw_port_2], simd: [rw_port_1, rw_port_2]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_1: [rw_port_1, rw_port_2], simd: [rw_port_1, rw_port_2]}, bandwidth: 32}
 
   # ─── shared bus to off-chip DRAM ───
   - type: bus
-    memories: [eyeriss_like_0, eyeriss_like_1, pooling, simd, offchip]   # all on-chip cores + controller
+    ends:   # all on-chip cores + controller
+      eyeriss_like_0: [rw_port_1, rw_port_2]
+      eyeriss_like_1: [rw_port_1, rw_port_2]
+      pooling: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
+      offchip: [rw_port_1]
     bandwidth: 128           # wider than point-to-point links

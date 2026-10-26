@@ -291,23 +291,28 @@ class DecisionSpace:
         """The layout of every tensor copy, and the contiguous runs each transfer moves them in."""
         return CopyLayouts(self)
 
-    def side_rate(self, tr: TransferNode, memory: Memory, direction: str) -> Rate:
-        """Bits per cycle ``memory`` moves one side of ``tr`` at per contiguous run length: its measured shared
-        bandwidth, else that of the port the transfer's operand passes, else unbounded."""
-        model = self.side_bandwidth(tr, memory, direction)
+    def side_rate(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Rate:
+        """Bits per cycle ``memory`` moves one side of ``tr`` on route ``choice`` at per contiguous run length: its
+        measured shared bandwidth, else that of the port the transfer's operand passes, else unbounded."""
+        model = self.side_bandwidth(tr, choice, memory, direction)
         if model is None:
             return lambda span: float("inf")
         return lambda span: model.contiguous * model.efficiency(span, direction)
 
-    def side_port(self, tr: TransferNode, memory: Memory, direction: str) -> Port | None:
-        """The port of ``memory`` the operand of ``tr`` passes in ``direction``, None where none is."""
-        return self.accelerator.ports.memory_port(memory, direction, self.operand_role(tr, read_side=direction == READ))
+    def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
+        """The port of ``memory`` the operand of ``tr`` passes in ``direction`` on route ``choice``, None where none
+        is."""
+        role = self.operand_role(tr, read_side=direction == READ)
+        return self.accelerator.ports.memory_port(memory, direction, role, choice.links_at(memory, direction == READ))
 
-    def side_bandwidth(self, tr: TransferNode, memory: Memory, direction: str) -> BandwidthModel | None:
-        """What bounds ``memory``'s side of ``tr``: its measured shared bandwidth, else its port's, else nothing."""
+    def side_bandwidth(
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
+    ) -> BandwidthModel | None:
+        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else its port's,
+        else nothing."""
         if (model := self.shared_bandwidth.get(memory)) is not None:
             return model
-        port = self.side_port(tr, memory, direction)
+        port = self.side_port(tr, choice, memory, direction)
         return port.bandwidth if port is not None else None
 
     def operand_role(self, tr: TransferNode, read_side: bool) -> str:

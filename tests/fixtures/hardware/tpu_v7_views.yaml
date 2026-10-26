@@ -33,7 +33,6 @@ cores:
   9: ./cores/tpu_v7_vmem.yaml   # TensorCore 1 VMEM scratchpad
   10: ./cores/tpu_v7_vmem.yaml  # TensorCore 2 VMEM scratchpad
   11: ./cores/tpu_v7_vmem.yaml  # TensorCore 3 VMEM scratchpad
-  12: ./cores/tpu_v7_hbm.yaml   # HBM3e controller
 
 core_coordinates:
   0: [0, 0]
@@ -48,9 +47,7 @@ core_coordinates:
   9: [1, 2]
   10: [2, 2]
   11: [3, 2]
-  12: [2, 3]
 
-offchip_core_id: 12
 unit_energy_cost: 0
 
 # ── Physical cost ──
@@ -62,27 +59,63 @@ technology_node: n3
 # The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one physical
 # scratchpad -- the modelling split described above: one memory, priced once, its views agreeing on its size.
 memories:
-  vmem_0: [8.vmem, 0.operand_buffer, 1.operand_buffer]
-  vmem_1: [9.vmem, 2.operand_buffer, 3.operand_buffer]
-  vmem_2: [10.vmem, 4.operand_buffer, 5.operand_buffer]
-  vmem_3: [11.vmem, 6.operand_buffer, 7.operand_buffer]
-  hbm: [12.hbm3e]
+  vmem_0:
+    offchip: false
+    views: [8.vmem, 0.operand_buffer, 1.operand_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [8, 0, 1]}
+      w_port_1: {from: w_port_1, cores: [8, 0, 1]}
+  vmem_1:
+    offchip: false
+    views: [9.vmem, 2.operand_buffer, 3.operand_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [9, 2, 3]}
+      w_port_1: {from: w_port_1, cores: [9, 2, 3]}
+  vmem_2:
+    offchip: false
+    views: [10.vmem, 4.operand_buffer, 5.operand_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [10, 4, 5]}
+      w_port_1: {from: w_port_1, cores: [10, 4, 5]}
+  vmem_3:
+    offchip: false
+    views: [11.vmem, 6.operand_buffer, 7.operand_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [11, 6, 7]}
+      w_port_1: {from: w_port_1, cores: [11, 6, 7]}
+  hbm:
+    offchip: true
+    views: []
+    capacity_bits: 3298534883328
+    ports:
+      rw_port_1: {bandwidth: 65536, serves: {any: [read, write]}, read_energy: 0.0610352, write_energy: 0.0610352}
 
 connections:
   # ── Within a chip, the two TensorCores' scratchpads exchange directly (die-to-die). ──
   - type: link
-    memories: [vmem_0, vmem_1]
+    ends:
+      vmem_0: [r_port_1, w_port_1]
+      vmem_1: [r_port_1, w_port_1]
     bandwidth: 131072
   - type: link
-    memories: [vmem_2, vmem_3]
+    ends:
+      vmem_2: [r_port_1, w_port_1]
+      vmem_3: [r_port_1, w_port_1]
     bandwidth: 131072
 
   # ── Between chips: the inter-chip interconnect, 1200 GB/s -> 5486 bits/cc. ──
   - type: link
-    memories: [vmem_1, vmem_2]
+    ends:
+      vmem_1: [r_port_1, w_port_1]
+      vmem_2: [r_port_1, w_port_1]
     bandwidth: 5486
 
   # ── HBM: every scratchpad reaches it, at the published 2 x 7380 GB/s. ──
   - type: bus
-    memories: [vmem_0, vmem_1, vmem_2, vmem_3, hbm]
+    ends:
+      vmem_0: [r_port_1, w_port_1]
+      vmem_1: [r_port_1, w_port_1]
+      vmem_2: [r_port_1, w_port_1]
+      vmem_3: [r_port_1, w_port_1]
+      hbm: [rw_port_1]
     bandwidth: 65536

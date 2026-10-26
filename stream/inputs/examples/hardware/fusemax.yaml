@@ -4,18 +4,30 @@ name: fusemax
 cores:
   0: ./cores/fusemax_array.yaml  # main array core
   1: ./cores/fusemax_vec.yaml    # SIMD/vector core
-  2: ./cores/fusemax_dram.yaml   # off-chip DRAM controller
 
-offchip_core_id: 2          # core that fronts external memory
 unit_energy_cost: 512       # default energy per transferred word
 
 memories:
-  sram: [0.sram, 1.sram]
-  dram: [2.dram]
+  sram:
+    offchip: false
+    views: [0.sram, 1.sram]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0, 1]}
+      w_port_1: {from: w_port_1, cores: [0, 1]}
+  dram:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000000000
+    ports:
+      rw_port_1: {bandwidth: 3200, serves: {input1: [read, write]}, read_energy: 10, write_energy: 10}
+      rw_port_2: {bandwidth: 3200, serves: {input2: [read, write]}, read_energy: 10, write_energy: 10}
+      rw_port_3: {bandwidth: 3200, serves: {output: [read, write]}, read_energy: 10, write_energy: 10}
 
 connections:
   # The one off-chip interface, between DRAM and the SRAM the array and vector cores share; the two cores move
   # data between them in place, in that SRAM.
   - type: link
-    memories: [sram, dram]
+    ends:
+      sram: [r_port_1, w_port_1]
+      dram: [rw_port_1, rw_port_2, rw_port_3]
     bandwidth: 512

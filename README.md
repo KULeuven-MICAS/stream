@@ -80,13 +80,13 @@ Price a small two-Conv workload (a committed test fixture) on a TPU-like quad-co
 
 ## 🧩 Hardware and Core Types
 
-An accelerator in Stream is described as a **system of heterogeneous dataflow cores**. Core roles include compute, memory, shim, and offchip; example dataflow core types include **AIE**, **TPU-like**, and **pooling**.
+An accelerator in Stream is described as a **system of heterogeneous dataflow cores**. Core roles are compute and memory, and the off-chip memory is declared as a memory of its own; example dataflow core types include **AIE**, **TPU-like**, and **pooling**.
 
 Hardware and mapping files are organized as follows:
 
 - `stream/inputs/examples/hardware/` - system-level hardware YAMLs (e.g. `tpu_like_quad_core.yaml`, `eyeriss_like_*.yaml`, `simba*.yaml`, `fusemax.yaml`).
 - `stream/inputs/examples/hardware/cores/` - per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `offchip.yaml`, `eyeriss_like.yaml`).
-- `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` - AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`, `shim_dma.yaml`).
+- `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` - AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`).
 - `stream/inputs/examples/mapping/`, `stream/inputs/aie/mapping/`, and `stream/inputs/testing/mapping/` - mapping descriptions.
 
 A mapping can be generated (as in Quick Start above) or hand-written and passed as `mapping`.

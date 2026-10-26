@@ -44,11 +44,13 @@ class AcceleratorHardwareView(BaseModel):
     and full connectivity. Suitable for hardware engineers reasoning about resource budgets.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     name: str = Field(description="Accelerator name")
-    num_cores: int = Field(description="Total number of cores including offchip")
+    num_cores: int = Field(description="Total number of cores")
     cores: list[CoreIR] = Field(description="All cores with full resource info (including extra_fields)")
-    memories: dict[str, list[str]] = Field(description="Each memory by name, with its views '<core id>.<instance>'")
+    memories: dict[str, dict[str, Any]] = Field(
+        description="Each memory by name: whether off-chip, and its views '<core id>.<instance>'"
+    )
     connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
 
@@ -59,10 +61,12 @@ class AcceleratorCompilerView(BaseModel):
     Suitable for compiler engineers performing placement and routing decisions.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     name: str = Field(description="Accelerator name")
     cores: list[CoreIR] = Field(description="All cores — use id, core_type, row_id, col_id for placement")
-    memories: dict[str, list[str]] = Field(description="Each memory by name, with its views '<core id>.<instance>'")
+    memories: dict[str, dict[str, Any]] = Field(
+        description="Each memory by name: whether off-chip, and its views '<core id>.<instance>'"
+    )
     connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
 
@@ -76,19 +80,16 @@ class AcceleratorIR(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream/accelerator_ir/v1",
+            "$id": "stream/accelerator_ir/v2",
         }
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     name: str = Field(description="Accelerator name as declared in hardware YAML")
-    num_cores: int = Field(description="Total number of cores (including offchip core if present)")
-    offchip_core_id: int | None = Field(
-        description="ID of the offchip memory core, or None if the accelerator has no offchip core"
-    )
-    memories: dict[str, list[str]] = Field(
-        description="Each memory by name, with its views: the top-level instance of each core that uses it, as "
-        "'<core id>.<instance>'"
+    num_cores: int = Field(description="Total number of cores")
+    memories: dict[str, dict[str, Any]] = Field(
+        description="Each memory by name: whether it is off-chip ('offchip') and its views ('views'), the top-level "
+        "instance of each core that uses it, as '<core id>.<instance>'"
     )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
     connections: list[dict[str, Any]] = Field(
@@ -123,7 +124,6 @@ class AcceleratorIR(BaseModel):
         return cls(
             name=raw["name"],
             num_cores=raw["num_cores"],
-            offchip_core_id=raw["offchip_core_id"],
             memories=raw["memories"],
             cores=cores,
             connections=raw["connections"],

@@ -56,9 +56,10 @@ def solved_model(accelerator: Accelerator) -> AllocationModel:
 
 def test_cores_sharing_a_memory_use_one_memory_of_them_both():
     accelerator = fusemax()
-    memories = [accelerator.memory_of(accelerator.get_core(i), OUTPUT) for i in (0, 1, 2)]
-    assert [m.name for m in memories] == ["sram", "sram", "dram"]
+    memories = [accelerator.memory_of(accelerator.get_core(i), OUTPUT) for i in (0, 1)]
+    assert [m.name for m in memories] == ["sram", "sram"]
     assert [c.id for c in memories[0].cores] == [0, 1]
+    assert accelerator.offchip_memory.name == "dram"
     assert len(accelerator.memories) == 2
 
 

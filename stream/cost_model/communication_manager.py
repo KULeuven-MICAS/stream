@@ -43,6 +43,15 @@ class MulticastPathPlan:
     pairs: tuple[tuple[int, int], ...] = ()
     link_shares: tuple[tuple["CommunicationLink", float], ...] = field(default=(), compare=False)
 
+    def links_at(self, memory: Memory, leaving: bool) -> tuple["CommunicationLink", ...]:
+        """The links the route's data leaves ``memory`` over, or enters it over: links out of it or into it, and the
+        buses it is on."""
+        return tuple(
+            link
+            for link in self.links_used
+            if memory in link.members or (link.sender if leaving else link.receiver) is memory
+        )
+
 
 def box_bits(boxes: Iterable[Box], bitwidth: float) -> float:
     """Bits the ``boxes`` cover together: distinct data counted once."""

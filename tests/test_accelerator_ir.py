@@ -28,9 +28,9 @@ HARDWARE_CASES = [
         "stream/inputs/examples/hardware/tpu_like_quad_core.yaml",
         {
             "name": "tpu_like_quad_core",
-            "offchip_core_id": 6,
+            "offchip_memory": "offchip",
             "expected_namespace": "zigzag",
-            "expected_num_cores": 7,
+            "expected_num_cores": 6,
         },
         id="examples/tpu_like_quad_core",
     ),
@@ -38,9 +38,9 @@ HARDWARE_CASES = [
         "stream/inputs/testing/hardware/tpu_like_quad_core.yaml",
         {
             "name": "tpu_like_quad_core",
-            "offchip_core_id": 6,
+            "offchip_memory": "offchip",
             "expected_namespace": "zigzag",
-            "expected_num_cores": 7,
+            "expected_num_cores": 6,
         },
         id="testing/tpu_like_quad_core",
     ),
@@ -48,9 +48,9 @@ HARDWARE_CASES = [
         "stream/inputs/aie/hardware/whole_array_strix.yaml",
         {
             "name": "whole_array_strix",
-            "offchip_core_id": 0,
+            "offchip_memory": "dram",
             "expected_namespace": "aie2",
-            "expected_num_cores": 48,
+            "expected_num_cores": 40,
         },
         id="aie/whole_array_strix",
     ),
@@ -90,19 +90,19 @@ def test_get_ir_top_level_keys(hardware_path, expected):
     """Top-level IR must contain all mandatory keys."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    required_keys = {"name", "num_cores", "offchip_core_id", "memories", "cores", "connections"}
+    required_keys = {"name", "num_cores", "memories", "cores", "connections"}
     assert required_keys.issubset(ir.keys()), f"Missing keys: {required_keys - ir.keys()}"
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_name_and_metadata(hardware_path, expected):
-    """Accelerator name, offchip id, and core count must match the YAML definition."""
+    """Accelerator name, off-chip memory, and core count must match the YAML definition."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     assert ir["name"] == expected["name"]
-    assert ir["offchip_core_id"] == expected["offchip_core_id"]
+    assert [name for name, memory in ir["memories"].items() if memory["offchip"]] == [expected["offchip_memory"]]
     assert ir["num_cores"] == expected["expected_num_cores"]
-    viewers = sorted(int(view.split(".")[0]) for views in ir["memories"].values() for view in views)
+    viewers = sorted(int(view.split(".")[0]) for memory in ir["memories"].values() for view in memory["views"])
     assert viewers == [c["id"] for c in ir["cores"]]
 
 
@@ -235,7 +235,7 @@ def test_get_ir_connectivity_structure(hardware_path, expected):
     for entry in ir["connections"]:
         assert entry["type"] in {"link", "bus"}, f"Unknown connectivity type: {entry['type']}"
         assert "bandwidth" in entry, f"Connectivity entry missing 'bandwidth': {entry}"
-        assert len(entry["memories"]) == 2 if entry["type"] == "link" else len(entry["memories"]) >= 2  # noqa: PLR2004
+        assert len(entry["ends"]) == 2 if entry["type"] == "link" else len(entry["ends"]) >= 2  # noqa: PLR2004
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
@@ -244,7 +244,7 @@ def test_get_ir_connectivity_references_valid_memories(hardware_path, expected):
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     for entry in ir["connections"]:
-        assert set(entry["memories"]) <= set(ir["memories"]), entry
+        assert set(entry["ends"]) <= set(ir["memories"]), entry
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
@@ -261,5 +261,5 @@ def test_accelerator_ir_round_trips_through_yaml(hardware_path, expected):
 
     assert data["name"] == expected["name"]
     assert data["num_cores"] == expected["expected_num_cores"]
-    assert data["offchip_core_id"] == expected["offchip_core_id"]
+    assert data["memories"][expected["offchip_memory"]] == {"offchip": True, "views": []}
     assert len(data["cores"]) == expected["expected_num_cores"]

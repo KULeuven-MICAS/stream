@@ -11,5 +11,5 @@ from stream.stages.parsing.accelerator_parser import parse_accelerator  # noqa: 
 def test_dram_is_named_by_the_runtime_tile_and_a_tile_memory_by_its_tile():
     """The lowering reaches DRAM from the runtime sequence, through the shim of the other end's column."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
-    assert _memory_tile(accelerator.offchip_memory).data == RUNTIME_TILE
-    assert _memory_tile(accelerator.memories["tile_2_3"]).data == "tile_2_3"
+    assert _memory_tile(accelerator.offchip_memory, "aie2").data == RUNTIME_TILE
+    assert _memory_tile(accelerator.memories["tile_2_3"], "aie2").data == "tile_2_3"

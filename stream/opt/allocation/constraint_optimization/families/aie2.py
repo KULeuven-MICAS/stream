@@ -82,8 +82,8 @@ class AIE2MemoryReuse:
 
 
 class AIE2DmaChannels:
-    """A tile's memory drives at most the tile's DMA channels in each direction: a compute tile's, a memory tile's or
-    the shim's."""
+    """A tile's memory drives at most the tile's DMA channels in each direction: a compute tile's or a memory tile's.
+    The off-chip memory spends none."""
 
     name: ClassVar[str] = "aie2_dma_channels"
     requires: ClassVar[tuple[str, ...]] = ("dma_in", "dma_out")
@@ -93,11 +93,9 @@ class AIE2DmaChannels:
         self,
         max_compute_tile_dma_channels: int = 2,
         max_mem_tile_dma_channels: int = 6,
-        max_shim_tile_dma_channels: int = 2,
     ) -> None:
         self.max_compute_tile_dma_channels = max_compute_tile_dma_channels
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
-        self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
 
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
@@ -112,8 +110,6 @@ class AIE2DmaChannels:
 
     def channels(self, memory: Memory) -> int:
         """The DMA channels ``memory``'s tile has in each direction."""
-        if memory.kind == "shim":
-            return self.max_shim_tile_dma_channels
         if memory.kind == "memory":
             return self.max_mem_tile_dma_channels
         if memory.kind == "compute":

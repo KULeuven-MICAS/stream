@@ -6,45 +6,94 @@ cores:
   1: meta_prototype.yaml   # compute-core B
   2: pooling.yaml          # pooling engine
   3: simd.yaml             # SIMD unit
-  4: offchip.yaml          # DRAM controller
 
-offchip_core_id: 4         # which core fronts external memory
 unit_energy_cost: 0        # default energy per transferred word
 
 # Each meta_prototype core has two top-level SRAMs: one for its activations and outputs, one for its weights.
 memories:
-  meta_prototype_0: [0.sram_1MB_A]
-  meta_prototype_1: [1.sram_1MB_A]
-  meta_prototype_0_weights: [0.sram_1MB_W]
-  meta_prototype_1_weights: [1.sram_1MB_W]
-  pooling: [2.sram_128KB]
-  simd: [3.sram_128KB_2rw]
-  offchip: [4.dram]
+  meta_prototype_0:
+    offchip: false
+    views: [0.sram_1MB_A]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  meta_prototype_1:
+    offchip: false
+    views: [1.sram_1MB_A]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  meta_prototype_0_weights:
+    offchip: false
+    views: [0.sram_1MB_W]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  meta_prototype_1_weights:
+    offchip: false
+    views: [1.sram_1MB_W]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  pooling:
+    offchip: false
+    views: [2.sram_128KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  simd:
+    offchip: false
+    views: [3.sram_128KB_2rw]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [3]}
+      rw_port_2: {from: rw_port_2, cores: [3]}
+  offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
 
 connections:
   # ─── direct link between the two compute cores ───
   - type: link
-    memories: [meta_prototype_0, meta_prototype_1]
+    ends:
+      meta_prototype_0: [r_port_1, w_port_1]
+      meta_prototype_1: [r_port_1, w_port_1]
     bandwidth: 64
 
   # ─── pooling core connected to each compute core ───
   - type: link
-    memories: [meta_prototype_0, pooling]
+    ends:
+      meta_prototype_0: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 64
   - type: link
-    memories: [meta_prototype_1, pooling]
+    ends:
+      meta_prototype_1: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 64
 
   # ─── SIMD core connected to each compute core ───
   - type: link
-    memories: [meta_prototype_0, simd]
+    ends:
+      meta_prototype_0: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 64
   - type: link
-    memories: [meta_prototype_1, simd]
+    ends:
+      meta_prototype_1: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 64
 
   # ─── shared bus to off-chip memory (all on-chip memories + controller) ───
   - type: bus
-    memories: [meta_prototype_0, meta_prototype_1, meta_prototype_0_weights, meta_prototype_1_weights, pooling, simd,
-      offchip]
+    ends:
+      meta_prototype_0: [r_port_1, w_port_1]
+      meta_prototype_1: [r_port_1, w_port_1]
+      meta_prototype_0_weights: [r_port_1, w_port_1]
+      meta_prototype_1_weights: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
+      offchip: [rw_port_1]
     bandwidth: 128        # wider than on-chip point-to-point links

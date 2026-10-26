@@ -43,7 +43,6 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import Mapping, NodeMapping
-from stream.parser.core_validator import OFF_DIE_KINDS
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.normalization import reduction_axes
@@ -79,11 +78,17 @@ RUNTIME_TILE = "tile_0_0"
 reaches DRAM through the shim of the column each transfer's other end sits in."""
 
 
-def _memory_tile(memory: Memory) -> StringAttr:
-    """How the generated code names ``memory``: on AIE, DRAM by :data:`RUNTIME_TILE` and a tile's memory by its tile,
-    which the hardware description must name it after since the AIE lowering reads the tile off the name; any other
-    memory by its name, for the backend that reads it."""
-    if memory.namespace != "aie2":
+SHIM_BUFFER_DESCRIPTORS = 16
+"""The buffer descriptors an AIE2 shim tile's DMA has for the runtime sequence."""
+SHIM_DMA_ITERATIONS = 64
+"""The steps one AIE2 shim buffer descriptor iterates."""
+
+
+def _memory_tile(memory: Memory, namespace: str) -> StringAttr:
+    """How the generated code names ``memory`` of an accelerator of cores of ``namespace``: on AIE, DRAM by
+    :data:`RUNTIME_TILE` and a tile's memory by its tile, which the hardware description must name it after since the
+    AIE lowering reads the tile off the name; any other memory by its name, for the backend that reads it."""
+    if namespace != "aie2":
         return StringAttr(memory.name)
     if memory.offchip:
         return StringAttr(RUNTIME_TILE)
@@ -155,13 +160,13 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(input_type, StrensorType)
         path_plan = mapping.resource_allocation[0]
         assert isinstance(path_plan, MulticastPathPlan)
-        cores = [_memory_tile(target) for target in path_plan.targets]
+        cores = [_memory_tile(target, self.ctx.get("accelerator").namespace) for target in path_plan.targets]
 
         if len(cores) == 1:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
                 raise ValueError("Spatial Strensor for single-core transfer found.")
 
-        if all(target.kind in OFF_DIE_KINDS for target in path_plan.targets):
+        if all(target.offchip for target in path_plan.targets):
             shape = cast(ShapedType, node.output.subview.source.type).get_shape()
             layer_dims = (
                 x[0]
@@ -181,7 +186,9 @@ class AIECodeGenerationStage(Stage):
             for (index, space), reader, output in zip(spaces, self._readers(node, workload), node.outputs, strict=True):
                 allocation = full_mapping.get(reader).resource_allocation[0]
                 if isinstance(allocation, MulticastPathPlan):
-                    cores_attr = [_memory_tile(memory) for memory in allocation.sources]
+                    cores_attr = [
+                        _memory_tile(memory, self.ctx.get("accelerator").namespace) for memory in allocation.sources
+                    ]
                 else:
                     cores_attr = [_tile(core) for core in allocation]
                 result_types.append(
@@ -436,13 +443,10 @@ class AIECodeGenerationStage(Stage):
         return module
 
     def _shim_limits(self) -> tuple[int, int]:
-        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates,
-        as the accelerator declares them; 0 where it does not. A trace writes its buffer out through
-        one descriptor."""
-        shims = [core for core in self.ctx.get("accelerator").core_list if core.type == "shim"]
-        descriptors = min((core.dma_buffer_descriptors for core in shims), default=0)
-        iterations = min((core.dma_iterations for core in shims), default=0)
-        return descriptors - 1 if descriptors and self.trace_size else descriptors, iterations
+        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates. A trace writes
+        its buffer out through one descriptor."""
+        descriptors = SHIM_BUFFER_DESCRIPTORS - 1 if self.trace_size else SHIM_BUFFER_DESCRIPTORS
+        return descriptors, SHIM_DMA_ITERATIONS
 
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused on chip."""

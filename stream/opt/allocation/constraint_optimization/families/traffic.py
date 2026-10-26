@@ -69,7 +69,7 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortS
         for position, memory in enumerate(memories):
             side = {"source_at": position} if direction == READ else {"target_at": position}
             share = ctx.space.moved_bits(tr, choice, **side) / moved
-            port = ports.memory_port(memory, direction, operand)
+            port = ports.memory_port(memory, direction, operand, choice.links_at(memory, leaving=direction == READ))
             if port is None:
                 continue
             # Targets in one memory receive a broadcast once, into it.

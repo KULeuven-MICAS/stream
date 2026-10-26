@@ -79,7 +79,7 @@ This requires **Linux x86_64** and **CPython 3.12 or 3.13**. See [Installation](
 
 ### The inputs
 
-- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a shim-DMA tile, a 512 KB memory tile, and four AIE compute tiles - a 4×8 grid of compute tiles.
+- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a 512 KB memory tile and four AIE compute tiles - a 4×8 grid of compute tiles - and DRAM, the off-chip memory every memory tile reaches.
 - **Workload** - a **SwiGLU** block: two projection `Gemm`s, a `SiLU` activation, an elementwise `Mul`, and a down-projection `Gemm`, built for a problem size by `make_swiglu_workload`.
 - **Mapping** - built from tile sizes by `make_swiglu_mapping`.
 

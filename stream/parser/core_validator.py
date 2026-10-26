@@ -15,17 +15,14 @@ logger = logging.getLogger(__name__)
 ALLOWED_NAMESPACES: frozenset[str] = frozenset({"zigzag", "aie2"})
 """Namespace prefixes recognised by the core type system (e.g. ``"zigzag"``, ``"aie2"``)."""
 
-ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory", "shim", "offchip"})
+ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory"})
 """Core kind suffixes recognised by the core type system.
 
 * ``compute`` — processing tile (systolic array, SIMD, …)
 * ``memory``  — on-chip memory / cache tile
-* ``shim``    — interface / DMA tile (e.g. AIE2 shim-DMA)
-* ``offchip`` — off-chip DRAM or external memory controller
-"""
 
-OFF_DIE_KINDS: frozenset[str] = frozenset({"offchip", "shim"})
-"""The core kinds that sit outside the die: the memory such a core views is the accelerator's off-chip memory."""
+Off-chip memory is no core: ``memories`` declares it.
+"""
 
 
 def core_kind_from_type(core_type: str | None) -> str:
@@ -208,16 +205,6 @@ class ZigZagMemoryCoreValidator(ZigZagBaseCoreValidator):
     CORE_KIND = "memory"
 
 
-@CoreValidatorRegistry.register
-class ZigZagShimCoreValidator(ZigZagBaseCoreValidator):
-    CORE_KIND = "shim"
-
-
-@CoreValidatorRegistry.register
-class ZigZagOffchipCoreValidator(ZigZagBaseCoreValidator):
-    CORE_KIND = "offchip"
-
-
 # =============================================================================
 # AIE2 namespace validators  (standalone cerberus — no ZigZag inheritance)
 # =============================================================================
@@ -344,15 +331,3 @@ class AIE2ComputeCoreValidator(AIE2BaseCoreValidator):
 @CoreValidatorRegistry.register
 class AIE2MemoryCoreValidator(AIE2BaseCoreValidator):
     CORE_KIND = "memory"
-
-
-@CoreValidatorRegistry.register
-class AIE2ShimCoreValidator(AIE2BaseCoreValidator):
-    """AIE2 shim / DMA interface tile (row 0 of the AIE array)."""
-
-    CORE_KIND = "shim"
-
-
-@CoreValidatorRegistry.register
-class AIE2OffchipCoreValidator(AIE2BaseCoreValidator):
-    CORE_KIND = "offchip"

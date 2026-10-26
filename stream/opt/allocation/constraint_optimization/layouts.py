@@ -152,5 +152,5 @@ class CopyLayouts:
     def _rate(self, tr: TransferNode, choice: MulticastPathPlan, direction: str) -> Rate:
         """The rate of the slowest memory on one side of ``choice``."""
         memories = choice.sources if direction == READ else choice.targets
-        sides = [self.space.side_rate(tr, memory, direction) for memory in dict.fromkeys(memories)]
+        sides = [self.space.side_rate(tr, choice, memory, direction) for memory in dict.fromkeys(memories)]
         return lambda span: min((side(span) for side in sides), default=float("inf"))

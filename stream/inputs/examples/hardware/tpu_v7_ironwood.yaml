@@ -44,7 +44,6 @@ cores:
   13: ./cores/tpu_v7_mxu.yaml
   14: ./cores/tpu_v7_vpu.yaml
   15: ./cores/tpu_v7_vmem.yaml
-  16: ./cores/tpu_v7_hbm.yaml
 
 # [col, row]: one column per TensorCore, so all four VMEMs are usable as on-chip memory cores
 # (col_id < nb_cols_to_use).
@@ -65,9 +64,7 @@ core_coordinates:
   13: [3, 1]
   14: [3, 2]
   15: [3, 3]
-  16: [0, 4]
 
-offchip_core_id: 16
 unit_energy_cost: 0
 
 # HBM3E is read and written 32 bytes at a time (a 32-bit pseudo-channel, burst length 8), so a
@@ -86,36 +83,75 @@ technology_node: n3
 
 # Each TensorCore's VMEM core, MXUs and VPU share its VMEM.
 memories:
-  vmem_0: [0.vmem, 1.vmem, 2.vmem, 3.vmem]
-  vmem_1: [4.vmem, 5.vmem, 6.vmem, 7.vmem]
-  vmem_2: [8.vmem, 9.vmem, 10.vmem, 11.vmem]
-  vmem_3: [12.vmem, 13.vmem, 14.vmem, 15.vmem]
-  hbm: [16.hbm3e]
+  vmem_0:
+    offchip: false
+    views: [0.vmem, 1.vmem, 2.vmem, 3.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0, 1, 2, 3]}
+      w_port_1: {from: w_port_1, cores: [0, 1, 2, 3]}
+  vmem_1:
+    offchip: false
+    views: [4.vmem, 5.vmem, 6.vmem, 7.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [4, 5, 6, 7]}
+      w_port_1: {from: w_port_1, cores: [4, 5, 6, 7]}
+  vmem_2:
+    offchip: false
+    views: [8.vmem, 9.vmem, 10.vmem, 11.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [8, 9, 10, 11]}
+      w_port_1: {from: w_port_1, cores: [8, 9, 10, 11]}
+  vmem_3:
+    offchip: false
+    views: [12.vmem, 13.vmem, 14.vmem, 15.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [12, 13, 14, 15]}
+      w_port_1: {from: w_port_1, cores: [12, 13, 14, 15]}
+  hbm:
+    offchip: true
+    views: []
+    capacity_bits: 3298534883328
+    ports:
+      rw_port_1: {bandwidth: 53600, serves: {any: [read, write]}, read_energy: 4, write_energy: 4}
 
 connections:
   # ── Within a chip, the two chiplets' VMEMs meet over the die-to-die link, ~600 GB/s each way. ──
   - type: link
-    memories: [vmem_0, vmem_1]
+    ends:
+      vmem_0: [r_port_1, w_port_1]
+      vmem_1: [r_port_1, w_port_1]
     bandwidth: 2182
   - type: link
-    memories: [vmem_2, vmem_3]
+    ends:
+      vmem_2: [r_port_1, w_port_1]
+      vmem_3: [r_port_1, w_port_1]
     bandwidth: 2182
 
   # ── Between the chips: one ICI link between their second chiplets, 100 GB/s each way. ──
   - type: link
-    memories: [vmem_1, vmem_3]
+    ends:
+      vmem_1: [r_port_1, w_port_1]
+      vmem_3: [r_port_1, w_port_1]
     bandwidth: 364
 
   # ── HBM: each chiplet's VMEM reaches its own four stacks at 3.69 TB/s. ──
   - type: link
-    memories: [vmem_0, hbm]
+    ends:
+      vmem_0: [r_port_1, w_port_1]
+      hbm: [rw_port_1]
     bandwidth: 13400
   - type: link
-    memories: [vmem_1, hbm]
+    ends:
+      vmem_1: [r_port_1, w_port_1]
+      hbm: [rw_port_1]
     bandwidth: 13400
   - type: link
-    memories: [vmem_2, hbm]
+    ends:
+      vmem_2: [r_port_1, w_port_1]
+      hbm: [rw_port_1]
     bandwidth: 13400
   - type: link
-    memories: [vmem_3, hbm]
+    ends:
+      vmem_3: [r_port_1, w_port_1]
+      hbm: [rw_port_1]
     bandwidth: 13400

@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from stream.hardware.bundle import HardwareBundle
-from stream.parser.core_validator import OFF_DIE_KINDS, core_kind_from_type
 from stream.plugins import load_group
 
 __all__ = [
@@ -64,7 +63,6 @@ class CoreCost:
     core_id: int
     name: str
     core_type: str
-    on_die: bool
     memories: list[MemoryCost]  # its private levels; the memories it shares with others are the report's
     compute: ComputeCost | None
     area_mm2: float
@@ -136,36 +134,31 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
 
     data = bundle.validated_data()
     cores_data = data["cores"]
-    on_die = {
-        core_id: (core_kind_from_type(core.get("type")) or "compute") not in OFF_DIE_KINDS
-        for core_id, core in cores_data.items()
-    }
-    viewed = {view for views in data["memories"].values() for view in views}
+    viewed = {view for memory in data["memories"].values() for view in memory["views"]}
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
         private = [name for name in _levels(core) if (core_id, name) not in viewed]
-        memories = [_memory_cost(name, [(core_id, core, name)], on_die[core_id], density) for name in private]
+        memories = [_memory_cost(name, [(core_id, core, name)], True, density) for name in private]
         core_name = str(core.get("name", f"core_{core_id}"))
-        compute = _compute_cost(core_id, core_name, core, density) if on_die[core_id] else None
+        compute = _compute_cost(core_id, core_name, core, density)
         core_costs.append(
             CoreCost(
                 core_id=core_id,
                 name=core_name,
                 core_type=str(core.get("type", "")),
-                on_die=on_die[core_id],
                 memories=memories,
                 compute=compute,
                 area_mm2=sum(m.area_mm2 for m in memories) + (compute.area_mm2 if compute else 0.0),
             )
         )
     shared = []
-    for name, views in data["memories"].items():
-        if len(sides := {on_die[core_id] for core_id, _ in views}) != 1:
-            raise ValueError(f"memory {name} is seen by on-die and off-die cores alike")
-        (on_die_side,) = sides
-        levels = [(cid, cores_data[cid], level) for cid, level in views]
-        shared.append(_memory_cost(name, levels, on_die_side, density))
+    for name, memory in data["memories"].items():
+        if memory["views"]:
+            levels = [(cid, cores_data[cid], level) for cid, level in memory["views"]]
+            shared.append(_memory_cost(name, levels, not memory["offchip"], density))
+        else:
+            shared.append(_own_memory_cost(name, memory, density))
 
     memories_all = [*shared, *(m for c in core_costs for m in c.memories)]
     on_die_memories = [m for m in memories_all if m.style == "sram"]
@@ -224,7 +217,35 @@ def _memory_cost(
         raise ValueError(f"the views of memory {name} disagree on its size: {[lv[:2] for lv in levels]}")
     instances, bits, _ = levels[0]
     ports = {port: width for *_, widths in levels for port, width in widths.items()}
-    width = max(ports.values(), default=0)
+    core_ids = tuple(core_id for core_id, _, _ in views)
+    return _priced(name, core_ids, instances, bits, max(ports.values(), default=0), max(len(ports), 1), on_die, density)
+
+
+def _own_memory_cost(name: str, memory: dict[str, Any], density: _Density) -> MemoryCost:
+    """A memory no core views, priced from what it declares: its capacity and its own ports."""
+    widths = [int(port["bandwidth"]) for port in memory["ports"].values()]
+    return _priced(
+        name,
+        (),
+        1,
+        memory["capacity_bits"],
+        max(widths, default=0),
+        max(len(widths), 1),
+        not memory["offchip"],
+        density,
+    )
+
+
+def _priced(  # noqa: PLR0913
+    name: str,
+    core_ids: tuple[int, ...],
+    instances: int,
+    bits: int,
+    width: int,
+    nb_ports: int,
+    on_die: bool,
+    density: _Density,
+) -> MemoryCost:
     if on_die:
         read_energy, write_energy = width * density.read_pj_per_bit, width * density.write_pj_per_bit
         area_mm2 = bits * instances * density.sram_um2_per_bit / 1e6
@@ -233,13 +254,13 @@ def _memory_cost(
         area_mm2 = 0.0
     return MemoryCost(
         name=name,
-        core_ids=tuple(core_id for core_id, _, _ in views),
+        core_ids=core_ids,
         style="sram" if on_die else "off_die",
         instances=instances,
         bits_per_instance=bits,
         total_bits=bits * instances,
         access_width_bits=width,
-        nb_ports=max(len(ports), 1),
+        nb_ports=nb_ports,
         area_mm2=area_mm2,
         read_energy_pj=read_energy,
         write_energy_pj=write_energy,

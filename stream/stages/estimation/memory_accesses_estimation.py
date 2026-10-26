@@ -5,6 +5,7 @@ from stream.cost_model.memory_accesses import CoreMemoryAccesses
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import READ, WRITE, declared_ports
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -99,9 +100,10 @@ class MemoryAccessesEstimationStage(Stage):
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
-                cores = self._offchip_cores()
-            else:
-                cores = _flatten_cores(self.mapping.get(src).resource_allocation)
+                bandwidth = self._offchip_bandwidth(READ)
+                self.core_memory_accesses.add_offchip_read(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                continue
+            cores = _flatten_cores(self.mapping.get(src).resource_allocation)
             for core in cores:
                 # Calculate the number of accesses per fire based on tensor size and bw on the core
                 bandwidth = core.get_max_memory_bandwidth(type="read")
@@ -146,9 +148,10 @@ class MemoryAccessesEstimationStage(Stage):
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
-                cores = self._offchip_cores()
-            else:
-                cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
+                bandwidth = self._offchip_bandwidth(WRITE)
+                self.core_memory_accesses.add_offchip_write(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                continue
+            cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
             for core in cores:
                 # Calculate the number of accesses per fire based on tensor size and bw on the core
                 bandwidth = core.get_max_memory_bandwidth(type="write")
@@ -156,12 +159,14 @@ class MemoryAccessesEstimationStage(Stage):
                 total_accesses = accesses_per_fire * nb_fires
                 self.core_memory_accesses.add_write(core, t_core, total_accesses)
 
-    def _offchip_cores(self) -> list[Core]:
-        """The core an edge's tensor is counted on: off-chip memory is accessed once whichever of its cores (an AIE
-        column's shim) the data passes, so on the one the description declares fronts it, ``offchip_core_id``."""
-        if self.accelerator.offchip_core_id is None:
-            raise ValueError(f"{self.accelerator.name} declares no off-chip core to count edge accesses on")
-        return [self.accelerator.get_core(self.accelerator.offchip_core_id)]
+    def _offchip_bandwidth(self, direction: str) -> float:
+        """Bits one access of the off-chip memory moves in ``direction``: its widest port serving it."""
+        if (memory := self.accelerator.offchip_memory) is None:
+            raise ValueError(f"{self.accelerator.name} declares no off-chip memory to count edge accesses on")
+        widths = [port.bits_per_cycle for port in declared_ports(memory) if any(d == direction for _, d in port.serves)]
+        if not widths:
+            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
+        return max(widths)
 
     def is_leaf(self):
         return True

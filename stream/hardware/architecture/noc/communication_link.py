@@ -10,7 +10,8 @@ if TYPE_CHECKING:
 class CommunicationLink:
     """A fixed-bandwidth connection between memories: a link carrying data from ``sender`` to ``receiver`` (a declared
     link is one each way), or a bus its ``members`` share in every direction. ``parallel`` tells apart the connections
-    declared between the same memories, each its own resource. Build one with :meth:`link` or :meth:`bus`."""
+    declared between the same memories, each its own resource. ``ports`` names, per memory it joins, the ports of it
+    the connection enters and leaves it through. Build one with :meth:`link` or :meth:`bus`."""
 
     def __init__(
         self,
@@ -20,6 +21,7 @@ class CommunicationLink:
         bandwidth: int | float,
         unit_energy_cost: float,
         parallel: int,
+        ports: dict[Memory, tuple[str, ...]],
     ) -> None:
         self.sender = sender
         self.receiver = receiver
@@ -27,19 +29,31 @@ class CommunicationLink:
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
         self.parallel = parallel
+        self.ports = ports
         self._key = (sender, receiver, members, bandwidth, unit_energy_cost, parallel)
 
     @classmethod
-    def link(
-        cls, sender: Memory, receiver: Memory, bandwidth: int | float, unit_energy_cost: float, parallel: int
+    def link(  # noqa: PLR0913
+        cls,
+        sender: Memory,
+        receiver: Memory,
+        bandwidth: int | float,
+        unit_energy_cost: float,
+        parallel: int,
+        ports: dict[Memory, tuple[str, ...]],
     ) -> CommunicationLink:
-        return cls(sender, receiver, (), bandwidth, unit_energy_cost, parallel)
+        return cls(sender, receiver, (), bandwidth, unit_energy_cost, parallel, ports)
 
     @classmethod
     def bus(
-        cls, members: tuple[Memory, ...], bandwidth: int | float, unit_energy_cost: float, parallel: int
+        cls,
+        members: tuple[Memory, ...],
+        bandwidth: int | float,
+        unit_energy_cost: float,
+        parallel: int,
+        ports: dict[Memory, tuple[str, ...]],
     ) -> CommunicationLink:
-        return cls(None, None, members, bandwidth, unit_energy_cost, parallel)
+        return cls(None, None, members, bandwidth, unit_energy_cost, parallel, ports)
 
     @property
     def memories(self) -> tuple[Memory, ...]:

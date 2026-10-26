@@ -208,7 +208,7 @@ class GenericMappingGenerator:
     def _select_cores_for_node(self, node: ComputationNode) -> list[Core]:
         """Select cores that can execute *node* according to operator_types.
 
-        Excludes offchip, shim, and memory cores unconditionally.  Selection priority:
+        Excludes memory cores unconditionally.  Selection priority:
         1. Specialized cores (operator_types is not None and node.type in list).
            If any specialized cores match, use them exclusively.
         2. Generic cores (operator_types is None — accepts all ops).
@@ -218,7 +218,7 @@ class GenericMappingGenerator:
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
         Conv/Gemm go to the generic compute cores that split it fastest.
         """
-        _SKIP_TYPES = {"offchip", "shim", "memory"}
+        _SKIP_TYPES = {"memory"}
         node_op = node.type
 
         specialized_cores: list[Core] = []
