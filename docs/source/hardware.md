@@ -37,7 +37,7 @@ core_coordinates:
 offchip_core_id: 6      # core that fronts external memory
 unit_energy_cost: 0     # default per-transfer energy for the links below
 
-memories:               # each memory, with its views: "<core id>.<that core's top-level instance>"
+memories:               # each shared memory, <core id>.<memory name>
   tpu_like_0: [0.sram_2MB]
   tpu_like_1: [1.sram_2MB]
   tpu_like_2: [2.sram_2MB]
