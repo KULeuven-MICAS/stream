@@ -80,19 +80,30 @@ def lower_steady_state(  # noqa: PLR0913
     fusion_splits: dict[LayerDim, int],
     cost_lut: CoreCostLUT,
     nb_cols_to_use: int,
+    route_alternatives: int,
 ) -> AllocationProblem:
-    """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``."""
-    return _Lowering(workload, accelerator, mapping, nb_cols_to_use).lower(fusion_splits, cost_lut)
+    """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``, each
+    placement of a transfer offered up to ``route_alternatives`` routes."""
+    lowering = _Lowering(workload, accelerator, mapping, nb_cols_to_use, route_alternatives)
+    return lowering.lower(fusion_splits, cost_lut)
 
 
 class _Lowering:
     """The state the lowering threads through its steps: a mapping it rewrites as the transfer graph grows."""
 
-    def __init__(self, workload: Workload, accelerator: Accelerator, mapping: Mapping, nb_cols_to_use: int):
+    def __init__(  # noqa: PLR0913
+        self,
+        workload: Workload,
+        accelerator: Accelerator,
+        mapping: Mapping,
+        nb_cols_to_use: int,
+        route_alternatives: int,
+    ):
         self.workload = workload
         self.accelerator = accelerator
         self.mapping = mapping.copy()
         self.nb_cols_to_use = nb_cols_to_use
+        self.route_alternatives = route_alternatives
         self.hardware = build_hardware_facts(accelerator, nb_cols_to_use)
 
     def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> AllocationProblem:
@@ -541,7 +552,7 @@ class _Lowering:
                     self._reads_in,
                 )
                 possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
-                    src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory
+                    src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
                 )
                 all_possible_resource_plans.extend(possible_resource_plans)
         return tuple(all_possible_resource_plans)

@@ -100,15 +100,14 @@ class ReuseLevels:
         for tr in ctx.space.transfer_nodes:
             if tr.transfer_type not in (TransferType.COMPUTE_TO_COMPUTE):
                 continue
+            # the transfer's loops, which every copy it delivers goes through
             relevancies = ctx.space.ssis[tr].get_applicable_temporal_relevancies()
-            last_irrelevant = -1
+            last_irrelevant = max((i for i, r in enumerate(relevancies) if r is False), default=-1)
+            if last_irrelevant < 0:
+                continue
             for t in tr.outputs:
-                for i, r in enumerate(relevancies):
-                    if r is False:
-                        last_irrelevant = i
-                if last_irrelevant >= 0:
-                    name = f"force_intermediate_reuse_{tr.name}"
-                    _held_from(ctx, t, last_irrelevant, len(relevancies), name, FUSED_INTERMEDIATE)
+                name = f"force_intermediate_reuse_{tr.name}"
+                _held_from(ctx, t, last_irrelevant, len(relevancies), name, FUSED_INTERMEDIATE)
 
 
 class OutputReuse:

@@ -10,6 +10,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.ports import OUTPUT, input_role
 from stream.opt.allocation.constraint_optimization.space import communicating_pairs
 from stream.stages.parsing.accelerator_parser import parse_accelerator
+from stream.workload.blocks import build_block
 
 TWO_CLUSTERS = """
 name: two-clusters
@@ -232,3 +233,61 @@ def test_partial_sums_bound_for_dram_are_reduce_scattered(tmp_path):
     assert sorted(to_dram.values()) == [0.25] * 4
     assert sum(ring.values()) == pytest.approx(4 * 0.75)
     assert max(ring.values()) <= 0.5
+
+
+def _plans(accelerator: Accelerator, sources, targets, demand, alternatives: int):
+    core = accelerator.get_core
+    return accelerator.communication_manager.get_possible_transfer_plan(
+        tuple(accelerator.memory_of(core(i), OUTPUT) for i in sources),
+        tuple(accelerator.memory_of(core(i), input_role(1)) for i in targets),
+        tuple(demand),
+        16,
+        lambda one, other: False,
+        alternatives,
+    )
+
+
+def test_a_transfer_is_offered_each_of_two_equally_fast_connections(tmp_path):
+    """Two links between the same memories: the first route takes one, the next, routed as if the first carried the
+    transfer, the other, so that the solve can put two transfers of one slot on one each."""
+    path = tmp_path / "parallel.yaml"
+    path.write_text(
+        "name: parallel\ncores:\n  0: testing_core1.yaml\n  1: testing_core1.yaml\n  2: offchip.yaml\n"
+        "offchip_core_id: 2\nunit_energy_cost: 0\n"
+        "memories: {m0: [0.sram_128K_A], m1: [1.sram_128K_A], m2: [2.dram], w0: [0.sram_128K_W], w1: [1.sram_128K_W]}\n"
+        "connections:\n"
+        "  - {type: link, memories: [m0, m1], bandwidth: 64}\n  - {type: link, memories: [m0, m1], bandwidth: 64}\n"
+        "  - {type: bus, memories: [m0, m1, w0, w1, m2], bandwidth: 8}\n"
+    )
+    plans = _plans(parse_accelerator(str(path)), (0,), (1,), [DemandItem(0, (0,), WHOLE)], 3)
+    assert sorted(str(link) for plan in plans for link in plan.links_used) == [
+        "CL#1(m0, m1, bw=64)",
+        "CL(m0, m1, bw=64)",
+    ]
+    assert all(share == 1.0 for plan in plans for _, share in plan.link_shares)
+
+
+def test_a_transfer_with_one_way_there_is_offered_one_route(accelerator):
+    """Each cluster's bus is the only way between its cores: the alternatives all take it, so only one is kept."""
+    assert len(_plans(accelerator, (0,), (1,), [DemandItem(0, (0,), WHOLE)], 3)) == 1
+
+
+def test_the_first_alternative_is_the_fastest_route(accelerator):
+    demand = [DemandItem(0, (0,), HALF_A), DemandItem(1, (0,), HALF_B)]
+    (first, *_) = _plans(accelerator, (6,), (0, 3), demand, 3)
+    assert first == route(accelerator, (6,), (0, 3), demand)
+    assert shares(first) == shares(route(accelerator, (6,), (0, 3), demand))
+
+
+def test_more_routes_never_make_a_solve_slower(tmp_path):
+    """The routes offered with alternatives include the one offered without, so the solve can only do better."""
+    latencies = [  # simba's mesh offers several equally fast routes between most chiplets
+        evaluate_mapping(
+            "stream/inputs/examples/hardware/simba.yaml",
+            build_block("attention", heads=2, seq=32, d_head=32),
+            str(tmp_path / str(n)),
+            options=SolveOptions(artifacts=False, route_alternatives=n),
+        ).cycles
+        for n in (1, 3)
+    ]
+    assert latencies[1] <= latencies[0]

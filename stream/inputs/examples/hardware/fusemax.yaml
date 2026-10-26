@@ -14,11 +14,8 @@ memories:
   dram: [2.dram]
 
 connections:
-  # Each compute core's DMA to the DRAM controller: two links between the SRAM that cores 0 and 1
-  # share and DRAM. The two cores move data between them in place, in their shared SRAM.
-  - type: link
-    memories: [sram, dram]
-    bandwidth: 512
+  # The one off-chip interface, between DRAM and the SRAM the array and vector cores share; the two cores move
+  # data between them in place, in that SRAM.
   - type: link
     memories: [sram, dram]
     bandwidth: 512

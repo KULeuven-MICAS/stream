@@ -102,7 +102,7 @@ estimate = generate_code(
 print(estimate.context.get("module"))
 ```
 
-`nb_cols_to_use=8` uses the full 4×8 compute-tile array, and `npu` targets the Strix (XDNA2) NPU. The MILP allocation over the whole array takes a minute or two; each fused group's design is written under `outputs/swiglu/group_<index>/codegen/`.
+`nb_cols_to_use=8` uses the full 4×8 compute-tile array, and `npu` targets the Strix (XDNA2) NPU. `route_alternatives` (default 1) offers the allocation more than one route for each placement of a transfer; on the AIE arrays the extra routes only break ties between equally fast ones, at many times the solve time. The MILP allocation over the whole array takes a minute or two; each fused group's design is written under `outputs/swiglu/group_<index>/codegen/`.
 
 ### The generated MLIR
 

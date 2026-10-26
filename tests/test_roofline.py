@@ -26,7 +26,8 @@ def test_fusemax_has_a_mac_roof_a_vector_roof_and_one_shared_on_chip_memory():
     levels = {level["name"]: level for level in roofline["levels"]}
     assert list(levels) == ["off-chip memory", "off-chip links", "on-chip memory"]
     assert {tuple(r["cores"]) for r in levels["on-chip memory"]["resources"]} == {(0, 1)}
-    assert levels["off-chip links"]["bytes_per_cycle"] == 4 * 512 / 8
+    # its one off-chip link, each way
+    assert levels["off-chip links"]["bytes_per_cycle"] == 2 * 512 / 8
 
 
 def test_vector_cores_serving_other_operators_are_separate_roofs():

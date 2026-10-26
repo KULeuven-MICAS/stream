@@ -116,12 +116,24 @@ class CommunicationManager:
         demand: tuple[DemandItem, ...],
         bitwidth: float,
         shares_memory: Callable[[Memory, Memory], bool],
+        alternatives: int,
     ) -> tuple[MulticastPathPlan, ...]:
-        """The route of a transfer between these memories that moves ``demand``, planned once per demand."""
-        key = (tuple(src_allocs), tuple(dst_allocs), demand, bitwidth)
-        plans = self._transfer_plans.get(key)
-        if plans is None:
-            plans = self._transfer_plans[key] = (self.route(key[0], key[1], demand, bitwidth, shares_memory),)
+        """The routes a transfer between these memories that moves ``demand`` may take, planned once per demand: the
+        fastest (:meth:`route`), then up to ``alternatives - 1`` more, each routed as if the ones before it already
+        carried the transfer, so that it takes other connections where comparably fast ones exist and the solve can
+        spread transfers sharing a slot over them. A route over the same links as an earlier one is dropped."""
+        if alternatives < 1:
+            raise ValueError(f"a transfer takes one of at least one route, not {alternatives}")
+        key = (tuple(src_allocs), tuple(dst_allocs), demand, bitwidth, alternatives)
+        if (plans := self._transfer_plans.get(key)) is None:
+            found: dict[frozenset[CommunicationLink], MulticastPathPlan] = {}
+            taken: dict[CommunicationLink, float] = {}
+            for _ in range(alternatives):
+                plan, carried = self._route(key[0], key[1], demand, bitwidth, shares_memory, taken)
+                found.setdefault(frozenset(plan.links_used), plan)
+                for link, bits in carried.items():
+                    taken[link] = taken.get(link, 0.0) + bits
+            plans = self._transfer_plans[key] = tuple(found.values())
         return plans
 
     def route(
@@ -132,13 +144,27 @@ class CommunicationManager:
         bitwidth: float,
         shares_memory: Callable[[Memory, Memory], bool],
     ) -> MulticastPathPlan:
-        """Serve each demand from the nearest source holding it, then grow one Steiner tree per source over the
+        """The fastest route of a transfer, see :meth:`_route`."""
+        plan, _ = self._route(sources, targets, demand, bitwidth, shares_memory, {})
+        return plan
+
+    def _route(
+        self,
+        sources: tuple[Memory, ...],
+        targets: tuple[Memory, ...],
+        demand: tuple[DemandItem, ...],
+        bitwidth: float,
+        shares_memory: Callable[[Memory, Memory], bool],
+        taken: dict[CommunicationLink, float],
+    ) -> tuple[MulticastPathPlan, dict[CommunicationLink, float]]:
+        """A route of the transfer, and the bits it puts on each link, with the links already carrying ``taken`` bits.
+        Serve each demand from the nearest source holding it, then grow one Steiner tree per source over the
         targets it serves (the shortest-path heuristic of Takahashi and Matsuyama), the largest source first and each
         link weighted by the cycles it would then be busy, so later trees avoid what earlier ones load. A link carries
         the union of the data its tree sends past it. A target that is its source needs no route; one that reaches its
         source otherwise, as a neighbouring tile's memory does, is reached on a route that moves none of it. Partial
         sums are then reduced on the way, see :meth:`_reduce`. Each link's share is of all the data the transfer
-        delivers, whether it moves or is already in its target."""
+        delivers, whether it moves or is already in its target; what ``taken`` carries only weighs the links."""
         served: dict[int, list[DemandItem]] = {}
         in_place: dict[int, set[Memory]] = {}
         pairs: set[tuple[int, int]] = set()
@@ -165,7 +191,7 @@ class CommunicationManager:
             pairs.add((s, item.target))
             served.setdefault(s, []).append(item)
 
-        load: dict[CommunicationLink, float] = {}
+        load: dict[CommunicationLink, float] = dict(taken)
         order: dict[CommunicationLink, None] = {}
         ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s].name))
         for s in ranked:
@@ -179,8 +205,9 @@ class CommunicationManager:
             delivered += [i.box for i in items]
             order |= dict.fromkeys(self._reduce(sources, targets[t], items, bitwidth, load))
         moved = box_bits(delivered, bitwidth)
-        shares = tuple((link, load[link] / moved if moved else 0.0) for link in order)
-        return MulticastPathPlan(
+        carried = {link: load[link] - taken.get(link, 0.0) for link in order}
+        shares = tuple((link, carried[link] / moved if moved else 0.0) for link in order)
+        plan = MulticastPathPlan(
             sources=sources,
             targets=targets,
             total_hops_objective=len(order),
@@ -188,6 +215,7 @@ class CommunicationManager:
             pairs=tuple(sorted(pairs)),
             link_shares=shares,
         )
+        return plan, carried
 
     def _distances(self, target: Memory) -> dict[Memory, float]:
         """Unloaded cycles per bit from every memory to ``target``, cached per target."""

@@ -30,7 +30,7 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed, each in its own `[p<placement>_]tile_<index>/` folder, and keep the fastest, whose files it copies into the group's folder.
 8. **`TilingGenerationStage`** - generate the intra-/inter-core tilings for each node.
 9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core.
-10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements and routes each may take, and fix the iteration spaces and timeslots, as an `AllocationProblem`.
+10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements each may take and up to `route_alternatives` routes per placement, and fix the iteration spaces and timeslots, as an `AllocationProblem`.
 11. **`AllocationStage`** - build the MILP (`AllocationModel`) for that problem from its [constraint families](#constraint-families) and solve it: decide tensor placement and transfer paths, producing the `Allocation` the context carries as `allocation`.
 12. **`MemoryAccessesEstimationStage`** - estimate memory traffic for the chosen allocation.
 
@@ -155,7 +155,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |
 | `ONNXModelParserStage` | `workload_path`, `output_path` |  | `onnx_model`, `workload` |  |  |
 | `PlacementGenerationStage` | `workload`, `mapping`, `accelerator` |  | `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
-| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits`, `nb_cols_to_use` |  | `allocation_problem` |  |  |
+| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits`, `nb_cols_to_use`, `route_alternatives` |  | `allocation_problem` |  |  |
 | `StructuralDedupStage` | `workload` |  | `block_classes` |  |  |
 | `TileSearchStage` | `workload`, `mapping`, `output_path` | `tile_search` | `mapping`, `output_path`, `placement_alternatives`, `placement_reserves` | `allocation` | `output_path` |
 | `TilingGenerationStage` | `workload`, `mapping`, `output_path` |  | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |
