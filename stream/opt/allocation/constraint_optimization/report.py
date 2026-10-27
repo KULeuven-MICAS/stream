@@ -55,10 +55,10 @@ def solved_reports(
     reuse_levels: dict[Tensor, int],
     total_latency: int,
     total_mac_ops: int | None,
-) -> tuple[dict[str, Any] | None, dict[int, dict[str, float]] | None, dict[str, Any] | None]:
+) -> tuple[dict[str, Any] | None, dict[Core | Memory, dict[str, float]] | None, dict[str, Any] | None]:
     """The performance report of the solved allocation -- where its latency goes, what binds its overlap, what each
-    tensor and memory holds, and the families' sections --, the unused capacity per core and the slot latency
-    breakdown, each read off the solution once and None when it cannot be."""
+    tensor and memory holds, and the families' sections --, the unused capacity per core and memory and the slot
+    latency breakdown, each read off the solution once and None when it cannot be."""
     reuse = guarded("tensor reuse", tensor_reuse_breakdown, ctx, reuse_levels)
     slack = guarded("resource slack", resource_slack, ctx)
     occupancy = guarded("memory occupancy", memory_occupancy, ctx)

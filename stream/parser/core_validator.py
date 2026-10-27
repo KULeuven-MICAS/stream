@@ -186,7 +186,13 @@ class ZigZagBaseCoreValidator(ZigZagAcceleratorValidator):
                 f"(found '{core_kind_from_type(self.data['type'])}')."
             )
 
-        parent_valid = super().validate()
+        try:
+            parent_valid = super().validate()
+        except (TypeError, AttributeError, KeyError) as exc:
+            # ZigZag's validator reads the description before checking its shape; a level given as a number, say,
+            # trips it, and that is the user's error to see, not a traceback.
+            self.invalidate(f"malformed core description: {type(exc).__name__}: {exc}")
+            parent_valid = False
         self.is_valid = self.is_valid and parent_valid
         return self.is_valid
 

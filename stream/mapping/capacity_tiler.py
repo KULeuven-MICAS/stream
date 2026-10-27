@@ -66,7 +66,8 @@ class CapacityTiler:
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         protected = {lead(d)[0] for d in protected}
-        budgets = {m: int(cap * self.fill_fraction) for m, cap in self._capacities(cns, cores_per_node).items()}
+        capacities = self._capacities(cns, cores_per_node)
+        budgets = {m: int(cap * self.fill_fraction) for m, cap in capacities.items()}
 
         # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
         per_core: dict[LayerDim, int] = {}
@@ -81,7 +82,6 @@ class CapacityTiler:
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
         resident: dict[LayerDim, int] = {dim: seeded.get(dim, per_core[dim]) for dim in per_core}
 
-        capacities = self._capacities(cns, cores_per_node)
         indexed, reductions = self._indexed(cns, per_core), self._reductions(cns)
 
         def required_overflow(reductions_first: frozenset[LayerDim]) -> float:
@@ -91,12 +91,22 @@ class CapacityTiler:
             held = self.required_bits(cns, cores_per_node, unroll, resident, nest, node_unroll)
             return max((bits - capacities[m] for m, bits in held.items()), default=0.0)
 
+        overflows: dict[tuple[int, ...], float] = {}
+
         def overflow() -> float:
             """Largest amount by which any memory exceeds its budget (<= 0 means the whole group fits), or by which
-            what the allocation must hold exceeds it in both nests the tiling may be emitted in."""
+            what the allocation must hold exceeds it in both nests the tiling may be emitted in (one, where the tiling
+            splits no reduction, as both nests are then the same); remembered per tiling, as the search asks for the
+            same one several times over."""
+            key = tuple(resident[dim] for dim in per_core)
+            if (found := overflows.get(key)) is not None:
+                return found
             held = self.memory_bits(cns, cores_per_node, unroll, resident, node_unroll)
             planned = max((bits - budgets[m] for m, bits in held.items() if budgets[m] > 0), default=0.0)
-            return max(planned, min(required_overflow(frozenset()), required_overflow(reductions)))
+            split = any(resident[d] < per_core[d] for d in reductions if d in per_core)
+            firsts = [frozenset(), reductions] if split else [frozenset()]
+            overflows[key] = found = max(planned, min(required_overflow(first) for first in firsts))
+            return found
 
         def fill() -> float:
             return self.array_fill(cns, cores_per_node, unroll, resident, node_unroll)
@@ -154,6 +164,9 @@ class CapacityTiler:
         if required_overflow(first) > 0:
             # what the allocation must hold fits only in the other nest
             first = frozenset() if accumulating else reductions
+            if required_overflow(first) > 0:
+                logger.warning("no loop nest of the tiling found for %s holds what the allocation must", cns)
+                return None
         return self._emit(cns, resident, per_core, indexed, first)
 
     def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned) -> None:  # noqa: PLR0913

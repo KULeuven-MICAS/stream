@@ -16,7 +16,7 @@ from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.hardware.ports import OUTPUT, READ
 from stream.ir.infeasibility import InfeasibleAllocationError
-from stream.mapping.mapping import placements_of, role_of
+from stream.mapping.mapping import placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
@@ -95,15 +95,14 @@ class DecisionSpace:
             for tensor in (*node.outputs, *carried):
                 if tensor in self.tensor_choices:
                     continue
-                raw = self.placements(node, tensor)
                 try:
-                    normalized = _normalize_tensor_choices(raw)
+                    normalized = _normalize_tensor_choices(self.placements(node, tensor))
                     if isinstance(node, TransferNode):
                         normalized = self._reader_placements(node, tensor, normalized)
                 except ValueError as exc:
                     raise InfeasibleAllocationError(
                         structural_infeasibility(
-                            f"node '{getattr(node, 'name', node)}' has no memory it can hold {tensor.name} in"
+                            f"node '{getattr(node, 'name', node)}' has no memory it can hold {tensor.name} in: {exc}"
                         )
                     ) from exc
                 self.tensor_choices[tensor] = normalized
@@ -187,15 +186,14 @@ class DecisionSpace:
 
     def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
         """A transfer's copy lives in the memories the computation node it reaches reads it in, not in every target
-        of the transfer; a copy for another transfer or an edge keeps the transfer's placements."""
+        of the transfer; a copy for another transfer or an edge, or one a mapping lands in none of those memories (a
+        neighbour's the reader reaches in place), keeps the transfer's placements."""
         reader = next(n for n in self.workload.successors(tr) if t in n.inputs)
         if not isinstance(reader, ComputationNode):
             return choices
         memories = {memory for choice in self.placements(reader, t) for memory in choice}
         narrowed = (tuple(memory for memory in choice if memory in memories) for choice in choices)
-        if not (kept := tuple(dict.fromkeys(choice for choice in narrowed if choice))):
-            raise ValueError(f"{tr.name} lands {t.name} in none of the memories {reader.name} reads it in")
-        return kept
+        return tuple(dict.fromkeys(choice for choice in narrowed if choice)) or choices
 
     def placements(self, node: Node, tensor: Tensor) -> tuple[Placement, ...]:
         """The memories ``node`` may hold or read ``tensor`` in, see :func:`placements_of`."""
@@ -204,8 +202,7 @@ class DecisionSpace:
 
     def cores(self, node: ComputationNode) -> tuple[Core, ...]:
         """The cores ``node`` runs on."""
-        (cores,) = self.mapping.get(node).resource_allocation
-        return cores
+        return the_one(self.mapping.get(node).resource_allocation, node, "core allocations")
 
     def compute_cores(self, tr: TransferNode) -> frozenset[Core]:
         """The cores at ``tr``'s positions: those of the computation producing its tensor and of the computations
@@ -299,21 +296,40 @@ class DecisionSpace:
             return lambda span: float("inf")
         return lambda span: model.contiguous * model.efficiency(span, direction)
 
-    def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
-        """The port of ``memory`` the operand of ``tr`` passes in ``direction`` on route ``choice``, None where none
-        is."""
+    def side_ports(
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
+    ) -> dict[Port, float]:
+        """The ports of ``memory`` the operand of ``tr`` passes in ``direction`` on route ``choice`` (one per link, as
+        one column's shim), each with the fraction of that side's bits it carries, as the route's bits split over the
+        links passing it. Empty where none is, or where the route moves no bits at the memory (a neighbour's memory
+        read in place): no port is then passed."""
         role = self.operand_role(tr, read_side=direction == READ)
-        return self.accelerator.ports.memory_port(memory, direction, role, choice.links_at(memory, direction == READ))
+        links = choice.links_at(memory, direction == READ)
+        by_port = self.accelerator.ports.memory_ports(memory, direction, role, links)
+        shares = dict(choice.link_shares)
+        carried = {port: sum(shares.get(link, 0.0) for link in port_links) for port, port_links in by_port.items()}
+        total = sum(carried.values())
+        return {port: bits / total for port, bits in carried.items() if bits} if total else {}
+
+    def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
+        """Of :meth:`side_ports`, the one carrying the most of the side's bits; None where none is."""
+        ports = self.side_ports(tr, choice, memory, direction)
+        return max(ports, key=ports.__getitem__, default=None)
 
     def side_bandwidth(
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
     ) -> BandwidthModel | None:
-        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else its port's,
-        else nothing."""
+        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else that of the
+        ports the side passes together, else nothing. Ports in parallel each carry their fraction of the side's bits,
+        so the side takes as long as the slowest port's fraction at its rate: that port's model scaled by one over its
+        fraction (two shims alike each carrying half move the side twice as fast as one)."""
         if (model := self.shared_bandwidth.get(memory)) is not None:
             return model
-        port = self.side_port(tr, choice, memory, direction)
-        return port.bandwidth if port is not None else None
+        ports = self.side_ports(tr, choice, memory, direction)
+        if not ports:
+            return None
+        port = min(ports, key=lambda port: port.bandwidth.contiguous / ports[port])
+        return port.bandwidth.scaled(1.0 / ports[port]) if ports[port] < 1.0 else port.bandwidth
 
     def operand_role(self, tr: TransferNode, read_side: bool) -> str:
         """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
@@ -479,9 +495,9 @@ class DecisionSpace:
                 if held is None:
                     continue
                 bits = self.workload.get_tensor_single_core(held, node, self.mapping).size_bits()
-                (sources,) = self.placements(node, held)
+                sources = the_one(self.placements(node, held), node, "placements")
                 for consumer, read in self._reads_of(node):
-                    (targets,) = self.placements(consumer, read)
+                    targets = the_one(self.placements(consumer, read), consumer, "placements")
                     pairs = communicating_pairs(sources, targets)
                     found += [(one, other, state.handover * bits) for one, other in pairs]
         return tuple(found)

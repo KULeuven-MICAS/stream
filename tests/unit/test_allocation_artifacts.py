@@ -24,10 +24,13 @@ def _solve(path: Path, two_conv: TwoConvWorkloadConfig, options: SolveOptions) -
 
 def test_a_solve_writes_its_artifacts_by_default(tmp_path: Path, two_conv: TwoConvWorkloadConfig) -> None:
     assert ARTIFACTS <= _solve(tmp_path, two_conv, SolveOptions())
+    assert (tmp_path / "hardware_graph.svg").exists()
 
 
 def test_a_sweep_can_turn_the_artifacts_off(tmp_path: Path, two_conv: TwoConvWorkloadConfig) -> None:
+    """Nothing beside the result, the hardware picture included."""
     assert not _solve(tmp_path, two_conv, SolveOptions(artifacts=False))
+    assert not (tmp_path / "hardware_graph.svg").exists()
 
 
 def test_a_tile_search_leaves_the_chosen_candidates_artifacts_beside_its_group(

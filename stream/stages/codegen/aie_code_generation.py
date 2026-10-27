@@ -75,27 +75,19 @@ def _tile(core: Core) -> StringAttr:
 
 RUNTIME_TILE = "tile_0_0"
 """Where the generated code puts what runs on the host: the AIE lowering moves its ops into the runtime sequence and
-reaches DRAM through the shim of the column each transfer's other end sits in."""
-
-
-SHIM_BUFFER_DESCRIPTORS = 16
-"""The buffer descriptors an AIE2 shim tile's DMA has for the runtime sequence."""
-SHIM_DMA_ITERATIONS = 64
-"""The steps one AIE2 shim buffer descriptor iterates."""
+reaches DRAM through the shim of the column each transfer's other end sits in, the DMA the off-chip memory declares
+(``dma:``) with the buffer descriptors and iterations the lowering may spend."""
 
 
 def _memory_tile(memory: Memory, namespace: str) -> StringAttr:
     """How the generated code names ``memory`` of an accelerator of cores of ``namespace``: on AIE, DRAM by
-    :data:`RUNTIME_TILE` and a tile's memory by its tile, which the hardware description must name it after since the
-    AIE lowering reads the tile off the name; any other memory by its name, for the backend that reads it."""
+    :data:`RUNTIME_TILE` and a tile's memory by its tile, ``tile_<col>_<row>`` from the tile's coordinates, which the
+    AIE lowering reads the tile off; any other memory by its name, for the backend that reads it."""
     if namespace != "aie2":
         return StringAttr(memory.name)
     if memory.offchip:
         return StringAttr(RUNTIME_TILE)
-    tile = _tile(memory.core)
-    if memory.name != tile.data:
-        raise ValueError(f"memory {memory.name} is the memory of tile {tile.data}: name it so")
-    return tile
+    return _tile(memory.core)
 
 
 class AIECodeGenerationStage(Stage):
@@ -443,10 +435,14 @@ class AIECodeGenerationStage(Stage):
         return module
 
     def _shim_limits(self) -> tuple[int, int]:
-        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates. A trace writes
-        its buffer out through one descriptor."""
-        descriptors = SHIM_BUFFER_DESCRIPTORS - 1 if self.trace_size else SHIM_BUFFER_DESCRIPTORS
-        return descriptors, SHIM_DMA_ITERATIONS
+        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates, as the off-chip
+        memory declares its DMA; 0 where it declares none, which leaves every loop unrolled. A trace writes its buffer
+        out through one descriptor."""
+        offchip = self.ctx.get("accelerator").offchip_memory
+        if offchip is None or offchip.dma is None:
+            return 0, 0
+        descriptors = offchip.dma.buffer_descriptors
+        return descriptors - 1 if self.trace_size else descriptors, offchip.dma.iterations
 
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused on chip."""

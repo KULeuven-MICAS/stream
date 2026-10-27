@@ -12,7 +12,9 @@ from stream.workload.workload import ComputationNode, TransferNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
+    from stream.hardware.architecture.accelerator import Accelerator
     from stream.hardware.architecture.core import Core
+    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
 
 
@@ -59,24 +61,24 @@ def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None)
 
 
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
-    ports = ctx.space.accelerator.ports
+    """The share of the transfer's bits each port of each memory on route ``choice`` passes: a memory's share is its
+    positions' together (a broadcast's targets in one memory receive it once), split over the ports its links pass
+    as the route's bits split over those links."""
+    space = ctx.space
     sides: list[PortShare] = []
-    runs = dict(zip((READ, WRITE), ctx.space.layouts.runs(tr, choice), strict=True))
-    moved = ctx.space.moved_bits(tr, choice)
+    runs = dict(zip((READ, WRITE), space.layouts.runs(tr, choice), strict=True))
+    moved = space.moved_bits(tr, choice)
     broadcast = _target_share(ctx, tr, choice) == 1.0
     for memories, direction in ((choice.sources, READ), (choice.targets, WRITE)):
-        operand = ctx.space.operand_role(tr, read_side=direction == READ)
-        for position, memory in enumerate(memories):
-            side = {"source_at": position} if direction == READ else {"target_at": position}
-            share = ctx.space.moved_bits(tr, choice, **side) / moved
-            port = ports.memory_port(memory, direction, operand, choice.links_at(memory, leaving=direction == READ))
-            if port is None:
-                continue
-            # Targets in one memory receive a broadcast once, into it.
-            broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
-            if direction == WRITE and broadcast and broadcast_again:
-                continue
-            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(runs[direction], direction)))
+        for memory in dict.fromkeys(memories):
+            positions = [i for i, m in enumerate(memories) if m is memory]
+            if direction == WRITE and broadcast:
+                positions = positions[:1]  # targets in one memory receive a broadcast once, into it
+            at = "source_at" if direction == READ else "target_at"
+            share = sum(space.moved_bits(tr, choice, **{at: position}) / moved for position in positions)
+            for port, fraction in space.side_ports(tr, choice, memory, direction).items():
+                efficiency = port.bandwidth.efficiency(runs[direction], direction)
+                sides.append(PortShare(port, direction, share * fraction, efficiency))
     return sides
 
 
@@ -103,18 +105,25 @@ def placed_cores(ctx: FormulationContext, node: ComputationNode) -> list[Core]:
 
 
 def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
-    """The top-level port traffic of each node from its cost backend, on the physical core it runs on."""
+    """The top-level port traffic of each node from its cost backend, on the physical core it runs on, each operand's
+    at a port of the memory that core holds the operand in."""
     traffic: list[NodeTraffic] = []
     backends: dict[Core, CoreCostBackend] = {}
+    accelerator = ctx.space.accelerator
     for node in ctx.space.ssc_nodes:
         fraction = active_fraction(node, ctx.space.ssis)
         for core in placed_cores(ctx, node):
             backend = backends.setdefault(core, select_backend(core))
             for operand, direction, bits in port_traffic(backend, ctx.space.cost_lut.get_cost(node, core)):
-                port = ctx.space.accelerator.ports.port_for(core, direction, operand)
+                port = accelerator.ports.port_for(core, direction, operand, _holding(accelerator, core, operand))
                 if port is not None:
                     traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))
     return traffic
+
+
+def _holding(accelerator: Accelerator, core: Core, operand: str) -> Memory | None:
+    """The memory ``core`` holds ``operand`` in, None where its hierarchy names no such operand."""
+    return accelerator.memory_holding(core, operand)
 
 
 def port_name(key: PortKey) -> str:

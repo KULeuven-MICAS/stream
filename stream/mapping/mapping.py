@@ -324,6 +324,17 @@ def offchip_memory(accelerator: Accelerator) -> Memory:
     return memory
 
 
+def the_one[T](options: tuple[T, ...], node: Node, what: str) -> T:
+    """The one entry of ``options``, the candidate ``what`` of ``node`` where its mapping leaves it one; the
+    allocation does not choose between several yet."""
+    if len(options) != 1:
+        raise NotImplementedError(
+            f"{getattr(node, 'name', node)} has {len(options)} candidate {what}; one is supported, so the mapping "
+            "must settle on it"
+        )
+    return options[0]
+
+
 def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
     """The memories ``node`` may hold the operand of ``role`` in, one per position: off-chip for an edge, the copies'
     for a transfer, and for a computation the memory each of its cores keeps that operand in (:meth:`Accelerator

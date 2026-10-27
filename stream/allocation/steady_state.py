@@ -121,6 +121,8 @@ class _NodeDetail:
         runs, each at its position among that copy's targets modulo the positions, as sources pair with targets."""
         space, solution = self.space, self.allocation.solution
         route, n = solution.transfer_routes[tn], self._positions(tn)
+        # Each copy at every target position it may land in (a target holds the copies of the nodes it runs), the
+        # first copy at any position no copy may land in.
         held = [(copy, m) for copy in tn.outputs for m in route.targets if m in space.candidate_memories(copy)]
         held += [(tn.outputs[0], c) for c in route.targets if all(c != target for _, target in held)]
         at = [(copy, [other for other, _ in held[:j]].count(copy) % n) for j, (copy, _) in enumerate(held)]

@@ -18,7 +18,6 @@ from stream.hardware.ports import (
     READ_BY_DATAPATH,
     WRITE,
     WRITE_BY_DATAPATH,
-    declared_ports,
     input_role,
 )
 from stream.opt.allocation.constraint_optimization.hardware import NamespaceConfig, namespaces_for
@@ -103,7 +102,8 @@ def _core_lines(accelerator: Accelerator, core: Core) -> list[str]:
         lines.append("runs " + _listed(operators, 5))
     held: dict[str, list[str]] = {}
     for role in ROLES:
-        held.setdefault(core.top_instance(role), []).append(_role(role))
+        if (instance := core.top_instance_holding(role)) is not None:  # a one-input core holds no I2
+            held.setdefault(instance, []).append(_role(role))
     for instance in sorted(core.top_instances()):
         memory = accelerator.memory_viewed(core, instance)
         lines.append(f"{instance} → {memory.name}: holds {', '.join(held.get(instance, ['nothing it computes']))}")
@@ -125,8 +125,9 @@ def _dma(core: Core) -> str | None:
 
 
 def _memory_lines(accelerator: Accelerator, memory: Memory) -> list[str]:
-    """Its name and kind, capacity, views, banks, and each port: its width, what it serves and which cores reach
-    it."""
+    """Its name and kind, capacity, views, banks, and each port as the model has it, at the width a measured port
+    model gives it: its width, what it serves and which cores reach it; a memory with a measured bandwidth has that
+    model in place of its ports."""
     lines = [
         f"Memory {memory.name}" + (" · off-chip" if memory.offchip else ""),
         f"kind {memory.kind}, {_bits(memory.capacity_bits)}",
@@ -134,18 +135,25 @@ def _memory_lines(accelerator: Accelerator, memory: Memory) -> list[str]:
     lines.append("views " + (", ".join(f"{core.id}.{instance}" for core, instance in memory.views) or "none"))
     if memory.banks is not None:
         lines.append(f"banks {memory.banks.count} × {memory.banks.width} B, stripe {memory.banks.stripe}")
-    for port in sorted(declared_ports(memory), key=lambda p: p.key.port):
+    if memory.dma is not None:
+        lines.append(f"DMA {memory.dma.buffer_descriptors} BDs × {memory.dma.iterations} steps")
+    if (measured := accelerator.bandwidth.get(memory)) is not None:
+        lines.append(f"measured {measured.ceiling:g} b/cycle, {measured.contiguous:g} one way; its ports not modelled")
+    ports = [port for port in accelerator.ports if port.key.memory == memory.name]
+    for port in sorted(ports, key=lambda p: p.key.port):
         lines.append(_port_line(port))
     return lines
 
 
 def _port_line(port: Port) -> str:
+    """Its name, width, the channels it is where it is a DMA, what it serves and which cores reach it."""
     serves: dict[str, list[str]] = {}
     for operand, direction in sorted(port.serves):
         serves.setdefault(DIRECTIONS[direction], []).append(_role(operand))
     served = "; ".join(f"{direction} {', '.join(operands)}" for direction, operands in sorted(serves.items()))
     cores = f"cores {', '.join(str(core_id) for core_id in port.core_ids)}" if port.core_ids else "its own"
-    return f"port {port.key.port}: {port.bandwidth.ceiling:g} b/cycle, {served}; {cores}"
+    channels = f" as {port.channels} channels" if port.channels else ""
+    return f"port {port.key.port}: {port.bandwidth.ceiling:g} b/cycle{channels}, {served}; {cores}"
 
 
 def _connections(accelerator: Accelerator) -> list[tuple[CommunicationLink, tuple[Memory, ...]]]:

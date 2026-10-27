@@ -82,7 +82,8 @@ def _link_label(link: CommunicationLink) -> str:
 
 def _path_label(path: MulticastPathPlan) -> str:
     """Short but complete label for a path of CommunicationLinks used as a track name."""
-    return f"Path from {path.sources[0].name}: {', '.join(map(str, path.links_used))}"
+    source = path.sources[0].name if path.sources else "?"
+    return f"Path from {source}: {', '.join(map(str, path.links_used))}"
 
 
 def _resource_label(res) -> str:
@@ -108,8 +109,8 @@ def _resource_sort_key(res) -> int:
 
 
 def _first_core(end) -> int:
-    """The lowest core id of a link end's memory, 0 for a bus's ends."""
-    return min(core.id for core in end.cores) if isinstance(end, Memory) else 0
+    """The lowest core id of a link end's memory, -1 for one no core views (DRAM), 0 for a bus's ends."""
+    return min((core.id for core in end.cores), default=-1) if isinstance(end, Memory) else 0
 
 
 def _core_group_label(cores: tuple[Core, ...]) -> str:

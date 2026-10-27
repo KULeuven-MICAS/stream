@@ -197,6 +197,21 @@ def test_cores_in_one_memory_need_no_route(tmp_path):
     assert not plan.links_used
 
 
+def test_a_bus_is_at_a_memory_only_where_a_hop_of_the_route_ends_there(accelerator):
+    """Hub m2 reaching off-chip m6 over the bus it shares with hub m5, and m5 over their link: m5's side passes the
+    link only, although m5 is on the bus too, so its port is charged the link's bits and not the bus's."""
+    from stream.cost_model.communication_manager import MulticastPathPlan
+
+    m2, m5, m6 = (accelerator.memories[f"m{i}"] for i in (2, 5, 6))
+    links = {str(d["cl"]): d["cl"] for _, _, d in accelerator.network.edges(data=True)}
+    bus, link = links["Bus(m2,m5,m6, bw=100)"], links["CL(m2, m5, bw=300)"]
+    plan = MulticastPathPlan((m2,), (m5, m6), 2, (bus, link), ((0, 0), (0, 1)), hops=((m2, m6, bus), (m2, m5, link)))
+    assert plan.links_at(m5, leaving=False) == (link,) and plan.links_at(m6, leaving=False) == (bus,)
+    assert plan.links_at(m2, leaving=True) == (bus, link) and plan.links_at(m2, leaving=False) == ()
+    without_hops = MulticastPathPlan((m2,), (m5, m6), 2, (bus, link), ((0, 0), (0, 1)))
+    assert set(without_hops.links_at(m5, leaving=False)) == {bus, link}
+
+
 def test_buses_of_the_same_width_are_distinct_links(accelerator):
     """Each cluster bus is its own link, so traffic on one does not count against the other."""
     buses = {link for _, _, data in accelerator.network.edges(data=True) if (link := data["cl"]).members}

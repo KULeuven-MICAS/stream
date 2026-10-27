@@ -85,5 +85,6 @@ class CommunicationLink:
             return NotImplemented
         return self._order() < other._order()
 
-    def _order(self) -> tuple[str, ...]:
-        return (*(memory.name for memory in self.memories), str(self.parallel))
+    def _order(self) -> tuple[tuple[str, ...], int]:
+        """What sorts links: the memories they join by name, then which of the parallel ones, as a number."""
+        return (tuple(memory.name for memory in self.memories), self.parallel)

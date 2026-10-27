@@ -54,6 +54,10 @@ class AIE2CoreBackend:
         """A tile holds every operand in its one memory."""
         return "memory"
 
+    def top_instance_holding(self, role: str) -> str | None:
+        """A tile holds every operand in its one memory."""
+        return "memory"
+
     def top_memory_capacity(self, instance: str) -> int:
         """Capacity in bits of the tile memory, the one instance a tile has, ``memory``."""
         if instance != "memory":

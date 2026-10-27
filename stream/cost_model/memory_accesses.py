@@ -4,6 +4,14 @@ from stream.hardware.architecture.core import Core
 from stream.workload.tensor import Tensor
 
 
+def _size_bits(tensor: Tensor) -> int:
+    """The tensor's bits, 0 where it cannot say."""
+    try:
+        return int(tensor.size_bits())
+    except Exception:  # noqa: BLE001 -- a stub tensor in a report still gets a row
+        return 0
+
+
 class AccessCount:
     """Class to track read and write counts."""
 
@@ -22,6 +30,8 @@ class CoreMemoryAccesses:
         # Structure: {core: {tensor: AccessCount}}
         self.accesses: dict[Core, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
         self.offchip: dict[Tensor, AccessCount] = defaultdict(AccessCount)
+        # Bits one off-chip access moves, per direction ("read", "write"), as the counts were taken
+        self.offchip_width: dict[str, float] = {}
 
     def add_read(self, core: Core, tensor: Tensor, count: int = 1) -> None:
         """Add read accesses for a core-tensor pair."""
@@ -32,11 +42,11 @@ class CoreMemoryAccesses:
         self.accesses[core][tensor].write += count
 
     def add_offchip_read(self, tensor: Tensor, count: int) -> None:
-        """Add read accesses of the off-chip memory for a tensor."""
+        """Add read accesses of the off-chip memory for a tensor, each as wide as :attr:`offchip_width` says."""
         self.offchip[tensor].read += count
 
     def add_offchip_write(self, tensor: Tensor, count: int) -> None:
-        """Add write accesses of the off-chip memory for a tensor."""
+        """Add write accesses of the off-chip memory for a tensor, each as wide as :attr:`offchip_width` says."""
         self.offchip[tensor].write += count
 
     def to_ir(self) -> dict:
@@ -45,7 +55,8 @@ class CoreMemoryAccesses:
         Counts are in *bandwidth-wide transfers* (a tensor tile's bits divided by the port bandwidth,
         times how many times it fires) -- the unit the cost model charges. Each tensor's ``size_bits``
         is carried alongside so a consumer can recover the bytes moved; ``offchip`` holds the off-chip
-        memory's per tensor, accesses being as wide as its widest port serving the direction.
+        memory's per tensor, with the bits one access moves each way (``read_bandwidth``, ``write_bandwidth``),
+        as the allocation models the memory: its measured rate, else its widest port serving the direction.
         """
         cores: list[dict] = []
         for core, tensors in self.accesses.items():
@@ -59,17 +70,12 @@ class CoreMemoryAccesses:
             for tensor, counts in tensors.items():
                 core_read += counts.read
                 core_write += counts.write
-                size_bits = 0
-                try:
-                    size_bits = int(tensor.size_bits())
-                except Exception:  # noqa: BLE001
-                    pass
                 tensor_rows.append(
                     {
                         "tensor": getattr(tensor, "name", str(tensor)),
                         "read": counts.read,
                         "write": counts.write,
-                        "size_bits": size_bits,
+                        "size_bits": _size_bits(tensor),
                     }
                 )
             tensor_rows.sort(key=lambda t: -(t["read"] + t["write"]))
@@ -88,7 +94,14 @@ class CoreMemoryAccesses:
             )
         cores.sort(key=lambda c: c["core_id"])
         offchip = [
-            {"tensor": getattr(tensor, "name", str(tensor)), "read": counts.read, "write": counts.write}
+            {
+                "tensor": getattr(tensor, "name", str(tensor)),
+                "read": counts.read,
+                "write": counts.write,
+                "size_bits": _size_bits(tensor),
+                "read_bandwidth": self.offchip_width.get("read", 0),
+                "write_bandwidth": self.offchip_width.get("write", 0),
+            }
             for tensor, counts in self.offchip.items()
         ]
         return {"cores": cores, "offchip": offchip}

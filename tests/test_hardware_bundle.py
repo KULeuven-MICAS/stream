@@ -141,6 +141,64 @@ def test_asymmetric_bundle_runs_end_to_end():
 # ── C4: the built-in cost model ───────────────────────────────────────────────────────────────────
 
 
+def test_the_cost_report_prices_only_what_a_solve_accepts():
+    """A top level that is a view of no memory fails the solve; the report must not quietly price it as a private
+    level beside the shared memory it was meant to be a view of."""
+    from pathlib import Path
+
+    path = Path("stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml")
+    data = yaml.safe_load(path.read_text())
+    del data["memories"]["meta_prototype_0_weights"]  # core 0's sram_1MB_W is then a view of nothing
+    for connection in data["connections"]:
+        connection["ends"].pop("meta_prototype_0_weights", None)
+    data["connections"] = [c for c in data["connections"] if len(c["ends"]) >= 2]
+    bundle = HardwareBundle.from_data(data, str(path.parent))
+    with pytest.raises(ValueError, match="core 0's top-level memory `sram_1MB_W` is a view of no memory"):
+        evaluate_bundle_cost(bundle)
+
+
+def test_a_core_viewing_the_off_chip_memory_is_its_controller_off_the_die():
+    """A DRAM controller core computes nothing and its own levels sit off the die with the memory it views."""
+    from pathlib import Path
+
+    from stream.hardware.cost import _evaluate_builtin
+
+    data = yaml.safe_load(Path(TPU_V7_VIEWS).read_text())
+    hbm = next(name for name, memory in data["memories"].items() if memory["offchip"])
+    data["memories"][hbm]["views"] = ["8.vmem"]
+    del data["memories"][hbm]["capacity_bits"]
+    data["memories"][hbm]["ports"] = {
+        "rw_port_1": {"from": "r_port_1", "cores": [8]},
+        "w": {"from": "w_port_1", "cores": [8]},
+    }
+    data["memories"]["vmem_0"]["views"] = ["0.operand_buffer", "1.operand_buffer"]
+    data["memories"]["vmem_0"]["ports"] = {name: {"from": name, "cores": [0, 1]} for name in ("r_port_1", "w_port_1")}
+    bundle = HardwareBundle.from_data(data, str(Path(TPU_V7_VIEWS).parent))
+    report = _evaluate_builtin(bundle, None)
+    controller = next(core for core in report.cores if core.core_id == 8)
+    assert controller.compute is None and all(m.style == "off_die" for m in controller.memories)
+    assert next(core for core in report.cores if core.core_id == 0).compute is not None
+
+
+def test_views_disagreeing_on_their_instances_are_priced_with_a_warning():
+    """Two cores whose arrays leave a shared level a different number of instances describe one memory badly; the
+    report prices it at the most instances and says so rather than failing the whole cost report."""
+    from stream.hardware.cost import _DENSITIES, DEFAULT_TECH_NODE, _memory_cost
+
+    def core(served: list[str]) -> dict:
+        level = {"size": 1024, "served_dimensions": served, "ports": [{"name": "r", "bandwidth_max": 64}]}
+        return {"operational_array": {"dimensions": ["D1"], "sizes": [4]}, "memories": {"lvl": level}}
+
+    warnings: list[str] = []
+    cost = _memory_cost(
+        "buf", [(0, core(["D1"]), "lvl"), (1, core([]), "lvl")], True, _DENSITIES[DEFAULT_TECH_NODE], warnings
+    )
+    assert cost.instances == 4 and cost.bits_per_instance == 1024
+    assert warnings == [
+        "the views of memory buf disagree on its (instances, bits) [(1, 1024), (4, 1024)]; priced at the most instances"
+    ]
+
+
 def test_simple_model_reports_positive_cost_and_prices_each_memory_once():
     """The built-in model prices a bundle with positive area and energy, and four memories seen through
     twelve views exactly once each."""
@@ -150,6 +208,8 @@ def test_simple_model_reports_positive_cost_and_prices_each_memory_once():
 
     vmems = [m for m in report.memories if m.bits_per_instance == _VIEWS_VMEM_BITS]
     assert [(m.name, m.core_ids) for m in vmems] == [(f"vmem_{k}", (8 + k, 2 * k, 2 * k + 1)) for k in range(4)]
+    # Each VMEM declares two ports its three views all reach: two physical ports, not six.
+    assert [m.nb_ports for m in vmems] == [2] * 4
     assert not any(m.bits_per_instance == _VIEWS_VMEM_BITS for c in report.cores for m in c.memories)
 
     # The built-in model advertises none of the detailed model's caveat fields.

@@ -1,4 +1,3 @@
-import re
 from typing import Any
 
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
@@ -10,8 +9,7 @@ from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBac
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.ports import READ, WRITE, MemoryBanks, OwnPort, PortKey, ViewPort
-from stream.parser.accelerator_validator import PORT_REF_REGEX, parse_port_ref
+from stream.hardware.ports import READ, WRITE, MemoryBanks, MemoryDma, OwnPort, PortKey, ViewPort
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -36,14 +34,15 @@ class AcceleratorFactory:
                 {port_name: _port(port) for port_name, port in memory["ports"].items()},
                 offchip=memory["offchip"],
                 capacity_bits=memory.get("capacity_bits"),
+                dma=MemoryDma(**memory["dma"]) if "dma" in memory else None,
             )
             for name, memory in self.data["memories"].items()
         }
         measured: dict[Memory, BandwidthModel] = {}
         port_models: dict[PortKey, BandwidthModel] = {}
-        for key, description in self.data["bandwidth"].items():
-            if re.match(PORT_REF_REGEX, key):
-                port_models[parse_port_ref(key)] = BandwidthModel.from_description(description)
+        for key, description in self.data["bandwidth"].items():  # keys split once, by the validator
+            if isinstance(key, PortKey):
+                port_models[key] = BandwidthModel.from_description(description)
             else:
                 measured[memories[key]] = BandwidthModel.from_description(description)
 
@@ -59,7 +58,7 @@ class AcceleratorFactory:
         )
         # Building the registry rejects a port its cores declare differently, a port a view's core declares that no
         # port of its memory is, and a port key naming no port.
-        _ = accelerator.ports
+        accelerator.ports.check_connections(accelerator.network)
         return accelerator
 
     def create_core(
@@ -172,6 +171,7 @@ def _port(port: dict[str, Any]) -> ViewPort | OwnPort:
         ),
         read_energy_per_bit=port["read_energy"],
         write_energy_per_bit=port["write_energy"],
+        channels=port.get("channels"),
     )
 
 

@@ -99,9 +99,26 @@ memories:
     offchip: true
     views: []
     capacity_bits: 10000000000
-    ports:  # one shim tile's DMA: two 64-bit channels each way
-      mm2s: {bandwidth: 128, serves: {any: [read]}, read_energy: 0, write_energy: 0}
-      s2mm: {bandwidth: 128, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+    dma:  # each column's shim tile DMA, which the runtime sequence reaches DRAM through
+      buffer_descriptors: 16
+      iterations: 64
+    ports:  # each column's shim DMA: two 64-bit channels each way, the column's link to its memory tile passing them
+      mm2s_c0: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c0: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c1: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c1: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c2: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c2: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c3: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c3: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c4: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c4: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c5: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c5: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c6: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c6: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c7: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c7: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
   tile_0_1:
     offchip: false
     views: [1.memory]
@@ -347,7 +364,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 0) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c0, s2mm_c0]
       tile_0_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 0) ─────
@@ -376,7 +393,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 1) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c1, s2mm_c1]
       tile_1_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 1) ─────
@@ -405,7 +422,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 2) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c2, s2mm_c2]
       tile_2_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 2) ─────
@@ -434,7 +451,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 3) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c3, s2mm_c3]
       tile_3_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 3) ─────
@@ -462,7 +479,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 4) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c4, s2mm_c4]
       tile_4_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 4) ─────
@@ -490,7 +507,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 5) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c5, s2mm_c5]
       tile_5_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 5) ─────
@@ -518,7 +535,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 6) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c6, s2mm_c6]
       tile_6_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 6) ─────
@@ -546,7 +563,7 @@ connections:
   # ───── Connect DRAM to the column's mem tile (Column 7) ─────
   - type: link
     ends:
-      dram: [mm2s, s2mm]
+      dram: [mm2s_c7, s2mm_c7]
       tile_7_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 7) ─────

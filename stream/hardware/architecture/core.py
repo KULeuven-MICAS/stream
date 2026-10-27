@@ -156,6 +156,11 @@ class Core:
         assert self._backend is not None, f"{self} has no backend"
         return self._backend.top_instance(role)
 
+    def top_instance_holding(self, role: str) -> str | None:
+        """:meth:`top_instance`, or None where the core holds no operand of ``role``."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.top_instance_holding(role)
+
     def top_memory_capacity(self, instance: str) -> int:
         """Capacity in bits of the top-level memory instance ``instance``."""
         assert self._backend is not None, f"{self} has no backend"

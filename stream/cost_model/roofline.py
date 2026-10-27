@@ -46,19 +46,17 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
         if served:
             roof["name"] += "@" + ",".join(map(str, sorted(roof["cores"])))
     levels: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    # A resource is named as the memory_ports report names it (`<memory>.<port>`, a measured memory's name, a link's
+    # name), which is unique, so a solve's rows match the levels by that name alone.
     for port in accelerator.ports:
         offchip = accelerator.memories[port.key.memory].offchip
         levels[OFFCHIP_MEMORY if offchip else ONCHIP_MEMORY].append(
-            {
-                "resource": _port_name(port_name(port.key), port.core_ids),
-                "cores": list(port.core_ids),
-                "bytes_per_cycle": port.bits_per_cycle / 8,
-            }
+            {"resource": port_name(port.key), "cores": list(port.core_ids), "bytes_per_cycle": port.bits_per_cycle / 8}
         )
     for memory, model in accelerator.bandwidth.items():
         cores = [c.id for c in memory.cores]
         levels[OFFCHIP_MEMORY if memory.offchip else ONCHIP_MEMORY].append(
-            {"resource": _port_name(memory.name, cores), "cores": cores, "bytes_per_cycle": model.ceiling / 8}
+            {"resource": memory.name, "cores": cores, "bytes_per_cycle": model.ceiling / 8}
         )
     for link in dict.fromkeys(data["cl"] for _, _, data in accelerator.network.edges(data=True)):
         cores = sorted(link_cores(link))
@@ -232,7 +230,7 @@ def _traffic(rows: list[dict[str, Any]], hardware: dict[str, Any], iterations: i
     moved: dict[str, float] = defaultdict(float)
     busiest: dict[str, dict[str, Any]] = {}
     for row in rows:
-        name = row["resource"] if row["kind"] == "link" else _port_name(row["resource"], row["core_ids"])
+        name = row["resource"]
         if (level := level_of.get(name)) is None:
             continue
         moved[level] += row["bits_per_iteration"] * iterations / 8
@@ -265,8 +263,3 @@ def _core_roofs(accelerator: Accelerator, core: Core) -> list[tuple[str, Any, fl
     mac = families.get("matmul")
     roofs = [("MAC", None, prod(mac.mac.values()))] if mac is not None and mac.mac else []
     return roofs + ([("vector", None, families["vector"].ops_per_cycle)] if "vector" in families else [])
-
-
-def _port_name(port: str, core_ids: Any) -> str:
-    """``port`` with the cores that reach it, as ``<port>@<ids>``; alone for a port no core reaches."""
-    return f"{port}@{','.join(map(str, sorted(core_ids)))}" if core_ids else port

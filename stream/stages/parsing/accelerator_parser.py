@@ -28,7 +28,7 @@ class AcceleratorParserStage(Stage):
     """Parse to parse an accelerator from a user-defined yaml file."""
 
     reads = ("accelerator",)
-    optional_reads = ("kernel_library", "output_path")
+    optional_reads = ("kernel_library", "output_path", "artifacts")
     writes = ("accelerator",)
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
@@ -41,8 +41,9 @@ class AcceleratorParserStage(Stage):
         )
         if (library := self.ctx.get("kernel_library")) is not None:
             accelerator.kernel_library = KernelLibrary.load(library)
-        if (output_path := self.ctx.get("output_path")) is not None:
-            # A picture for reading the hardware as Stream understands it; a failure to draw it must not stop a solve.
+        if (output_path := self.ctx.get("output_path")) is not None and self.ctx.get("artifacts", True):
+            # A picture for reading the hardware as Stream understands it, one of the solve's artifacts; a failure to
+            # draw it must not stop a solve.
             try:
                 os.makedirs(output_path, exist_ok=True)
                 draw_hardware(accelerator, os.path.join(output_path, "hardware_graph.svg"))

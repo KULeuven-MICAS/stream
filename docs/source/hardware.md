@@ -88,6 +88,7 @@ Data lives in memories, not in cores: a core computes out of its top-level memor
 | `offchip` | yes | Whether it is the off-chip memory, where the workload's inputs and outputs live. An accelerator has at most one. |
 | `views` | yes | For each core using it, `<core id>.<instance>`, the name the core's file gives the top-level memory instance it sees the memory as, e.g. `[0.l1, 1.tcdm]`. Empty for a memory no core computes out of, such as DRAM. |
 | `capacity_bits` | for a memory without views | Its capacity. A memory with views takes the one its views declare, and declares none. |
+| `dma` | no | The DMA its own ports are the channels of, as the AIE2 shim tile's DMA that reaches DRAM, or each of several alike, one per column: `buffer_descriptors`, the descriptors one has for the runtime sequence, and `iterations`, the steps one descriptor iterates. The AIE code generator chains re-reads within them, per shim; a memory declaring none leaves every loop unrolled. Only on a memory whose ports declare `channels`. |
 | `ports` | yes | Its ports by name, see [Memory ports](#memory-ports). |
 
 Everything outside the core files refers to the memory by its name; a core's own names stay inside it.
@@ -108,6 +109,10 @@ ports:
   # A port of the memory's own, as DRAM's: its width in bits per cycle, the directions it serves per operand
   # (`input<k>`, `output`, or `any` for every operand), and its energies in pJ per bit.
   rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+  # A port that is a DMA, as an AIE2 shim's: `channels` it has, each carrying one fifo at a time, so that at most that
+  # many transfers serve the memory through it in one steady state (the `aie2_dma_channels` family). Without
+  # `channels` a port bounds only its bits per cycle.
+  mm2s: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
 ```
 
 Nothing is shared unless said so: every port a view's core declares on the memory is in exactly one of its ports, and the cores of one port must declare it alike, with the same width and energies. A port its views declare takes its width, energies and what it serves from the core files. A transfer leaves and enters a memory over the connections its route takes there, and passes one of the ports those connections name for that memory (see [Connections](#connections-link-vs-bus)): the one its operand is allocated in that direction (`fh` into the memory, `th` out of it; a tile DMA serves every operand), else the one serving that direction, as a ZigZag hierarchy allocates an input no port out of its top level. Two candidate ports, as a connection through the ports of two cores each with their own names, are an error, since which one the bits pass is then undeclared; a connection naming only the one it passes settles it. A `bandwidth` key `<memory>.<port>` (e.g. `dram.rw_port_1`) gives the measured model to one port. It replaces that port's width, in bits per cycle. A memory with a measured model has no per-port model, so it takes no port key.
@@ -273,7 +278,7 @@ and FuseMax arrays are systolic.
 
 ### AIE cores
 
-AIE tiles use the `aie2` namespace and a lighter schema describing tile-local memory and the object-FIFO depth, rather than a full ZigZag hierarchy. These are used by the AIE codegen entry points and live under `stream/inputs/aie/hardware/`. A tile's one memory is its instance `memory`, so its view is `<core id>.memory`, and the memory is named after its tile, `tile_<col>_<row>`: the code generator names the memory a transfer lands in, and the AIE lowering reads the tile off that name. DRAM is the one exception: no core views it, and its two ports, `mm2s` and `s2mm`, are one shim tile's DMA, two 64-bit channels each way. The shim tiles are no cores: the generated code reaches DRAM from the runtime sequence, through the shim of the column the transfer's other end sits in, with the buffer descriptors and iterations an AIE2 shim DMA has.
+AIE tiles use the `aie2` namespace and a lighter schema describing tile-local memory and the object-FIFO depth, rather than a full ZigZag hierarchy. These are used by the AIE codegen entry points and live under `stream/inputs/aie/hardware/`. A tile's one memory is its instance `memory`, so its view is `<core id>.memory`; the shipped files name it after its tile, `tile_<col>_<row>`, for reading, while the code generator names the memory a transfer lands in after the tile's coordinates whatever the description calls it. DRAM is the one exception: no core views it, and its ports are the shim tile DMAs, one `mm2s`/`s2mm` pair per column (`mm2s_c<col>`, `s2mm_c<col>` on a multi-column array), each two 64-bit channels (`channels: 2`), and each column's link to its memory tile passes its own pair. The `aie2_dma_channels` family then lets each shim's channels carry at most that many fifos reading DRAM, and as many writing it, in one steady state, each fifo counted on the shim its route passes. The shim tiles are no cores: the generated code reaches DRAM from the runtime sequence, through the shim of the column the transfer's other end sits in, with the buffer descriptors and iterations DRAM's `dma` declares for each shim, an AIE2 shim DMA's 16 and 64. A tile's memory is its own, a view of exactly one tile: a neighbouring tile reads it in place without a view of it, as the namespace's shared-memory rule says.
 
 ```yaml
 name: aie_tile

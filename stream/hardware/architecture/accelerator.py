@@ -37,8 +37,12 @@ class Accelerator:
         self.kernel_library = kernel_library
         self._cores = {core.id: core for core in sorted(cores, key=lambda core: core.id)}
         self.memories = {memory.name: memory for memory in sorted(memories)}
-        # (core id, top-level instance) -> the memory that view is of
-        self._viewed = {(core.id, instance): memory for memory in memories for core, instance in memory.views}
+        # (core id, top-level instance) -> the memory that view is of, each view of one memory
+        self._viewed: dict[tuple[int, str], Memory] = {}
+        for memory in memories:
+            for core, instance in memory.views:
+                if (other := self._viewed.setdefault((core.id, instance), memory)) is not memory:
+                    raise ValueError(f"{core.id}.{instance} is a view of both {other.name} and {memory.name}")
         for core in self._cores.values():
             bound = {instance for core_id, instance in self._viewed if core_id == core.id}
             if unbound := sorted(core.top_instances() - bound):
@@ -67,6 +71,12 @@ class Accelerator:
         """The memory ``core`` reads or writes the operand of ``role`` ('input<k>' or 'output') in: the one its
         top-level instance holding that operand is a view of."""
         return self._viewed[(core.id, core.top_instance(role))]
+
+    def memory_holding(self, core: Core, role: str) -> Memory | None:
+        """:meth:`memory_of`, or None where ``core`` holds no operand of ``role``, as a one-input core holds no second
+        input."""
+        instance = core.top_instance_holding(role)
+        return None if instance is None else self._viewed[(core.id, instance)]
 
     def memory_viewed(self, core: Core, instance: str) -> Memory:
         """The memory ``core``'s top-level instance ``instance`` is a view of."""

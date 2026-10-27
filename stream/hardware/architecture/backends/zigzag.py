@@ -72,13 +72,25 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
     def top_instance(self, role: str) -> str:
         """The top-level memory instance holding the operand of ``role``; a core with one top-level instance holds
         every operand there, its hierarchy naming the operand or not, as it has nowhere else to."""
+        if (top := self.top_instance_holding(role)) is None:
+            operand, tops = memory_operand(role), sorted(self.top_instances())
+            raise ValueError(f"{self} holds {role}'s operand {operand} in none of its top levels {tops}")
+        return top
+
+    def top_instance_holding(self, role: str) -> str | None:
+        """:meth:`top_instance`, or None where the hierarchy names no operand of ``role`` and has several top levels,
+        so that none can be said to hold it. A further input beyond the two a hierarchy names (a normalisation's scale
+        and bias, a clip's bounds) lives with the first input, the activations, as the datapath reads them alike."""
         hierarchy, operand = self.memory_hierarchy, memory_operand(role)
         if operand in hierarchy.get_operands():
             return hierarchy.get_memory_levels(operand)[-1].name
         if len(tops := self.top_instances()) == 1:
             (top,) = tops
             return top
-        raise ValueError(f"{self} holds {role}'s operand {operand} in none of its top levels {sorted(tops)}")
+        first = MemoryOperand("I1")
+        if role.startswith("input") and role[5:].isdigit() and int(role[5:]) > 2 and first in hierarchy.get_operands():  # noqa: PLR2004
+            return hierarchy.get_memory_levels(first)[-1].name
+        return None
 
     def top_memory_capacity(self, instance: str) -> int:
         """Capacity in bits of the top-level memory instance ``instance``, the one the core's memory view binds."""

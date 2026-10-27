@@ -3,10 +3,11 @@ its own."""
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from stream.cost_model.bandwidth import BandwidthModel
 
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.memory import Memory
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
+
+logger = logging.getLogger(__name__)
 
 Service = tuple[str, str]
 MemoryView = tuple[int, str]
@@ -36,6 +39,10 @@ class PortKey(NamedTuple):
 
 ANY_OPERAND = "any"
 """Operand role of a port that serves every operand, such as a tile DMA."""
+
+
+BY_DATAPATH = {READ: READ_BY_DATAPATH, WRITE: WRITE_BY_DATAPATH}
+"""The datapath's direction through a memory for each of a transfer's."""
 
 
 def input_role(k: int) -> str:
@@ -79,18 +86,31 @@ class ViewPort:
 
 @dataclass(frozen=True)
 class OwnPort:
-    """A memory's port no core declares, as an off-chip memory's is; ``serves`` holds (operand role, direction)."""
+    """A memory's port no core declares, as an off-chip memory's is; ``serves`` holds (operand role, direction).
+    ``channels`` are the DMA channels the port is, as an AIE2 shim tile's DMA reaching DRAM, each carrying one fifo at
+    a time; None for a port that is no DMA, which bounds only its bits per cycle."""
 
     bits_per_cycle: float
     serves: frozenset[Service]
     read_energy_per_bit: float
     write_energy_per_bit: float
+    channels: int | None = None
+
+
+@dataclass(frozen=True)
+class MemoryDma:
+    """The DMA a memory's own ports are the channels of, as the AIE2 shim tile's DMA that reaches DRAM: the buffer
+    descriptors it has for the runtime sequence and the steps one descriptor iterates."""
+
+    buffer_descriptors: int
+    iterations: int
 
 
 @dataclass(frozen=True)
 class Port:
     """One port of a memory, keyed by (memory, port name), with the cores that reach it.
-    ``serves`` holds (operand role, direction) and the energies are in pJ per bit."""
+    ``serves`` holds (operand role, direction) and the energies are in pJ per bit; ``channels`` are the DMA channels
+    the port is, None where it is no DMA."""
 
     key: PortKey
     core_ids: tuple[int, ...]
@@ -98,6 +118,7 @@ class Port:
     serves: frozenset[Service]
     read_energy_per_bit: float = 0.0
     write_energy_per_bit: float = 0.0
+    channels: int | None = None
 
     def energy_per_bit(self, direction: str) -> float:
         return self.read_energy_per_bit if direction == READ else self.write_energy_per_bit
@@ -124,12 +145,11 @@ class PortRegistry:
     def from_accelerator(cls, accelerator: Accelerator) -> PortRegistry:
         """The ports every memory declares: one a port its views' cores declare, reached by the cores it names, or
         one of its own. Every port a view's core declares is in exactly one of its memory's. A memory with a measured
-        bandwidth has no ports, as that already covers its traffic."""
+        bandwidth has no ports, as that already covers its traffic, so it need not declare its cores' either."""
         ports: dict[PortKey, Port] = {}
         for memory in accelerator.memories.values():
-            built = declared_ports(memory)
             if memory not in accelerator.bandwidth:
-                ports |= {port.key: port for port in built}
+                ports |= {port.key: port for port in declared_ports(memory)}
         if unknown := sorted(set(accelerator.port_bandwidth) - set(ports)):
             raise ValueError(
                 f"`bandwidth` names ports {['.'.join(key) for key in unknown]} no memory declares, or of a memory with "
@@ -142,6 +162,31 @@ class PortRegistry:
             }
         )
 
+    def check_connections(self, network: Any) -> None:
+        """Warn, once at parse time, of each connection end naming several ports that all serve one operand in one of
+        a transfer's directions (a read or a write; the datapath's are each core's own): a transfer passing the end
+        that way leaves which port its bits take undeclared, and :meth:`memory_port` raises on it when one does. A
+        description may still mean it, as a connection through two cores' own ports that only one core's transfers
+        take, so it is no error here."""
+        for link in dict.fromkeys(data["cl"] for _, _, data in network.edges(data=True)):
+            for memory, names in link.ports.items():
+                through = [p for p in self._ports_of_memory.get(memory.name, ()) if p.key.port in names]
+                services = {service for p in through for service in p.serves if service[1] in (READ, WRITE)}
+                for operand, direction in sorted(services):
+                    own = [
+                        p for p in through if (operand, direction) in p.serves or (ANY_OPERAND, direction) in p.serves
+                    ]
+                    if len(own) > 1:
+                        logger.warning(
+                            "%s names ports %s of memory %s, which all serve %s %s: a transfer passing them that way "
+                            "fails to say which it takes; name the one it passes",
+                            link,
+                            [p.key.port for p in own],
+                            memory.name,
+                            operand,
+                            direction,
+                        )
+
     def __iter__(self) -> Iterator[Port]:
         return iter(self._ports.values())
 
@@ -149,42 +194,104 @@ class PortRegistry:
         """The top-level ports ``core`` reaches; none for a core without a port model."""
         return self._ports_of.get(core.id, ())
 
-    def port_for(self, core: Core, direction: str, operand: str) -> Port | None:
-        """The port ``operand``'s top level uses for ``direction`` on ``core``, as its datapath reaches it."""
-        return _serving(self.ports_of(core), direction, operand, f"core {core.id}")
+    def port_for(self, core: Core, direction: str, operand: str, memory: Memory | None = None) -> Port | None:
+        """The port ``operand``'s top level uses for ``direction`` on ``core``, as its datapath reaches it: of the
+        core's ports on ``memory``, the one holding the operand, where given (None where that memory has no modelled
+        port, as a measured one), else of all its ports; the first serving that operand (or every operand) in that
+        direction, else the first serving the direction at all, else, for a transfer's read or write, the first port
+        the datapath reads or writes the memory through (a read port is one whichever side of it the hierarchy
+        allocates), as a ZigZag hierarchy allocates an input no port out of its top level but its bits still pass
+        one; the datapath takes no transfer's port, as a tile DMA, so its unserved access passes none. A core's own
+        ports leave nothing else to decide by, so several candidates are no error here; which port a transfer passes
+        a memory through is :meth:`memory_port`'s, where a connection names it."""
+        ports = self.ports_of(core)
+        if memory is not None:
+            ports = tuple(p for p in ports if p.key.memory == memory.name)
+        serving = _candidates(ports, direction, operand)
+        return serving[0] if serving else None
+
+    def memory_ports(
+        self, memory: Memory, direction: str, operand: str, links: Iterable[CommunicationLink]
+    ) -> dict[Port, tuple[CommunicationLink, ...]]:
+        """The ports of ``memory`` a transfer moving ``operand`` passes in ``direction`` over ``links``, each with the
+        links passing it: per link, of the ports it enters and leaves ``memory`` through, the one serving the operand
+        (a route over several links, one per column's shim, passes one port per link; a link naming two that serve it
+        alike passes the first by name, see :func:`_serving`). Empty where no link reaches the memory or none of its
+        ports serves the direction."""
+        by_port: dict[Port, tuple[CommunicationLink, ...]] = {}
+        for link in links:
+            names = set(link.ports.get(memory, ()))  # a link not joining the memory passes none of its ports
+            through = tuple(port for port in self._ports_of_memory.get(memory.name, ()) if port.key.port in names)
+            if (port := _serving(through, direction, operand, f"memory {memory.name} over {link}")) is not None:
+                by_port[port] = (*by_port.get(port, ()), link)
+        return by_port
 
     def memory_port(
         self, memory: Memory, direction: str, operand: str, links: Iterable[CommunicationLink]
     ) -> Port | None:
-        """The port of ``memory`` a transfer moving ``operand`` passes in ``direction`` over ``links``: of the ports
-        those links enter and leave ``memory`` through, the one serving it. None where no link reaches it."""
+        """The one port of ``memory`` a transfer moving ``operand`` passes in ``direction`` over ``links``
+        (:meth:`memory_ports`); None where no link reaches it, and an error where the links pass several ports, which
+        the caller must then weigh apart."""
         links = tuple(links)
-        names = {name for link in links for name in link.ports[memory]}
-        through = tuple(port for port in self._ports_of_memory.get(memory.name, ()) if port.key.port in names)
-        return _serving(through, direction, operand, f"memory {memory.name} over {sorted(map(str, links))}")
+        ports = self.memory_ports(memory, direction, operand, links)
+        if len(ports) > 1:
+            names = sorted(port.key.port for port in ports)
+            raise ValueError(f"memory {memory.name} over {sorted(map(str, links))}: the links pass ports {names}")
+        return next(iter(ports), None)
+
+
+def _candidates(ports: tuple[Port, ...], direction: str, operand: str) -> list[Port]:
+    """Of ``ports``, those the bits of ``operand`` may pass in ``direction``: the ones serving that operand (or every
+    operand) in it, else the ones serving the direction at all, else, for a transfer's read or write, the ones the
+    datapath reads or writes the memory through (a read port is one whichever side of it the hierarchy allocates);
+    the datapath takes no transfer's port, as a tile DMA, so its unserved access has none."""
+    own = [p for p in ports if (operand, direction) in p.serves or (ANY_OPERAND, direction) in p.serves]
+    serving = own or [p for p in ports if any(d == direction for _, d in p.serves)]
+    if not serving and direction in BY_DATAPATH:
+        serving = [p for p in ports if any(d == BY_DATAPATH[direction] for _, d in p.serves)]
+    return serving
 
 
 def _serving(ports: tuple[Port, ...], direction: str, operand: str, where: str) -> Port | None:
-    """The port of ``where`` the bits of ``operand`` pass in ``direction``: the one serving that operand (or every
-    operand) there, else the one port serving the direction at all, as a ZigZag hierarchy allocates an input no port
-    out of its top level; None where none serves the direction. Several candidates, as views naming their ports apart
-    declare, leave which the bits pass undeclared, and raise."""
-    own = [p for p in ports if (operand, direction) in p.serves or (ANY_OPERAND, direction) in p.serves]
-    serving = own or [p for p in ports if any(d == direction for _, d in p.serves)]
+    """The port of ``where`` a transfer passes the bits of ``operand`` in ``direction``, of :func:`_candidates`; None
+    where none serves it. Several candidates, as views naming their ports apart declare on one connection, leave which
+    the bits pass undeclared: the first by name is taken, the same one every time, as :meth:`PortRegistry
+    .check_connections` warned at parse time; a connection naming only the one it passes settles it."""
+    serving = _candidates(ports, direction, operand)
     if len(serving) > 1:
-        names = [p.key.port for p in serving]
-        raise ValueError(f"{where}: ports {names} all serve {operand} {direction}; name the one a transfer passes")
+        serving.sort(key=lambda port: port.key.port)
+        logger.debug(
+            "%s: ports %s all serve %s %s; taking %s",
+            where,
+            [p.key.port for p in serving],
+            operand,
+            direction,
+            serving[0].key.port,
+        )
     return serving[0] if serving else None
+
+
+ViewSpecs = dict[int, dict[str, PortSpec]]
+"""Per core viewing a memory, the ports its backend declares on its view of it, by name."""
 
 
 def declared_ports(memory: Memory) -> tuple[Port, ...]:
     """The ports ``memory`` declares, at their declared widths, after checking every port a view's core declares is
-    in exactly one of them."""
-    _check_covered(memory)
-    return tuple(_built(memory, name, declared) for name, declared in memory.ports.items())
+    in exactly one of them. Each view's backend is asked for its ports once."""
+    specs = _view_specs(memory)
+    _check_covered(memory, specs)
+    return tuple(_built(memory, name, declared, specs) for name, declared in memory.ports.items())
 
 
-def _built(memory: Memory, name: str, declared: ViewPort | OwnPort) -> Port:
+def _view_specs(memory: Memory) -> ViewSpecs:
+    """The ports each view's core declares on its view of ``memory``, by core id and port name."""
+    return {
+        core.id: {spec.name: spec for spec in core.port_specs() if spec.memory == instance}
+        for core, instance in memory.views
+    }
+
+
+def _built(memory: Memory, name: str, declared: ViewPort | OwnPort, specs: ViewSpecs) -> Port:
     """The port ``name`` of ``memory`` as declared: its own, or the port its cores' backends declare on their views of
     it, which they must declare alike."""
     key = PortKey(memory.name, name)
@@ -196,9 +303,10 @@ def _built(memory: Memory, name: str, declared: ViewPort | OwnPort) -> Port:
             serves=declared.serves,
             read_energy_per_bit=declared.read_energy_per_bit,
             write_energy_per_bit=declared.write_energy_per_bit,
+            channels=declared.channels,
         )
-    specs = [_view_spec(memory, core_id, declared.source) for core_id in declared.core_ids]
-    rates = {(spec.bits_per_cycle, spec.read_energy_per_bit, spec.write_energy_per_bit) for spec in specs}
+    view_specs = [_view_spec(memory, core_id, declared.source, specs) for core_id in declared.core_ids]
+    rates = {(spec.bits_per_cycle, spec.read_energy_per_bit, spec.write_energy_per_bit) for spec in view_specs}
     if len(rates) != 1:
         raise ValueError(
             f"memory {memory.name} port {name}: cores {list(declared.core_ids)} declare {declared.source} differently; "
@@ -207,39 +315,36 @@ def _built(memory: Memory, name: str, declared: ViewPort | OwnPort) -> Port:
     return Port(
         key=key,
         core_ids=tuple(sorted(declared.core_ids)),
-        bandwidth=BandwidthModel.flat(specs[0].bits_per_cycle),
-        serves=frozenset(service for spec in specs for service in spec.serves),
-        read_energy_per_bit=specs[0].read_energy_per_bit,
-        write_energy_per_bit=specs[0].write_energy_per_bit,
+        bandwidth=BandwidthModel.flat(view_specs[0].bits_per_cycle),
+        serves=frozenset(service for spec in view_specs for service in spec.serves),
+        read_energy_per_bit=view_specs[0].read_energy_per_bit,
+        write_energy_per_bit=view_specs[0].write_energy_per_bit,
     )
 
 
-def _view_spec(memory: Memory, core_id: int, source: str) -> PortSpec:
+def _view_spec(memory: Memory, core_id: int, source: str, specs: ViewSpecs) -> PortSpec:
     """The port ``source`` core ``core_id``'s backend declares on its view of ``memory``."""
-    views = {core.id: (core, instance) for core, instance in memory.views}
-    if core_id not in views:
+    if core_id not in specs:
         raise ValueError(f"memory {memory.name}: a port names core {core_id}, which is no view of it")
-    core, instance = views[core_id]
-    declared = {spec.name: spec for spec in core.port_specs() if spec.memory == instance}
-    if source not in declared:
+    if source not in specs[core_id]:
         raise ValueError(
-            f"memory {memory.name}: core {core_id} declares no port {source} on {instance}; it declares "
-            f"{sorted(declared)}"
+            f"memory {memory.name}: core {core_id} declares no port {source} on {memory.instance_of(core_id)}; it "
+            f"declares {sorted(specs[core_id])}"
         )
-    return declared[source]
+    return specs[core_id][source]
 
 
-def _check_covered(memory: Memory) -> None:
+def _check_covered(memory: Memory, specs: ViewSpecs) -> None:
     """Every port a view's core declares is in exactly one of the memory's ports."""
     taken: dict[tuple[int, str], list[str]] = defaultdict(list)
     for name, declared in memory.ports.items():
         if isinstance(declared, ViewPort):
             for core_id in declared.core_ids:
                 taken[(core_id, declared.source)].append(name)
-    for core, instance in memory.views:
-        for spec in (spec for spec in core.port_specs() if spec.memory == instance):
-            if len(names := taken.get((core.id, spec.name), [])) != 1:
+    for core_id, declared_specs in specs.items():
+        for spec_name in declared_specs:
+            if len(names := taken.get((core_id, spec_name), [])) != 1:
                 raise ValueError(
-                    f"memory {memory.name}: core {core.id}'s port {spec.name} is in ports {names}; each port a view's "
+                    f"memory {memory.name}: core {core_id}'s port {spec_name} is in ports {names}; each port a view's "
                     "core declares belongs to exactly one of its memory's ports"
                 )

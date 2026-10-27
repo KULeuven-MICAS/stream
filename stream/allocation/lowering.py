@@ -18,7 +18,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT
-from stream.mapping.mapping import Mapping, offchip_memory, placements_of, role_of
+from stream.mapping.mapping import Mapping, offchip_memory, placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand, streamed_operands
@@ -47,18 +47,20 @@ from stream.workload.workload import Workload, position_of
 
 
 def reader_positions(
-    tensor: Tensor, readers: Sequence[tuple[HasInputs, Sequence[Core], Sequence[Memory]]]
+    tensor: Tensor, readers: Sequence[tuple[HasInputs, Sequence[Core | None], Sequence[Memory]]]
 ) -> tuple[Memory, ...]:
     """The memory a copy of ``tensor`` lands in at each position: one per reading core, in the order the readers
     (each with its cores and the memory each reads the copy in) declare them, as that is what pairs a spatial index
-    with a core; cores sharing a memory repeat it. A core reads the copy in one memory, whichever reader it runs."""
-    found: dict[Core, tuple[HasInputs, Memory]] = {}
+    with a core; cores sharing a memory repeat it. A core reads the copy in one memory, whichever reader it runs. A
+    reader with no core (an output edge, off chip) is a position of its own."""
+    found: dict[object, tuple[HasInputs, Memory]] = {}
     for reader, cores, memories in readers:
         for core, memory in zip(cores, memories, strict=True):
-            first, held = found.setdefault(core, (reader, memory))
+            key = core if core is not None else object()  # a position of its own, shared with no core's
+            first, held = found.setdefault(key, (reader, memory))
             if held is not memory:
                 raise ValueError(
-                    f"core {core.id} reads {tensor.name} in {memory.name} for {reader.name} but in {held.name} for "
+                    f"core {key.id} reads {tensor.name} in {memory.name} for {reader.name} but in {held.name} for "
                     f"{first.name}: a copy lands in one memory per core"
                 )
     return tuple(memory for _, memory in found.values())
@@ -438,7 +440,10 @@ class _Lowering:
             return staged or ((offchip_memory(self.accelerator),),)
         readers = []
         for dst in dsts:
-            (cores,) = self._retrieve_core_allocation(dst)
+            if isinstance(dst, OutEdge):  # the workload's output leaves off chip: one position no core reads at
+                readers.append((dst, (None,), self._target_placement(dst, node)))
+                continue
+            cores = the_one(self._retrieve_core_allocation(dst), dst, "core allocations")
             readers.append((dst, cores, self._target_placement(dst, node)))
         return (reader_positions(node.inputs[0], readers),)
 
@@ -576,8 +581,7 @@ class _Lowering:
 
     def _reads_in(self, node: ComputationNode, tensor: Tensor) -> tuple[Memory, ...]:
         """The memory each of ``node``'s cores reads its input ``tensor`` in."""
-        (memories,) = placements_of(self.accelerator, self.mapping, node, role_of(node, tensor))
-        return memories
+        return the_one(placements_of(self.accelerator, self.mapping, node, role_of(node, tensor)), node, "placements")
 
     def determine_transfer_type(
         self,
@@ -588,14 +592,18 @@ class _Lowering:
         dst_type: str | None = None,
     ) -> TransferType:
         """The type of transfer moving ``tensor`` from ``src`` to ``dsts``, by the kinds of memory it leaves and
-        lands in."""
+        lands in; a computation's side is ``compute`` whatever memory its core holds the operand in, as a core whose
+        hierarchy tops out in the off-chip memory still computes out of it."""
         if src_type is None:
             src_allocation = self._source_placements(src)
             assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
-            src_type = self._effective_allocation_type(src_allocation[0])
+            src_type = (
+                "compute" if isinstance(src, ComputationNode) else self._effective_allocation_type(src_allocation[0])
+            )
         if dst_type is None:
             landing = [m for dst in dsts for m in self._destination_memories(dst, tensor)]
-            dst_type = self._effective_allocation_type(landing)
+            computes = any(isinstance(dst, ComputationNode) for dst in dsts)
+            dst_type = "compute" if computes else self._effective_allocation_type(landing)
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
         elif src_type == "compute" and dst_type in ("memory", "offchip"):

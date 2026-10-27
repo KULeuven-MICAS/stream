@@ -13,6 +13,7 @@ import pytest
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import ANY_OPERAND, READ, WRITE, OwnPort
 from stream.opt.allocation.constraint_optimization.families.aie2 import AIE2DmaChannels
 from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace, HardwareFacts
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
@@ -44,8 +45,43 @@ def aie2():
 def test_a_compute_tile_has_the_two_dma_channels_the_hardware_gives_it():
     """``AIE2TargetModel`` answers 2 for ``WireBundle::DMA`` on a compute tile, 6 on a
     memory tile. Modelling more is what lets an infeasible design reach aiecc."""
-    assert AIE2DmaChannels().channels(_memory(_core(0, "compute", 0, 2))) == 2
-    assert AIE2DmaChannels().channels(_memory(_core(1, "memory", 0, 1))) == 6
+    for direction in ("in", "out"):
+        assert AIE2DmaChannels().channels(_memory(_core(0, "compute", 0, 2)), direction) == 2
+        assert AIE2DmaChannels().channels(_memory(_core(1, "memory", 0, 1)), direction) == 6
+
+
+def test_a_tile_declaring_its_dma_drives_the_channels_it_declares():
+    """A tile file's ``dma: {mm2s, s2mm}`` is the hardware's word: S2MM channels write into the tile, MM2S read out."""
+    core = _core(0, "compute", 0, 2)
+    core.dma_mm2s, core.dma_s2mm = 1, 2
+    assert AIE2DmaChannels().channels(_memory(core), "out") == 1
+    assert AIE2DmaChannels().channels(_memory(core), "in") == 2
+
+
+def _dram(ports: dict[str, OwnPort]) -> Memory:
+    memory = Memory.__new__(Memory)
+    memory.name, memory.views, memory.offchip, memory.capacity_bits, memory.ports = "dram", (), True, 0, ports
+    return memory
+
+
+def test_dram_drives_the_channels_of_the_shim_dma_its_ports_declare():
+    """DRAM is reached through a shim tile's DMA, two channels each way: a steady state with three fifos reading DRAM
+    needs a third MM2S channel the shim does not have, and the solver, not aiecc, must say so."""
+    dram = _dram(
+        {
+            "mm2s": OwnPort(128, frozenset({(ANY_OPERAND, READ)}), 0, 0, channels=2),
+            "s2mm": OwnPort(128, frozenset({(ANY_OPERAND, WRITE)}), 0, 0, channels=2),
+        }
+    )
+    assert dram.dma_channels(READ) == 2 and dram.dma_channels(WRITE) == 2
+    assert dram.dma_port(["mm2s", "s2mm"], READ, "input1")[0] == "mm2s"
+
+
+def test_an_off_chip_memory_whose_ports_are_no_dma_is_unbounded():
+    """A plain DRAM port bounds bits per cycle, not fifos: nothing counts its channels."""
+    dram = _dram({"rw": OwnPort(64, frozenset({(ANY_OPERAND, READ), (ANY_OPERAND, WRITE)}), 0, 0)})
+    assert dram.dma_channels(READ) is None and dram.dma_channels(WRITE) is None
+    assert dram.dma_port(["rw"], READ, "input1") is None
 
 
 @pytest.mark.parametrize(

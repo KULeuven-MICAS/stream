@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from stream.hardware.bundle import HardwareBundle
+from stream.parser.core_validator import core_kind_from_type
 from stream.plugins import load_group
 
 __all__ = [
@@ -132,16 +133,21 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
         node = DEFAULT_TECH_NODE
     density = _DENSITIES[node]
 
-    data = bundle.validated_data()
+    data = bundle.validated_data()  # the validator saw every top-level instance as a view: nothing is priced twice
     cores_data = data["cores"]
     viewed = {view for memory in data["memories"].values() for view in memory["views"]}
+    off_die = {view[0] for memory in data["memories"].values() if memory["offchip"] for view in memory["views"]}
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
+        # A memory-kind core viewing the off-chip memory is its controller, off the die with it: its own levels are
+        # priced there and it computes nothing. A compute core is on the die whatever it views (its hierarchy may top
+        # out in DRAM).
+        on_die = core_id not in off_die or core_kind_from_type(core.get("type")) == "compute"
         private = [name for name in _levels(core) if (core_id, name) not in viewed]
-        memories = [_memory_cost(name, [(core_id, core, name)], True, density) for name in private]
+        memories = [_memory_cost(name, [(core_id, core, name)], on_die, density, warnings) for name in private]
         core_name = str(core.get("name", f"core_{core_id}"))
-        compute = _compute_cost(core_id, core_name, core, density)
+        compute = _compute_cost(core_id, core_name, core, density) if on_die else None
         core_costs.append(
             CoreCost(
                 core_id=core_id,
@@ -156,7 +162,8 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
     for name, memory in data["memories"].items():
         if memory["views"]:
             levels = [(cid, cores_data[cid], level) for cid, level in memory["views"]]
-            shared.append(_memory_cost(name, levels, not memory["offchip"], density))
+            cost = _memory_cost(name, levels, not memory["offchip"], density, warnings, nb_ports=len(memory["ports"]))
+            shared.append(cost)
         else:
             shared.append(_own_memory_cost(name, memory, density))
 
@@ -208,17 +215,29 @@ def _level(core: dict[str, Any], name: str) -> tuple[int, int, dict[str, int]]:
 
 
 def _memory_cost(
-    name: str, views: list[tuple[int, dict[str, Any], str]], on_die: bool, density: _Density
+    name: str,
+    views: list[tuple[int, dict[str, Any], str]],
+    on_die: bool,
+    density: _Density,
+    warnings: list[str],
+    nb_ports: int | None = None,
 ) -> MemoryCost:
-    """One memory priced once from its views, which agree on its size: its ports are those any view declares, a port
-    two views name alike counted once."""
+    """One memory priced once from its views, which agree on its bits (the validator checks) and should on how many
+    instances of it their arrays leave unserved, at the width of the widest port any view declares; where they do not,
+    it is priced at the most instances any view sees and the report says so. Its physical ports are ``nb_ports``, the
+    ports the accelerator declares on it (two views naming one port apart are one port, and alike two); a core's
+    private level counts the ports its file declares."""
     levels = [_level(core, level) for _, core, level in views]
     if len({(instances, bits) for instances, bits, _ in levels}) != 1:
-        raise ValueError(f"the views of memory {name} disagree on its size: {[lv[:2] for lv in levels]}")
-    instances, bits, _ = levels[0]
+        warnings.append(
+            f"the views of memory {name} disagree on its (instances, bits) {sorted({lv[:2] for lv in levels})}; "
+            "priced at the most instances"
+        )
+    instances, bits = max(instances for instances, _, _ in levels), levels[0][1]
     ports = {port: width for *_, widths in levels for port, width in widths.items()}
     core_ids = tuple(core_id for core_id, _, _ in views)
-    return _priced(name, core_ids, instances, bits, max(ports.values(), default=0), max(len(ports), 1), on_die, density)
+    nb_ports = len(ports) if nb_ports is None else nb_ports
+    return _priced(name, core_ids, instances, bits, max(ports.values(), default=0), max(nb_ports, 1), on_die, density)
 
 
 def _own_memory_cost(name: str, memory: dict[str, Any], density: _Density) -> MemoryCost:
