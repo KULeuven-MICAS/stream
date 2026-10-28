@@ -239,12 +239,13 @@ def _propagate_spatial_reuse(ssis: IterationSpaces, spatial_side: Tensor, tempor
 def solved_mapping(workload: Workload, mapping: Mapping, solution: AllocationSolution) -> Mapping:
     """A copy of ``mapping`` with each transfer bound to the route and memories the solution chose."""
     solved = mapping.copy()
+    placements = {tr: (placement,) for tr, placement in solution.memory_placements.items()}
     for tr, route in solution.transfer_routes.items():
         solved.set_for_node(
             tr,
             resource_allocation=(route,),
             inter_core_tiling=tuple(),
-            memory_allocation=(placement,) if (placement := solution.memory_placements.get(tr)) else (),
+            memory_allocation=placements.get(tr, ()),
         )
     for tr in workload.get_transfer_nodes():
         assert len(solved.get(tr).resource_allocation) == 1, (

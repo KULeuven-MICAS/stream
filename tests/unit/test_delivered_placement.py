@@ -22,7 +22,7 @@ class _Node:
 
 
 class _Tile:
-    """A memory tile's memory, as far as the coherence reads it."""
+    """A stand-in memory with only an id and a name."""
 
     def __init__(self, core_id: int, name: str):
         self.id, self.name = core_id, name

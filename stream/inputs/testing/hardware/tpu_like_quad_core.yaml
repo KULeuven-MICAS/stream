@@ -133,7 +133,7 @@ connections:
 
   # -------- Shared off-chip memory bus: all cores share one medium ---------- #
   - type: bus
-    ends:  # includes the DRAM controller itself
+    ends:
       tpu_like_0: [r_port_1, w_port_1]
       tpu_like_1: [r_port_1, w_port_1]
       tpu_like_2: [r_port_1, w_port_1]

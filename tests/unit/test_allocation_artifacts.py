@@ -28,7 +28,7 @@ def test_a_solve_writes_its_artifacts_by_default(tmp_path: Path, two_conv: TwoCo
 
 
 def test_a_sweep_can_turn_the_artifacts_off(tmp_path: Path, two_conv: TwoConvWorkloadConfig) -> None:
-    """Nothing beside the result, the hardware picture included."""
+    """No artifacts are written, including the hardware picture."""
     assert not _solve(tmp_path, two_conv, SolveOptions(artifacts=False))
     assert not (tmp_path / "hardware_graph.svg").exists()
 

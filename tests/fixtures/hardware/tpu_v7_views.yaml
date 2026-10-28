@@ -16,8 +16,8 @@
 #  * SparseCores are omitted. They accelerate embeddings and sparse lookups, which none of the
 #    dense workloads modelled here touch.
 #
-# Cores 0-7 are the four TensorCores (MXU + VPU each), 8-9 the per-chip on-chip staging buffer,
-# 10 the HBM controller. Bandwidths are bits/cycle at 1.75 GHz.
+# Cores 0-7 are the four TensorCores (MXU + VPU each), 8-11 their VMEM cores. Bandwidths are
+# bits/cycle at 1.75 GHz.
 name: tpu_v7_ironwood
 
 cores:

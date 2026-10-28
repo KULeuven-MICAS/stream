@@ -1,6 +1,4 @@
-"""A few seeds of the memory fuzzer (``python -m tests.fuzz.memory_fuzz`` runs as many as asked): each must solve or
-be infeasible with a reason, keep what placing tensors in memories promises, and not depend on the order the
-description lists its memories in."""
+"""A few seeds of the memory fuzzer; ``python -m tests.fuzz.memory_fuzz`` runs more."""
 
 import pytest
 
@@ -16,6 +14,5 @@ def test_a_random_accelerator_solves_soundly(seed):
 
 @pytest.mark.slow
 def test_the_tiling_leaves_room_for_what_the_allocation_pins():
-    """Seed 977: a MoE on small memories, whose expert outputs and dispatched tokens the allocation keeps resident
-    across their outermost loops; the tiling must leave room for them, rather than count two buffers each."""
+    """Seed 977, a MoE on small memories, solves with room for the tensors the allocation keeps resident."""
     assert run(977)["status"] == "ok"

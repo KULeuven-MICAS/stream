@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
+from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import ROUTE_HOPS
 from stream.opt.allocation.constraint_optimization.utils import resource_key
@@ -13,7 +14,6 @@ from stream.workload.workload import Tensor
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
-    from stream.hardware.architecture.memory import Memory
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.workload.workload import TransferNode

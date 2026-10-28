@@ -43,16 +43,15 @@ core_coordinates:
   21: [3, 3]
   22: [3, 4]
   23: [3, 5]
-# DRAM is the off-chip memory; every tile's memory is its own.
 memories:
   dram:
     offchip: true
     views: []
     capacity_bits: 10000000000
-    dma:  # each column's shim tile DMA, which the runtime sequence reaches DRAM through
+    dma:
       buffer_descriptors: 16
       iterations: 64
-    ports:  # each column's shim DMA: two 64-bit channels each way, the column's link to its memory tile passing them
+    ports:
       mm2s_c0: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
       s2mm_c0: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
       mm2s_c1: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}

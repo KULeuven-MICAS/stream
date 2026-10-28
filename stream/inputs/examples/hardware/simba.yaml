@@ -1,4 +1,4 @@
-# 6 × 6 SIMBA chiplet mesh plus a package-level DRAM controller
+# 6 × 6 SIMBA chiplet mesh plus package-level DRAM
 name: simba_package
 
 cores:     # id → YAML description
@@ -332,9 +332,9 @@ connections:
   - {type: link, ends: {simba_chiplet_34: [r_port_1, w_port_1], simba_chiplet_35: [r_port_1, w_port_1]}, bandwidth: 256}
 
   # ───────── Per-column off-chip DRAM links (Strix-style distributed memory access) ─────────
-  # Each column's edge chiplet (row 0 = cores 0..5) gets its OWN link to the DRAM controller
-  # (core 36), so DRAM bandwidth is distributed across 6 links rather than one shared bus. A single
-  # shared bus is used in every steady-state slot and so has zero boundary idle, pinning the TETRA
+  # Each column's edge chiplet (row 0 = cores 0..5) gets its OWN link to DRAM, so DRAM bandwidth is
+  # distributed across 6 links rather than one shared bus. A single shared bus is used in every
+  # steady-state slot and so has zero boundary idle, pinning the TETRA
   # inter-iteration overlap to 0; per-column links let that overlap grow when layers sit on different
   # columns. Deeper chiplets reach DRAM by routing up their column through the (wide) mesh.
   - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_0: [r_port_1, w_port_1]}, bandwidth: 256}

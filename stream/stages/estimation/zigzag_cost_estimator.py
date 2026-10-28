@@ -25,7 +25,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.workload.utils import affine_bounds, is_mac_operator_type, operand_inputs
-from stream.workload.workload import ComputationNode, Tensor, Workload
+from stream.workload.workload import ComputationNode, Workload
 
 ZigZagLayerNode = zigzag_layer_node.LayerNode
 ZigZagLayerNodeAttributes = zigzag_layer_node.LayerNodeAttributes
@@ -105,7 +105,7 @@ class ZigZagCostEstimator:
         dimension_relations: list[ZigZagLayerDimRelation] = []
         pr_sizes: dict[ZigZagLayerDim, int] = {}
         per_core_dim_sizes = self._per_core_sizes(node)
-        tensors = (node.outputs[0],) + self._operands(node)
+        tensors = (node.outputs[0],) + operand_inputs(node)
         operand_names = ["O"] + self.input_operand_names[: len(tensors) - 1]
         equation_str = ""
         for tensor, operand_name in zip(tensors, operand_names, strict=True):
@@ -155,11 +155,6 @@ class ZigZagCostEstimator:
                 equation_str += " * "
         return ZigZagLayerEquation(equation_str), dimension_relations, ZigZagLayerDimSizes(pr_sizes)
 
-    @staticmethod
-    def _operands(node: ComputationNode) -> tuple[Tensor, ...]:
-        """The inputs ZigZag prices, its memory operands ``I1``, ``I2``, ...: :func:`operand_inputs`."""
-        return operand_inputs(node)
-
     def _per_core_sizes(self, node: ComputationNode) -> dict[LayerDim, int]:
         """Each unique dim's extent on one core of the node's inter-core split, a split that does not divide its dim
         evenly, or a node without a mapping, leaving it whole."""
@@ -183,7 +178,7 @@ class ZigZagCostEstimator:
         """Each operand at its tensor's element type; a matmul's or convolution's partial sums at the accumulator
         precision its core declares, cast to the output's type as they are written out."""
         precisions: dict[str, int] = {
-            self.input_operand_names[i]: tensor.operand_type.bitwidth for i, tensor in enumerate(self._operands(node))
+            self.input_operand_names[i]: tensor.operand_type.bitwidth for i, tensor in enumerate(operand_inputs(node))
         }
         assert len(node.outputs) == 1, "Only single output nodes are supported."
         precisions["O_final"] = node.outputs[0].operand_type.bitwidth
@@ -200,14 +195,14 @@ class ZigZagCostEstimator:
         # Assume all operands constant for a single node workload
 
         constant_operands: list[ZigZagLayerOperand] = []
-        for i in range(len(self._operands(node))):
+        for i in range(len(operand_inputs(node))):
             constant_operands.append(ZigZagLayerOperand(self.input_operand_names[i]))
         return constant_operands
 
     def create_operand_source(self, node: ComputationNode) -> ZigZagInputOperandSource:
         # For now, assume all input operands originate from the layer id itself
         operand_source: ZigZagInputOperandSource = {}
-        for i in range(len(self._operands(node))):
+        for i in range(len(operand_inputs(node))):
             operand_source[ZigZagLayerOperand(self.input_operand_names[i])] = 0
         return operand_source
 
@@ -233,7 +228,7 @@ class ZigZagCostEstimator:
     def get_memory_operand_links(self, node: ComputationNode, core: Core) -> ZigZagMemoryOperandLinks:
         # Check that the core memory hierarchy contains two input memory operands I1 and I2 and one output O
         memory_operands = list(core.mem_hierarchy_dict.keys())
-        assert len(memory_operands) > len(self._operands(node))
+        assert len(memory_operands) > len(operand_inputs(node))
         assert any(op.name == "I1" for op in memory_operands), (
             f"Core {core.id} memory hierarchy must contain memory operand I1."
         )
@@ -244,7 +239,7 @@ class ZigZagCostEstimator:
             f"Core {core.id} memory hierarchy must contain memory operand O."
         )
         memory_operand_links: ZigZagMemoryOperandLinks = {}
-        for i in range(len(self._operands(node))):
+        for i in range(len(operand_inputs(node))):
             mem_op = next(op for op in memory_operands if op.name == f"I{i + 1}")
             layer_op = ZigZagLayerOperand(self.input_operand_names[i])
             memory_operand_links[layer_op] = mem_op

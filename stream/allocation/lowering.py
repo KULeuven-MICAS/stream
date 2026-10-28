@@ -49,14 +49,14 @@ from stream.workload.workload import Workload, position_of
 def reader_positions(
     tensor: Tensor, readers: Sequence[tuple[HasInputs, Sequence[Core | None], Sequence[Memory]]]
 ) -> tuple[Memory, ...]:
-    """The memory a copy of ``tensor`` lands in at each position: one per reading core, in the order the readers
-    (each with its cores and the memory each reads the copy in) declare them, as that is what pairs a spatial index
-    with a core; cores sharing a memory repeat it. A core reads the copy in one memory, whichever reader it runs. A
-    reader with no core (an output edge, off chip) is a position of its own."""
+    """The memory a copy of ``tensor`` lands in at each position, one per reading core. Each reader gives its cores
+    and the memory each core reads the copy in. Positions keep the readers' core order, since that order pairs a
+    spatial index with a core. A core must read the copy in the same memory for every reader. A reader without a core
+    (an output edge) gets a position of its own."""
     found: dict[object, tuple[HasInputs, Memory]] = {}
     for reader, cores, memories in readers:
         for core, memory in zip(cores, memories, strict=True):
-            key = core if core is not None else object()  # a position of its own, shared with no core's
+            key = core if core is not None else object()  # unique key: shared with no other position
             first, held = found.setdefault(key, (reader, memory))
             if held is not memory:
                 raise ValueError(
@@ -421,9 +421,9 @@ class _Lowering:
     def determine_possible_memory_allocations(
         self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]
     ) -> tuple[tuple[Memory, ...], ...]:
-        """The memories the transfer's copies may land in, one per target position. An input transfer's
-        MEM_TO_MEM copy lands in memory tiles, as does an output transfer's COMPUTE_TO_MEM copy; any other copy lands
-        where its readers read it."""
+        """The candidate memories the transfer's copies land in, one per target position. An input transfer's
+        MEM_TO_MEM copy and an output transfer's COMPUTE_TO_MEM copy land in memory tiles. Any other copy lands where
+        its readers read it."""
         if node.transfer_type in (TransferType.MEM_TO_MEM,) and isinstance(src, InEdge):
             # Find the dst with max number of compute allocations to determine possible memory cores
             compute_dsts = get_compute_predecessors_successors(
@@ -440,11 +440,9 @@ class _Lowering:
             return staged or ((offchip_memory(self.accelerator),),)
         readers = []
         for dst in dsts:
-            if isinstance(dst, OutEdge):  # the workload's output leaves off chip: one position no core reads at
-                readers.append((dst, (None,), self._target_placement(dst, node)))
-                continue
-            cores = the_one(self._retrieve_core_allocation(dst), dst, "core allocations")
-            readers.append((dst, cores, self._target_placement(dst, node)))
+            # An output edge is read off chip, by no core.
+            allocation = ((None,),) if isinstance(dst, OutEdge) else self.mapping.get(dst).resource_allocation
+            readers.append((dst, the_one(allocation, dst, "cores"), self._target_placement(dst, node)))
         return (reader_positions(node.inputs[0], readers),)
 
     def determine_possible_inter_core_tiling(
@@ -568,9 +566,6 @@ class _Lowering:
         # For now, return the minimum number of iterations across all nodes
         return min(iterations_per_node.values())
 
-    def _retrieve_core_allocation(self, node: ComputationNode) -> tuple[tuple[Core, ...], ...]:
-        return self.mapping.get(node).resource_allocation
-
     def _source_placements(self, node: HasOutputs) -> tuple[tuple[Memory, ...], ...]:
         """The memories ``node`` may hold its output in, one per position."""
         return placements_of(self.accelerator, self.mapping, node, OUTPUT)
@@ -592,18 +587,14 @@ class _Lowering:
         dst_type: str | None = None,
     ) -> TransferType:
         """The type of transfer moving ``tensor`` from ``src`` to ``dsts``, by the kinds of memory it leaves and
-        lands in; a computation's side is ``compute`` whatever memory its core holds the operand in, as a core whose
-        hierarchy tops out in the off-chip memory still computes out of it."""
+        lands in."""
         if src_type is None:
             src_allocation = self._source_placements(src)
             assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
-            src_type = (
-                "compute" if isinstance(src, ComputationNode) else self._effective_allocation_type(src_allocation[0])
-            )
+            src_type = self._effective_allocation_type(src_allocation[0])
         if dst_type is None:
             landing = [m for dst in dsts for m in self._destination_memories(dst, tensor)]
-            computes = any(isinstance(dst, ComputationNode) for dst in dsts)
-            dst_type = "compute" if computes else self._effective_allocation_type(landing)
+            dst_type = self._effective_allocation_type(landing)
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
         elif src_type == "compute" and dst_type in ("memory", "offchip"):
@@ -615,27 +606,20 @@ class _Lowering:
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
     def _destination_memories(self, dst: HasInputs, tensor: Tensor) -> tuple[Memory, ...]:
-        """The memories ``dst`` reads ``tensor`` in: off-chip for an output edge, the input memory of each of a
-        computation's cores."""
+        """The memories ``dst`` reads ``tensor`` in: off-chip for an output edge, else the memory each of the
+        computation's cores reads it in."""
         if isinstance(dst, OutEdge):
             return (offchip_memory(self.accelerator),)
         assert isinstance(dst, ComputationNode), f"Unexpected destination node type: {type(dst)}"
         return self._reads_in(dst, tensor)
 
     def _effective_allocation_type(self, allocs: Sequence[Memory]) -> str:
-        """The transfer type a set of (possibly mixed) memories must serve: their one kind, else ``compute`` when any
-        is a compute memory (that is where the data originates or is needed), else the off-chip side's kind."""
-        alloc_types = set(alloc.kind for alloc in allocs)
-        if not alloc_types:
+        """The memory kind a set of (possibly mixed) memories serves as: ``compute`` if any is a compute memory (that is
+        where the data originates or is needed), else ``offchip``, else ``memory``."""
+        kinds = {alloc.kind for alloc in allocs}
+        if not kinds:
             raise ValueError("no allocations to determine transfer type")
-        if len(alloc_types) == 1:
-            return alloc_types.pop()
-        if "compute" in alloc_types:
-            return "compute"
-        for preferred in ("offchip", "memory"):
-            if preferred in alloc_types:
-                return preferred
-        return alloc_types.pop()
+        return next(kind for kind in ("compute", "offchip", "memory") if kind in kinds)
 
     def _mem_tiles(self) -> list[Memory]:
         """The memory tiles within the column budget, in column order."""

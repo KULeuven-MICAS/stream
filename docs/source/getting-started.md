@@ -12,7 +12,7 @@ This needs only the base install (`pip install -e .`). We map a tiny two-layer c
 
 ### The inputs
 
-- **Hardware** - `tpu_like_quad_core.yaml` is a system of **four TPU-like compute cores** plus a pooling engine, a SIMD unit, and an off-chip DRAM controller, wired together by an on-chip interconnect.
+- **Hardware** - `tpu_like_quad_core.yaml` is a system of **four TPU-like compute cores** plus a pooling engine, a SIMD unit, and off-chip DRAM, wired together by an on-chip interconnect.
 - **Workload** - `2conv_1_8_32_32_16_32_3.onnx` is **two chained `Conv` layers** (a committed test fixture; only the tensor shapes matter for cost estimation, so the weights are cleared and the file stays tiny).
 - **Mapping** *(optional)* - a hand-written mapping YAML. **Omit it** and the mapping generator that claims the hardware proposes one: which cores each layer may run on, and how layers are tiled across cores.
 
@@ -79,7 +79,7 @@ This requires **Linux x86_64** and **CPython 3.12 or 3.13**. See [Installation](
 
 ### The inputs
 
-- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a 512 KB memory tile and four AIE compute tiles - a 4×8 grid of compute tiles - and DRAM, the off-chip memory every memory tile reaches.
+- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a shim-DMA tile, a 512 KB memory tile, and four AIE compute tiles - a 4×8 grid of compute tiles.
 - **Workload** - a **SwiGLU** block: two projection `Gemm`s, a `SiLU` activation, an elementwise `Mul`, and a down-projection `Gemm`, built for a problem size by `make_swiglu_workload`.
 - **Mapping** - built from tile sizes by `make_swiglu_mapping`.
 
@@ -102,7 +102,7 @@ estimate = generate_code(
 print(estimate.context.get("module"))
 ```
 
-`nb_cols_to_use=8` uses the full 4×8 compute-tile array, and `npu` targets the Strix (XDNA2) NPU. `route_alternatives` (default 1) offers the allocation more than one route for each placement of a transfer; on the AIE arrays the extra routes only break ties between equally fast ones, at many times the solve time. The MILP allocation over the whole array takes a minute or two; each fused group's design is written under `outputs/swiglu/group_<index>/codegen/`.
+`nb_cols_to_use=8` uses the full 4×8 compute-tile array, and `npu` targets the Strix (XDNA2) NPU. The MILP allocation over the whole array takes a minute or two; each fused group's design is written under `outputs/swiglu/group_<index>/codegen/`.
 
 ### The generated MLIR
 

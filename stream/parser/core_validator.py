@@ -21,7 +21,7 @@ ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory"})
 * ``compute`` — processing tile (systolic array, SIMD, …)
 * ``memory``  — on-chip memory / cache tile
 
-Off-chip memory is no core: ``memories`` declares it.
+Memories, including off-chip memory, are declared in the accelerator's ``memories``.
 """
 
 
@@ -189,8 +189,7 @@ class ZigZagBaseCoreValidator(ZigZagAcceleratorValidator):
         try:
             parent_valid = super().validate()
         except (TypeError, AttributeError, KeyError) as exc:
-            # ZigZag's validator reads the description before checking its shape; a level given as a number, say,
-            # trips it, and that is the user's error to see, not a traceback.
+            # ZigZag's validator can crash on a malformed description; report it as a validation error.
             self.invalidate(f"malformed core description: {type(exc).__name__}: {exc}")
             parent_valid = False
         self.is_valid = self.is_valid and parent_valid

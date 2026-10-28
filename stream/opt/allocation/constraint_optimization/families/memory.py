@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from xdsl.ir.affine import AffineDimExpr
 
+from stream.hardware.architecture.memory import Memory
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.diagnosis import (
     ConstraintTag,
@@ -20,7 +21,6 @@ from stream.opt.solver import ObjectiveLevel, SolverModel, SolverVar, SolverVarT
 from stream.workload.iterator_type import is_state_operand
 
 if TYPE_CHECKING:
-    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import Tensor, TransferNode
@@ -124,9 +124,9 @@ class MemoryCapacity:
     provides: ClassVar[tuple[str, ...]] = ()
 
     def build(self, ctx: FormulationContext) -> None:
-        """What each memory holds, so cores sharing one memory share its capacity: a whole tensor once however many
-        of its positions sit there, a tile once per position, a handover by its writer and by a reader that cannot
-        reach it, and an in-place copy only what it holds beyond its source."""
+        """What each memory holds against its capacity: a whole tensor once however many of its positions sit there,
+        a tile once per position, a handover by its writer and by a reader that cannot reach it, and an in-place copy
+        only what it holds beyond its source."""
         space, ledger = ctx.space, ctx.ledger
         z_stop, z_single = ctx.vars.z_stop, ctx.vars.z_single
         held: dict[tuple[Tensor, Memory], Held] = defaultdict(list)
@@ -197,8 +197,8 @@ class MemoryCapacity:
 
 
 def _holdings(ctx: FormulationContext, t: Tensor) -> list[tuple[Memory, int, SolverVar]]:
-    """Per memory ``t`` may sit in and number of positions it then takes there (one per core holding it), the binary
-    that places it so."""
+    """For each memory ``t`` may sit in and each number of positions it can take there: the binary that places it
+    so."""
     space = ctx.space
     return [
         (memory, copies, ctx.tensor_in_memory_var(t, memory, copies))
@@ -250,9 +250,9 @@ def _tile_shape(space: DecisionSpace, node: Any, tensor: Tensor, tile: Tensor) -
 
 
 class ObjectFifoDepth:
-    """The object-fifo depth each memory's tensors need, per memory and once per position a tensor takes in it (each
-    core holding it reads its own fifo), which a namespace family bounds, and the buffering depth, the objective level
-    after the off-chip traffic; with ``depth`` False only the buffering level."""
+    """The object-fifo depth each memory's tensors need, counted once per position a tensor takes in it (each core
+    reads its own fifo), which a namespace family bounds. Also the buffering depth, the objective level after the
+    off-chip traffic; with ``depth`` False only the buffering level."""
 
     name: ClassVar[str] = "object_fifo_depth"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -301,8 +301,8 @@ class ObjectFifoDepth:
 
 
 class BufferDescriptors:
-    """The buffer descriptors each memory's transfers need, per memory and once per position a tensor takes in it,
-    which a namespace family bounds: a compute tile needs one per tile it holds, a memory tile one per tile it repeats
+    """The buffer descriptors each memory's transfers need, counted once per position a tensor takes in it, which a
+    namespace family bounds: a compute memory needs one per tile it holds, a staging memory one per tile it repeats
     while its reader does not reuse it."""
 
     name: ClassVar[str] = "buffer_descriptors"
@@ -324,7 +324,8 @@ class BufferDescriptors:
                         bd_depth[memory] = bd_depth[memory] + bds_needed * indicator._raw
                         ledger.loads[(BUFFER_DESCRIPTORS, memory)].append((indicator, bds_needed))
                     if terms:
-                        least[memory] = min(least.get(memory, terms[0][1]), *(n for _, n in terms))
+                        fewest = min(n for _, n in terms)
+                        least[memory] = min(least.get(memory, fewest), fewest)
                 for memory, descriptors in least.items():
                     ledger.terms[(BUFFER_DESCRIPTORS, memory)][t.name] = descriptors
         for memory, expr in bd_depth.items():

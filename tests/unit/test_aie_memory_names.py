@@ -16,8 +16,7 @@ def _stage(accelerator, trace_size: int) -> AIECodeGenerationStage:
 
 
 def test_the_shim_descriptors_and_iterations_are_the_off_chip_memorys_dma():
-    """The runtime sequence spends the shim DMA's descriptors DRAM declares, one fewer with a trace writing out through
-    one; an accelerator declaring none leaves every loop unrolled."""
+    """The shim limits come from DRAM's DMA, one descriptor fewer with a trace, and are zero without a DMA."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
     assert _stage(accelerator, trace_size=0)._shim_limits() == (16, 64)
     assert _stage(accelerator, trace_size=8192)._shim_limits() == (15, 64)
@@ -28,5 +27,5 @@ def test_the_shim_descriptors_and_iterations_are_the_off_chip_memorys_dma():
 def test_dram_is_named_by_the_runtime_tile_and_a_tile_memory_by_its_tile():
     """The lowering reaches DRAM from the runtime sequence, through the shim of the other end's column."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
-    assert _memory_tile(accelerator.offchip_memory, "aie2").data == RUNTIME_TILE
-    assert _memory_tile(accelerator.memories["tile_2_3"], "aie2").data == "tile_2_3"
+    assert _memory_tile(accelerator.offchip_memory).data == RUNTIME_TILE
+    assert _memory_tile(accelerator.memories["tile_2_3"]).data == "tile_2_3"

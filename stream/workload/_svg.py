@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from pathlib import Path
 
 import networkx as nx
 
@@ -55,9 +56,9 @@ def _edge(one, other, style: str) -> str:
     )
 
 
-def write_svg(path: str, boxes, edges, graph, palette, edge_styles=None) -> None:
-    """Draw ``boxes`` in layers of ``graph`` and ``edges`` between them; ``edge_styles`` names the style, of
-    ``EDGE_STYLES``, of the edges not drawn as a plain arrow."""
+def write_svg(path: str | Path, boxes, edges, graph, palette, edge_styles=None) -> None:
+    """Draw ``boxes`` in layers of ``graph`` with ``edges`` between them. ``edge_styles`` maps an edge to a style in
+    ``EDGE_STYLES``; other edges are plain arrows."""
     edge_styles = edge_styles or {}
     placed = _place(boxes, graph)
     width = max((x + w for x, _, w, _ in placed.values()), default=0) + MARGIN

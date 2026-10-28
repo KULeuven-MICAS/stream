@@ -13,6 +13,7 @@ from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
 
 from stream.datatypes import InterCoreTiling, LayerDim
+from stream.hardware.architecture.memory import Memory
 from stream.workload._svg import write_svg as _write_svg
 from stream.workload.affine_access import footprint, map_dim_positions
 from stream.workload.affine_transform import AffineTransform
@@ -35,7 +36,6 @@ from stream.workload.utils import affine_bounds, affine_coefficients, sympy_to_x
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan
     from stream.hardware.architecture.core import Core
-    from stream.hardware.architecture.memory import Memory
     from stream.mapping.mapping import Mapping
 
 
@@ -808,18 +808,18 @@ class Workload(DiGraphWrapper[Node]):
         n_sources: int,
         n_targets: int,
         by_spatial_index: bool,
-        targets: Sequence["Memory"],
-        reads_in: Callable[[ComputationNode, Tensor], tuple["Memory", ...]],
+        targets: Sequence[Memory],
+        reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]],
     ) -> tuple["DemandItem", ...]:
-        """What each target of ``transfer`` reads and the sources holding it, placed on ``n_sources`` and ``n_targets``
-        positions with the targets split by ``tiling``, or, given the memories ``targets`` the copies' readers read in
-        (``reads_in`` a reader's memory per core), each target reading what the readers read there under their own
-        splits, all of them where several cores read in one memory. A window overlapping neighbouring tiles of a
-        computation is handed by the sources whose tiles it overlaps. Otherwise each side holds the tiles of its split,
-        contiguously in core order, a copy of the same tile on several cores being served by whichever is nearest, or,
-        where the sources split a dimension they reduce over, a partial sum on each that the target needs all of;
-        ``by_spatial_index`` instead keeps the pairing of a code generator that matches the target at ``j`` with the
-        sources at ``j``, ``j + m``, ..."""
+        """What each of the ``n_targets`` targets of ``transfer`` reads, and which of the ``n_sources`` sources hold it.
+
+        By default the targets are split by ``tiling``. When the readers of the copies all read in memories among
+        ``targets`` (``reads_in`` gives a reader's memory per core), each target reads what those readers read there,
+        under their own splits. A window overlapping neighbouring tiles is served by the sources whose tiles it
+        overlaps. Otherwise each side holds the tiles of its split in core order; a tile copied on several cores is
+        served by the nearest, and a partial sum over a split reduction dimension is needed from every source.
+        ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``, ``j + m``, ..., as a code
+        generator does."""
         from stream.cost_model.communication_manager import DemandItem  # noqa: PLC0415
 
         source, src = transfer.inputs[0], next(self.predecessors(transfer))
@@ -874,17 +874,18 @@ class Workload(DiGraphWrapper[Node]):
         self,
         transfer: TransferNode,
         mapping: "Mapping",
-        targets: Sequence["Memory"],
-        reads_in: Callable[[ComputationNode, Tensor], tuple["Memory", ...]],
-    ) -> list[tuple[Tensor, ComputationNode, InterCoreTiling, tuple["Memory", ...]]]:
-        """Each computation node reading a copy of ``transfer`` straight from it, with the copy, its split and the
-        memory each of its cores reads it in, where all of them are among ``targets``; empty otherwise."""
+        targets: Sequence[Memory],
+        reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]],
+    ) -> list[tuple[Tensor, ComputationNode, InterCoreTiling, tuple[Memory, ...]]]:
+        """Each computation node reading a copy of ``transfer`` directly, with the copy, its split and the memory each
+        of its cores reads it in. Empty unless all those memories are among ``targets``."""
         readers = []
         for tensor in transfer.outputs:
             node = next(n for n in self.successors(transfer) if isinstance(n, HasInputs) and tensor in n.inputs)
             if not isinstance(node, ComputationNode) or not mapping.get(node).resource_allocation:
                 return []
-            if not set(memories := reads_in(node, tensor)) <= set(targets):
+            memories = reads_in(node, tensor)
+            if not set(memories) <= set(targets):
                 return []
             readers.append((tensor, node, self._tiling(node, mapping), memories))
         return readers

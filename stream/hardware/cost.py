@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from stream.hardware.bundle import HardwareBundle
-from stream.parser.core_validator import core_kind_from_type
 from stream.plugins import load_group
 
 __all__ = [
@@ -27,8 +26,7 @@ HARDWARE_COST_MODEL_GROUP = "stream.hardware_cost_model"
 
 @dataclass(frozen=True)
 class MemoryCost:
-    """One memory, priced once: a physical memory of the accelerator, seen by ``core_ids``, or a level private to one
-    core."""
+    """The cost of one memory: a memory of the accelerator viewed by ``core_ids``, or a level private to one core."""
 
     name: str
     core_ids: tuple[int, ...]
@@ -64,7 +62,7 @@ class CoreCost:
     core_id: int
     name: str
     core_type: str
-    memories: list[MemoryCost]  # its private levels; the memories it shares with others are the report's
+    memories: list[MemoryCost]  # its private levels; the levels that view an accelerator memory are in the report
     compute: ComputeCost | None
     area_mm2: float
 
@@ -75,7 +73,7 @@ class HardwareCostReport:
     technology_node: str
     technology_declared: bool
     cores: list[CoreCost]
-    memories: list[MemoryCost]  # the accelerator's memories, each seen by its cores' top-level instances
+    memories: list[MemoryCost]  # the accelerator's memories
     total_area_mm2: float
     memory_area_mm2: float
     compute_area_mm2: float
@@ -133,21 +131,16 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
         node = DEFAULT_TECH_NODE
     density = _DENSITIES[node]
 
-    data = bundle.validated_data()  # the validator saw every top-level instance as a view: nothing is priced twice
+    data = bundle.validated_data()
     cores_data = data["cores"]
     viewed = {view for memory in data["memories"].values() for view in memory["views"]}
-    off_die = {view[0] for memory in data["memories"].values() if memory["offchip"] for view in memory["views"]}
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
-        # A memory-kind core viewing the off-chip memory is its controller, off the die with it: its own levels are
-        # priced there and it computes nothing. A compute core is on the die whatever it views (its hierarchy may top
-        # out in DRAM).
-        on_die = core_id not in off_die or core_kind_from_type(core.get("type")) == "compute"
         private = [name for name in _levels(core) if (core_id, name) not in viewed]
-        memories = [_memory_cost(name, [(core_id, core, name)], on_die, density, warnings) for name in private]
+        memories = [_memory_cost(name, [(core_id, core, name)], True, density, warnings) for name in private]
         core_name = str(core.get("name", f"core_{core_id}"))
-        compute = _compute_cost(core_id, core_name, core, density) if on_die else None
+        compute = _compute_cost(core_id, core_name, core, density)
         core_costs.append(
             CoreCost(
                 core_id=core_id,
@@ -222,11 +215,9 @@ def _memory_cost(
     warnings: list[str],
     nb_ports: int | None = None,
 ) -> MemoryCost:
-    """One memory priced once from its views, which agree on its bits (the validator checks) and should on how many
-    instances of it their arrays leave unserved, at the width of the widest port any view declares; where they do not,
-    it is priced at the most instances any view sees and the report says so. Its physical ports are ``nb_ports``, the
-    ports the accelerator declares on it (two views naming one port apart are one port, and alike two); a core's
-    private level counts the ports its file declares."""
+    """Price one memory from its views, at the width of the widest port any view declares. If the views disagree on
+    the number of instances, use the largest and add a warning. ``nb_ports`` is the number of ports the accelerator
+    declares on the memory; None counts the ports the core files declare, as for a private level."""
     levels = [_level(core, level) for _, core, level in views]
     if len({(instances, bits) for instances, bits, _ in levels}) != 1:
         warnings.append(

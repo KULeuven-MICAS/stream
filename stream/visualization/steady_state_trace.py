@@ -49,7 +49,6 @@ from typing import TYPE_CHECKING
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.space import is_const_input, is_const_output
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_active_transfer_latency_for_path
@@ -82,8 +81,8 @@ def _link_label(link: CommunicationLink) -> str:
 
 def _path_label(path: MulticastPathPlan) -> str:
     """Short but complete label for a path of CommunicationLinks used as a track name."""
-    source = path.sources[0].name if path.sources else "?"
-    return f"Path from {source}: {', '.join(map(str, path.links_used))}"
+    sources = ", ".join(memory.name for memory in path.sources)
+    return f"Path from {sources}: {', '.join(map(str, path.links_used))}"
 
 
 def _resource_label(res) -> str:
@@ -104,13 +103,9 @@ def _resource_sort_key(res) -> int:
         col = getattr(res, "col_id", 0) or 0
         row = getattr(res, "row_id", 0) or 0
         return col * 1000 + row
-    # Links sorted after all cores, then by the first core of the sender's and the receiver's memory
-    return 1_000_000 + _first_core(getattr(res, "sender", None)) * 1000 + _first_core(getattr(res, "receiver", None))
-
-
-def _first_core(end) -> int:
-    """The lowest core id of a link end's memory, -1 for one no core views (DRAM), 0 for a bus's ends."""
-    return min((core.id for core in end.cores), default=-1) if isinstance(end, Memory) else 0
+    # Links sorted after all cores, then by the lowest core id viewing each of their first two memories
+    first, second = (min((core.id for core in memory.cores), default=0) for memory in res.memories[:2])
+    return 1_000_000 + first * 1000 + second
 
 
 def _core_group_label(cores: tuple[Core, ...]) -> str:

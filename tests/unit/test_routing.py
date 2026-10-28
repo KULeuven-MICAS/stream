@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
 from stream.api import SolveOptions, evaluate_mapping
-from stream.cost_model.communication_manager import DemandItem, box_bits
+from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan, box_bits
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, input_role
@@ -32,10 +33,12 @@ OFFCHIP = {
 """An off-chip memory: one 64-bit port serving every operand both ways."""
 
 
-def _hardware(path, name: str, cores: dict[int, str], memories: dict[str, Any], connections: str) -> str:
-    """Write a description of ``cores`` (testing core files) at ``path``: ``memories`` maps a name to :data:`OFFCHIP`
-    or to the views of an on-chip memory, whose cores all reach its one read and one write port, and ``connections``
-    is the YAML list of its links and buses, each by the ``memories`` it joins, through every port of each."""
+def _hardware(path: Path, name: str, cores: dict[int, str], memories: dict[str, Any], connections: str) -> Path:
+    """Write a hardware description to ``path`` and return the path.
+
+    ``memories`` maps a name to :data:`OFFCHIP` or to the views of an on-chip memory with one read and one write port.
+    ``connections`` is a YAML list of links and buses, each naming the ``memories`` it joins.
+    """
 
     def declared(views: Any) -> dict[str, Any]:
         if views is OFFCHIP:
@@ -56,7 +59,7 @@ def _hardware(path, name: str, cores: dict[int, str], memories: dict[str, Any], 
         ],
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False))
-    return str(path)
+    return path
 
 
 TWO_CLUSTERS_MEMORIES = {
@@ -71,8 +74,17 @@ TWO_CLUSTERS_CONNECTIONS = """
 - {type: link, memories: [m2, m5], bandwidth: 300}
 - {type: bus, memories: [w0, w1, w2, w3, w4, w5, m6], bandwidth: 100}
 """
-"""Two clusters of three cores on a bus each, whose hubs 2 and 5 share a bus with off-chip memory 6 and a link; every
-core has a memory of its own, m<core>, and a weights memory w<core> that only off-chip memory reaches."""
+"""Two clusters of three cores on a bus each. Hubs m2 and m5 share a link and a bus with off-chip m6. Each core also has
+a weights memory w<core> that only m6 reaches."""
+
+TWO_CORES_MEMORIES = {
+    "m0": ["0.sram_128K_A"],
+    "m1": ["1.sram_128K_A"],
+    "m2": OFFCHIP,
+    "w0": ["0.sram_128K_W"],
+    "w1": ["1.sram_128K_W"],
+}
+"""Two cores, each with an activation memory m<core> and a weights memory w<core>, and off-chip m2."""
 
 HALF_A, HALF_B = ((0, 7), (0, 15)), ((8, 15), (0, 15))
 WHOLE = ((0, 15), (0, 15))
@@ -91,15 +103,16 @@ def _memory(accelerator: Accelerator, end: int | str, role: str) -> Memory:
 
 
 def route(accelerator: Accelerator, sources, targets, demand, shares_memory=lambda one, other: False):
-    """Route between the memories ``sources`` write their output in and ``targets`` read their first input in, each a
-    core or a memory's name."""
-    return accelerator.communication_manager.route(
+    """Route from the output memories of ``sources`` to the first-input memories of ``targets`` (core ids or memory
+    names)."""
+    plan, _ = accelerator.communication_manager.route(
         tuple(_memory(accelerator, end, OUTPUT) for end in sources),
         tuple(_memory(accelerator, end, input_role(1)) for end in targets),
         tuple(demand),
         16,
         shares_memory,
     )
+    return plan
 
 
 def shares(plan) -> dict[str, float]:
@@ -168,13 +181,7 @@ def test_off_chip_memory_never_relays_data_between_cores(tmp_path):
         tmp_path / "relay.yaml",
         "relay",
         dict.fromkeys(range(2), "testing_core1.yaml"),
-        {
-            "m0": ["0.sram_128K_A"],
-            "m1": ["1.sram_128K_A"],
-            "m2": OFFCHIP,
-            "w0": ["0.sram_128K_W"],
-            "w1": ["1.sram_128K_W"],
-        },
+        TWO_CORES_MEMORIES,
         "[{type: link, memories: [w0, m2], bandwidth: 1000}, {type: link, memories: [w1, m2], bandwidth: 1000},"
         " {type: link, memories: [m0, m2], bandwidth: 1000}, {type: link, memories: [m1, m2], bandwidth: 1000},"
         " {type: link, memories: [m0, m1], bandwidth: 10}]",
@@ -198,23 +205,18 @@ def test_cores_in_one_memory_need_no_route(tmp_path):
 
 
 def test_a_bus_is_at_a_memory_only_where_a_hop_of_the_route_ends_there(accelerator):
-    """Hub m2 reaching off-chip m6 over the bus it shares with hub m5, and m5 over their link: m5's side passes the
-    link only, although m5 is on the bus too, so its port is charged the link's bits and not the bus's."""
-    from stream.cost_model.communication_manager import MulticastPathPlan
-
+    """A route from m2 over the bus to m6 and over the link to m5 reaches m5 only through the link."""
     m2, m5, m6 = (accelerator.memories[f"m{i}"] for i in (2, 5, 6))
     links = {str(d["cl"]): d["cl"] for _, _, d in accelerator.network.edges(data=True)}
     bus, link = links["Bus(m2,m5,m6, bw=100)"], links["CL(m2, m5, bw=300)"]
     plan = MulticastPathPlan((m2,), (m5, m6), 2, (bus, link), ((0, 0), (0, 1)), hops=((m2, m6, bus), (m2, m5, link)))
     assert plan.links_at(m5, leaving=False) == (link,) and plan.links_at(m6, leaving=False) == (bus,)
     assert plan.links_at(m2, leaving=True) == (bus, link) and plan.links_at(m2, leaving=False) == ()
-    without_hops = MulticastPathPlan((m2,), (m5, m6), 2, (bus, link), ((0, 0), (0, 1)))
-    assert set(without_hops.links_at(m5, leaving=False)) == {bus, link}
 
 
 def test_buses_of_the_same_width_are_distinct_links(accelerator):
     """Each cluster bus is its own link, so traffic on one does not count against the other."""
-    buses = {link for _, _, data in accelerator.network.edges(data=True) if (link := data["cl"]).members}
+    buses = {data["cl"] for _, _, data in accelerator.network.edges(data=True) if data["cl"].members}
     assert sorted(str(bus) for bus in buses) == [
         "Bus(m0,m1,m2, bw=1000)",
         "Bus(m2,m5,m6, bw=100)",
@@ -285,19 +287,12 @@ def _plans(accelerator: Accelerator, sources, targets, demand, alternatives: int
 
 
 def test_a_transfer_is_offered_each_of_two_equally_fast_connections(tmp_path):
-    """Two links between the same memories: the first route takes one, the next, routed as if the first carried the
-    transfer, the other, so that the solve can put two transfers of one slot on one each."""
+    """With two equal links between the same memories, the alternatives use one link each."""
     path = _hardware(
         tmp_path / "parallel.yaml",
         "parallel",
         dict.fromkeys(range(2), "testing_core1.yaml"),
-        {
-            "m0": ["0.sram_128K_A"],
-            "m1": ["1.sram_128K_A"],
-            "m2": OFFCHIP,
-            "w0": ["0.sram_128K_W"],
-            "w1": ["1.sram_128K_W"],
-        },
+        TWO_CORES_MEMORIES,
         "[{type: link, memories: [m0, m1], bandwidth: 64}, {type: link, memories: [m0, m1], bandwidth: 64},"
         " {type: bus, memories: [m0, m1, w0, w1, m2], bandwidth: 8}]",
     )
@@ -310,7 +305,7 @@ def test_a_transfer_is_offered_each_of_two_equally_fast_connections(tmp_path):
 
 
 def test_a_transfer_with_one_way_there_is_offered_one_route(accelerator):
-    """Each cluster's bus is the only way between its cores: the alternatives all take it, so only one is kept."""
+    """Cores reachable only over their cluster's bus get one route."""
     assert len(_plans(accelerator, (0,), (1,), [DemandItem(0, (0,), WHOLE)], 3)) == 1
 
 
@@ -318,7 +313,6 @@ def test_the_first_alternative_is_the_fastest_route(accelerator):
     demand = [DemandItem(0, (0,), HALF_A), DemandItem(1, (0,), HALF_B)]
     (first, *_) = _plans(accelerator, ("m6",), (0, 3), demand, 3)
     assert first == route(accelerator, ("m6",), (0, 3), demand)
-    assert shares(first) == shares(route(accelerator, ("m6",), (0, 3), demand))
 
 
 def test_more_routes_never_make_a_solve_slower(tmp_path):

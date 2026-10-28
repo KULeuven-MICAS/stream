@@ -167,9 +167,9 @@ class DecisionSpace:
 
     def candidate_memories(self, t: Tensor) -> set[Memory]:
         """Every memory one of ``t``'s placements uses; the set is shared, so callers do not change it."""
-        if (memories := self._candidates.get(t)) is None:
-            memories = self._candidates[t] = {memory for choice in self.tensor_choices[t] for memory in choice}
-        return memories
+        if t not in self._candidates:
+            self._candidates[t] = {memory for choice in self.tensor_choices[t] for memory in choice}
+        return self._candidates[t]
 
     def runtime(self, n: ComputationNode) -> int:
         """Cycles ``n`` takes on the slowest core it may run on, before its active fraction."""
@@ -185,9 +185,8 @@ class DecisionSpace:
         return range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
 
     def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
-        """A transfer's copy lives in the memories the computation node it reaches reads it in, not in every target
-        of the transfer; a copy for another transfer or an edge, or one a mapping lands in none of those memories (a
-        neighbour's the reader reaches in place), keeps the transfer's placements."""
+        """Narrow a transfer's placements to the memories its reading computation node reads the copy in. A copy read
+        by another transfer or an edge, or one no placement lands in those memories, keeps all placements."""
         reader = next(n for n in self.workload.successors(tr) if t in n.inputs)
         if not isinstance(reader, ComputationNode):
             return choices
@@ -205,14 +204,13 @@ class DecisionSpace:
         return the_one(self.mapping.get(node).resource_allocation, node, "core allocations")
 
     def compute_cores(self, tr: TransferNode) -> frozenset[Core]:
-        """The cores at ``tr``'s positions: those of the computation producing its tensor and of the computations
-        reading its copies straight from it; a staged or off-chip side sits on no core."""
-        if (found := self._compute_cores.get(tr)) is None:
+        """The cores of the computation nodes that produce ``tr``'s input or read its outputs directly."""
+        if tr not in self._compute_cores:
             nodes = (*self.workload.predecessors(tr), *self.workload.successors(tr))
-            found = self._compute_cores[tr] = frozenset(
+            self._compute_cores[tr] = frozenset(
                 core for node in nodes if isinstance(node, ComputationNode) for core in self.cores(node)
             )
-        return found
+        return self._compute_cores[tr]
 
     @cached_property
     def sole_outputs(self) -> set[Tensor]:
@@ -267,7 +265,8 @@ class DecisionSpace:
         )
         return max(link, *shared) if self.shared_bandwidth else link
 
-    def direction(self, memory: Memory, path: MulticastPathPlan) -> str | None:
+    @staticmethod
+    def direction(memory: Memory, path: MulticastPathPlan) -> str | None:
         """'read' for a transfer out of this memory, 'write' for one into it, None for one it takes no part in."""
         if memory in path.sources:
             return "read"
@@ -289,8 +288,8 @@ class DecisionSpace:
         return CopyLayouts(self)
 
     def side_rate(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Rate:
-        """Bits per cycle ``memory`` moves one side of ``tr`` on route ``choice`` at per contiguous run length: its
-        measured shared bandwidth, else that of the port the transfer's operand passes, else unbounded."""
+        """Bits per cycle ``memory`` moves for one side of ``tr`` on route ``choice``, as a function of the contiguous
+        run length. Unbounded when nothing limits it (see :meth:`side_bandwidth`)."""
         model = self.side_bandwidth(tr, choice, memory, direction)
         if model is None:
             return lambda span: float("inf")
@@ -299,17 +298,15 @@ class DecisionSpace:
     def side_ports(
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
     ) -> dict[Port, float]:
-        """The ports of ``memory`` the operand of ``tr`` passes in ``direction`` on route ``choice`` (one per link, as
-        one column's shim), each with the fraction of that side's bits it carries, as the route's bits split over the
-        links passing it. Empty where none is, or where the route moves no bits at the memory (a neighbour's memory
-        read in place): no port is then passed."""
+        """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
+        fraction of the side's bits it carries. Empty when the route moves no bits through a port of ``memory``."""
         role = self.operand_role(tr, read_side=direction == READ)
         links = choice.links_at(memory, direction == READ)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, links)
         shares = dict(choice.link_shares)
         carried = {port: sum(shares.get(link, 0.0) for link in port_links) for port, port_links in by_port.items()}
         total = sum(carried.values())
-        return {port: bits / total for port, bits in carried.items() if bits} if total else {}
+        return {port: bits / total for port, bits in carried.items() if bits}
 
     def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
         """Of :meth:`side_ports`, the one carrying the most of the side's bits; None where none is."""
@@ -319,17 +316,16 @@ class DecisionSpace:
     def side_bandwidth(
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
     ) -> BandwidthModel | None:
-        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else that of the
-        ports the side passes together, else nothing. Ports in parallel each carry their fraction of the side's bits,
-        so the side takes as long as the slowest port's fraction at its rate: that port's model scaled by one over its
-        fraction (two shims alike each carrying half move the side twice as fast as one)."""
-        if (model := self.shared_bandwidth.get(memory)) is not None:
-            return model
+        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else the ports
+        the side passes, else nothing (None). Ports work in parallel, so the side is as slow as the port that needs
+        longest for its fraction of the bits: that port's rate divided by its fraction."""
+        if memory in self.shared_bandwidth:
+            return self.shared_bandwidth[memory]
         ports = self.side_ports(tr, choice, memory, direction)
         if not ports:
             return None
         port = min(ports, key=lambda port: port.bandwidth.contiguous / ports[port])
-        return port.bandwidth.scaled(1.0 / ports[port]) if ports[port] < 1.0 else port.bandwidth
+        return port.bandwidth.scaled(1.0 / ports[port])
 
     def operand_role(self, tr: TransferNode, read_side: bool) -> str:
         """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
@@ -375,9 +371,8 @@ class DecisionSpace:
         return broadcast
 
     def transfer_shares_memory(self, tr: TransferNode, memory: Memory, incoming: bool) -> bool:
-        """Whether this memory is served this transfer out of memory it already shares: the object-fifo lowering
-        keeps a single-consumer fifo off the DMA, and Stream routes core to core only where the layouts agree, so what
-        is left to check is whether the memories this one hands to, or takes from, are its neighbours."""
+        """Whether this memory gets (or gives) this transfer's data without moving it: every memory it takes from (or
+        hands to) shares memory with it."""
         if self.within_one_memory(tr):
             return True
         choices = self.path_choices.get(tr) or ()
@@ -413,10 +408,10 @@ class DecisionSpace:
     def moved_bits(
         self, tr: TransferNode, choice: MulticastPathPlan, source_at: int | None = None, target_at: int | None = None
     ) -> float:
-        """Bits one firing of ``tr`` moves on ``choice``, or of them those out of the source at position ``source_at``
-        or into the target at position ``target_at`` (a position, not a memory: cores sharing a memory hold it at
-        several): what sources hand targets they share no memory with where windows overlap neighbouring tiles, else
-        its tensor (a source's even share, a target's tile) less the halo a sliding loop keeps resident."""
+        """Bits one firing of ``tr`` moves on ``choice``. With ``source_at`` or ``target_at``, only the bits out of
+        the source or into the target at that position (a memory can appear at several positions). With overlapping
+        windows these are the bits sources hand to targets they share no memory with; else the tensor (a source's even
+        share, a target's tile) less the halo a sliding loop keeps resident."""
         tensor, out = tr.inputs[0], tr.outputs[0]
         if overlaps := self.overlaps(tr):
             moved = sum(
@@ -481,10 +476,9 @@ class DecisionSpace:
 
     @cached_property
     def handovers(self) -> tuple[tuple[Memory, Memory, int], ...]:
-        """Memories in which cores pass a kernel's state (such as a running reduction's scale) to the core consuming
-        its output, in a buffer both ends hold, and the bits each holds: the state's memory on the passing core and the
-        memory the consuming core reads the output in; which core meets which is the relation the transfer between
-        them uses, read off the mapping's allocation."""
+        """Kernel state (such as a running reduction's scale) passed to the core consuming the kernel's output, as
+        ``(memory of the passing core, memory the consumer reads in, bits)``. Both ends hold a buffer of that size;
+        which cores pair up follows the transfer between them."""
         found: list[tuple[Memory, Memory, int]] = []
         for node in self.ssc_nodes:
             kernel = self.mapping.get(node).kernel

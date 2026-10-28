@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from stream.cost_model.communication_manager import MulticastPathPlan
-    from stream.hardware.architecture.core import Core
-    from stream.hardware.architecture.memory import Memory
-    from stream.opt.solver import SolveStats
-    from stream.workload.node import Tensor, TransferNode
+from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
+from stream.opt.solver import SolveStats
+from stream.workload.node import Tensor, TransferNode
 
 
 @dataclass(frozen=True)

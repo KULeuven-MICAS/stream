@@ -138,8 +138,7 @@ ACCELERATOR_RAW: dict = {
         },
         {
             "type": "link",
-            "from_memory": "tile1",
-            "to_memory": "offchip",
+            "ends": {"tile1": ["mm2s", "s2mm"], "offchip": ["rw"]},
             "bandwidth": 64.0,
             "unit_energy_cost": 1.0,
         },

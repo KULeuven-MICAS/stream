@@ -65,7 +65,7 @@ HARDWARE_CASES = [
 def _build_accelerator(relative_path: str) -> Accelerator:
     path = REPO_ROOT / relative_path
     data = open_yaml(path)
-    validator = AcceleratorValidator(data, str(path))
+    validator = AcceleratorValidator(data, path)
     assert validator.validate(), f"{path} failed validation: {'; '.join(validator.errors)}"
     factory = AcceleratorFactory(validator.normalized_data)
     return factory.create()
@@ -257,7 +257,7 @@ def test_get_ir_lists_each_declared_connection_once(hardware_path, expected):
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_accelerator_ir_round_trips_through_yaml(hardware_path, expected):
     """The IR of a parsed hardware description is plain YAML."""
-    data = yaml.safe_load(yaml.dump(parse_accelerator(str(REPO_ROOT / hardware_path)).get_ir(), sort_keys=False))
+    data = yaml.safe_load(yaml.dump(parse_accelerator(REPO_ROOT / hardware_path).get_ir(), sort_keys=False))
 
     assert data["name"] == expected["name"]
     assert data["num_cores"] == expected["expected_num_cores"]

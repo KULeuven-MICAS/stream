@@ -1,5 +1,4 @@
-"""A transfer's copy lives in the memories the node it reaches reads it in, not in every memory the transfer delivers
-to."""
+"""A transfer's copy lives in the memories its reader reads it from, not in every memory the transfer reaches."""
 
 from stream.api import evaluate_mapping
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
@@ -52,16 +51,14 @@ def test_a_copy_for_a_reader_on_one_core_holds_the_whole_tensor(tmp_path):
 
 
 def test_a_transfer_sits_on_the_cores_computing_at_its_ends(tmp_path):
-    """The cores a transfer serves are those computing its tensor and reading its copies; a staged or off-chip side
-    sits on no core, so a transfer into a memory another core shares does not serve that core."""
+    """A transfer's compute cores are exactly the cores of the computation nodes at its ends."""
     workload = build_block("attention", batch=1, heads=2, seq=16, d_head=16)
     allocation = evaluate_mapping(
         "stream/inputs/examples/hardware/tpu_like_quad_core.yaml", workload, str(tmp_path)
     ).context.get("allocation")
     space = DecisionSpace(allocation.problem)
     for tr in space.transfer_nodes:
-        ends = [n for n in (*space.workload.predecessors(tr), *space.workload.successors(tr))]
+        ends = (*space.workload.predecessors(tr), *space.workload.successors(tr))
         computed = {core for n in ends if isinstance(n, ComputationNode) for core in space.cores(n)}
-        assert space.compute_cores(tr) == computed
-        assert all(core.kind == "compute" for core in space.compute_cores(tr))
-    assert any(not space.compute_cores(tr) for tr in space.transfer_nodes) is False
+        assert computed and space.compute_cores(tr) == computed
+        assert all(core.kind == "compute" for core in computed)

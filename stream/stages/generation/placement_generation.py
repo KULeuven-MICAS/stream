@@ -211,7 +211,6 @@ class PlacementGenerationStage(Stage):
     def _row_width(self, node: ComputationNode, kernel, core: Core) -> int:
         extent = self.workload.get_dimension_size(self.workload.get_dims(node)[kernel.dim_positions(node)["n"]])
         operands = max(MIN_CALL_OPERANDS, len(kernel.operand_layouts() or ()))
-        # The smallest memory the core holds one of the node's operands in: the kernel's buffers share it.
         capacity = min(self.accelerator.memory_of(core, role_of(node, t)).capacity_bits for t in node.tensors)
         budget = (capacity // 8) // (operands * BUFFERS * ELEMENT_BYTES)
         return max(w for w in range(1, min(extent, budget) + 1) if extent % w == 0)

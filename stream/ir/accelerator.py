@@ -88,12 +88,11 @@ class AcceleratorIR(BaseModel):
     name: str = Field(description="Accelerator name as declared in hardware YAML")
     num_cores: int = Field(description="Total number of cores")
     memories: dict[str, dict[str, Any]] = Field(
-        description="Each memory by name: whether it is off-chip ('offchip') and its views ('views'), the top-level "
-        "instance of each core that uses it, as '<core id>.<instance>'"
+        description="Each memory by name: whether off-chip ('offchip'), and its views '<core id>.<instance>' ('views')"
     )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
     connections: list[dict[str, Any]] = Field(
-        description="The links and buses between memories, one entry each as the hardware description declares them"
+        description="The links and buses between memories, as the hardware description declares them"
     )
 
     @classmethod

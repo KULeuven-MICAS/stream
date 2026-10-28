@@ -46,8 +46,6 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
         if served:
             roof["name"] += "@" + ",".join(map(str, sorted(roof["cores"])))
     levels: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    # A resource is named as the memory_ports report names it (`<memory>.<port>`, a measured memory's name, a link's
-    # name), which is unique, so a solve's rows match the levels by that name alone.
     for port in accelerator.ports:
         offchip = accelerator.memories[port.key.memory].offchip
         levels[OFFCHIP_MEMORY if offchip else ONCHIP_MEMORY].append(

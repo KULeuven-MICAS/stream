@@ -26,7 +26,8 @@ class OffchipTraffic:
     def build(self, ctx: FormulationContext) -> None:
         space = ctx.space
         timed = space.accelerator.offchip_memory in space.shared_bandwidth
-        if self.charge and not timed and (bandwidth := space.offchip_bandwidth()):
+        bandwidth = space.offchip_bandwidth()
+        if self.charge and not timed and bandwidth:
             ctx.quantities.add("offchip_traffic_weight", space.iterations / bandwidth)
 
     def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:

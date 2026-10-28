@@ -1,4 +1,4 @@
-# Two FuseMax cores sharing a top-level on-chip memory, plus an explicit DRAM controller
+# Two FuseMax cores sharing a top-level on-chip memory, plus off-chip DRAM
 name: fusemax
 
 cores:

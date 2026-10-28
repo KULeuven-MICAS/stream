@@ -49,7 +49,7 @@ class CapacityTiler:
         self.fill_fraction = fill_fraction
         self._shapes: dict[tuple, tuple[int, ...]] = {}
 
-    def plan(  # noqa: PLR0913, PLR0915
+    def plan(  # noqa: PLR0913
         self,
         cns: tuple[ComputationNode, ...],
         cores_per_node: dict[ComputationNode, list[Core]],
@@ -66,8 +66,7 @@ class CapacityTiler:
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         protected = {lead(d)[0] for d in protected}
-        capacities = self._capacities(cns, cores_per_node)
-        budgets = {m: int(cap * self.fill_fraction) for m, cap in capacities.items()}
+        budgets = {m: int(cap * self.fill_fraction) for m, cap in self._capacities(cns, cores_per_node).items()}
 
         # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
         per_core: dict[LayerDim, int] = {}
@@ -82,31 +81,11 @@ class CapacityTiler:
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
         resident: dict[LayerDim, int] = {dim: seeded.get(dim, per_core[dim]) for dim in per_core}
 
-        indexed, reductions = self._indexed(cns, per_core), self._reductions(cns)
-
-        def required_overflow(reductions_first: frozenset[LayerDim]) -> float:
-            """Largest amount by which what the allocation must hold exceeds a memory, in the loop nest with
-            ``reductions_first`` innermost."""
-            nest = self.loop_nest(resident, per_core, indexed, reductions_first)
-            held = self.required_bits(cns, cores_per_node, unroll, resident, nest, node_unroll)
-            return max((bits - capacities[m] for m, bits in held.items()), default=0.0)
-
-        overflows: dict[tuple[int, ...], float] = {}
-
         def overflow() -> float:
-            """Largest amount by which any memory exceeds its budget (<= 0 means the whole group fits), or by which
-            what the allocation must hold exceeds it in both nests the tiling may be emitted in (one, where the tiling
-            splits no reduction, as both nests are then the same); remembered per tiling, as the search asks for the
-            same one several times over."""
-            key = tuple(resident[dim] for dim in per_core)
-            if (found := overflows.get(key)) is not None:
-                return found
+            """Largest amount by which any memory exceeds its budget (0 means the whole group fits). Never negative, so
+            a shrink gets no credit for going past fitting."""
             held = self.memory_bits(cns, cores_per_node, unroll, resident, node_unroll)
-            planned = max((bits - budgets[m] for m, bits in held.items() if budgets[m] > 0), default=0.0)
-            split = any(resident[d] < per_core[d] for d in reductions if d in per_core)
-            firsts = [frozenset(), reductions] if split else [frozenset()]
-            overflows[key] = found = max(planned, min(required_overflow(first) for first in firsts))
-            return found
+            return max([0.0, *(bits - budgets[m] for m, bits in held.items() if budgets[m] > 0)])
 
         def fill() -> float:
             return self.array_fill(cns, cores_per_node, unroll, resident, node_unroll)
@@ -130,6 +109,7 @@ class CapacityTiler:
             for cn in cns
             for dims in [self.sub_workload.get_dims(cn)]
         }
+        reductions = set().union(*reduced_by.values())
         fitted: list[tuple[float, dict[LayerDim, int]]] = []
         if overflow() <= 0 and fill() >= self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll):
             fitted.append((fill(), dict(seed)))
@@ -145,6 +125,15 @@ class CapacityTiler:
         if not fitted:
             return None
         resident.update(max(fitted, key=lambda found: found[0])[1])
+        indexed = {
+            dim: sum(
+                math.prod(t.shape) * t.operand_type.bitwidth
+                for cn in cns
+                for t in dict.fromkeys(cn.tensors)
+                if dim in {lead(self.sub_workload.get_dims(cn)[p])[0] for p in map_dim_positions(cn.get_mapping(t))}
+            )
+            for dim in per_core
+        }
         self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned)
         if resident == seed:
             return []
@@ -160,14 +149,7 @@ class CapacityTiler:
             else {}
         )
         accumulating = any(bits > budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
-        first = reductions if accumulating else frozenset()
-        if required_overflow(first) > 0:
-            # what the allocation must hold fits only in the other nest
-            first = frozenset() if accumulating else reductions
-            if required_overflow(first) > 0:
-                logger.warning("no loop nest of the tiling found for %s holds what the allocation must", cns)
-                return None
-        return self._emit(cns, resident, per_core, indexed, first)
+        return self._emit(cns, resident, per_core, indexed, reductions if accumulating else set())
 
     def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned) -> None:  # noqa: PLR0913
         """Cut ``resident`` into at least :attr:`PIPELINE_TILES` steady-state tiles, each cut the least that keeps the
@@ -323,80 +305,6 @@ class CapacityTiler:
                     held.setdefault(memory, {})[(core.id, tile)] = buffers * math.prod(shape) * t.operand_type.bitwidth
         return {memory: sum(tiles.values()) for memory, tiles in held.items()}
 
-    def required_bits(
-        self,
-        cns: tuple[ComputationNode, ...],
-        cores_per_node: dict[ComputationNode, list[Core]],
-        unroll: dict[LayerDim, int],
-        resident: dict[LayerDim, int],
-        nest: tuple[LayerDim, ...],
-        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
-    ) -> dict[str, float]:
-        """The least each memory must hold in the loop nest ``nest`` (:meth:`loop_nest`), as :meth:`memory_bits`
-        counts it but every tile in one buffer, and each tensor the group produces resident up to its outermost loop
-        that does not index it, as the allocation pins it: spanning its whole per-core slice along every loop inside
-        that one that does index it."""
-        lead = self.sub_workload.leading_dim
-        unroll = {lead(d)[0]: f for d, f in unroll.items()}
-        unique, _ = self.sub_workload.unique_dimensions()
-        full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
-        held: dict[str, dict[tuple, float]] = {}
-        produced = {t for cn in cns for t in cn.outputs}
-        for cn in cns:
-            dims = self.sub_workload.get_dims(cn)
-            for t in dict.fromkeys(cn.tensors):
-                indexing = {lead(dims[p])[0] for p in map_dim_positions(cn.get_mapping(t))}
-                outer = max((i for i, d in enumerate(nest) if d not in indexing), default=0)
-                pinned = [d for d in nest[:outer] if d in indexing] if t in produced else []
-                whole = {d: full[d] // u if full[d] % (u := unroll.get(d, 1)) == 0 else full[d] for d in pinned}
-                sizes = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll)
-                key = (t.name, cn.name, tuple(sizes[z] for z in unique))
-                if (shape := self._shapes.get(key)) is None:
-                    shape = self._shapes[key] = self.sub_workload.get_tensor_shape_with_dimension_sizes(t, sizes, cn)
-                tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
-                for core in cores_per_node.get(cn, []):
-                    memory = self.accelerator.memory_of(core, role_of(cn, t)).name
-                    held.setdefault(memory, {})[(core.id, tile)] = math.prod(shape) * t.operand_type.bitwidth
-        return {memory: sum(tiles.values()) for memory, tiles in held.items()}
-
-    def _reductions(self, cns: tuple[ComputationNode, ...]) -> frozenset[LayerDim]:
-        """The unique dims a node of the group reduces over."""
-        lead = self.sub_workload.leading_dim
-        return frozenset(
-            lead(dims[p])[0]
-            for cn in cns
-            for dims in [self.sub_workload.get_dims(cn)]
-            for p, kind in derive_iterator_types(cn).items()
-            if kind != IteratorType.PARALLEL and p < len(dims)
-        )
-
-    def _indexed(self, cns: tuple[ComputationNode, ...], per_core: dict[LayerDim, int]) -> dict[LayerDim, float]:
-        """Per dim, the bits of the group's tensors it indexes, what orders the steady-state loops."""
-        lead = self.sub_workload.leading_dim
-        return {
-            dim: sum(
-                math.prod(t.shape) * t.operand_type.bitwidth
-                for cn in cns
-                for t in dict.fromkeys(cn.tensors)
-                if dim in {lead(self.sub_workload.get_dims(cn)[p])[0] for p in map_dim_positions(cn.get_mapping(t))}
-            )
-            for dim in per_core
-        }
-
-    @staticmethod
-    def loop_nest(
-        resident: dict[LayerDim, int],
-        per_core: dict[LayerDim, int],
-        indexed: dict[LayerDim, float],
-        reductions_first: frozenset[LayerDim],
-    ) -> tuple[LayerDim, ...]:
-        """The steady-state loops, innermost first: one per dim the tiling splits (tile < the per-core slice), from the
-        one indexing the least data (``indexed``) to the most, so that what an inner loop does not index stays put
-        while it runs, as a matmul's weights do over the rows of its activations; ``reductions_first`` go innermost,
-        so each output tile is complete before the next."""
-        tiled = [dim for dim, tile in resident.items() if tile < per_core.get(dim, tile)]
-        return tuple(sorted(tiled, key=lambda dim: (dim not in reductions_first, indexed.get(dim, 0.0))))
-
     def _capacities(
         self, cns: tuple[ComputationNode, ...], cores_per_node: dict[ComputationNode, list[Core]]
     ) -> dict[str, int]:
@@ -438,13 +346,18 @@ class CapacityTiler:
         resident: dict[LayerDim, int],
         per_core: dict[LayerDim, int],
         indexed: dict[LayerDim, float],
-        reductions_first: frozenset[LayerDim],
+        reductions: set[LayerDim],
     ) -> list[dict[str, Any]]:
-        """One entry per loop of the nest (:meth:`loop_nest`), innermost first, naming a node that has the dim, else a
-        node dim stepping along it, its tile scaled by the stride."""
+        """One entry per tiled dim (resident tile < the per-core slice), naming a node that has the dim, else a node dim
+        stepping along it, its tile scaled by the stride. The first entry is the innermost steady-state loop. The
+        dims go from the one indexing the least data (``indexed``) to the most: what an inner loop does not index stays
+        put while it runs, as a matmul's weights do over the rows of its activations, rather than being fetched again
+        every iteration; ``reductions`` go innermost before them, so each output tile is complete before the next."""
         entries: list[dict[str, Any]] = []
-        for dim in self.loop_nest(resident, per_core, indexed, reductions_first):
-            tile = resident[dim]
+        order = sorted(resident.items(), key=lambda item: (item[0] not in reductions, indexed.get(item[0], 0.0)))
+        for dim, tile in order:
+            if tile >= per_core.get(dim, tile):
+                continue
             steps = [
                 (abs(coefficient), cn.name, idx)
                 for cn in cns

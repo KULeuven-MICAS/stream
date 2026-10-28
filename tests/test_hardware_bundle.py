@@ -3,6 +3,7 @@
 import json
 import math
 import tempfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -10,9 +11,12 @@ import yaml
 from stream.api import evaluate_mapping
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import (
+    _DENSITIES,
+    DEFAULT_TECH_NODE,
     BudgetVerdict,
     HardwareBudget,
     HardwareBudgetExceededError,
+    _memory_cost,
     assert_within_budget,
     check_budget,
     evaluate_bundle_cost,
@@ -25,8 +29,7 @@ from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.stage import LeafStage, MainStage
 
 TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
-# An Ironwood variant whose VMEM is seen as `vmem` on a memory core AND as `operand_buffer` on each of that
-# TensorCore's two compute cores: three views of one memory.
+# An Ironwood variant where each VMEM has three views: `vmem` on a memory core, `operand_buffer` on two compute cores.
 TPU_V7_VIEWS = "tests/fixtures/hardware/tpu_v7_views.yaml"
 QUAD_CORE = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 AIE2_STRIX = "stream/inputs/aie/hardware/whole_array_strix.yaml"
@@ -142,10 +145,7 @@ def test_asymmetric_bundle_runs_end_to_end():
 
 
 def test_the_cost_report_prices_only_what_a_solve_accepts():
-    """A top level that is a view of no memory fails the solve; the report must not quietly price it as a private
-    level beside the shared memory it was meant to be a view of."""
-    from pathlib import Path
-
+    """A top-level memory that is a view of no memory is rejected by the cost report too."""
     path = Path("stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml")
     data = yaml.safe_load(path.read_text())
     del data["memories"]["meta_prototype_0_weights"]  # core 0's sram_1MB_W is then a view of nothing
@@ -157,33 +157,8 @@ def test_the_cost_report_prices_only_what_a_solve_accepts():
         evaluate_bundle_cost(bundle)
 
 
-def test_a_core_viewing_the_off_chip_memory_is_its_controller_off_the_die():
-    """A DRAM controller core computes nothing and its own levels sit off the die with the memory it views."""
-    from pathlib import Path
-
-    from stream.hardware.cost import _evaluate_builtin
-
-    data = yaml.safe_load(Path(TPU_V7_VIEWS).read_text())
-    hbm = next(name for name, memory in data["memories"].items() if memory["offchip"])
-    data["memories"][hbm]["views"] = ["8.vmem"]
-    del data["memories"][hbm]["capacity_bits"]
-    data["memories"][hbm]["ports"] = {
-        "rw_port_1": {"from": "r_port_1", "cores": [8]},
-        "w": {"from": "w_port_1", "cores": [8]},
-    }
-    data["memories"]["vmem_0"]["views"] = ["0.operand_buffer", "1.operand_buffer"]
-    data["memories"]["vmem_0"]["ports"] = {name: {"from": name, "cores": [0, 1]} for name in ("r_port_1", "w_port_1")}
-    bundle = HardwareBundle.from_data(data, str(Path(TPU_V7_VIEWS).parent))
-    report = _evaluate_builtin(bundle, None)
-    controller = next(core for core in report.cores if core.core_id == 8)
-    assert controller.compute is None and all(m.style == "off_die" for m in controller.memories)
-    assert next(core for core in report.cores if core.core_id == 0).compute is not None
-
-
 def test_views_disagreeing_on_their_instances_are_priced_with_a_warning():
-    """Two cores whose arrays leave a shared level a different number of instances describe one memory badly; the
-    report prices it at the most instances and says so rather than failing the whole cost report."""
-    from stream.hardware.cost import _DENSITIES, DEFAULT_TECH_NODE, _memory_cost
+    """Views that disagree on a memory's instance count are priced at the most instances, with a warning."""
 
     def core(served: list[str]) -> dict:
         level = {"size": 1024, "served_dimensions": served, "ports": [{"name": "r", "bandwidth_max": 64}]}
@@ -200,8 +175,7 @@ def test_views_disagreeing_on_their_instances_are_priced_with_a_warning():
 
 
 def test_simple_model_reports_positive_cost_and_prices_each_memory_once():
-    """The built-in model prices a bundle with positive area and energy, and four memories seen through
-    twelve views exactly once each."""
+    """The built-in model reports positive area and energy, and prices each of the four VMEMs once."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7_VIEWS))
     assert report.total_area_mm2 > 0
     assert report.peak_access_energy_pj_per_cycle > 0
@@ -251,8 +225,7 @@ def test_views_of_one_memory_that_disagree_on_its_size_are_rejected():
 
 
 def test_a_shared_vmem_is_priced_once_per_tensorcore():
-    """Each TensorCore's 64 MiB VMEM is the top memory of its VMEM core, both MXUs and its VPU
-    (one memory): four views of one macro, priced once."""
+    """Each TensorCore's 64 MiB VMEM has four views (its VMEM core, both MXUs and its VPU) and is priced once."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
     vmems = [m for m in report.memories if m.total_bits == _VMEM_BITS]
     assert [m.core_ids for m in vmems] == [tuple(range(4 * k, 4 * k + 4)) for k in range(4)]

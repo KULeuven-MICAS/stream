@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _validate_accelerator(relative_path: str):
     path = REPO_ROOT / relative_path
     data = open_yaml(path)
-    validator = AcceleratorValidator(data, accelerator_path=str(path))
+    validator = AcceleratorValidator(data, accelerator_path=path)
     assert validator.validate(), f"{path} failed validation: {'; '.join(validator.errors)}"
     return validator.normalized_data
 

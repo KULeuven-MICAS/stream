@@ -1,4 +1,4 @@
-# Two meta-prototype compute cores plus pooling, SIMD and an off-chip DRAM controller
+# Two meta-prototype compute cores plus pooling, SIMD and off-chip DRAM
 name: meta-proto-2-core-with-pooling-and-offchip-cores
 
 cores:
@@ -86,7 +86,7 @@ connections:
       simd: [rw_port_1, rw_port_2]
     bandwidth: 64
 
-  # ─── shared bus to off-chip memory (all on-chip memories + controller) ───
+  # ─── shared bus to off-chip memory (every memory) ───
   - type: bus
     ends:
       meta_prototype_0: [r_port_1, w_port_1]

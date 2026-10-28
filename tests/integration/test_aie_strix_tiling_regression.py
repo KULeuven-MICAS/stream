@@ -18,10 +18,7 @@ _ATTENTION = "stream/inputs/testing/workload/attention_head.onnx"
 def test_attention_strix_no_tiling_crash(tmp_path: Path) -> None:
     try:
         ctx = evaluate_mapping(
-            _ACCELERATOR,
-            _ATTENTION,
-            str(tmp_path),
-            options=SolveOptions(nb_cols_to_use=4, backend="ortools_gscip"),
+            _ACCELERATOR, _ATTENTION, str(tmp_path), options=SolveOptions(nb_cols_to_use=4, backend="ortools_gscip")
         ).context
     except InfeasibleAllocationError:
         # A structured infeasibility is a well-defined outcome, not the crash under test.

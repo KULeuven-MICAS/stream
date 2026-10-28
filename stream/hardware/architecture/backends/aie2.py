@@ -59,7 +59,7 @@ class AIE2CoreBackend:
         return "memory"
 
     def top_memory_capacity(self, instance: str) -> int:
-        """Capacity in bits of the tile memory, the one instance a tile has, ``memory``."""
+        """Capacity in bits of the tile's one memory instance, ``memory``."""
         if instance != "memory":
             raise ValueError(f"an AIE2 tile's one memory is `memory`, not `{instance}`")
         return self.memory_capacity_bits

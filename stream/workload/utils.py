@@ -38,8 +38,8 @@ def is_mac_operator_type(op_type: object) -> bool:
 
 
 def operand_inputs(node: ComputationNode) -> tuple[Tensor, ...]:
-    """The inputs a core holds as its operands ``I1``, ``I2``, ... in order: a multiply-accumulate's two, so not a
-    further input such as a bias, which is added into its output."""
+    """The inputs that are a core's operands ``I1``, ``I2``, ... in order. A MAC has two; a further input such as a bias
+    is added into the output instead."""
     return node.inputs[:2] if is_mac_operator_type(node.type) else node.inputs
 
 

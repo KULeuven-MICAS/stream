@@ -6,14 +6,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
+from stream.hardware.architecture.memory import Memory
+from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag, HardwareResource
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import SolverModel, SolverVar, SolverVarType
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
-    from stream.hardware.architecture.memory import Memory
-    from stream.opt.allocation.constraint_optimization.diagnosis import HardwareResource, ResourceKind, StructuralRule
+    from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, StructuralRule
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import Choice, DecisionSpace, Placement
     from stream.workload.workload import Tensor
@@ -102,8 +102,8 @@ class FormulationContext:
         return sanitized if count == 0 else f"{sanitized}_{count}"
 
     def tensor_in_memory_expr(self, t: Tensor, memory: Memory, positions: int | None = None) -> Any:
-        """Whether ``t`` sits in ``memory`` (at exactly ``positions`` of its positions, when given): a constant for a
-        fixed tensor, else the sum of its placements there."""
+        """Whether ``t`` sits in ``memory`` (at exactly ``positions`` of its positions, if given): a constant for a
+        fixed tensor, else the sum of its matching placements."""
 
         def there(choice: Placement) -> bool:
             return memory in choice if positions is None else choice.count(memory) == positions
@@ -117,8 +117,8 @@ class FormulationContext:
     def tensor_in_memory_var(self, t: Tensor, memory: Memory, positions: int | None = None) -> SolverVar:
         """A binary equal to :meth:`tensor_in_memory_expr`, one per (tensor, memory, positions) for the whole model."""
         key = (t, memory, positions)
-        if (u := self._in_memory.get(key)) is not None:
-            return u
+        if key in self._in_memory:
+            return self._in_memory[key]
         name = f"{t.name}_{resource_key(memory)}" + (f"_x{positions}" if positions is not None else "")
         u = self._in_memory[key] = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{name}")
         self.add_constr(

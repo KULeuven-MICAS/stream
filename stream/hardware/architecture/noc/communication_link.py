@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from stream.hardware.architecture.core import Core
-    from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 
 
 class CommunicationLink:
-    """A fixed-bandwidth connection between memories: a link carrying data from ``sender`` to ``receiver`` (a declared
-    link is one each way), or a bus its ``members`` share in every direction. ``parallel`` tells apart the connections
-    declared between the same memories, each its own resource. ``ports`` names, per memory it joins, the ports of it
-    the connection enters and leaves it through. Build one with :meth:`link` or :meth:`bus`."""
+    """A fixed-bandwidth connection between memories: either a one-way link from ``sender`` to ``receiver``, or a bus
+    shared by its ``members`` in every direction. Build one with :meth:`link` or :meth:`bus`. ``parallel`` numbers the
+    connections declared between the same memories, each a separate resource. ``ports`` gives, per memory, the names
+    of the ports the connection uses on it."""
 
     def __init__(
         self,
@@ -83,8 +80,4 @@ class CommunicationLink:
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, CommunicationLink):
             return NotImplemented
-        return self._order() < other._order()
-
-    def _order(self) -> tuple[tuple[str, ...], int]:
-        """What sorts links: the memories they join by name, then which of the parallel ones, as a number."""
-        return (tuple(memory.name for memory in self.memories), self.parallel)
+        return (self.memories, self.parallel) < (other.memories, other.parallel)

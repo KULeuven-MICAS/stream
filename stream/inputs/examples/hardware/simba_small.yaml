@@ -1,4 +1,4 @@
-# 2 × 2 SIMBA mesh with an explicit off-chip DRAM controller
+# 2 × 2 SIMBA mesh with off-chip DRAM
 name: simba_package_small
 
 cores:
@@ -66,7 +66,7 @@ connections:
 
   # ───── Shared bus to off-chip memory ─────
   - type: bus
-    ends:   # all chiplets + DRAM controller
+    ends:   # all chiplets + DRAM
       simba_chiplet_0: [r_port_1, w_port_1]
       simba_chiplet_1: [r_port_1, w_port_1]
       simba_chiplet_2: [r_port_1, w_port_1]

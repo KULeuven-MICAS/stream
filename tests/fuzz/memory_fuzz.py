@@ -1,16 +1,16 @@
-"""Fuzzing the memories: random accelerators (cores, which of them share a memory, memory sizes, links, buses, measured
-bandwidths) solving random small workloads, each solve checked against what placing tensors in memories promises.
+"""Fuzz the memory model: solve small random workloads on random accelerators and check the tensor placements.
 
-Every case is a seed; ``python -m tests.fuzz.memory_fuzz --seeds 0:200 --out out/fuzz`` runs a range in parallel and
-writes one JSON per seed, failures with their traceback, and a summary grouping them by cause. A case also solves a
-copy of its accelerator with its lists in another order, which must reach the same latency, and one with its memories
-renamed and connections reordered, whose latency may move only through route tie-breaks (``route_sensitive``)."""
+Each case is a seed. ``python -m tests.fuzz.memory_fuzz --seeds 0:200 --out out/fuzz`` runs a range in parallel and
+writes one JSON per seed plus a summary grouped by cause. Each case is also solved with its lists reordered, which must
+give the same latency, and with its memories renamed, which may change the latency through route tie-breaks
+(status ``route_sensitive``)."""
 
 from __future__ import annotations
 
 import argparse
 import copy
 import json
+import logging
 import multiprocessing
 import random
 import re
@@ -23,12 +23,22 @@ from unittest.mock import patch
 
 import yaml
 
+from stream.api import SolveOptions, evaluate_mapping
+from stream.hardware.ports import OUTPUT
+from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.mapping.mapping import role_of
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
+from stream.parser.accelerator_factory import AcceleratorFactory
+from stream.parser.accelerator_validator import AcceleratorValidator
+from stream.workload.blocks import build_block
+from stream.workload.node import ComputationNode, InEdge
+
 CORES = Path("stream/inputs/examples/hardware/cores")
 TESTING_CORES = Path("stream/inputs/testing/hardware/cores")
 MAC = [CORES / "tpu_like.yaml", CORES / "eyeriss_like.yaml", CORES / "simba_chiplet.yaml", CORES / "fusemax_array.yaml"]
 DUAL_TOP = [TESTING_CORES / "testing_core1.yaml", CORES / "meta_prototype.yaml"]
 VECTOR = [CORES / "simd.yaml", CORES / "fusemax_vec.yaml"]
-# a TensorCore: two arrays and a memory core, views of one VMEM that the memory core stages tensors in
+# a TensorCore: two arrays and a memory core that all view one VMEM
 TENSORCORE = [CORES / "tpu_v7_mxu.yaml", CORES / "tpu_v7_vpu.yaml", CORES / "tpu_v7_vmem.yaml"]
 SCALES = (1 / 1024, 1 / 128, 1 / 32, 1 / 8, 1 / 2, 1, 2)
 BLOCKS = {
@@ -42,7 +52,7 @@ BLOCKS = {
 
 
 def _tops(core: dict[str, Any]) -> dict[str, list[str]]:
-    """A core file's top-level instances, each with the operands it holds."""
+    """The top-level instances of a core file, each with the operands it holds."""
     tops: dict[str, list[str]] = {}
     for name, level in core["memories"].items():
         for operand in level["operands"]:
@@ -52,8 +62,7 @@ def _tops(core: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _onchip(cores: list[dict[str, Any]], views: list[tuple[int, str]]) -> dict[str, Any]:
-    """An on-chip memory of ``views``, each port its views' cores declare one they all reach (the views of one memory
-    declare their ports alike)."""
+    """An on-chip memory with ``views``, each port of the first view reached by all view cores."""
     core_id, instance = views[0]
     names = [port["name"] for port in cores[core_id]["memories"][instance]["ports"]]
     ids = [c for c, _ in views]
@@ -65,7 +74,7 @@ def _onchip(cores: list[dict[str, Any]], views: list[tuple[int, str]]) -> dict[s
 
 
 def _dram(r: random.Random) -> dict[str, Any]:
-    """The off-chip memory: one port serving every operand, or one per operand as FuseMax's."""
+    """The off-chip memory, with either one shared port or one port per operand."""
     energy = {"read_energy": 15.625, "write_energy": 15.625}
     if r.random() < 0.3:
         ports = {
@@ -87,7 +96,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
     if tensorcore:
         files = TENSORCORE + files
     cores = [yaml.safe_load(path.read_text()) for path in files]
-    # every top-level instance its own memory, then some of the cores with one top level grouped into one
+    # give each top-level instance its own memory, then merge some single-top-level cores into shared memories
     memories: dict[str, list[tuple[int, str]]] = {}
     for core_id, core in enumerate(cores):
         for instance in _tops(core):
@@ -95,7 +104,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
             level["size"] = max(8192, int(level["size"] * r.choice(SCALES)) // 8 * 8)
             memories[f"m{len(memories)}"] = [(core_id, instance)]
     if tensorcore:
-        # the TensorCore's three views of its VMEM, the memory core's view the lead
+        # merge the TensorCore's three VMEM views, copying the memory core's level onto the others
         vmem = [f"m{i}" for i in range(3)]
         lead = cores[2]["memories"]["vmem"]
         for name in vmem[:2]:
@@ -112,7 +121,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
         for name in group[1:]:
             ((core_id, instance),) = memories.pop(name)
             level = cores[core_id]["memories"][instance]
-            # one memory: the views agree on its size and declare its ports alike
+            # views of one memory must agree on its size and ports
             for key in ("size", "ports", "r_cost", "w_cost", "banks"):
                 if key in lead:
                     level[key] = copy.deepcopy(lead[key])
@@ -145,7 +154,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
         measured = r.choice([*onchip, "dram"])
         bandwidth[measured] = {"ceiling": r.choice([64.0, 256.0]), "contiguous": r.choice([32.0, 128.0])}
     elif r.random() < 0.3:
-        # a measured model of one port of one memory
+        # measure one port of one memory
         name = r.choice([*onchip, "dram"])
         port = r.choice(sorted(declared[name]["ports"]))
         bandwidth[f"{name}.{port}"] = {"ceiling": 64.0, "contiguous": r.choice([16.0, 64.0])}
@@ -155,7 +164,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
         "cores": dict(enumerate(cores)),
         "unit_energy_cost": 0,
         "memories": declared,
-        # each connection through every port of each memory it joins
+        # each connection goes through every port of each memory it joins
         "connections": [
             {key: value for key, value in c.items() if key != "memories"}
             | {"ends": {name: list(declared[name]["ports"]) for name in c["memories"]}}
@@ -168,8 +177,7 @@ def generate(seed: int) -> dict[str, Any]:  # noqa: PLR0912, PLR0915 -- one draw
 
 
 def reordered(data: dict[str, Any], seed: int) -> dict[str, Any]:
-    """The same accelerator, its memories, their views and bus members listed in another order, which nothing may
-    depend on."""
+    """The same accelerator with its memories, views, ports and bus members shuffled."""
     r = random.Random(seed + 1_000_003)
     out = copy.deepcopy(data)
     items = list(out["memories"].items())
@@ -194,8 +202,7 @@ def _shuffled(r: random.Random, port: dict[str, Any]) -> dict[str, Any]:
 
 
 def renamed(data: dict[str, Any], seed: int) -> dict[str, Any]:
-    """The same accelerator, its memories renamed and its connections declared in another order: routes break ties
-    between equally fast connections by name and declaration order, so a latency may move."""
+    """The same accelerator with its memories renamed and its connections shuffled."""
     r = random.Random(seed + 2_000_003)
     names = list(data["memories"])
     new = dict(zip(names, (f"v{i}_{n}" for i, n in enumerate(r.sample(names, len(names)))), strict=True))
@@ -204,17 +211,14 @@ def renamed(data: dict[str, Any], seed: int) -> dict[str, Any]:
     out["connections"] = r.sample(out["connections"], len(out["connections"]))
     for connection in out["connections"]:
         connection["ends"] = {new[m]: ports for m, ports in connection["ends"].items()}
-    out["bandwidth"] = {
-        ".".join((new[key.split(".")[0]], *key.split(".")[1:])): value
-        for key, value in data.get("bandwidth", {}).items()
-    }
+    out["bandwidth"] = {}
+    for key, value in data.get("bandwidth", {}).items():
+        memory, dot, port = key.partition(".")
+        out["bandwidth"][new[memory] + dot + port] = value
     return out
 
 
 def build(data: dict[str, Any]):
-    from stream.parser.accelerator_factory import AcceleratorFactory  # noqa: PLC0415
-    from stream.parser.accelerator_validator import AcceleratorValidator  # noqa: PLC0415
-
     validator = AcceleratorValidator(copy.deepcopy(data), "fuzz.yaml")
     if not validator.validate():
         raise ValueError(f"invalid description: {validator.errors}")
@@ -223,10 +227,6 @@ def build(data: dict[str, Any]):
 
 def solve(data: dict[str, Any], block: str, params: dict[str, Any]) -> tuple[Any, list[Any]]:
     """The solved context, and every allocation model the solve built, each with its space and solution."""
-    from stream.api import SolveOptions, evaluate_mapping  # noqa: PLC0415
-    from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel  # noqa: PLC0415
-    from stream.workload.blocks import build_block  # noqa: PLC0415
-
     solved: list[tuple[Any, Any]] = []
     original = AllocationModel.solve
 
@@ -243,7 +243,7 @@ def solve(data: dict[str, Any], block: str, params: dict[str, Any]) -> tuple[Any
 
 
 def check(context: Any, solved: list[tuple[Any, Any]]) -> list[str]:
-    """What placing tensors in memories promises, broken by this solve."""
+    """The placement and route invariants this solve breaks."""
     broken: list[str] = []
     for group, allocation in context.get("group_allocations").items():
         for row in allocation["performance"]["memory_occupancy"]:
@@ -257,12 +257,7 @@ def check(context: Any, solved: list[tuple[Any, Any]]) -> list[str]:
 
 
 def _placements(accelerator: Any, space: Any, placed: dict[Any, Any]) -> list[str]:
-    """Each tensor sits in one of its choices, in the accelerator's memories: an edge's off chip, a computation's
-    output in its cores' output memories, its inputs in the memories its cores read them in."""
-    from stream.hardware.ports import OUTPUT  # noqa: PLC0415
-    from stream.mapping.mapping import role_of  # noqa: PLC0415
-    from stream.workload.node import ComputationNode, InEdge  # noqa: PLC0415
-
+    """Check each tensor is placed in one of its choices and in the memories its producers and readers use."""
     broken = []
     for t, placement in placed.items():
         if placement not in space.tensor_choices[t]:
@@ -291,8 +286,7 @@ def _placements(accelerator: Any, space: Any, placed: dict[Any, Any]) -> list[st
 
 
 def _route(space: Any, placed: dict[Any, Any], tr: Any, route: Any) -> list[str]:
-    """A transfer takes a route it was offered, from where its input sits to where its copies do, over links that
-    reach them."""
+    """Check a transfer takes an offered route from its input's memory to its copies' memories."""
     broken = []
     if route not in space.path_choices[tr]:
         broken.append(f"{tr.name} takes a route it was not offered")
@@ -306,9 +300,7 @@ def _route(space: Any, placed: dict[Any, Any], tr: Any, route: Any) -> list[str]
 
 
 def _route_reaches(space: Any, tr: Any, route: Any) -> list[str]:
-    """Each target the route pairs with a source is that source, shares its memory, or is reached over its links."""
-    if space.in_one_memory(route) or not route.links_used:
-        return []
+    """Check each target of the route is reachable from its paired source."""
     edges: dict[Any, set[Any]] = {}
     for link in route.links_used:
         ends = (
@@ -319,8 +311,7 @@ def _route_reaches(space: Any, tr: Any, route: Any) -> list[str]:
         for a, b in ends:
             edges.setdefault(a, set()).add(b)
     broken = []
-    for i, j in route.pairs or ():
-        source, target = route.sources[i], route.targets[j]
+    for source, target in space.pairs(tr, route):
         if source is target or space.hardware.shares_memory(source, target):
             continue
         seen, frontier = {source}, [source]
@@ -335,10 +326,6 @@ def _route_reaches(space: Any, tr: Any, route: Any) -> list[str]:
 
 
 def run(seed: int) -> dict[str, Any]:
-    import logging  # noqa: PLC0415
-
-    from stream.ir.infeasibility import InfeasibleAllocationError  # noqa: PLC0415
-
     logging.disable(logging.WARNING)
 
     case = generate(seed)
@@ -367,7 +354,7 @@ def run(seed: int) -> dict[str, Any]:
 
 
 def _signature(exc: BaseException) -> str:
-    """The exception's type and message, numbers and names stripped so that one cause groups its cases."""
+    """The exception type and message, with numbers and memory names stripped so one cause groups its cases."""
     message = re.sub(r"\b\d+(\.\d+)?\b", "N", str(exc).splitlines()[0] if str(exc) else "")
     return f"{type(exc).__name__}: {re.sub(r'[mv]\d+(_m\d+|_dram)?', 'M', message)[:200]}"
 

@@ -192,16 +192,11 @@ def resource_ref(resource: HardwareResource) -> ResourceRefIR:
     """A physical resource as the IR the architecture view highlights."""
     if isinstance(resource, Core):
         detail = {"core_type": str(resource.core_type)}
-        return ResourceRefIR(kind="core", id=str(resource.id), label=_label(resource), detail=detail)
+        return ResourceRefIR(kind="core", id=str(resource.id), label=resource_key(resource), detail=detail)
     if isinstance(resource, Memory):
         detail = {"cores": ",".join(str(c.id) for c in resource.cores), "capacity_bits": str(resource.capacity_bits)}
-        return ResourceRefIR(kind="memory", id=resource.name, label=_label(resource), detail=detail)
+        return ResourceRefIR(kind="memory", id=resource.name, label=resource_key(resource), detail=detail)
     return ResourceRefIR(kind="link", id=resource_key(resource), label=resource_key(resource))
-
-
-def _label(resource: Core | Memory) -> str:
-    """How a diagnosis names a core or memory."""
-    return f"Core {resource.id}" if isinstance(resource, Core) else f"Memory {resource.name}"
 
 
 def _implicated_resource(ledger: ResourceLedger, entry: dict[str, Any]) -> ImplicatedResourceIR:
@@ -260,7 +255,7 @@ def _unmet(
         return None
     demand = sum(_term_value(v) for v in forced.values())
     gap = demand - bound
-    named = _label(resource)
+    named = resource_key(resource)
     terms = []
     for label, info in sorted(forced.items(), key=lambda kv: -_term_value(kv[1])):
         dims, dtype = _term_meta(info)
@@ -304,7 +299,7 @@ def _direct_capacity_overflows(ledger: ResourceLedger) -> list[ImplicatedResourc
         demand = sum(_term_value(v) for v in terms.values())
         if demand > bound:
             overflows.append((demand - bound, kind.name, kind, resource))
-    overflows.sort(key=lambda o: (o[0], o[1], _label(o[3])), reverse=True)
+    overflows.sort(key=lambda o: (o[0], o[1], resource_key(o[3])), reverse=True)
     resources: list[ImplicatedResourceIR] = []
     for _gap, _name, kind, resource in overflows:
         resources.append(

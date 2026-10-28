@@ -1,4 +1,4 @@
-# Four Eyeriss-like compute cores with pooling, SIMD and an off-chip DRAM controller
+# Four Eyeriss-like compute cores with pooling, SIMD and off-chip DRAM
 name: eyeriss_like_quad_core
 
 cores:
@@ -92,7 +92,7 @@ connections:
 
   # ───── Shared bus to off-chip DRAM ─────
   - type: bus
-    ends:   # all on-chip cores + controller
+    ends:   # every memory
       eyeriss_like_0: [rw_port_1, rw_port_2]
       eyeriss_like_1: [rw_port_1, rw_port_2]
       eyeriss_like_2: [rw_port_1, rw_port_2]

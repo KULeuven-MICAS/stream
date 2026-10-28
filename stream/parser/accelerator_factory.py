@@ -9,7 +9,7 @@ from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBac
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.ports import READ, WRITE, MemoryBanks, MemoryDma, OwnPort, PortKey, ViewPort
+from stream.hardware.ports import MemoryBanks, MemoryDma, PortKey, build_memory_ports
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -27,20 +27,22 @@ class AcceleratorFactory:
             core_id: self.create_core(core_data, core_id, coordinates.get(core_id))
             for core_id, core_data in self.data["cores"].items()
         }
-        memories = {
-            name: Memory(
+        measured_names = {key for key in self.data["bandwidth"] if not isinstance(key, PortKey)}
+        memories = {}
+        for name, memory in self.data["memories"].items():
+            views = tuple((cores[core_id], instance) for core_id, instance in memory["views"])
+            memories[name] = Memory(
                 name,
-                tuple((cores[core_id], instance) for core_id, instance in memory["views"]),
-                {port_name: _port(port) for port_name, port in memory["ports"].items()},
+                views,
+                # A measured memory's ports only carry its DMA channels, so its views need not declare theirs.
+                build_memory_ports(name, views, memory["ports"], complete=name not in measured_names),
                 offchip=memory["offchip"],
                 capacity_bits=memory.get("capacity_bits"),
                 dma=MemoryDma(**memory["dma"]) if "dma" in memory else None,
             )
-            for name, memory in self.data["memories"].items()
-        }
         measured: dict[Memory, BandwidthModel] = {}
         port_models: dict[PortKey, BandwidthModel] = {}
-        for key, description in self.data["bandwidth"].items():  # keys split once, by the validator
+        for key, description in self.data["bandwidth"].items():
             if isinstance(key, PortKey):
                 port_models[key] = BandwidthModel.from_description(description)
             else:
@@ -56,8 +58,6 @@ class AcceleratorFactory:
             reconfiguration=self.data.get("reconfiguration"),
             port_bandwidth=port_models,
         )
-        # Building the registry rejects a port its cores declare differently, a port a view's core declares that no
-        # port of its memory is, and a port key naming no port.
         accelerator.ports.check_connections(accelerator.network)
         return accelerator
 
@@ -111,7 +111,7 @@ class AcceleratorFactory:
 
         if namespace == "zigzag":
             # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
-            # The memories are the accelerator's (`memories`): ZigZag only tells its instances apart by this id.
+            # ZigZag uses this id to tell memory instances of different cores apart.
             zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=core_id)
             # ZigZagCoreFactory returns a raw zigzag Accelerator — upgrade to
             # our ZigZagCoreBackend subclass so the backend protocol methods
@@ -136,8 +136,8 @@ class AcceleratorFactory:
         )
 
     def create_network(self, memories: dict[str, Memory]) -> MemoryGraph:
-        """The memories, with an edge each way for every link and between every two members of a bus, all of a bus's
-        edges one shared `CommunicationLink`, each knowing the ports it enters and leaves every memory through."""
+        """The graph of memories: an edge each way for every link, and between every two memories on a bus. All edges
+        of one bus share one `CommunicationLink`."""
         edges: list[tuple[Memory, Memory, dict[str, CommunicationLink]]] = []
         seen: dict[tuple[str, tuple[str, ...]], int] = {}
         for connection in self.data["connections"]:
@@ -158,26 +158,8 @@ class AcceleratorFactory:
         return MemoryGraph(edges)
 
 
-def _port(port: dict[str, Any]) -> ViewPort | OwnPort:
-    """A ``memories.<name>.ports`` entry: a port the views' cores declare, or the memory's own."""
-    if "from" in port:
-        return ViewPort(port["from"], tuple(port["cores"]))
-    return OwnPort(
-        bits_per_cycle=port["bandwidth"],
-        serves=frozenset(
-            (role, READ if direction == "read" else WRITE)
-            for role, directions in port["serves"].items()
-            for direction in directions
-        ),
-        read_energy_per_bit=port["read_energy"],
-        write_energy_per_bit=port["write_energy"],
-        channels=port.get("channels"),
-    )
-
-
 def _with_stream_fields(core: Core, core_data: dict[str, Any], operator_types: list[str] | None) -> Core:
-    """``core`` with the fields Stream reads beside any backend's: the operators it runs, its operand precision and
-    the banks of each of its memory levels that declares them."""
+    """``core`` with the Stream-specific fields set: its operators, operand precision and memory banks."""
     core.operator_types = operator_types
     core.operand_precision = core_data.get("operand_precision") or {}
     core.memory_banks = {name: MemoryBanks(**banks) for name, banks in core_data["memory_banks"].items()}

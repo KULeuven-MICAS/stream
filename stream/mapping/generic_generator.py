@@ -379,8 +379,7 @@ class GenericMappingGenerator:
         sliding = {sub_workload.leading_dim(d)[0] for d in self._sliding_dims(sub_workload, cns)}
         if not sliding and sliding_only:
             return {}
-        # Per operand: its bits, the dims indexing it, and the memories the node's cores hold it in, so that an
-        # operand is weighed against the memory it lands in, not the smallest one a core has.
+        # Per operand: its bits, the dims indexing it, and the memories the node's cores hold it in.
         operands: list[tuple[int, frozenset[LayerDim], frozenset[str]]] = []
         capacities: dict[str, int] = {}
         for cn in cns:
@@ -753,8 +752,8 @@ class GenericMappingGenerator:
             return []
         unroll = self._inter_core_unrolling(sub_workload, cns).get(fusion_dim, 1)
         per_core = full // unroll if unroll > 1 and full % unroll == 0 else full
-        # Each intermediate's budget is half the smallest memory a core of the group holds it in, as its producer's
-        # output or a reader's input: it shares that memory with weights and activations.
+        # Each intermediate's budget is half the smallest memory a core of the group holds it in, since it shares
+        # that memory with weights and activations.
         budgets = {
             t: min(
                 (
@@ -779,7 +778,7 @@ class GenericMappingGenerator:
             )
 
         # Only tile when the whole per-core slice does not fit (the layer-fusion trigger).
-        if not budgets or fits(per_core):
+        if fits(per_core):
             return []
         divisors = sorted((t for t in range(1, per_core + 1) if per_core % t == 0), reverse=True)
         tile = next((t for t in divisors if fits(t)), divisors[-1])

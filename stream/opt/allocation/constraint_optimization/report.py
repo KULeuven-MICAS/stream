@@ -10,8 +10,10 @@ from collections.abc import Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
 from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
@@ -21,18 +23,14 @@ from stream.workload.utils import is_mac_operator_type
 from stream.workload.workload import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
-    from stream.cost_model.communication_manager import MulticastPathPlan
     from stream.cost_model.layout import Layout
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.families import FamilySelection
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.opt.solver import SolveStats
 
 logger = logging.getLogger(__name__)
-
-"""Core kinds that model a memory or DMA endpoint, never in a compute roofline."""
 
 VAR_THRESHOLD = 0.5
 """A MILP binary comes back as 0.9999...; anything above the midpoint is a 1."""
@@ -322,12 +320,13 @@ def _json_scalar(v: Any) -> Any:
 
 def mac_roofline_peak(accelerator: Accelerator) -> tuple[int, int]:
     """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
-    units = [u for core in accelerator.core_list if runs_macs(core) and (u := compute_units(core))]
+    units = [compute_units(core) for core in accelerator.core_list if runs_macs(core)]
+    units = [u for u in units if u]
     return sum(units), len(units)
 
 
 def compute_units(core: Any) -> int:
-    """The units of ``core``'s operational array, 0 for a core that does not compute (off-chip, memory, DMA)."""
+    """The units of ``core``'s operational array, 0 for a core that does not compute."""
     if core.kind != "compute":
         return 0
     return int(getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0)
@@ -417,7 +416,8 @@ def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
             if indicator.X > VAR_THRESHOLD:
                 per_tensor[tensor_name] += bits
         per_tensor = {name: bits for name, bits in per_tensor.items() if bits > 0}
-        if handed := ledger.handover_bits.get(memory, 0):
+        handed = ledger.handover_bits.get(memory, 0)
+        if handed:
             per_tensor["handover"] = handed
         resident = sum(per_tensor.values())
         capacity = int(ledger.bounds[(MEMORY_CAPACITY, memory)] * 8)
@@ -440,7 +440,7 @@ def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
 def capacity_slack(
     ctx: FormulationContext, occupancy: list[dict[str, Any]] | None
 ) -> dict[Core | Memory, dict[str, float]]:
-    """Unused capacity per resource: per memory its bytes and each bounded limit (fifo depth, buffer descriptors) in
+    """Unused capacity per resource: memory in bytes, and each bounded limit (fifo depth, buffer descriptors) in
     slots."""
     ledger, memories = ctx.ledger, ctx.space.accelerator.memories
     slack: dict[Core | Memory, dict[str, float]] = {}

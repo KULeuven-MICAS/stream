@@ -4,21 +4,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.families.dma import DMA_CHANNELS
 from stream.opt.allocation.constraint_optimization.families.memory import BUFFER_DESCRIPTORS, OBJECT_FIFO_DEPTH
 from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 
 if TYPE_CHECKING:
-    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
     from stream.opt.allocation.constraint_optimization.families.reuse import MemoryReuseEntry
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
 
 
 class _DepthLimit:
-    """Each AIE2 tile's memory's ``quantity`` stays within the tile's ``max_object_fifo_depth``, a constraint of
-    limit ``kind``."""
+    """Each AIE2 tile memory's ``quantity`` stays within its tile's ``max_object_fifo_depth`` (limit ``kind``)."""
 
     name: ClassVar[str]
     requires: ClassVar[tuple[str, ...]]
@@ -82,11 +81,9 @@ class AIE2MemoryReuse:
 
 
 class AIE2DmaChannels:
-    """A memory drives at most its DMA's channels in each direction: a tile's memory the tile DMA's, as its core
-    declares them (S2MM channels write into the tile, MM2S channels read out of it), else the two a compute tile and
-    the six a memory tile have. DRAM is reached through the shim DMAs its ports are, one per column, so each port
-    drives at most the channels it declares, counted by the routes passing it; an off-chip memory whose ports declare
-    none is unbounded."""
+    """A tile memory drives at most its tile DMA's channels in each direction: what its core declares (S2MM writes
+    into the tile, MM2S reads out of it), capped by the option for its kind. DRAM is reached through the shim DMAs,
+    one port per column, and each port drives at most the channels it declares."""
 
     name: ClassVar[str] = "aie2_dma_channels"
     requires: ClassVar[tuple[str, ...]] = ("dma_in", "dma_out")
@@ -103,9 +100,8 @@ class AIE2DmaChannels:
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
         for direction in ("in", "out"):
-            for memory, usage in q.indexed(f"dma_{direction}").items():  # tile memories; DRAM's are per port below
-                if (limit := self.channels(memory, direction)) is None:
-                    continue
+            for memory, usage in q.indexed(f"dma_{direction}").items():
+                limit = self.channels(memory, direction)
                 ctx.add_constr(
                     usage.expr <= limit,
                     name=f"dma_{direction}_cap_{resource_key(memory)}",
@@ -114,28 +110,24 @@ class AIE2DmaChannels:
                     bound=float(limit),
                 )
             name = f"dma_port_{direction}"
-            for (memory, port_name), usage in (q.indexed(name) if name in q else {}).items():
-                channels = memory.ports[port_name].channels
+            for (memory, port), usage in (q.indexed(name) if name in q else {}).items():
                 ctx.add_constr(
-                    usage.expr <= channels,
-                    name=f"dma_{direction}_cap_{resource_key(memory)}_{port_name}",
+                    usage.expr <= port.channels,
+                    name=f"dma_{direction}_cap_{resource_key(memory)}_{port.key.port}",
                     resource=memory,
                     kind=DMA_CHANNELS,
-                    bound=float(channels),
+                    bound=float(port.channels),
                 )
 
-    def channels(self, memory: Memory, direction: str) -> int | None:
-        """The DMA channels a tile's ``memory`` has for fifos ``direction`` (``in``: writing into it, ``out``: reading
-        out of it); None where nothing bounds them. The off-chip memory's are its ports', each bounded apart by
-        :meth:`build`."""
-        incoming = direction == "in"
-        if memory.offchip:
-            raise ValueError(f"{memory} is off-chip: its channels are its DMA ports', bounded per port")
-        # Each viewing tile's DMA, as its core declares it (an AIE2 tile's memory has one); none declared, the kind's
-        if declared := sum(getattr(core, "dma_s2mm" if incoming else "dma_mm2s", 0) for core in memory.cores):
-            return declared
+    def channels(self, memory: Memory, direction: str) -> int:
+        """The DMA channels a tile's ``memory`` has in ``direction`` (``in``: writing into it, ``out``: reading out of
+        it): what its cores declare, at most the option for its kind."""
         if memory.kind == "memory":
-            return self.max_mem_tile_dma_channels
-        if memory.kind == "compute":
-            return self.max_compute_tile_dma_channels
-        raise ValueError(f"Unexpected memory kind for DMA channel constraint: {memory.kind}")
+            limit = self.max_mem_tile_dma_channels
+        elif memory.kind == "compute":
+            limit = self.max_compute_tile_dma_channels
+        else:
+            raise ValueError(f"Unexpected memory kind for DMA channel constraint: {memory.kind}")
+        attribute = "dma_s2mm" if direction == "in" else "dma_mm2s"
+        declared = sum(getattr(core, attribute, 0) for core in memory.cores)
+        return min(declared, limit) if declared else limit

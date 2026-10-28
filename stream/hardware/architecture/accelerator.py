@@ -12,14 +12,13 @@ from stream.hardware.ports import PortKey, PortRegistry
 
 
 class MemoryGraph(nx.MultiDiGraph):
-    """The memories of an accelerator, with directed edges for the links and buses that move data between them; two
-    memories may be joined by several, each its own resource."""
+    """The memories of an accelerator, with directed edges for the links and buses between them. Two memories may be
+    joined by several edges, each a separate resource."""
 
 
 class Accelerator:
-    """A set of cores and the memories they compute out of: each top-level memory instance of a core is a view of
-    one memory, which several cores may share. The memories are a graph whose edges are the links and buses that move
-    data between them; at most one is off-chip."""
+    """The cores, the memories they use and the network between those memories. Each top-level memory instance of a
+    core is a view of one memory, and several cores may view the same memory. At most one memory is off-chip."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -37,19 +36,22 @@ class Accelerator:
         self.kernel_library = kernel_library
         self._cores = {core.id: core for core in sorted(cores, key=lambda core: core.id)}
         self.memories = {memory.name: memory for memory in sorted(memories)}
-        # (core id, top-level instance) -> the memory that view is of, each view of one memory
+        # (core id, top-level instance) -> the memory that instance is a view of
         self._viewed: dict[tuple[int, str], Memory] = {}
         for memory in memories:
             for core, instance in memory.views:
-                if (other := self._viewed.setdefault((core.id, instance), memory)) is not memory:
+                other = self._viewed.setdefault((core.id, instance), memory)
+                if other is not memory:
                     raise ValueError(f"{core.id}.{instance} is a view of both {other.name} and {memory.name}")
         for core in self._cores.values():
             bound = {instance for core_id, instance in self._viewed if core_id == core.id}
-            if unbound := sorted(core.top_instances() - bound):
+            unbound = sorted(core.top_instances() - bound)
+            if unbound:
                 raise ValueError(f"{core}'s top-level memories {unbound} are views of no memory")
-        if len(offchip := [memory for memory in memories if memory.offchip]) > 1:
+        offchip = [memory for memory in memories if memory.offchip]
+        if len(offchip) > 1:
             raise ValueError(f"several off-chip memories: {offchip}")
-        self.offchip_memory = offchip[0] if offchip else None
+        self.offchip_memory = next(iter(offchip), None)
         self.network = network
         # memory -> the measured bandwidth every transfer into or out of it shares
         self.bandwidth = bandwidth or {}
@@ -73,8 +75,7 @@ class Accelerator:
         return self._viewed[(core.id, core.top_instance(role))]
 
     def memory_holding(self, core: Core, role: str) -> Memory | None:
-        """:meth:`memory_of`, or None where ``core`` holds no operand of ``role``, as a one-input core holds no second
-        input."""
+        """:meth:`memory_of`, or None if ``core`` holds no operand of ``role``."""
         instance = core.top_instance_holding(role)
         return None if instance is None else self._viewed[(core.id, instance)]
 
@@ -93,8 +94,9 @@ class Accelerator:
 
     @property
     def namespace(self) -> str:
-        """The one namespace of its cores (the validator rejects a mix)."""
-        if len(namespaces := {core.namespace for core in self._cores.values()}) != 1:
+        """The namespace of its cores, which must all share one."""
+        namespaces = {core.namespace for core in self._cores.values()}
+        if len(namespaces) != 1:
             raise ValueError(f"{self} has cores of namespaces {sorted(namespaces)}")
         (namespace,) = namespaces
         return namespace
@@ -104,8 +106,8 @@ class Accelerator:
         return list(self._cores.values())
 
     def get_ir(self) -> dict:
-        """The accelerator as plain data: its name, cores (:meth:`Core.get_ir`), memories with their views and whether
-        off-chip, and connections, one entry per link or bus as the hardware description declares them."""
+        """The accelerator as plain data: its name, cores, memories and connections (one entry per declared link or
+        bus)."""
         cores_ir: list[dict] = [core.get_ir() for core in self.core_list]
         connections: dict[tuple, dict] = {}
         for _, _, data in self.network.edges(data=True):

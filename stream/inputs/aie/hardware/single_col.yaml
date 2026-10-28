@@ -17,10 +17,10 @@ memories:
     offchip: true
     views: []
     capacity_bits: 10000000000
-    dma:  # the shim tile's DMA the runtime sequence reaches DRAM through
+    dma:
       buffer_descriptors: 16
       iterations: 64
-    ports:  # the shim DMA's channels: two 64-bit ones each way
+    ports:
       mm2s: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
       s2mm: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
   tile_0_1:

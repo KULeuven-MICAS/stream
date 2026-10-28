@@ -50,7 +50,7 @@ def test_cores_sharing_a_memory_share_its_ports(fusemax: Accelerator):
 
 
 def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
-    """The one link to DRAM passes all three of its ports; which one a transfer takes is the operand's."""
+    """DRAM's link passes all three of its ports, and each operand picks its own."""
     registry, dram = fusemax.ports, fusemax.offchip_memory
     assert all(port.core_ids == () for port in registry if port.key.memory == "dram")
     links = [d["cl"] for u, v, d in fusemax.network.edges(data=True) if dram in (u, v)]
@@ -66,8 +66,7 @@ def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
 
 
 def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fusemax: Accelerator):
-    """A ZigZag hierarchy allocates an input no port out of its top level, but its bits still pass one of the core's
-    ports serving that direction: the first, since a core's own ports leave nothing else to decide by."""
+    """An input with no port allocated for a direction uses the core's first port serving that direction."""
     core = fusemax.get_core(0)
     assert all((input_role(1), WRITE_BY_DATAPATH) not in port.serves for port in fusemax.ports.ports_of(core))
     port = fusemax.ports.port_for(core, WRITE_BY_DATAPATH, input_role(1))
@@ -75,8 +74,7 @@ def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fu
 
 
 def test_an_operands_bits_pass_a_port_of_the_memory_holding_it():
-    """meta_prototype keeps its weights in their own SRAM, whose read port its hierarchy allocates no operand out of:
-    weights leaving the core pass that SRAM's port, not the activation SRAM's, so the lookup takes the memory."""
+    """meta_prototype keeps its weights in their own SRAM, so weights pass that SRAM's port when given the memory."""
     accelerator = parse_accelerator("stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml")
     core = accelerator.get_core(0)
     weights = accelerator.memory_of(core, input_role(2))
@@ -152,32 +150,6 @@ def test_a_cost_backend_without_port_traffic_reports_none():
     entry = CoreCostEntry(energy_total=0.0, latency_total=0.0, ideal_cycle=0.0, ideal_temporal_cycle=0.0)
     assert port_traffic(_BackendWithoutPortTraffic(), entry) == ()
     assert port_traffic(ZIGZAG_BACKEND, entry) == ()
-
-
-def test_declared_ports_asks_each_view_for_its_ports_once():
-    """Building a memory's ports walks each view's hierarchy once, not once per port it is in and once more to check
-    coverage: an estimation stage asks for them per transfer."""
-    from stream.hardware.architecture.memory import Memory
-    from stream.hardware.ports import PortSpec, ViewPort, declared_ports
-
-    asked: list[int] = []
-
-    class _Core:
-        def __init__(self, core_id: int) -> None:
-            self.id = core_id
-
-        def port_specs(self) -> tuple[PortSpec, ...]:
-            asked.append(self.id)
-            return tuple(
-                PortSpec("sram", name, 64.0, frozenset({(OUTPUT, direction)}))
-                for name, direction in (("r", READ), ("w", WRITE))
-            )
-
-    memory = Memory.__new__(Memory)
-    memory.name, memory.views = "l1", tuple((_Core(i), "sram") for i in range(3))  # type: ignore[assignment]
-    memory.ports = {"r": ViewPort("r", (0, 1, 2)), "w": ViewPort("w", (0, 1, 2))}
-    assert {port.key.port: port.core_ids for port in declared_ports(memory)} == {"r": (0, 1, 2), "w": (0, 1, 2)}
-    assert sorted(asked) == [0, 1, 2]
 
 
 def test_views_of_one_memory_share_its_ports():

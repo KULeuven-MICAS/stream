@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
 from stream.hardware.architecture.core import Core
@@ -9,19 +11,17 @@ from stream.stages.estimation.memory_accesses_estimation import (
     _memory_tile_cores,
 )
 from stream.stages.parsing.accelerator_parser import parse_accelerator
+from stream.workload.node import TransferType
 
 
 def _stage(hardware: str) -> MemoryAccessesEstimationStage:
     stage = MemoryAccessesEstimationStage.__new__(MemoryAccessesEstimationStage)
     stage.accelerator = parse_accelerator(hardware)
-    stage._offchip_widths = {}
-    stage.core_memory_accesses = CoreMemoryAccesses()
     return stage
 
 
 def test_an_edge_access_moves_what_the_allocation_models_the_off_chip_memory_at():
-    """Strix measures DRAM, so an access moves its contiguous rate one way; whole_array's DRAM has no measurement,
-    so an access moves its widest shim port, and the memory accesses agree with the model the solver used."""
+    """Off-chip accesses use Strix's measured one-way DRAM rate, or whole_array's widest shim port."""
     strix = _stage("stream/inputs/aie/hardware/whole_array_strix.yaml")
     assert strix._offchip_bandwidth(READ) == strix._offchip_bandwidth(WRITE) == 148.3
     plain = _stage("stream/inputs/aie/hardware/whole_array.yaml")
@@ -75,8 +75,7 @@ def test_only_memory_tiles_are_charged_mem_tile_traffic():
 
 
 def test_a_staging_memory_compute_cores_also_compute_out_of_charges_its_memory_core():
-    """A TensorCore's VMEM is viewed by the VMEM core and the MXU and VPU: a transfer staged in it charges the VMEM
-    core, as it did when that core held the memory alone, and no compute core."""
+    """A transfer staged in a VMEM viewed by the VMEM core, MXU and VPU charges only the VMEM core."""
     vmem, mxu, vpu = _typed_core(8, "zigzag.memory"), _typed_core(0, "zigzag.compute"), _typed_core(1, "zigzag.compute")
     memory = Memory.__new__(Memory)
     memory.name, memory.views, memory.offchip = "vmem_0", ((vmem, "vmem"), (mxu, "buf"), (vpu, "buf")), False
@@ -85,12 +84,7 @@ def test_a_staging_memory_compute_cores_also_compute_out_of_charges_its_memory_c
 
 
 def test_a_transfer_into_the_memory_its_reader_computes_out_of_stages_nothing():
-    """A transfer landing in a VMEM for the MXU to read in place is the reader's write, counted on the destination;
-    the VMEM core is charged a staging write and read-out only for a transfer whose destination is the memory tile."""
-    from types import SimpleNamespace
-
-    from stream.workload.node import TransferType
-
+    """A transfer into a VMEM the MXU reads in place charges the VMEM core no staging accesses."""
     vmem, mxu = _typed_core(8, "zigzag.memory"), _typed_core(0, "zigzag.compute")
     memory = Memory.__new__(Memory)
     memory.name, memory.views, memory.offchip = "vmem_0", ((vmem, "vmem"), (mxu, "buf")), False

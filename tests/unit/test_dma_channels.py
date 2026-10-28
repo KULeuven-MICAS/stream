@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import pytest
 
+from stream.cost_model.bandwidth import BandwidthModel
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.ports import ANY_OPERAND, READ, WRITE, OwnPort
+from stream.hardware.ports import ANY_OPERAND, READ, WRITE, Port, PortKey
 from stream.opt.allocation.constraint_optimization.families.aie2 import AIE2DmaChannels
 from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace, HardwareFacts
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
@@ -51,36 +52,37 @@ def test_a_compute_tile_has_the_two_dma_channels_the_hardware_gives_it():
 
 
 def test_a_tile_declaring_its_dma_drives_the_channels_it_declares():
-    """A tile file's ``dma: {mm2s, s2mm}`` is the hardware's word: S2MM channels write into the tile, MM2S read out."""
+    """A tile's declared ``dma: {mm2s, s2mm}`` sets its channels: S2MM writes into the tile, MM2S reads out."""
     core = _core(0, "compute", 0, 2)
     core.dma_mm2s, core.dma_s2mm = 1, 2
     assert AIE2DmaChannels().channels(_memory(core), "out") == 1
     assert AIE2DmaChannels().channels(_memory(core), "in") == 2
 
 
-def _dram(ports: dict[str, OwnPort]) -> Memory:
+def _port(name: str, bits: float, serves: set, channels: int | None = None) -> Port:
+    return Port(PortKey("dram", name), (), BandwidthModel.flat(bits), frozenset(serves), channels=channels)
+
+
+def _dram(ports: dict[str, Port]) -> Memory:
     memory = Memory.__new__(Memory)
     memory.name, memory.views, memory.offchip, memory.capacity_bits, memory.ports = "dram", (), True, 0, ports
     return memory
 
 
 def test_dram_drives_the_channels_of_the_shim_dma_its_ports_declare():
-    """DRAM is reached through a shim tile's DMA, two channels each way: a steady state with three fifos reading DRAM
-    needs a third MM2S channel the shim does not have, and the solver, not aiecc, must say so."""
+    """DRAM's DMA ports declare two channels each way, and a read picks the MM2S port."""
     dram = _dram(
         {
-            "mm2s": OwnPort(128, frozenset({(ANY_OPERAND, READ)}), 0, 0, channels=2),
-            "s2mm": OwnPort(128, frozenset({(ANY_OPERAND, WRITE)}), 0, 0, channels=2),
+            "mm2s": _port("mm2s", 128, {(ANY_OPERAND, READ)}, channels=2),
+            "s2mm": _port("s2mm", 128, {(ANY_OPERAND, WRITE)}, channels=2),
         }
     )
-    assert dram.dma_channels(READ) == 2 and dram.dma_channels(WRITE) == 2
-    assert dram.dma_port(["mm2s", "s2mm"], READ, "input1")[0] == "mm2s"
+    assert dram.dma_port(["mm2s", "s2mm"], READ, "input1").key.port == "mm2s"
 
 
 def test_an_off_chip_memory_whose_ports_are_no_dma_is_unbounded():
-    """A plain DRAM port bounds bits per cycle, not fifos: nothing counts its channels."""
-    dram = _dram({"rw": OwnPort(64, frozenset({(ANY_OPERAND, READ), (ANY_OPERAND, WRITE)}), 0, 0)})
-    assert dram.dma_channels(READ) is None and dram.dma_channels(WRITE) is None
+    """An off-chip memory whose ports declare no channels has no channel limit."""
+    dram = _dram({"rw": _port("rw", 64, {(ANY_OPERAND, READ), (ANY_OPERAND, WRITE)})})
     assert dram.dma_port(["rw"], READ, "input1") is None
 
 

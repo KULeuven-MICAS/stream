@@ -1,9 +1,9 @@
 # Hardware
 
-A hardware target in Stream is a **system of heterogeneous dataflow cores**. You describe it with YAML in two layers:
+A hardware target in Stream is a **system of heterogeneous dataflow cores** that compute out of **memories**, with the memories joined by links and buses. You describe it with YAML in two layers:
 
-1. An **accelerator file** - names the system, lists its cores, and defines how the cores are connected.
-2. One **core file per core type** - describes a single core's compute array, memory hierarchy, and role.
+1. An **accelerator file** - names the system, lists its cores and memories, says which memory each core computes out of, and connects the memories.
+2. One **core file per core type** - describes a single core's compute array and memory hierarchy.
 
 Accelerator files live in `stream/inputs/examples/hardware/`; the core files they reference live in `stream/inputs/examples/hardware/cores/`. Several cores in an accelerator may point at the *same* core file (e.g. four identical compute cores).
 
@@ -22,7 +22,7 @@ cores:
   2: ./cores/tpu_like.yaml   # compute C
   3: ./cores/tpu_like.yaml   # compute D
   4: ./cores/pooling.yaml    # pooling engine
-  5: ./cores/simd.yaml       # SIMD / vector unit
+  5: ./cores/simd.yaml       # SIMD unit
 
 core_coordinates:
   0: [0, 0]
@@ -32,13 +32,13 @@ core_coordinates:
   4: [2, 0]
   5: [2, 1]
 
-unit_energy_cost: 0     # default per-transfer energy for the links below
+unit_energy_cost: 0     # default energy for the connections
 
 memories:
   tpu_like_0:
     offchip: false
-    views: [0.sram_2MB]           # <core id>.<top-level memory instance>
-    ports:                        # each a port core 0's file declares on sram_2MB
+    views: [0.sram_2MB]           # <core id>.<top-level memory instance in that core's file>
+    ports:                        # ports core 0's file declares on sram_2MB
       r_port_1: {from: r_port_1, cores: [0]}
       w_port_1: {from: w_port_1, cores: [0]}
   # … tpu_like_1 to tpu_like_3, pooling and simd alike …
@@ -50,15 +50,15 @@ memories:
       rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
 
 connections:
-  # 2-D mesh among the four compute cores
+  # 2-D mesh among the four compute cores' memories
   - type: link
-    ends:                         # each memory it joins, with the ports it enters and leaves it through
+    ends:                         # each memory it joins, with the ports the link passes there
       tpu_like_0: [r_port_1, w_port_1]
       tpu_like_1: [r_port_1, w_port_1]
     bandwidth: 32
   # … more links …
 
-  # shared bus to off-chip memory (all cores ↔ DRAM)
+  # shared bus to off-chip memory
   - type: bus
     ends:
       tpu_like_0: [r_port_1, w_port_1]
@@ -70,63 +70,64 @@ connections:
 | Field | Required | Meaning |
 |-------|:---:|---------|
 | `name` | yes | A label for the system. |
-| `cores` | yes | Map of integer **core id → core file**; ids need not be consecutive. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
-| `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
-| `bandwidth` | no | Map of memory name to the measured bandwidth every transfer into or out of that memory shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes, or, where nothing is measured, `burst`, the bytes the memory moves per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). The allocation then runs no transfer through the memory faster than its access pattern allows, and bounds every step by the time the memory spends on one iteration's transfers. A key can also name one memory port, see [Memory ports](#memory-ports). |
-| `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
-| `memories` | yes | Map of memory name → whether it is off-chip, its views `<core id>.<instance>` and its ports, see [Memories](#memories). |
-| `connections` | yes | List of links and buses connecting the memories (see below). |
-| `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
+| `cores` | yes | Map of integer **core id → core file**. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
+| `memories` | yes | Map of memory name → its description, see [Memories](#memories). |
+| `connections` | yes | List of links and buses between memories, see [Connections](#connections-link-vs-bus). |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
+| `bandwidth` | no | Measured bandwidth models, keyed by memory name or by `<memory>.<port>`, see [Measured bandwidth](#measured-bandwidth). |
+| `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
+| `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
+| `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
 
 ### Memories
 
-Data lives in memories, not in cores: a core computes out of its top-level memories, and several cores may compute out of the same one. `memories` names each memory and writes it out in full:
+Data lives in memories. A core computes out of its top-level memory instances (per operand, the highest level in its core file), and each such instance is a **view** of exactly one memory. Several cores may view one memory, as the MXU, VPU and VMEM cores of `tpu_v7_ironwood.yaml` do; data between them moves in place, without a route. Lower levels of a core's hierarchy are internal to the core.
 
 | Field | Required | Meaning |
 |-------|:---:|---------|
 | `offchip` | yes | Whether it is the off-chip memory, where the workload's inputs and outputs live. An accelerator has at most one. |
-| `views` | yes | For each core using it, `<core id>.<instance>`, the name the core's file gives the top-level memory instance it sees the memory as, e.g. `[0.l1, 1.tcdm]`. Empty for a memory no core computes out of, such as DRAM. |
-| `capacity_bits` | for a memory without views | Its capacity. A memory with views takes the one its views declare, and declares none. |
-| `dma` | no | The DMA its own ports are the channels of, as the AIE2 shim tile's DMA that reaches DRAM, or each of several alike, one per column: `buffer_descriptors`, the descriptors one has for the runtime sequence, and `iterations`, the steps one descriptor iterates. The AIE code generator chains re-reads within them, per shim; a memory declaring none leaves every loop unrolled. Only on a memory whose ports declare `channels`. |
+| `views` | yes | The core instances that see this memory, as `<core id>.<instance>`, e.g. `[0.l1, 1.tcdm]`. Empty for a memory no core computes out of, such as DRAM. |
+| `capacity_bits` | only without views | Its capacity in bits. A memory with views takes the size its views declare. |
 | `ports` | yes | Its ports by name, see [Memory ports](#memory-ports). |
+| `dma` | no | The DMA behind its `channels` ports: `buffer_descriptors` and `iterations` per descriptor. The AIE code generator chains re-reads within these limits; without `dma` every loop is unrolled. |
 
-Everything outside the core files refers to the memory by its name; a core's own names stay inside it.
-
-Each top-level instance of a core, the highest level of some operand, is a view of exactly one memory; a core with an activation and a weights SRAM, such as `meta_prototype`, binds both, to two memories. A node reads each input, and writes its output, in the memory its core's top-level instance for that operand is a view of: its `k`-th operand in the one holding `I<k>`, the output in the one holding `O`. A multiply-accumulate's operands are its first two inputs; a further input, such as a bias, is added into the output, and state a node carries is updated in place as an accumulator is, so both land in the output's memory. A core with one top-level instance holds every operand there. Inner levels are the core's own: no transfer reaches them and Stream models none of their ports. The views of one memory declare the same capacity, and every memory has a connection: one nothing reaches holds nothing a transfer can bring.
-
-A memory belongs to none of its cores. The allocation places tensors in memories, a placement naming the memory at each of its node's positions, the same memory repeated for cores that share it. A memory's capacity bounds everything its cores hold in it together: split tiles add up, a tensor each core holds whole counts once. Data between its cores moves in place, without a route. Connections join memories, and a `bandwidth` model of a memory bounds every transfer into or out of it, whichever of its cores the transfer serves; its macro is priced once.
+The allocation places tensors in memories; a memory's capacity bounds what all its cores hold in it together. A node reads input `k` from the memory its core's `I<k>` instance views, and writes to the one its `O` instance views.
 
 ### Memory ports
 
-`ports` lists every physical port of a memory, each one of two kinds:
+`ports` lists every physical port of a memory. A port either comes from the viewing cores' files or is declared by the memory itself:
 
 ```yaml
 ports:
-  # A port the views' cores declare: the port `from` that cores `cores` declare on their view, one port they all reach.
-  rw_a: {from: rw_port_1, cores: [0, 1]}   # cores 0 and 1 share one port
-  rw_b: {from: rw_port_1, cores: [2]}      # core 2 has its own
-  # A port of the memory's own, as DRAM's: its width in bits per cycle, the directions it serves per operand
-  # (`input<k>`, `output`, or `any` for every operand), and its energies in pJ per bit.
+  # Port `rw_port_1` that the listed cores declare on their view; cores in one entry share the port.
+  rw_a: {from: rw_port_1, cores: [0, 1]}
+  rw_b: {from: rw_port_1, cores: [2]}
+  # Declared here: width in bits per cycle, directions served per operand (`input<k>`, `output` or `any`),
+  # energies in pJ per bit.
   rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
-  # A port that is a DMA, as an AIE2 shim's: `channels` it has, each carrying one fifo at a time, so that at most that
-  # many transfers serve the memory through it in one steady state (the `aie2_dma_channels` family). Without
-  # `channels` a port bounds only its bits per cycle.
+  # A DMA port: each of its `channels` carries one transfer at a time.
   mm2s: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
 ```
 
-Nothing is shared unless said so: every port a view's core declares on the memory is in exactly one of its ports, and the cores of one port must declare it alike, with the same width and energies. A port its views declare takes its width, energies and what it serves from the core files. A transfer leaves and enters a memory over the connections its route takes there, and passes one of the ports those connections name for that memory (see [Connections](#connections-link-vs-bus)): the one its operand is allocated in that direction (`fh` into the memory, `th` out of it; a tile DMA serves every operand), else the one serving that direction, as a ZigZag hierarchy allocates an input no port out of its top level. Two candidate ports, as a connection through the ports of two cores each with their own names, are an error, since which one the bits pass is then undeclared; a connection naming only the one it passes settles it. A `bandwidth` key `<memory>.<port>` (e.g. `dram.rw_port_1`) gives the measured model to one port. It replaces that port's width, in bits per cycle. A memory with a measured model has no per-port model, so it takes no port key.
+Every port a viewing core declares must belong to exactly one entry. A transfer passes, of the ports its connection lists for the memory, the one serving its operand in its direction; list only one such port per connection end.
 
 The `memory_ports` [constraint family](stages.md#constraint-families), in the default set, uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
+### Measured bandwidth
+
+`bandwidth` gives a measured model, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes, or, where nothing is measured, `burst`, the bytes moved per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). Its key is either:
+
+- a **memory** (e.g. `dram`): the model bounds every transfer into or out of it, in place of its ports' widths, so its views need not list their ports;
+- a **port** `<memory>.<port>` (e.g. `hbm.rw_port_1`): the model replaces that port's width.
+
 ### Connections: `link` vs `bus`
 
-Each entry in `connections` is one connection:
+Each entry in `connections` is one connection between memories:
 
 | Field | Required | Meaning |
 |-------|:---:|---------|
 | `type` | no | `link` (point-to-point between exactly two memories) or `bus` (shared medium between two or more memories). Defaults to `link`. |
-| `ends` | yes | Map of each connected memory's name → the ports of it the connection enters and leaves it through, of those the memory declares. Exactly two memories for a `link`; two or more for a `bus`. A memory a transfer leaves or enters over the connection is charged at the port of these serving its operand; an empty list charges none. |
+| `ends` | yes | Map of each connected memory → the ports of that memory the connection passes. |
 | `bandwidth` | yes | Peak bandwidth of the connection (bits per cycle), `> 0`. |
 | `unit_energy_cost` | no | Per-word energy for this connection; inherits the accelerator-level default if omitted. |
 
@@ -141,7 +142,7 @@ A transfer's route serves each target from the nearest memory holding the data i
 Every core declares a `type` of the form `<namespace>.<kind>`:
 
 - **namespace** - `zigzag` (a full dataflow core modelled with ZigZag's cost model) or `aie2` (an AMD AIE tile).
-- **kind** - `compute` or `memory`. Off-chip memory is no core: `memories` declares it.
+- **kind** - `compute` or `memory` (a core that holds data but runs no nodes, such as an AIE memory tile). Off-chip memory is not a core: the accelerator's `memories` declares it.
 
 A bare kind (e.g. `type: compute`) is accepted and defaults to the `zigzag` namespace.
 
@@ -278,7 +279,7 @@ and FuseMax arrays are systolic.
 
 ### AIE cores
 
-AIE tiles use the `aie2` namespace and a lighter schema describing tile-local memory and the object-FIFO depth, rather than a full ZigZag hierarchy. These are used by the AIE codegen entry points and live under `stream/inputs/aie/hardware/`. A tile's one memory is its instance `memory`, so its view is `<core id>.memory`; the shipped files name it after its tile, `tile_<col>_<row>`, for reading, while the code generator names the memory a transfer lands in after the tile's coordinates whatever the description calls it. DRAM is the one exception: no core views it, and its ports are the shim tile DMAs, one `mm2s`/`s2mm` pair per column (`mm2s_c<col>`, `s2mm_c<col>` on a multi-column array), each two 64-bit channels (`channels: 2`), and each column's link to its memory tile passes its own pair. The `aie2_dma_channels` family then lets each shim's channels carry at most that many fifos reading DRAM, and as many writing it, in one steady state, each fifo counted on the shim its route passes. The shim tiles are no cores: the generated code reaches DRAM from the runtime sequence, through the shim of the column the transfer's other end sits in, with the buffer descriptors and iterations DRAM's `dma` declares for each shim, an AIE2 shim DMA's 16 and 64. A tile's memory is its own, a view of exactly one tile: a neighbouring tile reads it in place without a view of it, as the namespace's shared-memory rule says.
+AIE tiles use the `aie2` namespace and a lighter schema describing tile-local memory, the tile DMA's channels and the object-FIFO depth, rather than a full ZigZag hierarchy. These are used by the AIE codegen entry points and live under `stream/inputs/aie/hardware/`.
 
 ```yaml
 name: aie_tile
@@ -288,14 +289,22 @@ memory:
   capacity: 524288     # bits
   bandwidth_min: 512   # bits / cycle
   bandwidth_max: 512
+dma:                   # tile DMA channels
+  mm2s: 2
+  s2mm: 2
+  channel_bits: 64
 ```
+
+A tile's view is `<core id>.memory`, with ports `mm2s` and `s2mm`. On `aie2` each on-chip memory is a view of exactly one tile (the shipped files name it `tile_<col>_<row>`); a neighbouring tile reads it without a view.
+
+DRAM has no views. Its ports are the shim DMAs, one `mm2s`/`s2mm` pair per column (`mm2s_c<col>`, `s2mm_c<col>`), each with `channels: 2`, and each column's link to its memory tile passes that column's pair. DRAM's `dma` gives the shim DMA's buffer descriptors and iterations (16 and 64 on AIE2).
 
 ---
 
 ## Example systems
 
-Eight non-AIE example accelerators ship under `stream/inputs/examples/hardware/` and are exercised across both example workloads in the test matrix (see the [Workload × Hardware matrix](https://github.com/KULeuven-MICAS/stream#workload--hardware-matrix) in the README):
+Nine non-AIE example accelerators ship under `stream/inputs/examples/hardware/` and are exercised across both example workloads in the test matrix (see the [Workload × Hardware matrix](https://github.com/KULeuven-MICAS/stream#workload--hardware-matrix) in the README):
 
-`eyeriss_like_single_core`, `eyeriss_like_dual_core`, `eyeriss_like_quad_core`, `tpu_like_quad_core`, `simba_small`, `simba` (a 36-core chiplet mesh), `fusemax`, and `meta_prototype_dual_core_simd_offchip`.
+`eyeriss_like_single_core`, `eyeriss_like_dual_core`, `eyeriss_like_quad_core`, `tpu_like_quad_core`, `simba_small`, `simba` (a 36-core chiplet mesh), `fusemax`, `meta_prototype_dual_core_simd_offchip`, and `tpu_v7_ironwood` (memories shared by several cores).
 
 AIE example systems (`single_core`, single column, full array, Strix variant) live under `stream/inputs/aie/hardware/`.

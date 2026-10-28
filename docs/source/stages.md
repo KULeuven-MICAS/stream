@@ -72,19 +72,19 @@ The allocation model is built from constraint families, each a group of constrai
 | `path_choice` | each transfer takes one route, whose ends hold the tensors it moves; the route length is the last objective level | |
 | `reuse_rates` | how many iterations one firing of a transfer serves | |
 | `memory_capacity` | what each memory holds fits in its capacity | |
-| `object_fifo_depth` | the object-fifo depth each core's tensors need, and the buffering depth, an objective level | `depth` (without it only the buffering level) |
-| `buffer_descriptors` | the buffer descriptors each core's transfers need | |
+| `object_fifo_depth` | the object-fifo depth each memory's tensors need, and the buffering depth, an objective level | `depth` (without it only the buffering level) |
+| `buffer_descriptors` | the buffer descriptors each memory's transfers need | |
 | `slot_latency` | a slot lasts as long as the slowest node or transfer in it | |
 | `link_contention` | the transfers of a slot share each link: the slot lasts as long as they keep any link busy together; a circuit-switched link (`aie2`) carries at most one transfer per slot | |
 | `reuse_levels`, `output_reuse` | a tensor handed between cores, and a final output, are held up to their outermost irrelevant loop | |
 | `reuse_compatibility` | the reuse levels on either side of a memory-to-compute transfer agree | |
 | `spatial_reuse` | reuse covers every temporal loop inside a tensor's outermost spatial loop | |
 | `overlap` | how much of an iteration the next one overlaps, the fill before the first, and the latency they add up to | `model` (`occupancy` or `span`), `transfer_contention`, `offchip_contention` |
-| `dma_channels` | the DMA channels each core drives, whose peaks the latency objective charges | |
+| `dma_channels` | the DMA channels each memory's transfers drive, whose peaks the latency objective charges | |
 | `offchip_traffic` | the bits crossing the off-chip boundary, an objective level and charged in the latency objective | `charge` (without it only the level) |
 | `aie2_object_fifo_depth`, `aie2_buffer_descriptors` | an AIE2 tile's fifo depth and buffer descriptors stay within `max_object_fifo_depth` | |
 | `aie2_memory_reuse` | a memory tile outlives its reader only where one replay expresses the re-read | |
-| `aie2_dma_channels` | a tile drives at most its DMA channels in each direction | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6) |
+| `aie2_dma_channels` | a memory drives at most its DMA's channels in each direction: a tile's memory its tile DMA's, capped by the option for its kind; DRAM each shim port's `channels` | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6) |
 | `memory_ports` | each memory port's bits fit in its rate, see [Memory ports](hardware.md#memory-ports) | `interval`, `burst` |
 | `energy` | the energy one iteration takes: each node's on its cores, and each transfer's bits times the energy per bit of the ports and links it uses; it only reports | |
 

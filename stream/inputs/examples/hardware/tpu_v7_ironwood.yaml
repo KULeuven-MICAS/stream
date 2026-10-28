@@ -15,8 +15,8 @@
 #    TensorCore's VMEM core (one memory): its 64 MiB is the TensorCore's one residency limit,
 #    its ports at the vector load/store rate the bandwidth all of them share, and a block's operands
 #    reach the arrays from it in place. The chiplet's links join its VMEM.
-#  * Each chiplet's VMEM links to HBM at that chiplet's bandwidth; Stream has one off-chip core, and
-#    a route never passes through it, so data between TensorCores takes the die-to-die link or ICI.
+#  * Each chiplet's VMEM links to HBM at that chiplet's bandwidth; a route never passes through the
+#    off-chip memory, so data between TensorCores takes the die-to-die link or ICI.
 #  * The slice is two neighbouring chips joined by one ICI link between their second chiplets.
 #
 # Bandwidths are bits per cycle at 2.2 GHz (1 GB/s = 3.636 bits per cycle).
@@ -24,7 +24,6 @@
 # Core map (per TensorCore: MXU, MXU, VPU, VMEM):
 #   chip 0: TC0 = 0, 1, 2, 3     TC1 = 4, 5, 6, 7
 #   chip 1: TC2 = 8, 9, 10, 11   TC3 = 12, 13, 14, 15
-#   HBM: 16
 name: tpu_v7_ironwood
 
 cores:

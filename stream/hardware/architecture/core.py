@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
-
-if TYPE_CHECKING:
-    from stream.hardware.ports import MemoryBanks, PortSpec
+from stream.hardware.ports import MemoryBanks, PortSpec
 
 
 class Core:

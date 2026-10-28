@@ -9,8 +9,9 @@ from math import ceil, prod
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag
+from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag, HardwareResource
 from stream.opt.allocation.constraint_optimization.families import (
     LATENCY,
     OFFCHIP_TIMED,
@@ -26,8 +27,6 @@ from stream.workload.node import ComputationNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
-    from stream.hardware.architecture.memory import Memory
-    from stream.opt.allocation.constraint_optimization.diagnosis import HardwareResource
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
@@ -263,8 +262,8 @@ def _slot_pressure_bound(q: QuantityRegistry) -> int:
 def _skipped_step_floor(
     ctx: FormulationContext, overlap: SolverVar, iteration: Any, latency: dict[tuple[Any, Any], Any]
 ) -> None:
-    """A step a core skips still takes as long as the operands it skips over, while a transfer serves the core: one
-    at a position of its own, not one serving another core out of a memory they share."""
+    """A step a core skips still takes as long as the operands it skips over, for each transfer whose producer or
+    reader runs on that core."""
     space = ctx.space
     for n in space.ssc_nodes:
         for core in space.cost_lut.get_cores(n):

@@ -1,4 +1,4 @@
-# Eyeriss-like single compute core with dedicated pooling, SIMD and an off-chip DRAM controller
+# Eyeriss-like single compute core with dedicated pooling, SIMD and off-chip DRAM
 name: eyeriss_like_single_core
 
 cores:
@@ -47,7 +47,7 @@ connections:
       simd: [rw_port_1, rw_port_2]
     bandwidth: 32
 
-  # ─── Shared bus to off-chip memory (all cores + controller) ───
+  # ─── Shared bus to off-chip memory (every memory) ───
   - type: bus
     ends:
       eyeriss_like: [rw_port_1, rw_port_2]

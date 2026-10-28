@@ -36,7 +36,7 @@ class BandwidthModel:
         return cls(ceiling=bits_per_cycle, contiguous=bits_per_cycle, strided={side: {} for side in DIRECTIONS})
 
     def scaled(self, factor: float) -> BandwidthModel:
-        """Every rate ``factor`` times this one's, as ports alike working in parallel reach together."""
+        """This model with every rate multiplied by ``factor``, as for identical ports used in parallel."""
         return BandwidthModel(
             ceiling=self.ceiling * factor,
             contiguous=self.contiguous * factor,

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
+from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, input_role
@@ -20,7 +21,6 @@ if TYPE_CHECKING:
     # annotation here and validated at runtime when a kernel is actually set (AIE mappings),
     # so importing it eagerly would force the AIE toolchain onto the base install.
     from stream.compiler.kernels.aie_kernel import AIEKernel
-    from stream.hardware.architecture.accelerator import Accelerator
 
 Resource: TypeAlias = Core | MulticastPathPlan
 
@@ -304,9 +304,9 @@ class Mapping:
 
 
 def role_of(node: ComputationNode, tensor: Tensor) -> str:
-    """The operand role ``tensor`` has on ``node``: its k-th operand (:func:`operand_inputs`), else the output's, for
-    its output, the state it carries (updated in place, as an accumulator is) and a further input such as a
-    multiply-accumulate's bias (added into the output)."""
+    """The operand role ``tensor`` has on ``node``: the k-th input role for its k-th operand (:func:`operand_inputs`),
+    else the output role. The output role also covers state updated in place (an accumulator) and extra inputs such
+    as a bias."""
     if tensor in node.outputs or (tensor in node.inputs and is_state_operand(node, tensor)):
         return OUTPUT
     operands = operand_inputs(node)
@@ -319,26 +319,26 @@ def role_of(node: ComputationNode, tensor: Tensor) -> str:
 
 def offchip_memory(accelerator: Accelerator) -> Memory:
     """The memory the workload's edge tensors live in."""
-    if (memory := accelerator.offchip_memory) is None:
+    memory = accelerator.offchip_memory
+    if memory is None:
         raise ValueError(f"{accelerator.name} has no off-chip memory to hold the workload's inputs and outputs")
     return memory
 
 
 def the_one[T](options: tuple[T, ...], node: Node, what: str) -> T:
-    """The one entry of ``options``, the candidate ``what`` of ``node`` where its mapping leaves it one; the
-    allocation does not choose between several yet."""
+    """The single entry of ``options``, the candidate ``what`` of ``node``. Choosing between several is not supported
+    yet."""
     if len(options) != 1:
         raise NotImplementedError(
-            f"{getattr(node, 'name', node)} has {len(options)} candidate {what}; one is supported, so the mapping "
-            "must settle on it"
+            f"{node.name} has {len(options)} candidate {what}; one is supported, so the mapping must settle on it"
         )
     return options[0]
 
 
 def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
-    """The memories ``node`` may hold the operand of ``role`` in, one per position: off-chip for an edge, the copies'
-    for a transfer, and for a computation the memory each of its cores keeps that operand in (:meth:`Accelerator
-    .memory_of`). Cores sharing a memory repeat it."""
+    """The candidate memories ``node`` holds its ``role`` operand in, one per position: off-chip for an edge, the
+    memory allocation for a transfer, and for a computation the memory each core keeps that operand in. Cores sharing
+    a memory repeat it."""
     if isinstance(node, InEdge | OutEdge):
         return ((offchip_memory(accelerator),),)
     if isinstance(node, TransferNode):

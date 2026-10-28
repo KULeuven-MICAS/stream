@@ -6,13 +6,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.diagnosis import StructuralRule
 from stream.opt.solver import SolverVarType
 from stream.workload.node import TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType
 
 if TYPE_CHECKING:
-    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.solver import LinExpr, SolverVar
     from stream.workload.workload import Tensor
@@ -100,14 +100,15 @@ class ReuseLevels:
         for tr in ctx.space.transfer_nodes:
             if tr.transfer_type not in (TransferType.COMPUTE_TO_COMPUTE):
                 continue
-            # the transfer's loops, which every copy it delivers goes through
             relevancies = ctx.space.ssis[tr].get_applicable_temporal_relevancies()
-            last_irrelevant = max((i for i, r in enumerate(relevancies) if r is False), default=-1)
-            if last_irrelevant < 0:
-                continue
+            last_irrelevant = -1
             for t in tr.outputs:
-                name = f"force_intermediate_reuse_{tr.name}"
-                _held_from(ctx, t, last_irrelevant, len(relevancies), name, FUSED_INTERMEDIATE)
+                for i, r in enumerate(relevancies):
+                    if r is False:
+                        last_irrelevant = i
+                if last_irrelevant >= 0:
+                    name = f"force_intermediate_reuse_{tr.name}"
+                    _held_from(ctx, t, last_irrelevant, len(relevancies), name, FUSED_INTERMEDIATE)
 
 
 class OutputReuse:

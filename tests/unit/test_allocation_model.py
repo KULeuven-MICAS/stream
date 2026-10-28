@@ -124,8 +124,7 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
     ids=["offchip_links", "no_offchip_links", "offchip_shared_bandwidth_model", "onchip_shared_bandwidth_model"],
 )
 def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
-    """No off-chip bandwidth charges nothing, and with a shared-bandwidth model of the off-chip memory the bytes are in
-    the latency already."""
+    """Off-chip traffic is charged only with off-chip bandwidth and no shared-bandwidth model of the off-chip memory."""
     space = SimpleNamespace(
         shared_bandwidth=shared_bandwidth,
         iterations=4,

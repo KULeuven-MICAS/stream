@@ -4,7 +4,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![Docs](https://img.shields.io/badge/docs-stream-blue)](https://kuleuven-micas.github.io/stream/)
 
-**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
+**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths between memories. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
 ### 📖 [**Explore the Documentation**](https://kuleuven-micas.github.io/stream/)
 ### 🚀 [**Getting Started Guide**](https://kuleuven-micas.github.io/stream/getting-started/)
@@ -80,12 +80,12 @@ Price a small two-Conv workload (a committed test fixture) on a TPU-like quad-co
 
 ## 🧩 Hardware and Core Types
 
-An accelerator in Stream is described as a **system of heterogeneous dataflow cores**. Core roles are compute and memory, and the off-chip memory is declared as a memory of its own; example dataflow core types include **AIE**, **TPU-like**, and **pooling**.
+An accelerator in Stream is described as a **system of heterogeneous dataflow cores** that compute out of **memories**, joined by links and buses. Several cores can share one memory, and off-chip DRAM is a memory too. Example dataflow core types include **AIE**, **TPU-like**, and **pooling**. See the [Hardware docs](https://kuleuven-micas.github.io/stream/hardware/) for the format.
 
 Hardware and mapping files are organized as follows:
 
 - `stream/inputs/examples/hardware/` - system-level hardware YAMLs (e.g. `tpu_like_quad_core.yaml`, `eyeriss_like_*.yaml`, `simba*.yaml`, `fusemax.yaml`).
-- `stream/inputs/examples/hardware/cores/` - per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `offchip.yaml`, `eyeriss_like.yaml`).
+- `stream/inputs/examples/hardware/cores/` - per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `eyeriss_like.yaml`).
 - `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` - AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`).
 - `stream/inputs/examples/mapping/`, `stream/inputs/aie/mapping/`, and `stream/inputs/testing/mapping/` - mapping descriptions.
 

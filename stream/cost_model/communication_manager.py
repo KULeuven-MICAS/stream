@@ -1,5 +1,5 @@
 import heapq
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
 from math import prod
@@ -31,6 +31,10 @@ class DemandItem:
     reduce: bool = False
 
 
+# One step of a route: the memory the data leaves, the one it reaches and the link it crosses.
+Hop = tuple[Memory, Memory, CommunicationLink]
+
+
 @dataclass(frozen=True, slots=True)
 class MulticastPathPlan:
     """A transfer's route: which source serves which target (``pairs``, by position), the links the data crosses and
@@ -42,25 +46,11 @@ class MulticastPathPlan:
     links_used: tuple["CommunicationLink", ...]
     pairs: tuple[tuple[int, int], ...] = ()
     link_shares: tuple[tuple["CommunicationLink", float], ...] = field(default=(), compare=False)
-    hops: tuple["Hop", ...] = field(default=(), compare=False)
-    """Each step the data takes, (from memory, to memory, over link); a bus is one link but as many hops as memories
-    it serves."""
+    hops: tuple[Hop, ...] = field(default=(), compare=False)
 
     def links_at(self, memory: Memory, leaving: bool) -> tuple["CommunicationLink", ...]:
-        """The links the route's data leaves ``memory`` over, or enters it over: those of the hops out of it, or into
-        it (a bus only where a hop of the route ends at the memory, not for every member on it). A plan without hops,
-        as a test builds, has links out of or into it and the buses it is on."""
-        if self.hops:
-            return tuple(dict.fromkeys(link for u, v, link in self.hops if (u if leaving else v) is memory))
-        return tuple(
-            link
-            for link in self.links_used
-            if memory in link.members or (link.sender if leaving else link.receiver) is memory
-        )
-
-
-Hop = tuple[Memory, Memory, "CommunicationLink"]
-"""One step of a route: the memory the data leaves, the one it reaches and the link it crosses."""
+        """The links of the route's hops that leave ``memory`` (``leaving``) or enter it."""
+        return tuple(dict.fromkeys(link for u, v, link in self.hops if (u if leaving else v) is memory))
 
 
 def box_bits(boxes: Iterable[Box], bitwidth: float) -> float:
@@ -137,53 +127,40 @@ class CommunicationManager:
         shares_memory: Callable[[Memory, Memory], bool],
         alternatives: int,
     ) -> tuple[MulticastPathPlan, ...]:
-        """The routes a transfer between these memories that moves ``demand`` may take, planned once per demand: the
-        fastest (:meth:`route`), then up to ``alternatives - 1`` more, each routed as if the ones before it already
-        carried the transfer, so that it takes other connections where comparably fast ones exist and the solve can
-        spread transfers sharing a slot over them. A route over the same links as an earlier one is dropped."""
-        if alternatives < 1:
-            raise ValueError(f"a transfer takes one of at least one route, not {alternatives}")
+        """The routes a transfer between these memories that moves ``demand`` may take, cached per demand. The first is
+        the fastest (:meth:`route` on idle links). Each of the up to ``alternatives - 1`` others is routed as if the
+        earlier ones already carried the transfer, so it prefers other, comparably fast links. Duplicate routes are
+        dropped."""
         key = (tuple(src_allocs), tuple(dst_allocs), demand, bitwidth, alternatives)
-        if (plans := self._transfer_plans.get(key)) is None:
+        if key not in self._transfer_plans:
             found: dict[frozenset[CommunicationLink], MulticastPathPlan] = {}
             taken: dict[CommunicationLink, float] = {}
             for _ in range(alternatives):
-                plan, carried = self._route(key[0], key[1], demand, bitwidth, shares_memory, taken)
+                plan, carried = self.route(key[0], key[1], demand, bitwidth, shares_memory, taken)
                 found.setdefault(frozenset(plan.links_used), plan)
                 for link, bits in carried.items():
                     taken[link] = taken.get(link, 0.0) + bits
-            plans = self._transfer_plans[key] = tuple(found.values())
-        return plans
+            self._transfer_plans[key] = tuple(found.values())
+        return self._transfer_plans[key]
 
-    def route(
+    def route(  # noqa: PLR0913
         self,
         sources: tuple[Memory, ...],
         targets: tuple[Memory, ...],
         demand: tuple[DemandItem, ...],
         bitwidth: float,
         shares_memory: Callable[[Memory, Memory], bool],
-    ) -> MulticastPathPlan:
-        """The fastest route of a transfer, see :meth:`_route`."""
-        plan, _ = self._route(sources, targets, demand, bitwidth, shares_memory, {})
-        return plan
-
-    def _route(
-        self,
-        sources: tuple[Memory, ...],
-        targets: tuple[Memory, ...],
-        demand: tuple[DemandItem, ...],
-        bitwidth: float,
-        shares_memory: Callable[[Memory, Memory], bool],
-        taken: dict[CommunicationLink, float],
+        taken: Mapping[CommunicationLink, float] | None = None,
     ) -> tuple[MulticastPathPlan, dict[CommunicationLink, float]]:
-        """A route of the transfer, and the bits it puts on each link, with the links already carrying ``taken`` bits.
-        Serve each demand from the nearest source holding it, then grow one Steiner tree per source over the
-        targets it serves (the shortest-path heuristic of Takahashi and Matsuyama), the largest source first and each
-        link weighted by the cycles it would then be busy, so later trees avoid what earlier ones load. A link carries
-        the union of the data its tree sends past it. A target that is its source needs no route; one that reaches its
-        source otherwise, as a neighbouring tile's memory does, is reached on a route that moves none of it. Partial
-        sums are then reduced on the way, see :meth:`_reduce`. Each link's share is of all the data the transfer
-        delivers, whether it moves or is already in its target; what ``taken`` carries only weighs the links."""
+        """A route of the transfer and the bits it puts on each link, given links already carrying ``taken`` bits
+        (none by default).
+
+        Each demand is served from the nearest source holding it. Then one Steiner tree per source grows over the
+        targets it serves (the shortest-path heuristic of Takahashi and Matsuyama), largest source first, each link
+        weighted by the cycles it would then be busy, so later trees avoid loaded links. A link carries the union of
+        the data its tree sends past it. A target that is its source needs no route. A target that shares memory with
+        its source is reached by a route that moves no data. Partial sums are reduced on the way (:meth:`_reduce`).
+        Each link's share is relative to all data the transfer delivers. ``taken`` only weighs the links."""
         served: dict[int, list[DemandItem]] = {}
         in_place: dict[int, set[Memory]] = {}
         pairs: set[tuple[int, int]] = set()
@@ -210,6 +187,7 @@ class CommunicationManager:
             pairs.add((s, item.target))
             served.setdefault(s, []).append(item)
 
+        taken = taken or {}
         load: dict[CommunicationLink, float] = dict(taken)
         hops: dict[Hop, None] = {}
         ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s].name))
@@ -254,8 +232,8 @@ class CommunicationManager:
         bitwidth: float,
         load: dict[CommunicationLink, float],
     ) -> list[Hop]:
-        """Load ``load`` with the links of a tree from ``source`` to the targets of ``items``, each carrying the union
-        of the data sent past it, and return the tree's hops."""
+        """Add to ``load`` the links of a tree from ``source`` to the targets of ``items``, each carrying the union of
+        the data sent past it. Returns the tree's hops."""
         sent = box_bits((i.box for i in items), bitwidth)
         ends = {targets[i.target] for i in items}
         tree = self._steiner_tree(source, ends, sent, load, self._adjacency())
@@ -275,22 +253,21 @@ class CommunicationManager:
         bitwidth: float,
         load: dict[CommunicationLink, float],
     ) -> list[Hop]:
-        """Load ``load`` with the links that bring the partial sums ``items`` from their sources to ``target``, adding
+        """Add to ``load`` the links that bring the partial sums ``items`` from their sources to ``target``, adding
         them up on the way, and return their hops: a Steiner tree over the reversed links into the target, every link
         carrying the sum once. Partial sums in one memory are added there. Off-chip memory cannot add, so a sum headed
         there is completed in one of the on-chip memories next to it; cut into a part per memory holding partial sums,
         each completed where it then loads the busiest link least and all links least, the reduction becomes a
         reduce-scatter. A bus adds nothing, so each memory sending over it sends its own sum."""
         reverse = self._reverse_adjacency()
-        root = target
-        holders = [{sources[s] for s in item.sources} - {root} for item in items]
+        holders = [{sources[s] for s in item.sources} - {target} for item in items]
         memories = set().union(*holders)
         if not memories:
             return []
-        collectors = [(root, None)]
+        collectors = [(target, None)]
         parts = 1
-        if root.offchip:
-            collectors = [(u, link) for u, link in reverse.get(root, ()) if not u.offchip]
+        if target.offchip:
+            collectors = [(u, link) for u, link in reverse.get(target, ()) if not u.offchip]
             parts = len(memories)
         used: dict[Hop, None] = {}
         for k in range(parts):
@@ -306,7 +283,7 @@ class CommunicationManager:
                     ((v, u, link), box_bits((b for b, h in zip(boxes, holders, strict=True) if h & up), bitwidth))
                     for (u, v, link), up in below.items()
                 ]
-                return hops + ([((collector, root, last), bits)] if last is not None else [])
+                return hops + ([((collector, target, last), bits)] if last is not None else [])
 
             options = [(plan(c, last), c.name) for c, last in collectors if memories <= self._distances(c).keys()]
             if not options:

@@ -73,18 +73,14 @@ def _tile(core: Core) -> StringAttr:
     return StringAttr(f"tile_{core.col_id}_{core.row_id}")
 
 
+# The tile the generated code names for DRAM and for what runs on the host. The AIE lowering moves these ops into the
+# runtime sequence and reaches DRAM through the shim DMA of the column each transfer's other end sits in.
 RUNTIME_TILE = "tile_0_0"
-"""Where the generated code puts what runs on the host: the AIE lowering moves its ops into the runtime sequence and
-reaches DRAM through the shim of the column each transfer's other end sits in, the DMA the off-chip memory declares
-(``dma:``) with the buffer descriptors and iterations the lowering may spend."""
 
 
-def _memory_tile(memory: Memory, namespace: str) -> StringAttr:
-    """How the generated code names ``memory`` of an accelerator of cores of ``namespace``: on AIE, DRAM by
-    :data:`RUNTIME_TILE` and a tile's memory by its tile, ``tile_<col>_<row>`` from the tile's coordinates, which the
-    AIE lowering reads the tile off; any other memory by its name, for the backend that reads it."""
-    if namespace != "aie2":
-        return StringAttr(memory.name)
+def _memory_tile(memory: Memory) -> StringAttr:
+    """How the generated code names ``memory``: DRAM is :data:`RUNTIME_TILE` and a tile's memory is its tile
+    ``tile_<col>_<row>``."""
     if memory.offchip:
         return StringAttr(RUNTIME_TILE)
     return _tile(memory.core)
@@ -152,7 +148,7 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(input_type, StrensorType)
         path_plan = mapping.resource_allocation[0]
         assert isinstance(path_plan, MulticastPathPlan)
-        cores = [_memory_tile(target, self.ctx.get("accelerator").namespace) for target in path_plan.targets]
+        cores = [_memory_tile(target) for target in path_plan.targets]
 
         if len(cores) == 1:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
@@ -178,9 +174,7 @@ class AIECodeGenerationStage(Stage):
             for (index, space), reader, output in zip(spaces, self._readers(node, workload), node.outputs, strict=True):
                 allocation = full_mapping.get(reader).resource_allocation[0]
                 if isinstance(allocation, MulticastPathPlan):
-                    cores_attr = [
-                        _memory_tile(memory, self.ctx.get("accelerator").namespace) for memory in allocation.sources
-                    ]
+                    cores_attr = [_memory_tile(memory) for memory in allocation.sources]
                 else:
                     cores_attr = [_tile(core) for core in allocation]
                 result_types.append(
@@ -435,9 +429,8 @@ class AIECodeGenerationStage(Stage):
         return module
 
     def _shim_limits(self) -> tuple[int, int]:
-        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates, as the off-chip
-        memory declares its DMA; 0 where it declares none, which leaves every loop unrolled. A trace writes its buffer
-        out through one descriptor."""
+        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates, from the
+        off-chip memory's DMA; 0 if it declares none, which leaves every loop unrolled. A trace uses one descriptor."""
         offchip = self.ctx.get("accelerator").offchip_memory
         if offchip is None or offchip.dma is None:
             return 0, 0
@@ -453,7 +446,8 @@ class AIECodeGenerationStage(Stage):
         accelerator = allocation.problem.accelerator
         budgets: dict[tuple[int, int], TileBudget] = {}
         for memory in accelerator.memories.values():
-            if memory.offchip or (free := slack.get(memory)) is None:
+            free = slack.get(memory)
+            if memory.offchip or free is None:
                 continue
             tile = memory.core
             if tile.col_id is None or tile.row_id is None:

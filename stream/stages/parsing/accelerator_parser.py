@@ -1,5 +1,5 @@
 import logging
-import os
+from pathlib import Path
 
 from zigzag.utils import open_yaml
 
@@ -14,9 +14,9 @@ from stream.visualization.hardware_graph import draw_hardware
 logger = logging.getLogger(__name__)
 
 
-def parse_accelerator(yaml_path: str) -> Accelerator:
+def parse_accelerator(yaml_path: str | Path) -> Accelerator:
     """The accelerator a hardware YAML describes, validated."""
-    assert yaml_path.rsplit(".", maxsplit=1)[-1] == "yaml", "Expected a yaml file as accelerator input"
+    assert Path(yaml_path).suffix == ".yaml", "Expected a yaml file as accelerator input"
     validator = AcceleratorValidator(open_yaml(yaml_path), yaml_path)
     accelerator_data = validator.normalized_data
     if not validator.validate():
@@ -41,14 +41,10 @@ class AcceleratorParserStage(Stage):
         )
         if (library := self.ctx.get("kernel_library")) is not None:
             accelerator.kernel_library = KernelLibrary.load(library)
-        if (output_path := self.ctx.get("output_path")) is not None and self.ctx.get("artifacts", True):
-            # A picture for reading the hardware as Stream understands it, one of the solve's artifacts; a failure to
-            # draw it must not stop a solve.
-            try:
-                os.makedirs(output_path, exist_ok=True)
-                draw_hardware(accelerator, os.path.join(output_path, "hardware_graph.svg"))
-            except Exception as e:  # noqa: BLE001 -- visualization is best-effort
-                logger.warning("Skipping hardware visualization (%s): %s", type(e).__name__, e)
+        output_path = self.ctx.get("output_path")
+        if output_path is not None and self.ctx.get("artifacts", True):
+            Path(output_path).mkdir(parents=True, exist_ok=True)
+            draw_hardware(accelerator, Path(output_path) / "hardware_graph.svg")
 
         self.ctx.set(accelerator=accelerator)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)

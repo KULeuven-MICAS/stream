@@ -1,4 +1,4 @@
-"""Memories apart from cores: several cores compute out of one memory, which none of them owns."""
+"""Tests for physical memories and the cores that view them."""
 
 from __future__ import annotations
 
@@ -13,9 +13,11 @@ from xdsl.ir.affine import AffineMap
 
 from stream.allocation.lowering import reader_positions
 from stream.api import evaluate_mapping
-from stream.cost_model.communication_manager import DemandItem
+from stream.cost_model.bandwidth import BandwidthModel
+from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan
+from stream.hardware.architecture.accelerator import Accelerator, MemoryGraph
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.ports import OUTPUT, READ, WRITE, OwnPort, declared_ports, input_role
+from stream.hardware.ports import OUTPUT, READ, WRITE, Port, PortKey, input_role
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.mapping.mapping import role_of
 from stream.opt.allocation.constraint_optimization.families import available_families
@@ -33,9 +35,10 @@ from stream.opt.allocation.constraint_optimization.hardware import build_hardwar
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.opt.solver import SolverBackend, SolverParams, SolverVarType, create_solver
-from stream.parser.accelerator_validator import AcceleratorValidator, resolve_core_path
+from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.stages.parsing.accelerator_parser import parse_accelerator
 from stream.visualization.steady_state_trace import _resource_sort_key
+from stream.workload.blocks import build_block
 from stream.workload.node import ComputationNode, TransferNode
 from stream.workload.tensor import Tensor
 
@@ -80,36 +83,45 @@ memories:
 
 
 def _l1(*views: str) -> dict:
-    """An on-chip memory of shared testing cores' ``views``, each port one all of them reach."""
+    """An on-chip memory with ``views`` of shared testing cores, each port reached by all of them."""
     cores = [int(view.split(".")[0]) for view in views]
     ports = {name: {"from": name, "cores": cores} for name in ("r_port_1", "w_port_1")}
     return {"offchip": False, "views": list(views), "ports": ports}
 
 
 def _memories(**views: list[str]) -> dict:
-    """The memories ``views`` names, each an on-chip memory of them, and L3."""
+    """One on-chip memory per entry of ``views``, plus L3."""
     return {name: _l1(*entries) for name, entries in views.items()} | yaml.safe_load(L3)
 
 
 WHOLE = ((0, 15), (0, 15))
+SHARED_CORE1 = Path("stream/inputs/testing/hardware/cores/shared_testing_core1.yaml")
+SHARED_CORE2 = Path("stream/inputs/testing/hardware/cores/shared_testing_core2.yaml")
 
 
-def _accelerator(tmp_path, text: str = TWO_L1S, **overrides):
-    data = yaml.safe_load(text) | overrides
+def _two_l1s() -> dict:
+    return yaml.safe_load(TWO_L1S)
+
+
+def _accelerator(tmp_path, data: dict | None = None, **overrides):
     path = tmp_path / "hw.yaml"
-    path.write_text(yaml.safe_dump(data))
-    return parse_accelerator(str(path))
+    path.write_text(yaml.safe_dump((data or _two_l1s()) | overrides, sort_keys=False))
+    return parse_accelerator(path)
 
 
-def _errors(tmp_path, **overrides) -> list[str]:
-    data = yaml.safe_load(TWO_L1S) | overrides
-    (tmp_path / "hw.yaml").write_text(yaml.safe_dump(data))
-    validator = AcceleratorValidator(data, str(tmp_path / "hw.yaml"))
+def _invalid(data: dict, path: Path = Path("hw.yaml")) -> list[str]:
+    """The errors validating ``data`` reports; it must report some."""
+    validator = AcceleratorValidator(data, path)
     assert not validator.validate()
+    assert validator.errors
     return validator.errors
 
 
-def test_the_cores_of_a_memory_share_it_and_none_owns_it(tmp_path):
+def _errors(**overrides) -> list[str]:
+    return _invalid(_two_l1s() | overrides)
+
+
+def test_the_cores_of_a_memory_share_it(tmp_path):
     accelerator = _accelerator(tmp_path)
     a = accelerator.memories["l1_a"]
     assert [(core.id, instance) for core, instance in a.views] == [(0, "sram_64KB"), (1, "sram_64KB")]
@@ -121,10 +133,10 @@ def test_the_cores_of_a_memory_share_it_and_none_owns_it(tmp_path):
 
 
 def test_any_core_of_a_memory_sends_over_its_links(tmp_path):
-    """Either core of one L1 reaches either core of the other over the link between the two L1s."""
+    """Each core of one L1 reaches each core of the other over the link between the L1s."""
     accelerator = _accelerator(tmp_path)
     for source, target in ((0, 2), (1, 3), (1, 2)):
-        plan = accelerator.communication_manager.route(
+        plan, _ = accelerator.communication_manager.route(
             (accelerator.memory_of(accelerator.get_core(source), OUTPUT),),
             (accelerator.memory_of(accelerator.get_core(target), input_role(1)),),
             (DemandItem(0, (0,), WHOLE),),
@@ -140,57 +152,57 @@ def test_a_bandwidth_model_is_keyed_by_its_memory(tmp_path):
 
 
 @pytest.mark.parametrize("key", [0, "core0", "0.rw_port_1", "l1_a.sram_64KB.rw_port_1"])
-def test_a_bandwidth_key_naming_no_memory_is_rejected(tmp_path, key):
-    assert _errors(tmp_path, bandwidth={key: {"ceiling": 64, "contiguous": 64}})
+def test_a_bandwidth_key_naming_no_memory_is_rejected(key):
+    assert _errors(bandwidth={key: {"ceiling": 64, "contiguous": 64}})
 
 
-def test_a_port_key_of_a_measured_memory_is_rejected(tmp_path):
+def test_a_port_key_of_a_measured_memory_is_rejected():
     model = {"ceiling": 64, "contiguous": 64}
-    errors = _errors(tmp_path, bandwidth={"l1_a": model, "l1_a.rw_port_1": model})
+    errors = _errors(bandwidth={"l1_a": model, "l1_a.rw_port_1": model})
     assert any("already has a measured bandwidth" in error for error in errors)
 
 
-def test_an_instance_in_two_memories_is_rejected(tmp_path):
+def test_an_instance_in_two_memories_is_rejected():
     views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["1.sram_64KB", "2.sram_64KB", "3.sram_64KB"]}
-    errors = _errors(tmp_path, memories=_memories(**views))
+    errors = _errors(memories=_memories(**views))
     assert any("`1.sram_64KB` is a view of both l1_a and l1_b" in error for error in errors)
 
 
-def test_a_core_in_no_memory_is_rejected(tmp_path):
+def test_a_core_in_no_memory_is_rejected():
     views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["2.sram_64KB"]}
-    errors = _errors(tmp_path, memories=_memories(**views))
+    errors = _errors(memories=_memories(**views))
     assert any("core 3 is a view of no memory" in error for error in errors)
 
 
-def test_a_memory_no_connection_reaches_is_rejected(tmp_path):
+def test_a_memory_no_connection_reaches_is_rejected():
     views = {"l1_a": ["0.sram_64KB", "1.sram_64KB"], "l1_b": ["2.sram_64KB"], "spare": ["3.sram_64KB"]}
-    errors = _errors(tmp_path, memories=_memories(**views))
+    errors = _errors(memories=_memories(**views))
     assert any("spare" in error and "no connection" in error for error in errors)
 
 
-def test_a_connection_through_a_port_its_memory_does_not_declare_is_rejected(tmp_path):
+def test_a_connection_through_a_port_its_memory_does_not_declare_is_rejected():
     links = [{"type": "link", "ends": {"l1_a": ["rw_port_9"], "l3": ["rw_port_1"]}, "bandwidth": 64}]
-    errors = _errors(tmp_path, connections=links)
+    errors = _errors(connections=links)
     assert any("ends.l1_a` names ports ['rw_port_9'] it does not declare" in error for error in errors)
 
 
-def test_a_connection_naming_its_memories_without_their_ports_is_rejected(tmp_path):
+def test_a_connection_naming_its_memories_without_their_ports_is_rejected():
     links = [{"type": "link", "memories": ["l1_a", "l3"], "bandwidth": 64}]
-    assert _errors(tmp_path, connections=links)
+    assert _errors(connections=links)
 
 
-def test_a_connection_naming_cores_is_rejected(tmp_path):
+def test_a_connection_naming_cores_is_rejected():
     links = [{"type": "link", "cores": [0, 2], "bandwidth": 64}]
-    assert _errors(tmp_path, connections=links)
+    assert _errors(connections=links)
 
 
-def test_a_view_of_an_instance_its_core_does_not_declare_is_rejected(tmp_path):
+def test_a_view_of_an_instance_its_core_does_not_declare_is_rejected():
     views = {"l1_a": ["0.sram_64KB", "1.l1"], "l1_b": ["2.sram_64KB", "3.sram_64KB"]}
-    assert any("core 1 declares no memory `l1`" in error for error in _errors(tmp_path, memories=_memories(**views)))
+    assert any("core 1 declares no memory `l1`" in error for error in _errors(memories=_memories(**views)))
 
 
-def test_a_view_of_an_inner_level_is_rejected(tmp_path):
-    """A view binds a core's top-level instance: an inner level is the core's own, not where transfers land."""
+def test_a_view_of_an_inner_level_is_rejected():
+    """A view must name a top-level instance of its core."""
     text = (
         """
 name: inner
@@ -201,35 +213,13 @@ memories:
         + """connections: [{type: link, ends: {l1: [], l3: [rw_port_1]}, bandwidth: 64}]
 """
     )
-    data = yaml.safe_load(text)
-    validator = AcceleratorValidator(data, str(tmp_path / "hw.yaml"))
-    assert not validator.validate()
-    assert any("`sram_64KB` is no top-level memory; a view is of one of its top levels" in e for e in validator.errors)
+    errors = _invalid(yaml.safe_load(text))
+    assert any("`sram_64KB` is no top-level memory; a view is of one of its top levels" in e for e in errors)
 
 
-def test_a_link_joins_exactly_two_memories(tmp_path):
+def test_a_link_joins_exactly_two_memories():
     links = [{"type": "link", "ends": {"l1_a": [], "l1_b": [], "l3": []}, "bandwidth": 64}]
-    assert any("joins exactly two memories" in error for error in _errors(tmp_path, connections=links))
-
-
-def test_parallel_links_between_two_memories_are_distinct_resources(tmp_path):
-    """Two links declared between the same memories are two resources each way, told apart by their index."""
-    data = yaml.safe_load(TWO_L1S)
-    data["connections"].append({"type": "link", "ends": {"l1_a": ["r_port_1"], "l3": ["rw_port_1"]}, "bandwidth": 64})
-    accelerator = _accelerator(tmp_path, yaml.safe_dump(data))
-    a, l3 = accelerator.memories["l1_a"], accelerator.memories["l3"]
-    links = [d["cl"] for u, v, d in accelerator.network.edges(data=True) if (u, v) == (a, l3)]
-    assert sorted(map(str, links)) == ["CL#1(l1_a, l3, bw=64)", "CL(l1_a, l3, bw=64)"]
-    assert links[0] != links[1]
-
-
-def test_views_sharing_a_port_must_agree_on_it(tmp_path):
-    core = yaml.safe_load(open("stream/inputs/testing/hardware/cores/shared_testing_core2.yaml"))
-    core["memories"]["sram_64KB"]["ports"][0]["bandwidth_max"] = 256
-    data = yaml.safe_load(TWO_L1S)
-    data["cores"][1] = core
-    with pytest.raises(ValueError, match="declare r_port_1 differently"):
-        _ = _accelerator(tmp_path, yaml.safe_dump(data)).ports
+    assert any("joins exactly two memories" in error for error in _errors(connections=links))
 
 
 def test_the_ir_lists_each_memory_with_its_views(tmp_path):
@@ -242,7 +232,7 @@ def test_the_ir_lists_each_memory_with_its_views(tmp_path):
 
 
 def test_a_measured_on_chip_memory_leaves_the_off_chip_traffic_charged(tmp_path):
-    """Only a measured off-chip memory times what crosses the off-chip boundary."""
+    """Off-chip traffic is charged unless the off-chip memory itself is measured."""
     family = available_families()["offchip_traffic"]()
     model = {"ceiling": 64, "contiguous": 64}
     for measured, charged in (("l1_a", True), ("l3", False)):
@@ -255,33 +245,33 @@ def test_a_measured_on_chip_memory_leaves_the_off_chip_traffic_charged(tmp_path)
         assert ("offchip_traffic_weight" in quantities) is charged
 
 
-META_PROTOTYPE = "stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml"
+META_PROTOTYPE = Path("stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml")
 
 
 def test_a_core_reads_each_operand_in_the_memory_its_top_level_instance_for_it_is_a_view_of():
-    """A meta_prototype core keeps its activations and outputs in one SRAM and its weights in another."""
+    """A meta_prototype core holds activations and outputs in one SRAM and weights in another."""
     accelerator = parse_accelerator(META_PROTOTYPE)
     core = accelerator.get_core(0)
     assert accelerator.memory_of(core, OUTPUT).name == accelerator.memory_of(core, input_role(1)).name
     assert accelerator.memory_of(core, input_role(1)).name == "meta_prototype_0"
     assert accelerator.memory_of(core, input_role(2)).name == "meta_prototype_0_weights"
     assert [m.name for m in accelerator.memories_of(core)] == ["meta_prototype_0", "meta_prototype_0_weights"]
+    # a further input is held with the activations
+    assert accelerator.memory_holding(core, input_role(3)) is accelerator.memory_of(core, input_role(1))
 
 
-def test_a_top_level_instance_no_memory_binds_is_rejected(tmp_path):
-    """Each top-level instance holds operands transfers land in, so each must be a view of a memory."""
-    data = yaml.safe_load(open(META_PROTOTYPE))
+def test_a_top_level_instance_no_memory_binds_is_rejected():
+    """Every top-level instance of a core must be a view of some memory."""
+    data = yaml.safe_load(META_PROTOTYPE.read_text())
     del data["memories"]["meta_prototype_0_weights"]
     bus = next(c for c in data["connections"] if c["type"] == "bus")
     del bus["ends"]["meta_prototype_0_weights"]
-    validator = AcceleratorValidator(data, META_PROTOTYPE)
-    assert not validator.validate()
-    assert any("core 0's top-level memory `sram_1MB_W` is a view of no memory" in e for e in validator.errors)
+    errors = _invalid(data, META_PROTOTYPE)
+    assert any("core 0's top-level memory `sram_1MB_W` is a view of no memory" in e for e in errors)
 
 
 def test_weights_land_in_the_weights_memory(tmp_path):
-    """A convolution's weights are its second input: their copy sits in the weights SRAM of the cores reading them,
-    and only there."""
+    """Weight copies of a convolution are placed only in the weights SRAM."""
     workload = make_2_conv_workload(
         TwoConvWorkloadConfig(
             batch_size=1,
@@ -295,7 +285,7 @@ def test_weights_land_in_the_weights_memory(tmp_path):
             weight_dtype="bf16",
         )
     )
-    allocation = evaluate_mapping(META_PROTOTYPE, workload, str(tmp_path)).context.get("allocation")
+    allocation = evaluate_mapping(str(META_PROTOTYPE), workload, str(tmp_path)).context.get("allocation")
     workload = allocation.problem.workload
     weights = [
         copy
@@ -310,34 +300,33 @@ def test_weights_land_in_the_weights_memory(tmp_path):
 
 
 def test_the_off_chip_memory_is_the_one_declared_so(tmp_path):
-    """A memory says whether it is off-chip; an accelerator has at most one."""
+    """The off-chip memory is the one marked ``offchip``, and there is at most one."""
     accelerator = _accelerator(tmp_path)
     assert [memory.name for memory in accelerator.memories.values() if memory.offchip] == ["l3"]
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    memories = _two_l1s()["memories"]
     memories["l1_a"]["offchip"] = True
-    assert any("at most one off-chip memory" in error for error in _errors(tmp_path, memories=memories))
+    assert any("at most one off-chip memory" in error for error in _errors(memories=memories))
 
 
-def test_a_memory_declares_its_capacity_only_where_no_core_views_it(tmp_path):
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+def test_a_memory_declares_its_capacity_only_where_no_core_views_it():
+    memories = _two_l1s()["memories"]
     memories["l1_a"]["capacity_bits"] = 8
     del memories["l3"]["capacity_bits"]
-    errors = _errors(tmp_path, memories=memories)
+    errors = _errors(memories=memories)
     assert any("`memories.l1_a`: its views declare its capacity" in error for error in errors)
     assert any("`memories.l3`: no core views it" in error for error in errors)
 
 
 def test_a_memory_no_core_views_on_chip_is_a_memory_of_kind_memory(tmp_path):
-    """A relay buffer between the L1s and L3 that no core computes out of is a ``memory``, as a memory tile is, and
-    charges no core as one."""
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    """An on-chip memory with no views has kind ``memory`` and no cores."""
+    memories = _two_l1s()["memories"]
     memories["scratch"] = {
         "offchip": False,
         "views": [],
         "capacity_bits": 8 * 1024 * 1024,
         "ports": {"rw": {"bandwidth": 64, "serves": {"any": ["read", "write"]}, "read_energy": 0, "write_energy": 0}},
     }
-    connections = yaml.safe_load(TWO_L1S)["connections"]
+    connections = _two_l1s()["connections"]
     connections.append({"type": "link", "ends": {"scratch": ["rw"], "l1_a": ["r_port_1", "w_port_1"]}, "bandwidth": 64})
     accelerator = _accelerator(tmp_path, memories=memories, connections=connections)
     scratch = accelerator.memories["scratch"]
@@ -346,93 +335,67 @@ def test_a_memory_no_core_views_on_chip_is_a_memory_of_kind_memory(tmp_path):
 
 
 def test_a_dma_belongs_to_ports_that_are_its_channels(tmp_path):
-    """A memory's ``dma`` are the descriptors of the DMA its ports are channels of; a memory whose ports declare no
-    channels has no DMA to describe."""
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    """A memory may declare ``dma`` only if one of its ports declares ``channels``."""
+    memories = _two_l1s()["memories"]
     memories["l3"]["dma"] = {"buffer_descriptors": 16, "iterations": 64}
-    assert any("no port declares `channels`" in error for error in _errors(tmp_path, memories=memories))
+    assert any("no port declares `channels`" in error for error in _errors(memories=memories))
     memories["l3"]["ports"]["rw_port_1"]["channels"] = 4
     l3 = _accelerator(tmp_path, memories=memories).memories["l3"]
     assert (l3.dma.buffer_descriptors, l3.dma.iterations) == (16, 64)
-    assert l3.dma_channels(READ) == 4 and l3.dma_channels(WRITE) == 4
-    assert accelerator_port(l3, "rw_port_1").channels == 4
+    assert l3.ports["rw_port_1"].channels == 4
 
 
-def accelerator_port(memory, name: str):
-    return next(port for port in declared_ports(memory) if port.key.port == name)
-
-
-def test_an_aie2_tile_memory_is_a_view_of_exactly_one_tile(tmp_path):
-    """Two tiles viewing one memory would make it no tile's: the code generator names a tile memory by its tile, and
-    a neighbour reads a tile's memory in place without a view of it."""
+def test_an_aie2_tile_memory_is_a_view_of_exactly_one_tile():
+    """An AIE2 tile memory with two views is rejected."""
     path = Path("stream/inputs/aie/hardware/single_core.yaml")
     data = yaml.safe_load(path.read_text())
-    data["cores"] = {
-        i: yaml.safe_load(Path(resolve_core_path(f, str(path.parent))).read_text()) for i, f in data["cores"].items()
-    }
-    data["kernel_library"] = str((path.parent / data["kernel_library"]).resolve())
     data["memories"]["tile_0_2"]["views"] = ["1.memory", "2.memory"]
     del data["memories"]["tile_0_1"]
     data["connections"] = [conn for conn in data["connections"] if "tile_0_1" not in conn["ends"]]
-    (tmp_path / "hw.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
-    validator = AcceleratorValidator(data, str(tmp_path / "hw.yaml"))
-    assert not validator.validate()
-    assert any("`memories.tile_0_2` has 2 views; an AIE2 tile's memory is its own" in e for e in validator.errors)
+    errors = _invalid(data, path)
+    assert any("`memories.tile_0_2` has 2 views; an AIE2 tile's memory is its own" in e for e in errors)
 
 
-def test_a_level_written_as_a_number_is_one_error_not_a_crash(tmp_path):
-    """A core file giving a level as a scalar fails its own validation; the memory check must not then fall over
-    reading its size."""
-    data = yaml.safe_load(TWO_L1S)
-    core = yaml.safe_load(open("stream/inputs/testing/hardware/cores/shared_testing_core1.yaml"))
-    core["memories"]["sram_64KB"] = 1048576
-    data["cores"][0] = core
-    (tmp_path / "hw.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
-    validator = AcceleratorValidator(data, str(tmp_path / "hw.yaml"))
-    assert not validator.validate()
-    assert validator.errors
+@pytest.mark.parametrize(
+    "malform",
+    [lambda core: core["memories"].update(sram_64KB=1048576), lambda core: core.pop("memories")],
+    ids=["level written as a number", "no levels"],
+)
+def test_a_malformed_core_is_an_error_not_a_crash(malform):
+    core = yaml.safe_load(SHARED_CORE1.read_text())
+    malform(core)
+    _errors(cores={**_two_l1s()["cores"], 0: core})
 
 
-def test_parallel_links_sort_as_numbers(tmp_path):
-    connections = yaml.safe_load(TWO_L1S)["connections"]
+def test_parallel_links_between_two_memories_are_distinct_resources_sorted_by_number(tmp_path):
+    """Links between the same memories are told apart by their index, and sort by it as a number."""
+    connections = _two_l1s()["connections"]
     connections += [dict(connections[0]) for _ in range(10)]
     accelerator = _accelerator(tmp_path, connections=connections)
     a, b = accelerator.memories["l1_a"], accelerator.memories["l3"]
     links = sorted(d["cl"] for u, v, d in accelerator.network.edges(data=True) if (u, v) == (a, b))
-    assert [link.parallel for link in links] == list(range(11))
+    assert [link.parallel for link in links] == list(range(11)) and len(set(links)) == 11
+    assert [str(link) for link in links[:2]] == ["CL(l1_a, l3, bw=64)", "CL#1(l1_a, l3, bw=64)"]
 
 
-def test_a_port_naming_a_core_twice_is_rejected(tmp_path):
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+def test_a_port_naming_a_core_twice_is_rejected():
+    memories = _two_l1s()["memories"]
     memories["l1_a"]["ports"]["r_port_1"]["cores"] = [0, 0, 1]
-    assert any(
-        "`memories.l1_a.ports.r_port_1` names a core twice: [0, 0, 1]" in e
-        for e in _errors(tmp_path, memories=memories)
-    )
+    assert any("`memories.l1_a.ports.r_port_1` names a core twice: [0, 0, 1]" in e for e in _errors(memories=memories))
 
 
-def test_a_memory_between_columns_is_in_no_column_and_stages_nothing(tmp_path):
-    """Cores of two columns computing out of one memory: it sits in neither, so a solve on the first columns neither
-    stages tensors in it nor fails on it. A memory a memory-kind core views is a staging one, of kind compute all the
-    same where compute cores compute out of it."""
-    accelerator = _accelerator(tmp_path, core_coordinates={0: [0, 0], 1: [1, 0], 2: [0, 1], 3: [0, 2]})
-    l1_a, l1_b = accelerator.memories["l1_a"], accelerator.memories["l1_b"]
-    assert l1_a.col_id is None and l1_b.col_id == 0
-    assert not l1_a.staging and l1_a.kind == "compute"
-    assert build_hardware_facts(accelerator, nb_cols_to_use=2).mem_memories == []
+def test_a_memory_between_columns_is_rejected():
+    """A memory viewed by cores in different columns is rejected."""
+    errors = _errors(core_coordinates={0: [0, 0], 1: [1, 0], 2: [0, 1], 3: [0, 2]})
+    assert "`memories.l1_a`: its views' cores sit in different columns [0, 1]." in errors
+
+
+def test_a_staging_memory_compute_cores_compute_out_of_is_of_kind_compute():
+    """A staging memory that compute cores also view has kind ``compute``."""
     views = parse_accelerator("tests/fixtures/hardware/tpu_v7_views.yaml")
     vmem = views.memories["vmem_0"]
     assert vmem.staging and vmem.kind == "compute" and vmem.col_id == 0
     assert vmem in build_hardware_facts(views, nb_cols_to_use=4).mem_memories
-
-
-def test_a_further_input_of_a_two_memory_core_lives_with_the_activations():
-    """meta_prototype keeps activations and outputs in one SRAM and weights in another: a normalisation's scale, its
-    third input, is read like an activation, so it lands in the activation SRAM rather than failing the mapping."""
-    accelerator = parse_accelerator(META_PROTOTYPE)
-    core = accelerator.get_core(0)
-    assert accelerator.memory_of(core, input_role(3)).name == accelerator.memory_of(core, input_role(1)).name
-    assert accelerator.memory_holding(core, input_role(3)) is accelerator.memory_of(core, input_role(1))
 
 
 def test_a_link_not_joining_a_memory_passes_none_of_its_ports():
@@ -442,18 +405,21 @@ def test_a_link_not_joining_a_memory_passes_none_of_its_ports():
     assert accelerator.ports.memory_ports(dram, READ, input_role(1), elsewhere) == {}
 
 
-def test_two_shim_ports_alike_on_one_link_take_the_first_by_name():
-    """A connection naming two DMA ports that both serve a read leaves the one a transfer takes undeclared; the parse
-    warned, and the solve takes the first by name every time rather than failing while building its model."""
-    ports = {name: OwnPort(128, frozenset({("any", READ)}), 0, 0, channels=2) for name in ("shim_b", "shim_a")}
+def test_two_shim_ports_alike_on_one_link_leave_a_transfer_no_dma():
+    """Two DMA ports on one link that both serve a read make the port ambiguous."""
+    ports = {
+        name: Port(PortKey("dram", name), (), BandwidthModel.flat(128), frozenset({("any", READ)}), channels=2)
+        for name in ("shim_b", "shim_a")
+    }
     memory = Memory("dram", (), dict(ports), offchip=True, capacity_bits=8)
-    assert memory.dma_port(["shim_b", "shim_a"], READ, input_role(1))[0] == "shim_a"
+    with pytest.raises(ValueError, match=r"memory dram: DMA ports \['shim_a', 'shim_b'\] all serve"):
+        memory.dma_port(["shim_b", "shim_a"], READ, input_role(1))
+    assert memory.dma_port(["shim_b"], READ, input_role(1)).key.port == "shim_b"
     assert memory.dma_port(["shim_b"], WRITE, OUTPUT) is None
 
 
 def test_a_route_over_two_columns_links_passes_one_shim_port_per_link():
-    """DRAM reached from two columns' memory tiles goes through two shims, one per link: each port is found with the
-    links passing it, and asking for the one port says the route passes several."""
+    """A DRAM route to two columns passes one shim port per link, so asking for a single port fails."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
     dram = accelerator.offchip_memory
     links = [data["cl"] for u, v, data in accelerator.network.edges(data=True) if u is dram and v.col_id in (0, 1)]
@@ -468,16 +434,14 @@ def test_a_route_over_two_columns_links_passes_one_shim_port_per_link():
 
 
 def test_a_side_over_two_shims_splits_its_bits_and_moves_at_their_rate_together():
-    """A DRAM read reaching two columns' memory tiles passes two shim ports, half the bits each: the port-time family
-    charges each half, and the side moves at twice one shim's rate, the two working in parallel."""
-    from stream.cost_model.communication_manager import MulticastPathPlan
-
+    """A DRAM read split over two shim ports charges each its fraction and is paced by the busiest one."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
     dram = accelerator.offchip_memory
     tiles = [accelerator.memories[f"tile_{column}_1"] for column in (0, 1)]
     links = [data["cl"] for u, v, data in accelerator.network.edges(data=True) if u is dram and v in tiles]
+    hops = tuple((dram, link.receiver, link) for link in links)
     plan = MulticastPathPlan(
-        (dram,), tuple(tiles), 2, tuple(links), ((0, 0), (0, 1)), tuple((link, 0.5) for link in links)
+        (dram,), tuple(tiles), 2, tuple(links), ((0, 0), (0, 1)), tuple((link, 0.5) for link in links), hops
     )
     space = object.__new__(DecisionSpace)
     space.accelerator, space.shared_bandwidth = accelerator, {}
@@ -486,34 +450,32 @@ def test_a_side_over_two_shims_splits_its_bits_and_moves_at_their_rate_together(
     assert fractions == {"mm2s_c0": 0.5, "mm2s_c1": 0.5}
     assert space.side_bandwidth(None, plan, dram, READ).ceiling == 2 * 128
     uneven = MulticastPathPlan(
-        (dram,), tuple(tiles), 2, tuple(links), ((0, 0), (0, 1)), ((links[0], 0.75), (links[1], 0.25))
+        (dram,), tuple(tiles), 2, tuple(links), ((0, 0), (0, 1)), ((links[0], 0.75), (links[1], 0.25)), hops
     )
     assert space.side_bandwidth(None, uneven, dram, READ).ceiling == 128 / 0.75  # the busier shim paces the side
     assert space.side_port(None, plan, dram, READ).key.port in fractions
-    one = MulticastPathPlan((dram,), (tiles[0],), 1, links[:1], ((0, 0),), ((links[0], 1.0),))
+    one = MulticastPathPlan((dram,), (tiles[0],), 1, links[:1], ((0, 0),), ((links[0], 1.0),), hops[:1])
     assert space.side_bandwidth(None, one, dram, READ).ceiling == 128
 
 
 def test_a_measured_dram_keeps_its_shim_dma_channels():
-    """Strix measures DRAM, so the model has no ports on it for bandwidth; its shim DMAs still have two channels each
-    way, and the column's link to DRAM passes that column's shim."""
+    """Strix DRAM is measured, so it has no bandwidth ports, but each column's link still passes its shim DMA."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
     dram = accelerator.offchip_memory
     assert dram in accelerator.bandwidth and not [p for p in accelerator.ports if p.key.memory == "dram"]
     link = next(d["cl"] for u, v, d in accelerator.network.edges(data=True) if u is dram and v.name == "tile_3_1")
-    name, port = dram.dma_port(link.ports[dram], READ, input_role(1))
-    assert (name, port.channels) == ("mm2s_c3", 2)
-    name, port = dram.dma_port(link.ports[dram], WRITE, OUTPUT)
-    assert (name, port.channels) == ("s2mm_c3", 2)
+    port = dram.dma_port(link.ports[dram], READ, input_role(1))
+    assert (port.key.port, port.channels) == ("mm2s_c3", 2)
+    port = dram.dma_port(link.ports[dram], WRITE, OUTPUT)
+    assert (port.key.port, port.channels) == ("s2mm_c3", 2)
     assert dram.dma_port(link.ports[dram], "read_by_datapath", OUTPUT) is None
 
 
 def test_a_measured_memory_need_not_declare_its_cores_ports(tmp_path):
-    """A measured bandwidth covers every transfer into and out of the memory, so it declares no ports, its cores'
-    included."""
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+    """A memory with a measured bandwidth may declare no ports."""
+    memories = _two_l1s()["memories"]
     memories["l1_a"]["ports"] = {}
-    connections = yaml.safe_load(TWO_L1S)["connections"]
+    connections = _two_l1s()["connections"]
     for connection in connections:
         if "l1_a" in connection["ends"]:
             connection["ends"]["l1_a"] = []
@@ -522,26 +484,14 @@ def test_a_measured_memory_need_not_declare_its_cores_ports(tmp_path):
     assert not [port for port in accelerator.ports if port.key.memory == "l1_a"]
 
 
-def test_a_core_without_levels_is_one_error_not_a_crash(tmp_path):
-    data = yaml.safe_load(TWO_L1S)
-    core = yaml.safe_load(open("stream/inputs/testing/hardware/cores/shared_testing_core1.yaml"))
-    del core["memories"]
-    data["cores"][0] = core
-    validator = AcceleratorValidator(data, str(tmp_path / "hw.yaml"))
-    assert not validator.validate() and validator.errors
-
-
-def test_a_port_of_no_bandwidth_is_rejected(tmp_path):
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+def test_a_port_of_no_bandwidth_is_rejected():
+    memories = _two_l1s()["memories"]
     memories["l3"]["ports"]["rw_port_1"]["bandwidth"] = 0
-    assert any("`memories.l3.ports.rw_port_1.bandwidth` must be > 0" in e for e in _errors(tmp_path, memories=memories))
+    assert any("`memories.l3.ports.rw_port_1.bandwidth` must be > 0" in e for e in _errors(memories=memories))
 
 
 def test_a_view_of_two_memories_is_rejected_when_the_accelerator_is_built(tmp_path):
-    """The validator checks it for a description; an accelerator built from objects checks it too, rather than
-    reading the operand in whichever memory came last."""
-    from stream.hardware.architecture.accelerator import Accelerator, MemoryGraph
-
+    """Building an accelerator from objects rejects a view shared by two memories."""
     accelerator = _accelerator(tmp_path)
     l1_a = accelerator.memories["l1_a"]
     twin = Memory("twin", l1_a.views, {}, offchip=False, capacity_bits=None)
@@ -550,8 +500,7 @@ def test_a_view_of_two_memories_is_rejected_when_the_accelerator_is_built(tmp_pa
 
 
 def test_a_link_into_a_memory_no_core_views_sorts_in_the_steady_state_trace():
-    """The trace orders links by the first core of each end's memory; DRAM has none, and the trace must still be
-    written for every accelerator reached over a link."""
+    """Links from DRAM, which has no views, still get an integer sort key in the trace."""
     accelerator = parse_accelerator("stream/inputs/examples/hardware/fusemax.yaml")
     dram = accelerator.offchip_memory
     links = [data["cl"] for u, _, data in accelerator.network.edges(data=True) if u is dram]
@@ -559,10 +508,10 @@ def test_a_link_into_a_memory_no_core_views_sorts_in_the_steady_state_trace():
     assert _resource_sort_key(links[0]) > _resource_sort_key(accelerator.get_core(0))
 
 
-def test_a_port_naming_a_core_that_is_no_view_is_rejected(tmp_path):
-    memories = _memories(l1_a=["0.sram_64KB", "1.sram_64KB"], l1_b=["2.sram_64KB", "3.sram_64KB"])
+def test_a_port_naming_a_core_that_is_no_view_is_rejected():
+    memories = _two_l1s()["memories"]
     memories["l1_a"]["ports"]["r_port_1"]["cores"] = [0, 1, 2]
-    assert any("names cores [2], no views of it" in error for error in _errors(tmp_path, memories=memories))
+    assert any("names cores [2], no views of it" in error for error in _errors(memories=memories))
 
 
 @pytest.mark.parametrize(
@@ -575,15 +524,15 @@ def test_a_port_naming_a_core_that_is_no_view_is_rejected(tmp_path):
                 "r_again": {"from": "r_port_1", "cores": [1]},
                 "w_port_1": {"from": "w_port_1", "cores": [0, 1]},
             },
-            "core 1's port r_port_1 is in ports ['r_again', 'r_port_1']",
+            "core 1's port r_port_1 is in ports ['r_port_1', 'r_again']",
         ),
     ],
 )
 def test_every_port_a_view_declares_is_in_exactly_one_port_of_its_memory(tmp_path, ports, missing):
-    data = yaml.safe_load(TWO_L1S)
+    data = _two_l1s()
     _declare_ports(data, "l1_a", ports)
     with pytest.raises(ValueError, match=re.escape(missing)):
-        _accelerator(tmp_path, yaml.safe_dump(data))
+        _accelerator(tmp_path, data)
 
 
 def _declare_ports(data: dict, memory: str, ports: dict) -> None:
@@ -604,10 +553,8 @@ def _link(accelerator, sender: str, receiver: str, parallel: int = 0):
 
 
 def test_cores_of_one_memory_may_each_have_their_own_port(tmp_path):
-    """One port per core: each reaches its own. A transfer over a connection through both is told nothing of which it
-    passes and takes the first by name, the same every time (the parse warned); one over a connection through one of
-    them passes that one."""
-    data = yaml.safe_load(TWO_L1S)
+    """Each core may have its own port; a link through several ports serving the same operand is rejected."""
+    data = _two_l1s()
     _declare_ports(
         data,
         "l1_a",
@@ -617,10 +564,15 @@ def test_cores_of_one_memory_may_each_have_their_own_port(tmp_path):
             for core in (0, 1)
         },
     )
+    with pytest.raises(ValueError, match=r"of memory l1_a, which all serve"):
+        _accelerator(tmp_path, data)
+    for connection in data["connections"]:
+        if "l1_a" in connection["ends"]:
+            connection["ends"]["l1_a"] = ["r_0", "w_0"]
     data["connections"].append(
         {"type": "link", "ends": {"l1_a": ["r_1", "w_1"], "l1_b": ["r_port_1", "w_port_1"]}, "bandwidth": 32}
     )
-    accelerator = _accelerator(tmp_path, yaml.safe_dump(data, sort_keys=False))
+    accelerator = _accelerator(tmp_path, data)
     l1_a = [port for port in accelerator.ports if port.key.memory == "l1_a"]
     assert sorted((port.key.port, port.core_ids) for port in l1_a) == [
         ("r_0", (0,)),
@@ -630,20 +582,19 @@ def test_cores_of_one_memory_may_each_have_their_own_port(tmp_path):
     ]
     assert [port.key.port for port in accelerator.ports.ports_of(accelerator.get_core(1))] == ["r_1", "w_1"]
     l1_a, l1_b = accelerator.memories["l1_a"], accelerator.memories["l1_b"]
-    through_both, through_one = _link(accelerator, "l1_a", "l1_b"), _link(accelerator, "l1_a", "l1_b", 1)
-    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_both]).key.port == "r_0"
+    through_zero, through_one = _link(accelerator, "l1_a", "l1_b"), _link(accelerator, "l1_a", "l1_b", 1)
+    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_zero]).key.port == "r_0"
     assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_one]).key.port == "r_1"
     assert accelerator.ports.memory_port(l1_b, WRITE, OUTPUT, [through_one]).key.port == "w_port_1"
     assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, []) is None
 
 
 def test_views_naming_their_ports_apart_leave_a_transfer_no_port(tmp_path):
-    """Two ports of one memory serving an operand in one direction, as views naming their ports apart declare, say
-    nothing about which a transfer passes: it takes the first by name, the parse having warned."""
-    core = yaml.safe_load(open("stream/inputs/testing/hardware/cores/shared_testing_core2.yaml"))
+    """A link through two ports that serve the same operand in the same direction is rejected."""
+    core = yaml.safe_load(SHARED_CORE2.read_text())
     for port in core["memories"]["sram_64KB"]["ports"]:
         port["name"] = port["name"].replace("_1", "_2")
-    data = yaml.safe_load(TWO_L1S)
+    data = _two_l1s()
     data["cores"][1] = core
     _declare_ports(
         data,
@@ -654,10 +605,8 @@ def test_views_naming_their_ports_apart_leave_a_transfer_no_port(tmp_path):
             for core in (1, 2)
         },
     )
-    accelerator = _accelerator(tmp_path, yaml.safe_dump(data))
-    link = _link(accelerator, "l1_a", "l1_b")
-    assert accelerator.ports.memory_port(accelerator.memories["l1_a"], READ, OUTPUT, [link]).key.port == "r_port_1"
-    assert accelerator.ports.memory_port(accelerator.memories["l1_b"], WRITE, OUTPUT, [link]).key.port == "w_port_1"
+    with pytest.raises(ValueError, match=r"of memory l1_a, which all serve"):
+        _accelerator(tmp_path, data)
 
 
 class _Stub:
@@ -668,8 +617,7 @@ class _Stub:
 
 
 def test_the_bits_a_position_moves_are_its_own_where_cores_share_a_memory():
-    """A windowed transfer's bits out of one position are what that position hands, not what every position in the
-    same memory hands: the port shares of two cores sharing a memory sum to the memory's, not twice it."""
+    """Per-position bits of cores sharing a memory sum to the total, not to twice it."""
     a, b = _Stub(name="l1_a"), _Stub(name="l1_b")
     space = object.__new__(DecisionSpace)
     space.hardware = _Stub(shares_memory=lambda one, other: one is other)
@@ -682,8 +630,7 @@ def test_the_bits_a_position_moves_are_its_own_where_cores_share_a_memory():
 
 
 def test_a_core_reads_a_copy_in_one_memory():
-    """A copy lands in one memory per reading core, in the readers' core order, cores sharing a memory repeating it;
-    a core reading it in two memories, as two operands of two readers, is rejected."""
+    """Each reading core gets one memory for a copy; a core reading it from two memories is rejected."""
     a, b = _Stub(name="l1_a"), _Stub(name="l1_b")
     cores = [_Stub(id=i) for i in range(3)]
     one, other, tensor = _Stub(name="conv1"), _Stub(name="conv2"), _Stub(name="x")
@@ -693,7 +640,7 @@ def test_a_core_reads_a_copy_in_one_memory():
 
 
 def test_fifo_depth_and_descriptors_count_a_tensor_once_per_position():
-    """A tensor two cores hold in one memory takes a fifo, and its descriptors, on each: twice the tiles."""
+    """A tensor held by two cores in one memory counts its fifo and descriptors once per core."""
     model = create_solver(SolverBackend.ORTOOLS_GSCIP, "positions")
     model.set_param(SolverParams.VERBOSITY, 0)
     memory = Memory.__new__(Memory)
@@ -741,17 +688,13 @@ def test_every_core_a_hardware_file_declares_is_in_its_accelerator(path):
 
 @pytest.mark.parametrize(("name", "columns"), [("whole_array", 4), ("whole_array_strix", 8)])
 def test_aie_dram_is_an_off_chip_memory_with_a_shim_dma_per_column_and_every_mem_tile_reaches_it(name, columns):
-    """No core views DRAM: its ports are the shim tile DMAs, one per column, two 64-bit channels each way, each with
-    the shim's buffer descriptors for the runtime sequence; a column's link to its memory tile passes its own shim."""
+    """AIE DRAM has no views, one shim DMA port pair per column, and a link to every memory tile through its shim."""
     accelerator = parse_accelerator(f"stream/inputs/aie/hardware/{name}.yaml")
     dram = accelerator.offchip_memory
     assert dram.views == () and {core.kind for core in accelerator.core_list} == {"compute", "memory"}
-    assert {
-        name: (port.bits_per_cycle, port.core_ids, port.channels)
-        for port in declared_ports(dram)
-        for name in [port.key.port]
-    } == {f"{direction}_c{k}": (128, (), 2) for k in range(columns) for direction in ("mm2s", "s2mm")}
-    assert (dram.dma_channels(READ), dram.dma_channels(WRITE)) == (2 * columns, 2 * columns)
+    assert {port.key.port: (port.bits_per_cycle, port.core_ids, port.channels) for port in dram.ports.values()} == {
+        f"{direction}_c{k}": (128, (), 2) for k in range(columns) for direction in ("mm2s", "s2mm")
+    }
     assert (dram.dma.buffer_descriptors, dram.dma.iterations) == (16, 64)
     for _, mem_tile, data in accelerator.network.edges(dram, data=True):
         assert data["cl"].ports[dram] == (f"mm2s_c{mem_tile.col_id}", f"s2mm_c{mem_tile.col_id}")
@@ -768,8 +711,7 @@ def _node(op_type: str, inputs: int) -> ComputationNode:
 
 
 def test_a_multiply_accumulates_bias_lands_where_its_output_does():
-    """A Gemm's operands are its first two inputs; its bias is added into the output, on a core with an activation and
-    a weights SRAM in the activations', as ZigZag, which prices no third operand, leaves it."""
+    """A Gemm bias has the output role and lands in the activation SRAM on meta_prototype."""
     gemm = _node("Gemm", 3)
     assert [role_of(gemm, t) for t in (*gemm.inputs, *gemm.outputs)] == ["input1", "input2", OUTPUT, OUTPUT]
     accelerator = parse_accelerator(META_PROTOTYPE)
@@ -783,18 +725,16 @@ def test_every_input_of_an_elementwise_node_is_an_operand():
 
 
 def test_views_declaring_a_shared_port_differently_are_rejected_when_parsed(tmp_path):
-    """The disagreement surfaces when the description is read, not when a solve first asks for the ports."""
-    core = yaml.safe_load(open("stream/inputs/testing/hardware/cores/shared_testing_core2.yaml"))
+    """Views declaring a shared port differently fail at parse time."""
+    core = yaml.safe_load(SHARED_CORE2.read_text())
     core["memories"]["sram_64KB"]["ports"][0]["bandwidth_max"] = 256
-    data = yaml.safe_load(TWO_L1S)
+    data = _two_l1s()
     data["cores"][1] = core
     with pytest.raises(ValueError, match="declare r_port_1 differently"):
-        _accelerator(tmp_path, yaml.safe_dump(data))
+        _accelerator(tmp_path, data)
 
 
 def test_carried_state_lands_where_the_output_does():
-    """A linear-attention state update reads two operands and carries its state, updated in place each step."""
-    from stream.workload.blocks import build_block  # noqa: PLC0415
-
+    """A linear-attention state update reads its carried state with the output role."""
     node = next(n for n in build_block("linear_attention").get_computation_nodes() if n.name == "state_update")
     assert [role_of(node, t) for t in node.inputs] == ["input1", "input2", OUTPUT]

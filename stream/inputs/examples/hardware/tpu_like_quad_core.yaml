@@ -1,4 +1,4 @@
-# Four TPU-like compute cores + pooling, SIMD and off-chip DRAM controller
+# Four TPU-like compute cores + pooling, SIMD and off-chip DRAM
 name: tpu_like_quad_core
 
 cores:
