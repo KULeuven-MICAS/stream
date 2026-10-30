@@ -20,9 +20,16 @@ from stream.compiler.dialects.stream import (  # noqa: E402
     StrensorVarType,
 )
 from stream.compiler.transforms.aie_convert_ofs import transfer_endpoints  # noqa: E402
+from stream.compiler.transforms.aie_tiles import COMPUTE, MEMORY, AIETileLocation  # noqa: E402
 from stream.datatypes import LayerDim  # noqa: E402
 
 M, N = LayerDim("d2"), LayerDim("d1")
+TILES = {
+    "tile_0_2": AIETileLocation(COMPUTE, 0, 2),
+    "tile_1_2": AIETileLocation(COMPUTE, 1, 2),
+    "tile_4_1": AIETileLocation(MEMORY, 4, 1),
+    "tile_7_1": AIETileLocation(MEMORY, 7, 1),
+}
 
 
 def strensor(column: StrensorVarType, cores: list[str]) -> StrensorType:
@@ -49,4 +56,4 @@ def test_a_fanned_out_transfer_ends_at_the_reader_splitting_the_most_dimensions(
     push = PushOp(block.args[0], channel)
     pulls = [PullOp(wide, channel, point((0, N), (0, M))), PullOp(narrow, channel, point((0, M)))]
     block.add_ops([channel, push, *(pulls if wide_first else pulls[::-1])])
-    assert transfer_endpoints(push) == (wide, wide)
+    assert transfer_endpoints(push, TILES) == (wide, wide)
