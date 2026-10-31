@@ -232,6 +232,13 @@ def test_the_innermost_steady_state_loop_indexes_the_least_data(tmp_path):
     assert tiled[-1] == "proj_Q.D0"
 
 
+def test_attention_too_large_for_the_vmems_is_cut_after_its_projections_only(tmp_path):
+    """At 8192 tokens the projections and the attention do not fit fused, but the attention does on its own: its
+    scores stay on chip rather than every operator going to HBM and back."""
+    _, groups = _layers(TPU_V7, make_multi_head_attention(tmp_path / "mha.onnx", seq=8192))
+    assert [group["layers"] for group in groups] == [["proj_Q", "proj_K", "proj_V"], ["scores", "softmax", "context"]]
+
+
 def test_a_copy_in_memory_holds_what_every_reader_of_it_needs(tmp_path):
     """The attention head's input feeds the query projection, split by rows, and the key and value projections,
     split by head dimension and so reading all of it: each TensorCore's VMEM holds it whole, loaded from HBM, rather

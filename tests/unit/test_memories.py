@@ -228,9 +228,9 @@ def test_a_link_joins_exactly_two_memories():
 def test_the_ir_lists_each_memory_with_its_views(tmp_path):
     memories = _accelerator(tmp_path).get_ir()["memories"]
     assert memories == {
-        "l1_a": {"offchip": False, "views": ["0.sram_64KB", "1.sram_64KB"]},
-        "l1_b": {"offchip": False, "views": ["2.sram_64KB", "3.sram_64KB"]},
-        "l3": {"offchip": True, "views": []},
+        "l1_a": {"offchip": False, "capacity_bits": 64 * 1024 * 8, "views": ["0.sram_64KB", "1.sram_64KB"]},
+        "l1_b": {"offchip": False, "capacity_bits": 64 * 1024 * 8, "views": ["2.sram_64KB", "3.sram_64KB"]},
+        "l3": {"offchip": True, "capacity_bits": 10**10, "views": []},
     }
 
 
@@ -351,7 +351,11 @@ def test_a_memory_no_core_views_on_chip_is_a_memory_of_kind_memory(tmp_path):
     accelerator = _accelerator(tmp_path, memories=memories, connections=connections)
     scratch = accelerator.memories["scratch"]
     assert scratch.kind == "memory" and scratch.cores == () and scratch.namespace is None
-    assert accelerator.get_ir()["memories"]["scratch"] == {"offchip": False, "views": []}
+    assert accelerator.get_ir()["memories"]["scratch"] == {
+        "offchip": False,
+        "capacity_bits": 8 * 1024 * 1024,
+        "views": [],
+    }
 
 
 def test_a_dma_comes_with_the_ports_that_are_its_channels():

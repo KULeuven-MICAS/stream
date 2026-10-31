@@ -10,12 +10,16 @@ from onnx import TensorProto, helper
 from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
-from stream.hardware.ports import READ
+from stream.hardware.ports import OUTPUT, READ
 from stream.ir.allocation import AllocationIR
+from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.mapping.mapping import Mapping, placements_of
 from stream.opt.allocation.constraint_optimization.families.dma import _port_channels
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.parser.mapping_validator import MappingValidator
+from stream.workload.node import OutEdge
+from stream.workload.workload import walked_iterations
 
 RING = "stream/inputs/testing/hardware/tpu_like_ring_hbm.yaml"
 HBMS = ["hbm_0", "hbm_1", "hbm_2", "hbm_3"]
@@ -145,8 +149,15 @@ def _ring_with_hbms_of(capacity_bits):
 
 def test_a_weight_copied_in_each_hbm_over_its_capacity_is_refused_by_what_each_holds(tmp_path):
     """The 1 MiB weight whole in each 512 KiB HBM stack, the output a quarter in each, landing beside its core."""
-    with pytest.raises(ValueError, match=r"^hbm_0 holds a \+ w \+ out/4 = 1 MiB > 512 KiB$"):
+    with pytest.raises(InfeasibleAllocationError, match=r"^hbm_0 holds a \+ w \+ out/4 = 1 MiB > 512 KiB$") as refused:
         _solve(tmp_path, {"memories": HBMS}, out={}, hardware=_ring_with_hbms_of(4 * 2**20))
+    report = refused.value.report
+    assert report.nature == "capacity"
+    (resource,) = report.resources
+    unmet = resource.unmet
+    assert (resource.resource.id, unmet.family, unmet.unit) == ("hbm_0", "offchip_capacity", "bytes")
+    assert {term.label: term.value for term in unmet.terms} == {"w": 2**20, "a": 2**11, "out/4": 2**8}
+    assert (unmet.demand_value, unmet.bound_value) == (sum(term.value for term in unmet.terms), 2**19)
 
 
 def test_a_weight_split_over_the_hbms_fits_where_a_copy_in_each_does_not(tmp_path):
@@ -361,7 +372,9 @@ def test_a_layout_declared_for_one_end_of_a_fusion_cut_holds_for_the_other(tmp_p
 
 
 def test_a_tensor_crossing_a_fusion_cut_is_held_once(tmp_path):
-    with pytest.raises(ValueError, match=r"^hbm_0 holds a \+ w1/4 \+ hidden/4 \+ w2/4 \+ out/4 = 193 KiB > 100 KiB$"):
+    with pytest.raises(
+        InfeasibleAllocationError, match=r"^hbm_0 holds a \+ w1/4 \+ hidden/4 \+ w2/4 \+ out/4 = 193 KiB > 100 KiB$"
+    ):
         _mlp(tmp_path, LAID_OUT | {"Up_cut_out": SPLIT_N}, hardware=_ring_with_hbms_of(100 * 8 * 2**10))
 
 
@@ -386,3 +399,27 @@ def test_a_codegen_layout_declared_for_one_end_of_a_fusion_cut_holds_for_the_oth
     mappings = _mlp(tmp_path, transposed, hardware="stream/inputs/examples/hardware/tpu_like_quad_core.yaml")
     assert str(mappings[1].runtime_args["Up_cut_in"]) == str(mappings[0].runtime_args["Up_cut_out"])
     assert str(mappings[1].runtime_args["Up_cut_in"]) == "(d0, d1) -> (d1, d0)"
+
+
+def test_an_input_and_an_output_split_along_different_axes_walk_every_pairing_of_their_blocks():
+    """Two iterations walk the input's axis and three the output's: six iterations, where one axis pairs them."""
+    held, target = ["in 0", "in 1"], ["out 0", "out 1", "out 2"]
+    assert walked_iterations(held, target, one_axis=False) == [(h, t) for h in held for t in target]
+    assert walked_iterations(held, target[:2], one_axis=True) == [("in 0", "out 0"), ("in 1", "out 1")]
+    assert walked_iterations(None, target, one_axis=False) == [(None, t) for t in target]
+
+
+def test_where_an_output_lands_is_no_placement_of_its_edge():
+    """An output lands by its layout or beside its producing cores (landing_of), which its edge alone cannot say."""
+    accelerator = AcceleratorFactory(_ring_data()).create()
+    with pytest.raises(ValueError, match="holds no operand"):
+        placements_of(accelerator, Mapping(), OutEdge(name="out", inputs=()), OUTPUT)
+
+
+def test_the_reports_carry_each_off_chip_memory_s_capacity_and_access_width(tmp_path):
+    estimate = _estimate(tmp_path, SPLIT_N)
+    (accesses,) = estimate.context.get("group_memory_accesses").values()
+    widths = {(row["memory"], row["read_bandwidth"], row["write_bandwidth"]) for row in accesses["offchip"]}
+    assert widths == {(hbm, 8, 8) for hbm in HBMS}
+    memories = estimate.context.get("accelerator").get_ir()["memories"]
+    assert {hbm: memories[hbm]["capacity_bits"] for hbm in HBMS} == dict.fromkeys(HBMS, 10**10)

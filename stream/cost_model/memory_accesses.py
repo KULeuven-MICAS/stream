@@ -1,8 +1,13 @@
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import READ, WRITE
 from stream.workload.tensor import Tensor
+
+if TYPE_CHECKING:
+    from stream.hardware.architecture.accelerator import Accelerator
 
 
 class AccessCount:
@@ -16,7 +21,8 @@ class AccessCount:
 class CoreMemoryAccesses:
     """Read and write counts per core and tensor, and per off-chip memory and tensor."""
 
-    def __init__(self):
+    def __init__(self, accelerator: "Accelerator"):
+        self.accelerator = accelerator
         # Structure: {core: {tensor: AccessCount}}
         self.accesses: dict[Core, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
         self.offchip: dict[Memory, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
@@ -36,13 +42,9 @@ class CoreMemoryAccesses:
         self.offchip[memory][tensor].write += count
 
     def to_ir(self) -> dict:
-        """Serialise the accesses for inspection: per core, per tensor, read/write counts.
-
-        Counts are in *bandwidth-wide transfers* (a tensor tile's bits divided by the port bandwidth,
-        times how many times it fires) -- the unit the cost model charges. Each tensor's ``size_bits``
-        is carried alongside so a consumer can recover the bytes moved. ``offchip`` holds each off-chip
-        memory's counts per tensor.
-        """
+        """The accesses per core and tensor, in bandwidth-wide transfers, the unit the cost model charges, with each
+        tensor's ``size_bits``; ``offchip`` holds each off-chip memory's counts per tensor and the bits one access moves
+        each way."""
         cores: list[dict] = []
         for core, tensors in self.accesses.items():
             try:
@@ -72,7 +74,12 @@ class CoreMemoryAccesses:
             )
         cores.sort(key=lambda c: c["core_id"])
         offchip = [
-            {"memory": memory.name, **_tensor_row(tensor, counts)}
+            {
+                "memory": memory.name,
+                "read_bandwidth": self.accelerator.offchip_rate(memory, READ),
+                "write_bandwidth": self.accelerator.offchip_rate(memory, WRITE),
+                **_tensor_row(tensor, counts),
+            }
             for memory, tensors in self.offchip.items()
             for tensor, counts in tensors.items()
         ]

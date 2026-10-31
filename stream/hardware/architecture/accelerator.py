@@ -65,7 +65,7 @@ class Accelerator:
         self.port_bandwidth = port_bandwidth or {}
         self.reconfiguration = reconfiguration or {}
         self.communication_manager = CommunicationManager(self)
-        self._hop_counts: dict[tuple[Memory, Memory], float] = {}
+        self._hops_from: dict[Memory, dict[Memory, int]] = {}
 
     @property
     def offchip_memory(self) -> Memory | None:
@@ -76,12 +76,9 @@ class Accelerator:
 
     def hops(self, one: Memory, other: Memory) -> float:
         """Links from ``one`` to ``other``, infinite without a route."""
-        if (one, other) not in self._hop_counts:
-            reached = nx.has_path(self.network, one, other)
-            self._hop_counts[(one, other)] = (
-                nx.shortest_path_length(self.network, one, other) if reached else float("inf")
-            )
-        return self._hop_counts[(one, other)]
+        if one not in self._hops_from:
+            self._hops_from[one] = nx.single_source_shortest_path_length(self.network, one)
+        return self._hops_from[one].get(other, float("inf"))
 
     def nearest_offchip(self, memory: Memory) -> Memory:
         """The off-chip memory the fewest hops from ``memory``, the first in memory order of those as near."""
@@ -89,6 +86,20 @@ class Accelerator:
         if self.hops(memory, nearest) == float("inf"):
             raise ValueError(f"{memory.name} has no route to any off-chip memory to write its output to")
         return nearest
+
+    def offchip_rate(self, memory: Memory, direction: str) -> float:
+        """Bits per cycle off-chip ``memory`` moves in ``direction``: its measured contiguous rate if it has one, else
+        its widest port serving the direction."""
+        if (measured := self.bandwidth.get(memory)) is not None:
+            return measured.contiguous
+        widths = [
+            port.bits_per_cycle
+            for port in self.ports
+            if port.key.memory == memory.name and any(d == direction for _, d in port.serves)
+        ]
+        if not widths:
+            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
+        return max(widths)
 
     def get_core(self, core_id: int) -> Core:
         """
@@ -161,6 +172,7 @@ class Accelerator:
             "memories": {
                 memory.name: {
                     "offchip": memory.offchip,
+                    "capacity_bits": memory.capacity_bits,
                     "views": [f"{core.id}.{instance}" for core, instance in memory.views],
                 }
                 for memory in self.memories.values()

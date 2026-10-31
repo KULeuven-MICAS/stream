@@ -62,7 +62,7 @@ class MemoryAccessesEstimationStage(Stage):
         self.mapping: Mapping = self.ctx.get("mapping")
         self.ssis = self.ctx.get("allocation").ssis
 
-        self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses()
+        self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses(self.accelerator)
 
     def run(self):
         logger.info("Start MemoryAccessesEstimationStage.")
@@ -103,7 +103,7 @@ class MemoryAccessesEstimationStage(Stage):
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
                 for memory, bits in self._offchip_bits(tn, src, t_core, READ):
-                    accesses = ceil(bits / self._offchip_bandwidth(memory, READ)) * nb_fires
+                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, READ)) * nb_fires
                     self.core_memory_accesses.add_offchip_read(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(src).resource_allocation)
@@ -155,7 +155,7 @@ class MemoryAccessesEstimationStage(Stage):
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
                 for memory, bits in self._offchip_bits(tn, dst, t_core, WRITE):
-                    accesses = ceil(bits / self._offchip_bandwidth(memory, WRITE)) * nb_fires
+                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, WRITE)) * nb_fires
                     self.core_memory_accesses.add_offchip_write(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
@@ -182,18 +182,6 @@ class MemoryAccessesEstimationStage(Stage):
             (memory, tensor.size_bits() * route.memory_share(memory, leaving))
             for memory in dict.fromkeys(memory for memory in side if memory.offchip)
         ]
-
-    def _offchip_bandwidth(self, memory: Memory, direction: str) -> float:
-        """Bits one access of off-chip ``memory`` moves in ``direction``: its measured contiguous rate if it has one,
-        else its widest port serving the direction."""
-        measured = self.accelerator.bandwidth.get(memory)
-        if measured is not None:
-            return measured.contiguous
-        ports = [port for port in self.accelerator.ports if port.key.memory == memory.name]
-        widths = [port.bits_per_cycle for port in ports if any(d == direction for _, d in port.serves)]
-        if not widths:
-            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
-        return max(widths)
 
     def is_leaf(self):
         return True

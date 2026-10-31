@@ -35,8 +35,8 @@ def _divisors_desc(n: int) -> list[int]:
 class CapacityTiler:
     """Choose per-core intra-core tiles so every compute core's resident footprint fits its operand buffer, within
     ``fill_fraction`` of it: the headroom covers what the allocation adds beyond the tiles (handover buffers). Of the
-    tiles that fit, those that keep the most of each node's array filled are taken, then cut finer, as long as that
-    keeps the arrays as full, into at least ``PIPELINE_TILES``."""
+    tiles that fit, those that walk the fewest bits a layout splits and then keep the most of each node's array filled
+    are taken, then cut finer, as long as that keeps the arrays as full, into at least ``PIPELINE_TILES``."""
 
     MAX_STEADY_STATE_TILES = 1024
     PIPELINE_TILES = 8
@@ -117,7 +117,11 @@ class CapacityTiler:
         }
         reductions = set().union(*reduced_by.values())
         fitted: list[tuple[float, dict[LayerDim, int]]] = []
-        if overflow() <= 0 and fill() >= self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll):
+        if (
+            overflow() <= 0
+            and fill() >= self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll)
+            and not any(laid_out.get(d) for d in per_core if seed[d] < per_core[d])
+        ):
             fitted.append((fill(), dict(seed)))
         for start in dict.fromkeys((tuple(seed.items()), tuple(per_core.items()))) if not fitted else ():
             for candidates in ([d for d in per_core if d not in reductions], list(per_core)):
@@ -130,7 +134,12 @@ class CapacityTiler:
                     fitted.append((fill(), dict(resident)))
         if not fitted:
             return None
-        resident.update(max(fitted, key=lambda found: found[0])[1])
+
+        def rank(fit: tuple[float, dict[LayerDim, int]]) -> tuple[int, float]:
+            fill, tiles = fit
+            return -sum(laid_out.get(d, 0) for d in per_core if tiles[d] < per_core[d]), fill
+
+        resident.update(max(fitted, key=rank)[1])
         indexed = {
             dim: sum(
                 math.prod(t.shape) * t.operand_type.bitwidth
@@ -197,12 +206,13 @@ class CapacityTiler:
     def _shrink(  # noqa: PLR0913
         self, candidates, resident, per_core, divisors, overflow, fill, aligned, laid_out
     ) -> tuple[LayerDim, int] | None:
-        """The dim and smaller tile that keep the most of the arrays filled, a tile the array maps whole where one
-        does, walk the fewest bits a layout splits, and, among those, save the most overflow per doubling of the
+        """The dim and smaller tile that walk the fewest bits a layout splits, keep the most of the arrays filled, a
+        tile the array maps whole where one does, and, among those, save the most overflow per doubling of the
         steady-state tiles, within the tile budget; None when no step saves any. Looking past the next tile skips one
-        that only starts double buffering what it shrinks."""
+        that only starts double buffering what it shrinks. Walking a split axis makes each iteration wait on one
+        memory, which costs more than a less filled array."""
         base = overflow()
-        best, best_key = None, (-math.inf, False, -math.inf, 0.0)
+        best, best_key = None, (-math.inf, -math.inf, False, 0.0)
         for dim in candidates:
             keep = resident[dim]
             for smaller in (d for d in divisors[dim] if d < keep):
@@ -210,7 +220,7 @@ class CapacityTiler:
                 if math.prod(per_core[d] / resident[d] for d in per_core) > self.MAX_STEADY_STATE_TILES:
                     break
                 rate = (base - overflow()) / math.log2(keep / smaller)
-                if rate > 0 and (key := (fill(), aligned({dim}), -laid_out.get(dim, 0), rate)) > best_key:
+                if rate > 0 and (key := (-laid_out.get(dim, 0), fill(), aligned({dim}), rate)) > best_key:
                     best, best_key = (dim, smaller), key
             resident[dim] = keep
         return best

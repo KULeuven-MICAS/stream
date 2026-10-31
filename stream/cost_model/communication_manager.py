@@ -82,7 +82,7 @@ class MulticastPathPlan:
                 if any(ends[i] is memory for i in (item.sources if leaving else (item.target,))):
                     own.append(item.box)
                 else:
-                    own += [part for box in held if (part := _meet(box, item.box))]
+                    own += [part for box in held if (part := meet(box, item.box))]
         delivered = box_bits(self.delivered, 1)
         return sum(box_bits(own, 1) for own in boxes.values()) / delivered if delivered else 0.0
 
@@ -482,7 +482,7 @@ def _path(
     return steps
 
 
-def _meet(a: Box, b: Box) -> Box | None:
+def meet(a: Box, b: Box) -> Box | None:
     """The part two boxes share, if any."""
     if _disjoint(a, b):
         return None

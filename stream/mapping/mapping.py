@@ -15,6 +15,8 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory, size_text
 from stream.hardware.ports import OUTPUT, input_role
+from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, overflow_infeasibility
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
@@ -391,14 +393,14 @@ def the_one[T](options: tuple[T, ...], node: Node, what: str) -> T:
 
 
 def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
-    """The candidate memories ``node`` holds its ``role`` operand in, one per position: for an edge the memories of
-    its layout, else the off-chip memory; the memory allocation for a transfer, and for a computation the memory each
-    core keeps that operand in. Cores sharing a memory repeat it. An input needs a layout when there are several
-    off-chip memories."""
-    if isinstance(node, InEdge | OutEdge):
+    """The candidate memories ``node`` holds its ``role`` operand in, one per position: for an input edge the memories
+    of its layout, else the off-chip memory; the memory allocation for a transfer, and for a computation the memory
+    each core keeps that operand in. Cores sharing a memory repeat it. An input needs a layout when there are several
+    off-chip memories. Where an output lands is :func:`landing_of`."""
+    if isinstance(node, InEdge):
         if layout := mapping.edge_layouts.get(node.name):
             return (layout.memories,)
-        if isinstance(node, InEdge) and len(offchip := accelerator.offchip_memories) > 1:
+        if len(offchip := accelerator.offchip_memories) > 1:
             raise ValueError(
                 f"input {node.name} has no layout over the off-chip memories {[memory.name for memory in offchip]}; "
                 "declare one in the mapping's runtime_args"
@@ -463,27 +465,29 @@ def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None,
 
 def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNode) -> EdgeLayout | None:
     """Where ``src``'s output landed without a layout (:func:`landing_of`), as one: a block along the axis its first
-    split dim indexes in the memory the cores holding that block land it in, or all of it in one; None if the cores
-    holding one block land it in several."""
+    split dim indexing the output indexes, in the memory the cores holding that block land it in, or all of it in one;
+    None if no split dim indexes the output or the cores holding one block land it in several."""
     positions = landing_of(accelerator, mapping, None, src)
     if len(set(positions)) == 1:
         return EdgeLayout(positions[:1])
     tilings = mapping.get(src).inter_core_tiling
     tiling = tilings[0] if tilings else ()
-    if not tiling:
-        return None
-    (dim, factor), tiles = tiling[0], prod(f for _, f in tiling)
-    blocks: dict[int, set[Memory]] = defaultdict(set)
-    for core, memory in enumerate(positions):
-        blocks[position_of(core, len(positions), tiling) // (tiles // factor)].add(memory)
-    if any(len(memories) > 1 for memories in blocks.values()):
-        return None
     access = src.get_mapping(src.outputs[0])
-    axis = next(
-        axis
+    indexed = (
+        (loop, axis)
+        for loop, (dim, _) in enumerate(tiling)
         for axis, result in enumerate(access.results)
         if dim.position in map_dim_positions(AffineMap(access.num_dims, 0, (result,)))
     )
+    if (found := next(indexed, None)) is None:
+        return None
+    loop, axis = found
+    factor, inner = tiling[loop][1], prod(f for _, f in tiling[loop + 1 :])
+    blocks: dict[int, set[Memory]] = defaultdict(set)
+    for core, memory in enumerate(positions):
+        blocks[position_of(core, len(positions), tiling) // inner % factor].add(memory)
+    if any(len(memories) > 1 for memories in blocks.values()):
+        return None
     return EdgeLayout(tuple(next(iter(blocks[b])) for b in range(factor)), axis)
 
 
@@ -540,6 +544,23 @@ def offchip_holdings(
     return held
 
 
+OFFCHIP_CAPACITY = ResourceKind(
+    "offchip_capacity",
+    "off-chip memory capacity exceeded",
+    unit="bytes",
+    demand_label="workload inputs and outputs living in",
+    bound_label="capacity of",
+    demand_input="workload tensor sizes × mapping runtime_args layouts",
+    bound_input="hardware spec: memory size",
+    term_detail="share it holds",
+    levers=(
+        "Increase {resource} (hardware spec)",
+        "Split the tensors over the off-chip memories rather than copying them (mapping runtime_args)",
+        "Reduce the workload's tensor sizes (smaller batch, shorter sequence)",
+    ),
+)
+
+
 def check_offchip_capacity(
     accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
 ) -> None:
@@ -548,15 +569,17 @@ def check_offchip_capacity(
     if len(accelerator.offchip_memories) <= 1 and not any(mapping.edge_layouts for mapping in mappings):
         return
     for memory, held in offchip_holdings(accelerator, workloads, mappings).items():
-        bits = float(
-            sum(
-                share * tensor.size_bits(tuple(tensor.subview.source.type.get_shape()))
-                for tensor, share in held.items()
-            )
-        )
+        bits_of = {
+            tensor: float(share * tensor.size_bits(tuple(tensor.subview.source.type.get_shape())))
+            for tensor, share in held.items()
+        }
+        bits = sum(bits_of.values())
         if bits > memory.capacity_bits:
             terms = " + ".join(_share_text(tensor.name, share) for tensor, share in held.items())
-            raise ValueError(f"{memory.name} holds {terms} = {size_text(bits)} > {size_text(memory.capacity_bits)}")
+            summary = f"{memory.name} holds {terms} = {size_text(bits)} > {size_text(memory.capacity_bits)}"
+            shares = {_share_text(tensor.name, held[tensor]): b / 8 for tensor, b in bits_of.items()}
+            report = overflow_infeasibility(OFFCHIP_CAPACITY, memory, shares, memory.capacity_bits / 8, summary)
+            raise InfeasibleAllocationError(report)
 
 
 def _share_text(name: str, share: Fraction) -> str:

@@ -2,6 +2,8 @@
 chiplet: a cache split by KV heads as the cores split them streams each quarter from the HBM beside it, a pooled one
 waits on the links out of its HBM, and flash-decoding moves only its partials between slices."""
 
+from functools import partial
+
 import pytest
 import yaml
 from zigzag.utils import open_yaml
@@ -13,6 +15,7 @@ from stream.inputs.testing.workload.make_decode_attention import (
     make_decode_attention,
     make_flash_decoding,
 )
+from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 
@@ -48,6 +51,38 @@ def _hardware(name):
     return AcceleratorFactory(data).create()
 
 
+def _ring_of(slices):
+    """The ring with ``slices`` slices, each with an HBM stack of its own."""
+    link = {"type": "link", "bandwidth": 128}
+    rw = {"r_port_1": {"from": "r_port_1"}, "w_port_1": {"from": "w_port_1"}}
+    hbm = {"bandwidth": 8, "serves": {"any": ["read", "write"]}, "read_energy": 15.625, "write_energy": 15.625}
+    data = {
+        "name": f"ring_of_{slices}",
+        "cores": dict.fromkeys(range(slices), "tpu_like.yaml"),
+        "memories": {
+            **{
+                f"sram_{s}": {
+                    "offchip": False,
+                    "views": [f"{s}.sram_2MB"],
+                    "ports": {name: port | {"cores": [s]} for name, port in rw.items()},
+                }
+                for s in range(slices)
+            },
+            **{
+                f"hbm_{s}": {"offchip": True, "views": [], "capacity_bits": 10**10, "ports": {"rw_port_1": hbm}}
+                for s in range(slices)
+            },
+        },
+        "connections": [
+            link | {"ends": {f"sram_{s}": list(rw), f"sram_{(s + 1) % slices}": list(rw)}} for s in range(slices)
+        ]
+        + [link | {"bandwidth": 8, "ends": {f"sram_{s}": list(rw), f"hbm_{s}": ["rw_port_1"]}} for s in range(slices)],
+    }
+    validator = AcceleratorValidator(data, RING)
+    assert validator.validate()
+    return AcceleratorFactory(validator.normalized_data).create()
+
+
 def _layouts(cache, q=BY_HEADS):
     return {"q": q, "K": cache, "V": cache, "O": BY_HEADS}
 
@@ -63,7 +98,7 @@ def _decode(tmp_path, hardware, layouts, batch=1, context=None, make=make_decode
         mapping |= {"layers": list(layers), "fused_groups": [group]}
     (tmp_path / "mapping.yaml").write_text(yaml.safe_dump(mapping))
     return evaluate_mapping(
-        _hardware(hardware),
+        _hardware(hardware) if isinstance(hardware, str) else hardware,
         workload,
         str(tmp_path),
         str(tmp_path / "mapping.yaml"),
@@ -131,6 +166,15 @@ def test_a_cache_split_by_kv_heads_streams_each_quarter_from_the_hbm_beside_its_
     assert _hbm_time(hardware) <= estimate.cycles < 1.4 * _hbm_time(hardware)
 
 
+def test_a_long_cache_split_by_kv_heads_is_tiled_without_walking_the_heads(tmp_path):
+    """8k positions no longer fit a slice whole: the tiler cuts the head dimension or the sequence, never the heads the
+    layout splits, so each slice still streams its own quarter."""
+    estimate = _decode(tmp_path, "ring", _layouts(BY_HEADS), context=8192)
+    assert _cache_on_chip(estimate) == {}
+    assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
+    assert estimate.cycles < 1.1 * _hbm_time("ring", context=8192)
+
+
 def test_a_cache_pooled_in_one_slice_s_hbm_crosses_the_ring_and_waits_on_that_hbm(tmp_path):
     split = _decode(tmp_path / "split", "ring", _layouts(BY_HEADS))
     pooled = _decode(tmp_path / "pooled", "ring", _layouts(POOLED))
@@ -170,6 +214,18 @@ def test_a_cache_split_on_the_sequence_the_softmax_keeps_whole_costs_the_ring_on
     assert wrong.cycles == pytest.approx(split.cycles, rel=0.01)
 
 
+def test_fewer_kv_heads_than_chiplets_copied_in_each_hbm_are_read_from_the_hbm_beside_each_reader(tmp_path):
+    """Two KV heads over four chiplets, the cache copied in each HBM: every chiplet streams the head its cores attend
+    to from its own HBM, at most one head's K and V, and none crosses the die-to-die link or ICI."""
+    layouts = {"q": COPIED, "K": COPIED, "V": COPIED, "O": {"memories": HBMS, "split": 3}}
+    estimate = _decode(tmp_path, "ironwood", layouts, make=partial(make_decode_attention, kv_heads=2))
+    bits = _link_bits(estimate)
+    assert _cache_on_chip(estimate) == {}
+    assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
+    per_hbm = {hbm: sum(bits[t].get((hbm, f"vmem_{hbm[-1]}"), 0) for t in "KV") for hbm in HBMS}
+    assert max(per_hbm.values()) <= 2 * CONTEXT["ironwood"] * DHEAD * 16
+
+
 ATTENTION = [
     {"name": name, "core_allocation": [[0, 1, 2, 3]], "inter_core_tiling": [[{"dim": "D1", "split": 4}]]}
     for name in ("scores", "softmax", "context")
@@ -190,7 +246,7 @@ def test_a_cache_split_on_the_batch_the_iterations_walk_waits_on_one_hbm_at_a_ti
 def test_flash_decoding_with_its_parts_split_over_the_hbms_moves_only_the_combine_between_slices(tmp_path, hardware):
     """Each slice attends to the part of the sequence in its own HBM, every operator on a part following the split of
     what it reads; only the combine's maximum, sum and context cross between slices, and the step costs about what
-    the split by heads does."""
+    the split by heads does. Every transfer's steady state is described, those its readers split finer too."""
     plain = _decode(tmp_path / "plain", hardware, _layouts(BY_HEADS))
     flash = _decode(tmp_path / "flash", hardware, _layouts(BY_SEQUENCE, q=COPIED), make=make_flash_decoding)
     bits = _link_bits(flash)
@@ -200,6 +256,18 @@ def test_flash_decoding_with_its_parts_split_over_the_hbms_moves_only_the_combin
     assert sum(crossing.values()) < from_hbms / 32
     assert _hbm_shares(flash) == dict.fromkeys(HBMS, 0.25)
     assert _hbm_time(hardware) <= flash.cycles < 1.1 * plain.cycles
+    (group,) = flash.context.get("group_allocations").values()
+    transfers = [node for node in group["steady_state"]["tiled_graph"]["nodes"] if node["kind"] == "transfer"]
+    assert all("moved" in node for node in transfers)
+
+
+@pytest.mark.slow
+def test_flash_decoding_too_large_for_one_group_is_cut_into_two(tmp_path):
+    """16 sequences of 32k: the parts and the combine each fit fused, so the step is two groups streaming the cache
+    at the HBMs' rate, not a group per operator."""
+    estimate = _decode(tmp_path, "ring", _layouts(BY_HEADS), batch=16, context=32768, make=make_flash_decoding)
+    assert len(estimate.context.get("group_memory_accesses")) == 2
+    assert estimate.cycles < 1.01 * _hbm_time("ring", batch=16, context=32768)
 
 
 LONG = {"batch": 1024, "context": 32768}
@@ -207,7 +275,7 @@ LONG = {"batch": 1024, "context": 32768}
 
 
 def test_a_long_batched_cache_copied_in_each_chiplet_s_hbm_overflows_it(tmp_path):
-    with pytest.raises(ValueError, match=r"^hbm_0 holds .*K \+ .*V \+ .* GiB > 96 GiB$"):
+    with pytest.raises(InfeasibleAllocationError, match=r"^hbm_0 holds .*K \+ .*V \+ .* GiB > 96 GiB$"):
         _decode(tmp_path, "ironwood", _layouts(COPIED), **LONG)
 
 
@@ -227,6 +295,23 @@ def test_a_fusion_cut_without_a_layout_is_read_back_where_it_landed(tmp_path):
     estimate = _decode(tmp_path, "ironwood", _layouts(BY_HEADS), batch=16, context=2**21)
     assert len(estimate.context.get("group_memory_accesses")) == 3
     assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
+
+
+def test_a_fusion_cut_whose_cores_split_only_a_reduction_is_read_back_from_the_nearest_hbm(tmp_path):
+    """Split on the sequence, 16 sequences of 32k spill their scores at a cut made by cores splitting the sequence the
+    scores reduce over, which indexes no axis of what they write: the cut is read back where each core landed it."""
+    estimate = _decode(tmp_path, "ironwood", _layouts(BY_SEQUENCE, q=COPIED), batch=16, context=32768)
+    assert len(estimate.context.get("group_memory_accesses")) > 1
+    assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
+
+
+def test_a_fusion_cut_split_on_the_sequence_over_eight_slices_is_read_back_from_the_nearest_hbm(tmp_path):
+    hbms = [f"hbm_{s}" for s in range(8)]
+    by_sequence = {"memories": hbms, "split": 2}
+    layouts = {"q": {"memories": hbms}, "K": by_sequence, "V": by_sequence, "O": {"memories": hbms, "split": 1}}
+    estimate = _decode(tmp_path, _ring_of(8), layouts, batch=16, context=8192)
+    assert len(estimate.context.get("group_memory_accesses")) > 1
+    assert _hbm_shares(estimate) == dict.fromkeys(hbms, 1 / 8)
 
 
 @pytest.mark.parametrize("context", [CONTEXT["ironwood"], pytest.param(32768, marks=pytest.mark.slow)])
