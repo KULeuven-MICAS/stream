@@ -13,12 +13,13 @@ A mapping can be **auto-generated** by the pipeline or **hand-written**. The for
 
 ## Auto-generated mapping (the default)
 
-If you don't pass a mapping, `evaluate_mapping` asks the mapping generator that claims the hardware for one; for any accelerator that is the generic generator. This is the recommended starting point.
+If you don't pass a mapping, or pass one with only `runtime_args` (see [Where inputs and outputs live](#where-inputs-and-outputs-live)), `evaluate_mapping` asks the mapping generator that claims the hardware for one; for any accelerator that is the generic generator. This is the recommended starting point.
 
 The generic generator (`stream/stages/generation/generic_mapping_generation.py`):
 
 - **Selects eligible cores per node** from the hardware. A core with an `operator_types` list only accepts those op types (so pooling goes to the pooling core, SiLU/Mul to the SIMD core); a core without the list accepts anything. A core listing an operator also runs the operators it is expanded into and its parts (a core listing `Softmax` runs `PartialSoftmax`). A node no core runs is refused, naming its operator. Memory cores are never chosen for computation.
 - **Splits work across cores** when several compute cores are eligible, by factoring the node's dimensions into an inter-core tiling.
+- **Follows the layouts** of a mapping file with only `runtime_args`: it splits the cores first along the dimension indexing the axis the layouts split the most bits along, so each core reads the block of the off-chip memory beside it, keeps the tiler from walking that dimension over time, and carries the layouts into each group's mapping.
 - **Writes per-fusion-group `mapping.yaml` files** under the run's output directory, so you can inspect (and later hand-edit) exactly what it chose.
 
 This is enough to run any of the example workloads on any of the example architectures - see the matrix in the README.
@@ -88,6 +89,34 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 | `name` | yes | Group label. |
 | `layers` | yes | Names of the layers in this group. |
 | `intra_core_tiling` | no | Per-dimension temporal tiling, each `{dim: <Node>.D<n>, tile: size}` - note the **fully-qualified** dimension name (e.g. `Conv.D0`). |
+
+---
+
+## Where inputs and outputs live
+
+An accelerator with several off-chip memories (see [Hardware](hardware.md#memories)) needs to know where each workload input and output lives. The mapping file says so per edge under `runtime_args`, keyed by the tensor's name:
+
+```yaml
+runtime_args:
+  K: {memories: [hbm_0, hbm_1, hbm_2, hbm_3], split: 1}   # block s along axis 1 in hbm_s
+  q: {memories: [hbm_0, hbm_1, hbm_2, hbm_3]}             # a copy in each
+  O: {memories: [hbm_0]}                                  # all of it in one
+```
+
+| Layout | Meaning |
+|--------|---------|
+| `split: <axis>` | The whole tensor cut into one contiguous block per memory along that axis (0-indexed, as the workload declares the tensor), block `s` in `memories[s]`. The axis must split evenly. |
+| several `memories`, no `split` | A copy of the whole tensor in each; every reader takes it from the nearest. Inputs only. |
+| one memory | All of it there, as with a single off-chip memory. |
+
+These entries live beside the code generators' `layout` and are read apart from it.
+
+- **Without a layout.** With several off-chip memories, an input without one is refused, naming it. An output without one lands a block per producing core in the off-chip memory the fewest hops from where that core holds it.
+- **Fusion cuts.** The two ends of a cut, `<node>_cut_out` and `<node>_cut_in`, are one tensor: a layout declared for either holds for both, and ends declaring different memories are refused.
+- **Time and traffic.** Each memory serves what its blocks hold of what each core reads. Where the iterations walk a split axis, one iteration may read from fewer memories than the walk does: the latency takes the busiest iteration, which waits on the memories it reads while the others idle, while traffic and energy take the average over the walk, each memory its share. The busiest iteration is an upper bound: a schedule prefetching more than one tile ahead may beat it.
+- **Capacity.** Before solving, each off-chip memory must hold what lives in it: a block of each tensor split over it, all of each copy, each tensor counted once over the fused groups and both ends of a cut. Otherwise the run is refused, naming the memory and the sum, e.g. `hbm_0 holds K + V + q/4 + O/4 = 32 MiB > 16 MiB`.
+
+A layout the cores' split follows keeps each core's data in its own slice. Split along an axis the cores do not split, the data crosses the on-chip links; split along an axis the iterations walk, each iteration waits on one memory. `tests/test_decode_kv.py` shows all three for decode attention (`stream/inputs/testing/workload/make_decode_attention.py`) on `stream/inputs/testing/hardware/tpu_like_ring_hbm.yaml` and `tpu_v7_ironwood_hbm_per_chiplet.yaml`.
 
 ---
 
