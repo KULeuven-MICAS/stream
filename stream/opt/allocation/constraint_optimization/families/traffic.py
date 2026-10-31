@@ -51,11 +51,19 @@ class NodeTraffic:
 
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
     """The share of the transfer's bits each port of each memory on route ``choice`` passes, as
-    :meth:`DecisionSpace.side_ports` gives it."""
+    :meth:`DecisionSpace.side_ports` gives it. A target passing data on reads what it holds of it, unless its cores'
+    switch copies the data onto the links unread."""
     space = ctx.space
     sides: list[PortShare] = []
     runs = dict(zip((READ, WRITE), space.layouts.runs(tr, choice), strict=True))
-    for memories, direction in ((choice.sources, READ), (choice.targets, WRITE)):
+    relays = tuple(
+        memory
+        for memory in choice.targets
+        if memory not in choice.sources
+        and choice.links_at(memory, leaving=True)
+        and not space.hardware.circuit_switched(memory.cores)
+    )
+    for memories, direction in ((choice.sources + relays, READ), (choice.targets, WRITE)):
         for memory in dict.fromkeys(memories):
             for port, share in space.side_ports(tr, choice, memory, direction).items():
                 efficiency = port.bandwidth.efficiency(runs[direction], direction)

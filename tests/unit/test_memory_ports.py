@@ -159,6 +159,23 @@ def test_a_stream_active_for_less_than_a_cycle_keeps_its_bits(monkeypatch: pytes
     assert (stream.active_cycles, stream.latency_ub, stream.bits_per_cycle * stream.latency_ub) == ("gated", 0.125, 512)
 
 
+@pytest.mark.parametrize(("switched", "readers"), [(False, ["relay", "source"]), (True, ["source"])])
+def test_a_target_passing_data_on_reads_it_unless_its_switch_copies_it(switched, readers) -> None:
+    """A source feeding a relay that passes the data on to a target: a switch copies it onto the link unread."""
+    source, relay, target = memories = [MagicMock() for _ in range(3)]
+    for memory, tag in zip(memories, ("source", "relay", "target"), strict=True):
+        memory.tag = tag
+    choice = SimpleNamespace(
+        sources=(source,), targets=(relay, target), links_at=lambda memory, leaving: (memory is relay) == leaving
+    )
+    ctx = MagicMock()
+    ctx.space.layouts.runs.return_value = (None, None)
+    ctx.space.hardware.circuit_switched.return_value = switched
+    ctx.space.side_ports.side_effect = lambda tr, choice, memory, direction: {MagicMock(tag=memory.tag): 1.0}
+    sides = traffic._sides(ctx, MagicMock(), choice)
+    assert sorted(side.port.tag for side in sides if side.direction == "read") == readers
+
+
 def zigzag_stall(real_cycles: list[int], window: int, periods: int) -> float:
     """ZigZag's combined stall of double-buffered streams sharing one port (CostModelEvaluation, step 2)."""
     activities = [
