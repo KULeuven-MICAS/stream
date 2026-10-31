@@ -18,7 +18,8 @@ class MemoryGraph(nx.MultiDiGraph):
 
 class Accelerator:
     """The cores, the memories they use and the network between those memories. Each top-level memory instance of a
-    core is a view of one memory, and several cores may view the same memory. At most one memory is off-chip."""
+    core is a view of one memory, and several cores may view the same memory. At most one memory is off-chip, and every
+    other memory has a route to it."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -53,6 +54,11 @@ class Accelerator:
             raise ValueError(f"several off-chip memories: {offchip}")
         self.offchip_memory = next(iter(offchip), None)
         self.network = network
+        if self.offchip_memory is not None:
+            reached = nx.descendants(network, self.offchip_memory) if self.offchip_memory in network else set()
+            unreached = sorted(memory.name for memory in memories if memory not in reached | {self.offchip_memory})
+            if unreached:
+                raise ValueError(f"memories {unreached} have no route to off-chip memory {self.offchip_memory.name}")
         # memory -> the measured bandwidth every transfer into or out of it shares
         self.bandwidth = bandwidth or {}
         # (memory, port name) -> measured model replacing the port's declared width

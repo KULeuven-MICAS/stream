@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -131,12 +131,19 @@ class PortRegistry:
             ports[key] = replace(ports[key], bandwidth=model)
         return cls(ports)
 
-    def check_connections(self, network: MemoryGraph) -> None:
-        """Reject a connection that names several ports of one memory serving the same operand and direction (read or
-        write), since it is then unclear which port a transfer uses."""
+    def check_connections(self, network: MemoryGraph, measured: Collection[Memory]) -> None:
+        """Reject a connection that names, of a memory without a ``measured`` bandwidth, no port serving reads or none
+        serving writes, since no port would then bound a transfer over it; or several ports of one memory serving the
+        same operand and direction (read or write), since it is then unclear which port a transfer uses."""
         for link in dict.fromkeys(data["cl"] for _, _, data in network.edges(data=True)):
             for memory, names in link.ports.items():
                 through = [p for p in self._ports_of_memory.get(memory.name, ()) if p.key.port in names]
+                unserved = [d for d in (READ, WRITE) if not candidate_ports(through, d, ANY_OPERAND)]
+                if unserved and memory not in measured:
+                    raise ValueError(
+                        f"{link} names no port of memory {memory.name} serving {' or '.join(unserved)}: name the ports "
+                        "a transfer passes each way"
+                    )
                 services = {service for p in through for service in p.serves if service[1] in (READ, WRITE)}
                 for operand, direction in sorted(services):
                     own = candidate_ports(through, direction, operand)

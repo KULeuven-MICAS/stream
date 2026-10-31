@@ -334,15 +334,75 @@ def test_a_memory_no_core_views_on_chip_is_a_memory_of_kind_memory(tmp_path):
     assert accelerator.get_ir()["memories"]["scratch"] == {"offchip": False, "views": []}
 
 
-def test_a_dma_belongs_to_ports_that_are_its_channels(tmp_path):
-    """A memory may declare ``dma`` only if one of its ports declares ``channels``."""
+def test_a_dma_comes_with_the_ports_that_are_its_channels():
+    """A memory declares ``dma`` exactly when one of its ports declares ``channels``."""
     memories = _two_l1s()["memories"]
     memories["l3"]["dma"] = {"buffer_descriptors": 16, "iterations": 64}
     assert any("no port declares `channels`" in error for error in _errors(memories=memories))
+    del memories["l3"]["dma"]
     memories["l3"]["ports"]["rw_port_1"]["channels"] = 4
-    l3 = _accelerator(tmp_path, memories=memories).memories["l3"]
-    assert (l3.dma.buffer_descriptors, l3.dma.iterations) == (16, 64)
-    assert l3.ports["rw_port_1"].channels == 4
+    assert "`memories.l3`: ports ['rw_port_1'] declare `channels`, but no `dma` is given." in _errors(memories=memories)
+
+
+def test_a_zigzag_accelerator_declares_no_dma():
+    """No zigzag family bounds DMA channels, so declaring them is rejected rather than left unbounded."""
+    memories = _two_l1s()["memories"]
+    memories["l3"]["dma"] = {"buffer_descriptors": 16, "iterations": 64}
+    memories["l3"]["ports"]["rw_port_1"]["channels"] = 4
+    assert any("`memories.l3`: the zigzag namespace bounds no DMA channels" in e for e in _errors(memories=memories))
+
+
+def test_an_off_chip_memory_has_no_views():
+    memories = _two_l1s()["memories"]
+    memories["l1_b"]["offchip"] = True
+    del memories["l3"]
+    connections = [c for c in _two_l1s()["connections"] if "l3" not in c["ends"]]
+    errors = _errors(memories=memories, connections=connections)
+    assert "`memories.l1_b` is off-chip, where no core computes, so it has no views." in errors
+
+
+def _read_only_l3(data: dict) -> None:
+    data["memories"]["l3"]["ports"]["rw_port_1"]["serves"] = {"any": ["read"]}
+
+
+def _portless_l3(data: dict) -> None:
+    data["memories"]["l3"]["ports"] = {}
+    for connection in data["connections"]:
+        if "l3" in connection["ends"]:
+            connection["ends"]["l3"] = []
+
+
+def _l1_a_read_port_to_l3(data: dict) -> None:
+    next(c for c in data["connections"] if set(c["ends"]) == {"l1_a", "l3"})["ends"]["l1_a"] = ["r_port_1"]
+
+
+@pytest.mark.parametrize(
+    ("malform", "message"),
+    [
+        (_read_only_l3, "names no port of memory l3 serving write"),
+        (_portless_l3, "names no port of memory l3 serving read or write"),
+        (_l1_a_read_port_to_l3, r"CL\(l1_a, l3, bw=64\) names no port of memory l1_a serving write"),
+    ],
+    ids=["read-only DRAM port", "DRAM without ports", "link end with only a read port"],
+)
+def test_a_connection_passes_a_port_each_way_at_every_memory_it_joins(tmp_path, malform, message):
+    """A transfer over a connection is bounded by a port at each end, whichever way it goes."""
+    data = _two_l1s()
+    malform(data)
+    with pytest.raises(ValueError, match=message):
+        _accelerator(tmp_path, data)
+
+
+def test_a_memory_with_no_route_to_the_off_chip_memory_is_rejected(tmp_path):
+    data = _two_l1s()
+    ports = yaml.safe_load(L3)["l3"]["ports"]
+    data["memories"]["island"] = {"offchip": False, "views": [], "capacity_bits": 1024, "ports": ports}
+    data["connections"] = [c for c in data["connections"] if "l1_b" not in c["ends"]]
+    data["connections"].append(
+        {"type": "link", "ends": {"l1_b": ["r_port_1", "w_port_1"], "island": ["rw_port_1"]}, "bandwidth": 64}
+    )
+    with pytest.raises(ValueError, match=r"memories \['island', 'l1_b'\] have no route to off-chip memory l3"):
+        _accelerator(tmp_path, data)
 
 
 def test_an_aie2_tile_memory_is_a_view_of_exactly_one_tile():
@@ -388,6 +448,43 @@ def test_a_memory_between_columns_is_rejected():
     """A memory viewed by cores in different columns is rejected."""
     errors = _errors(core_coordinates={0: [0, 0], 1: [1, 0], 2: [0, 1], 3: [0, 2]})
     assert "`memories.l1_a`: its views' cores sit in different columns [0, 1]." in errors
+
+
+def _whole_array() -> tuple[Path, dict]:
+    path = Path("stream/inputs/aie/hardware/whole_array.yaml")
+    return path, yaml.safe_load(path.read_text())
+
+
+def test_every_aie2_dram_port_is_a_shim_dma():
+    """AIE2 DRAM moves data only through shim DMA channels, and the code generator needs their DMA's limits."""
+    path, data = _whole_array()
+    del data["memories"]["dram"]["ports"]["mm2s_c3"]["channels"]
+    assert any("`memories.dram.ports.mm2s_c3` declares no `channels`" in e for e in _invalid(data, path))
+    path, data = _whole_array()
+    del data["memories"]["dram"]["dma"]
+    assert any("`memories.dram`: ports ['mm2s_c0'," in e and "no `dma` is given" in e for e in _invalid(data, path))
+
+
+def test_an_aie2_shim_dma_serves_one_column():
+    path, data = _whole_array()
+    to_column_1 = next(c for c in data["connections"] if {"dram", "tile_1_1"} == set(c["ends"]))
+    to_column_1["ends"]["dram"] = ["mm2s_c0", "s2mm_c0"]
+    errors = _invalid(data, path)
+    assert "`memories.dram.ports.mm2s_c0` joins columns [0, 1]; a shim DMA serves its own column." in errors
+
+
+def test_an_aie2_tile_memory_has_no_channels_of_its_own():
+    """A tile memory's DMA channels are its core's; channels on its ports would bound nothing."""
+    path, data = _whole_array()
+    data["memories"]["tile_0_2"]["ports"]["extra"] = {
+        "bandwidth": 64,
+        "channels": 2,
+        "serves": {"any": ["read"]},
+        "read_energy": 0,
+        "write_energy": 0,
+    }
+    errors = _invalid(data, path)
+    assert "`memories.tile_0_2`: an AIE2 tile's DMA channels are its core's, not its ports'." in errors
 
 
 def test_a_staging_memory_compute_cores_compute_out_of_is_of_kind_compute():

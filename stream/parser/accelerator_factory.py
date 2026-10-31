@@ -58,7 +58,7 @@ class AcceleratorFactory:
             reconfiguration=self.data.get("reconfiguration"),
             port_bandwidth=port_models,
         )
-        accelerator.ports.check_connections(accelerator.network)
+        accelerator.ports.check_connections(accelerator.network, accelerator.bandwidth)
         return accelerator
 
     def create_core(

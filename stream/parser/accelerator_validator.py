@@ -581,8 +581,10 @@ class AcceleratorValidator:
         return level.get("capacity" if "memory" in core_data else "size") if isinstance(level, dict) else None
 
     def _validate_capacity_and_ports(self, name: str, memory: dict[str, Any], viewers: set[int]) -> None:
-        """Check that only a memory without views declares its capacity, that a port's cores view the memory, and that a
-        memory with a DMA has a port with channels."""
+        """Check that the off-chip memory has no views, that only a memory without views declares its capacity, that a
+        port's cores view the memory, and that a memory has a DMA exactly when a port has channels."""
+        if memory["offchip"] and viewers:
+            self.invalidate(f"`memories.{name}` is off-chip, where no core computes, so it has no views.")
         if viewers and "capacity_bits" in memory:
             self.invalidate(f"`memories.{name}`: its views declare its capacity, so `capacity_bits` is not given.")
         if not viewers and "capacity_bits" not in memory:
@@ -596,8 +598,11 @@ class AcceleratorValidator:
                 self.invalidate(f"`memories.{name}.ports.{port_name}` names cores {strangers}, no views of it.")
             if len(set(cores)) != len(cores):
                 self.invalidate(f"`memories.{name}.ports.{port_name}` names a core twice: {list(cores)}.")
-        if "dma" in memory and not any("channels" in port for port in memory["ports"].values()):
+        channels = [port_name for port_name, port in memory["ports"].items() if "channels" in port]
+        if "dma" in memory and not channels:
             self.invalidate(f"`memories.{name}.dma` is given, but no port declares `channels`.")
+        if channels and "dma" not in memory:
+            self.invalidate(f"`memories.{name}`: ports {channels} declare `channels`, but no `dma` is given.")
 
     @property
     def normalized_data(self) -> dict[str, Any]:
@@ -651,7 +656,12 @@ class ZigZagAcceleratorNamespaceValidator(BaseAcceleratorNamespaceValidator):
     NAMESPACE = "zigzag"
 
     def validate(self) -> None:
-        pass  # zigzag accelerators have no namespace-specific requirements
+        for name, memory in self.data["memories"].items():
+            if "dma" in memory or any("channels" in port for port in memory["ports"].values()):
+                self._invalidate(
+                    f"`memories.{name}`: the zigzag namespace bounds no DMA channels, so it declares no `dma` or "
+                    "`channels`."
+                )
 
 
 @AcceleratorNamespaceValidatorRegistry.register
@@ -667,16 +677,52 @@ class AIE2AcceleratorNamespaceValidator(BaseAcceleratorNamespaceValidator):
     def validate(self) -> None:
         self._validate_core_coordinates()
         self._validate_tile_memories()
+        self._validate_shim_ports()
 
     def _validate_tile_memories(self) -> None:
-        """Check that every on-chip memory is a view of exactly one tile, and that the off-chip memory has no views.
-        A tile reaches a neighbour's memory without a view of it."""
+        """Check that every on-chip memory is a view of exactly one tile, whose DMA its core declares. A tile reaches a
+        neighbour's memory without a view of it."""
         for name, memory in self.data["memories"].items():
-            if len(memory["views"]) != (0 if memory["offchip"] else 1):
+            if memory["offchip"]:
+                continue
+            if len(memory["views"]) != 1:
                 self._invalidate(
                     f"`memories.{name}` has {len(memory['views'])} views; an AIE2 tile's memory is its own, a view of "
-                    "exactly one tile, and off-chip memory is a view of none."
+                    "exactly one tile."
                 )
+            if any("channels" in port for port in memory["ports"].values()):
+                self._invalidate(f"`memories.{name}`: an AIE2 tile's DMA channels are its core's, not its ports'.")
+
+    def _validate_shim_ports(self) -> None:
+        """Check that every port of the off-chip memory is a shim DMA, with channels, joined to tiles of one column."""
+        for name, memory in self.data["memories"].items():
+            if not memory["offchip"]:
+                continue
+            for port_name, port in memory["ports"].items():
+                if "channels" not in port:
+                    self._invalidate(
+                        f"`memories.{name}.ports.{port_name}` declares no `channels`; an AIE2 array reaches off-chip "
+                        "memory through its shim DMAs."
+                    )
+                columns = {
+                    column
+                    for connection in self.data["connections"]
+                    if port_name in connection["ends"].get(name, ())
+                    for other in connection["ends"]
+                    if other != name
+                    for column in self._columns(other)
+                }
+                if len(columns) > 1:
+                    self._invalidate(
+                        f"`memories.{name}.ports.{port_name}` joins columns {sorted(columns)}; a shim DMA serves its "
+                        "own column."
+                    )
+
+    def _columns(self, memory: str) -> set[int]:
+        """The columns of the tiles that view ``memory``."""
+        coordinates = self.data["core_coordinates"]
+        views = self.data["memories"].get(memory, {}).get("views", ())
+        return {coordinates[core_id][0] for core_id, _ in views if core_id in coordinates}
 
     def _validate_core_coordinates(self) -> None:
         coords = self.data.get("core_coordinates", {})

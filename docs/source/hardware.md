@@ -85,11 +85,11 @@ Data lives in memories. A core computes out of its top-level memory instances (p
 
 | Field | Required | Meaning |
 |-------|:---:|---------|
-| `offchip` | yes | Whether it is the off-chip memory, where the workload's inputs and outputs live. An accelerator has at most one. |
+| `offchip` | yes | Whether it is the off-chip memory, where the workload's inputs and outputs live. An accelerator has at most one, every other memory has a route to it, and no core views it. |
 | `views` | yes | The core instances that see this memory, as `<core id>.<instance>`, e.g. `[0.l1, 1.tcdm]`. Empty for a memory no core computes out of, such as DRAM. |
 | `capacity_bits` | only without views | Its capacity in bits. A memory with views takes the size its views declare. |
 | `ports` | yes | Its ports by name, see [Memory ports](#memory-ports). |
-| `dma` | no | The DMA behind its `channels` ports: `buffer_descriptors` and `iterations` per descriptor. The AIE code generator chains re-reads within these limits; without `dma` every loop is unrolled. |
+| `dma` | no | The DMA behind its `channels` ports: `buffer_descriptors` and `iterations` per descriptor. Given exactly when a port has `channels`. Only the `aie2` namespace bounds DMA channels: there the off-chip memory has `dma` and every one of its ports has `channels`. The AIE code generator chains re-reads within these limits. |
 
 The allocation places tensors in memories; a memory's capacity bounds what all its cores hold in it together. A node reads input `k` from the memory its core's `I<k>` instance views, and writes to the one its `O` instance views.
 
@@ -109,7 +109,7 @@ ports:
   mm2s: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
 ```
 
-Every port a viewing core declares must belong to exactly one entry. A transfer passes, of the ports its connection lists for the memory, the one serving its operand in its direction; list only one such port per connection end.
+Every port a viewing core declares must belong to exactly one entry. A transfer passes, of the ports its connection lists for the memory, the one serving its operand in its direction; list at each end a port serving reads and one serving writes (unless the memory has a measured bandwidth), and only one such port per operand and direction.
 
 The `memory_ports` [constraint family](stages.md#constraint-families), in the default set, uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
@@ -297,7 +297,7 @@ dma:                   # tile DMA channels
 
 A tile's view is `<core id>.memory`, with ports `mm2s` and `s2mm`. On `aie2` each on-chip memory is a view of exactly one tile (the shipped files name it `tile_<col>_<row>`); a neighbouring tile reads it without a view.
 
-DRAM has no views. Its ports are the shim DMAs, one `mm2s`/`s2mm` pair per column (`mm2s_c<col>`, `s2mm_c<col>`), each with `channels: 2`, and each column's link to its memory tile passes that column's pair. DRAM's `dma` gives the shim DMA's buffer descriptors and iterations (16 and 64 on AIE2).
+DRAM has no views. Its ports are the shim DMAs, one `mm2s`/`s2mm` pair per column (`mm2s_c<col>`, `s2mm_c<col>`), each with `channels: 2`, and each column's link to its memory tile passes that column's pair; a shim port serves one column. DRAM's `dma` gives the shim DMA's buffer descriptors and iterations (16 and 64 on AIE2).
 
 ---
 
