@@ -11,6 +11,7 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.node import InEdge, OutEdge, TransferNode, TransferType
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
@@ -101,8 +102,9 @@ class MemoryAccessesEstimationStage(Stage):
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
-                bandwidth = self._offchip_bandwidth(READ)
-                self.core_memory_accesses.add_offchip_read(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                for memory, bits in self._offchip_bits(tn, src, t_core, READ):
+                    accesses = ceil(bits / self._offchip_bandwidth(memory, READ)) * nb_fires
+                    self.core_memory_accesses.add_offchip_read(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(src).resource_allocation)
             for core in cores:
@@ -152,8 +154,9 @@ class MemoryAccessesEstimationStage(Stage):
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
-                bandwidth = self._offchip_bandwidth(WRITE)
-                self.core_memory_accesses.add_offchip_write(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                for memory, bits in self._offchip_bits(tn, dst, t_core, WRITE):
+                    accesses = ceil(bits / self._offchip_bandwidth(memory, WRITE)) * nb_fires
+                    self.core_memory_accesses.add_offchip_write(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
             for core in cores:
@@ -163,10 +166,26 @@ class MemoryAccessesEstimationStage(Stage):
                 total_accesses = accesses_per_fire * nb_fires
                 self.core_memory_accesses.add_write(core, t_core, total_accesses)
 
-    def _offchip_bandwidth(self, direction: str) -> float:
-        """Bits one access of the off-chip memory moves in ``direction``: its measured contiguous rate if it has one,
+    def _offchip_bits(
+        self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str
+    ) -> list[tuple[Memory, float]]:
+        """Each off-chip memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, with the bits of it that memory
+        moves per firing: all of them with one off-chip memory, else, for a split layout, its share of what the
+        transfer's route delivers over the iterations walking the split axis, or its share of the route's data."""
+        if len(self.accelerator.offchip_memories) <= 1:
+            return [(offchip_memory(self.accelerator), tensor.size_bits())]
+        route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
+        if (shares := self.workload.layout_shares(edge, tn.inputs[0], self.mapping, route.delivered)) is not None:
+            return [(memory, tensor.size_bits() * share) for memory, share in shares.items()]
+        side = route.sources if leaving else route.targets
+        return [
+            (memory, tensor.size_bits() * route.memory_share(memory, leaving))
+            for memory in dict.fromkeys(memory for memory in side if memory.offchip)
+        ]
+
+    def _offchip_bandwidth(self, memory: Memory, direction: str) -> float:
+        """Bits one access of off-chip ``memory`` moves in ``direction``: its measured contiguous rate if it has one,
         else its widest port serving the direction."""
-        memory = offchip_memory(self.accelerator)
         measured = self.accelerator.bandwidth.get(memory)
         if measured is not None:
             return measured.contiguous

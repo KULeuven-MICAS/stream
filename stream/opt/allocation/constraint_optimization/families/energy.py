@@ -25,11 +25,11 @@ Component = tuple[str, str, tuple[int, ...]]
 
 
 def _energy_per_bit(stream: DmaStream) -> list[tuple[Component, float]]:
-    """pJ per bit by where it is spent: each source's share of its read, each target's write, and each link's share
-    of the bits it carries."""
+    """pJ per bit by where it is spent: each source's share of its read, each target's write (over a walk of an edge's
+    split axis, each memory's average share), and each link's share of the bits it carries."""
     ports = [
         (("port", port_name(side.port.key), side.port.core_ids), side.share * side.port.energy_per_bit(side.direction))
-        for side in stream.sides
+        for side in stream.energy_sides
     ]
     return ports + [
         (("link", link_name(link), link_cores(link)), share * link.unit_energy_cost / link.bandwidth)

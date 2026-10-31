@@ -86,6 +86,13 @@ class MulticastPathPlan:
         delivered = box_bits(self.delivered, 1)
         return sum(box_bits(own, 1) for own in boxes.values()) / delivered if delivered else 0.0
 
+    def memory_share(self, memory: Memory, leaving: bool) -> float:
+        """The share of the delivered data ``memory`` sends (``leaving``) or receives: all of it where it is the only
+        memory on its side."""
+        if set(self.sources if leaving else self.targets) == {memory}:
+            return 1.0
+        return self.share_at(memory, leaving, self.links_at(memory, leaving))
+
 
 def box_bits(boxes: Iterable[Box], bitwidth: float) -> float:
     """Bits the ``boxes`` cover together: distinct data counted once."""

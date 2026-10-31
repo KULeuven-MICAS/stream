@@ -450,11 +450,11 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '3.0'."""
+        """AllocationIR.model_json_schema() must include schema_version const '3.1'."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "3.0", f"Expected const='3.0', got: {sv}"
+        assert sv.get("const") == "3.1", f"Expected const='3.1', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
@@ -486,7 +486,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "3.0"
+        assert ir.schema_version == "3.1"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_allocation) constructs correctly."""
@@ -500,7 +500,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "3.0"
+        assert ir.schema_version == "3.1"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -580,7 +580,7 @@ class TestAllocationIR:
         view = ir.compiler_view()
 
         assert isinstance(view, AllocationCompilerView)
-        assert view.schema_version == "2.0"
+        assert view.schema_version == "2.1"
         assert "MatMul" in view.mapping_nodes
         matmul_node = view.mapping_nodes["MatMul"]
         assert isinstance(matmul_node, NodeAllocationIR)
@@ -611,7 +611,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "3.0"
+        assert parsed["schema_version"] == "3.1"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
@@ -791,10 +791,10 @@ def _without_descriptions(schema):
         (AcceleratorIR, "2.0", "0c669dc5e59ce14b"),
         (AcceleratorHardwareView, "2.0", "714be362a16d96b8"),
         (AcceleratorCompilerView, "2.0", "c09a97ce83accdbd"),
-        (AllocationIR, "3.0", "a66cee130dbc2ad0"),
+        (AllocationIR, "3.1", "3e3638bb5a6216c0"),
         (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
         (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
-        (AllocationCompilerView, "2.0", "2e7aaa321471109e"),
+        (AllocationCompilerView, "2.1", "9aea62c5ffaf0f7e"),
         (AllocationPerformanceView, "2.0", "b4c9df810d67eaaa"),
         (InfeasibilityReportIR, "2.0", "f916a400b3ad105e"),
     ],

@@ -1,17 +1,20 @@
 """Lowering of a fused group to its steady state: the transfers made explicit, each with the placements and
 routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
 
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import replace
+from functools import partial
 from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
+import networkx as nx
 import numpy as np
 from xdsl.ir.affine import AffineMap
 
 from stream.allocation.problem import AllocationProblem
-from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.cost_model.communication_manager import Box, DemandItem, MulticastPathPlan, box_bits
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
@@ -107,6 +110,7 @@ class _Lowering:
         self.nb_cols_to_use = nb_cols_to_use
         self.route_alternatives = route_alternatives
         self.hardware = build_hardware_facts(accelerator, nb_cols_to_use)
+        self._hop_counts: dict[tuple[Memory, Memory], float] = {}
 
     def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> AllocationProblem:
         with span("transfer_graph"):
@@ -437,7 +441,7 @@ class _Lowering:
         if node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
             staged = self._mem_tile_placements(src, node)
             # No on-chip memory tiles: the copy lands off-chip.
-            return staged or ((offchip_memory(self.accelerator),),)
+            return staged or (self._offchip_landing(dsts, src),)
         readers = []
         for dst in dsts:
             # An output edge is read off chip, by no core.
@@ -547,6 +551,7 @@ class _Lowering:
                     self.hardware.pairs_by_spatial_index((*src_allocs, *dst_allocs)),
                     dst_allocs,
                     self._reads_in,
+                    partial(self._iteration_cost, src_allocs, dst_allocs, bitwidth),
                 )
                 possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
                     src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
@@ -566,7 +571,8 @@ class _Lowering:
 
     def _target_placement(self, dst: HasInputs, transfer: TransferNode) -> tuple[Memory, ...]:
         """The memories ``dst`` reads ``transfer``'s copy in, one per position."""
-        return self._destination_memories(dst, next(t for t in transfer.outputs if t in dst.inputs))
+        tensor = next(t for t in transfer.outputs if t in dst.inputs)
+        return self._destination_memories(dst, tensor, next(iter(self.ssw.predecessors(transfer))))
 
     def _reads_in(self, node: ComputationNode, tensor: Tensor) -> tuple[Memory, ...]:
         """The memory each of ``node``'s cores reads its input ``tensor`` in."""
@@ -587,7 +593,7 @@ class _Lowering:
             assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
             src_type = self._effective_allocation_type(src_allocation[0])
         if dst_type is None:
-            landing = [m for dst in dsts for m in self._destination_memories(dst, tensor)]
+            landing = [m for dst in dsts for m in self._destination_memories(dst, tensor, src)]
             dst_type = self._effective_allocation_type(landing)
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
@@ -599,13 +605,61 @@ class _Lowering:
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
-    def _destination_memories(self, dst: HasInputs, tensor: Tensor) -> tuple[Memory, ...]:
-        """The memories ``dst`` reads ``tensor`` in: off-chip for an output edge, else the memory each of the
-        computation's cores reads it in."""
+    def _destination_memories(self, dst: HasInputs, tensor: Tensor, src: HasOutputs) -> tuple[Memory, ...]:
+        """The memories ``dst`` reads ``tensor`` from ``src`` in: off-chip for an output edge (see
+        :meth:`_offchip_landing`), else the memory each of the computation's cores reads it in."""
         if isinstance(dst, OutEdge):
-            return (offchip_memory(self.accelerator),)
+            return self._offchip_landing((dst,), src)
         assert isinstance(dst, ComputationNode), f"Unexpected destination node type: {type(dst)}"
         return self._reads_in(dst, tensor)
+
+    def _offchip_landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
+        """The off-chip memories a copy of ``src``'s output lands in, one per position: those of the layout of the
+        output edge reading it, else, with several off-chip memories, the one nearest each memory ``src`` holds it
+        in."""
+        if edge := next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_layouts), None):
+            return self.mapping.edge_layouts[edge.name].memories
+        if len(self.accelerator.offchip_memories) <= 1:
+            return (offchip_memory(self.accelerator),)
+        return tuple(map(self._nearest_offchip, the_one(self._source_placements(src), src, "placements")))
+
+    def _nearest_offchip(self, memory: Memory) -> Memory:
+        """The off-chip memory the fewest hops from ``memory``, the first in memory order of those as near."""
+        nearest = min(self.accelerator.offchip_memories, key=lambda offchip: (self._hops(memory, offchip), offchip))
+        if self._hops(memory, nearest) == float("inf"):
+            raise ValueError(f"{memory.name} has no route to any off-chip memory to write its output to")
+        return nearest
+
+    def _hops(self, one: Memory, other: Memory) -> float:
+        """Links from ``one`` to ``other``, infinite without a route."""
+        if (one, other) not in self._hop_counts:
+            network = self.accelerator.network
+            reached = nx.has_path(network, one, other)
+            self._hop_counts[(one, other)] = nx.shortest_path_length(network, one, other) if reached else float("inf")
+        return self._hop_counts[(one, other)]
+
+    def _iteration_cost(
+        self, sources: Sequence[Memory], targets: Sequence[Memory], bitwidth: float, items: Sequence[DemandItem]
+    ) -> tuple[float, float]:
+        """What one iteration's demand costs: the cycles the busiest off-chip memory takes at its rate, then the bits
+        times the links they cross from the nearest source holding them."""
+        held: dict[Memory, list[Box]] = defaultdict(list)
+        carried = 0.0
+        for item in items:
+            target = targets[item.target]
+            source = min((sources[s] for s in item.sources), key=lambda memory: self._hops(memory, target))
+            for memory in {source, target}:
+                if memory.offchip:
+                    held[memory].append(item.box)
+            carried += box_bits([item.box], bitwidth) * self._hops(source, target)
+        cycles = (box_bits(boxes, bitwidth) / self._offchip_rate(memory) for memory, boxes in held.items())
+        return max(cycles, default=0.0), carried
+
+    def _offchip_rate(self, memory: Memory) -> float:
+        """Bits per cycle an off-chip memory moves: its measured contiguous rate, else its ports' together."""
+        if (measured := self.accelerator.bandwidth.get(memory)) is not None:
+            return measured.contiguous
+        return sum(port.bits_per_cycle for port in self.accelerator.ports if port.key.memory == memory.name)
 
     def _effective_allocation_type(self, allocs: Sequence[Memory]) -> str:
         """The memory kind a set of (possibly mixed) memories serves as: ``compute`` if any is a compute memory (that is

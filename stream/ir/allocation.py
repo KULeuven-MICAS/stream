@@ -93,6 +93,13 @@ class FusedGroupIR(BaseModel):
     )
 
 
+class EdgeLayoutIR(BaseModel):
+    """Where a workload input or output lives: a block along ``axis`` in each memory, or without one all of it."""
+
+    memories: list[str] = Field(description="The off-chip memories holding the tensor, in block order")
+    axis: int | None = Field(description="The tensor axis split into a contiguous block per memory; None for a copy")
+
+
 # A tiling pair is [dim, factor]; anything shorter is not a decision we can type.
 _TILE_PAIR_LEN = 2
 
@@ -253,7 +260,7 @@ class AllocationCompilerView(BaseModel):
     Suitable for compiler engineers performing code generation and transfer routing.
     """
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["2.1"] = "2.1"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node tiling and core mapping: use inter_core_tiling and resource_allocation fields"
     )
@@ -261,6 +268,9 @@ class AllocationCompilerView(BaseModel):
         description="Groups of layers fused together with their intra-core tiling factors"
     )
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
+    edge_layouts: dict[str, EdgeLayoutIR] = Field(
+        default_factory=dict, description="The memories each input or output edge the mapping lays out lives in"
+    )
 
 
 class NodePerformanceIR(BaseModel):
@@ -568,7 +578,7 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["3.0"] = "3.0"
+    schema_version: Literal["3.1"] = "3.1"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
@@ -587,6 +597,9 @@ class AllocationIR(BaseModel):
     )
     fused_groups: list[FusedGroupIR] = Field(description="Groups of fused layers with their intra-core tiling factors")
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
+    edge_layouts: dict[str, EdgeLayoutIR] = Field(
+        default_factory=dict, description="The memories each input or output edge the mapping lays out lives in"
+    )
     performance: AllocationPerformanceView | None = Field(
         default=None,
         description="Read-only utilization/bottleneck summary; None if stats were unavailable for this solve",
@@ -699,6 +712,7 @@ class AllocationIR(BaseModel):
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
             runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
+            edge_layouts={name: EdgeLayoutIR(**layout) for name, layout in mapping.get("edge_layouts", {}).items()},
             performance=performance,
             steady_state=steady_state,
             roofline=RooflinePointIR(**raw["roofline"]) if raw.get("roofline") else None,
@@ -728,6 +742,7 @@ class AllocationIR(BaseModel):
             mapping_nodes=self.mapping_nodes,
             fused_groups=self.fused_groups,
             runtime_args=self.runtime_args,
+            edge_layouts=self.edge_layouts,
         )
 
     def performance_view(self) -> AllocationPerformanceView | None:
