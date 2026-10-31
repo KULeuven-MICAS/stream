@@ -27,6 +27,8 @@ print(allocation.solution.latency.total)
 - **Once per run**, in the output folder: a picture of the accelerator as Stream reads it (`hardware_graph.svg`): each core with the memory each of its top-level instances is a view of and the operands it holds there, each memory with its capacity, views, banks, measured bandwidth and ports (their width, the operands and directions they serve, the cores reaching them), and each link and bus between the memories. `python -m stream.visualization.hardware_graph <hardware.yaml> <out.svg>` draws one without solving.
 - **Per fused group**, in its `group_<index>/` folder: a picture of its tiled workload (`tiled_workload.svg`), the cost of each node on each core (`core_cost_lut.yaml`, with its `core_cost_lut.pickle` cache) and its allocation artifacts; under a tile search, those of the candidate it chose.
 
+`SolveOptions(artifacts=False)` writes none of these pictures (nor the ONNX parser's `workload_graph.svg`), and none of the allocation artifacts below.
+
 ## Allocation artifacts
 
 Each allocation solve writes into `group_<index>/allocation/`:
@@ -35,7 +37,7 @@ Each allocation solve writes into `group_<index>/allocation/`:
 - `traces/` - the allocation as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`); open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers.
 - `figures/` - the solver's progress for Gurobi (`optimization_progress.png`) and a picture of the solved steady-state workload (`steady_state_workload_final.svg`).
 
-A sweep that only needs the estimates turns these off with `SolveOptions(artifacts=False)`. A solve that has no solution writes its model for diagnosis instead, whatever `artifacts` says: Gurobi's irreducible infeasible subsystem as `allocation/model.ilp`, OR-Tools' whole model as `allocation/model.mps`.
+A sweep that only needs the estimates turns these off, and the pictures with them, with `SolveOptions(artifacts=False)`. A solve that has no solution writes its model for diagnosis instead, whatever `artifacts` says: Gurobi's irreducible infeasible subsystem as `allocation/model.ilp`, OR-Tools' whole model as `allocation/model.mps`.
 
 ## YAML reference
 

@@ -36,10 +36,11 @@ Stream parses the hardware and workload, proposes a mapping, and runs the alloca
 
 ### What you get
 
-Everything lands under the output directory, one folder per fused group. The `allocation/` folder describes the allocation solve; `SolveOptions(artifacts=False)` writes none of its reports, traces and figures, as a sweep that only needs the estimates does, and a solve without a solution writes its model there for diagnosis (see [Outputs](outputs.md#allocation-artifacts)):
+Everything lands under the output directory, one folder per fused group. The `allocation/` folder describes the allocation solve and the `.svg` files picture the hardware and the workload; `SolveOptions(artifacts=False)` writes neither, as a sweep that only needs the estimates does, and a solve without a solution writes its model there for diagnosis (see [Outputs](outputs.md#allocation-artifacts)):
 
 ```
 outputs/first-run/
+├── hardware_graph.svg                       # the accelerator as Stream reads it
 └── group_0/                                 # one fused group of layers
     ├── mapping.yaml                         # the generated mapping that was used
     ├── tiled_workload.svg                   # the workload after inter-core tiling

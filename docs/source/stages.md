@@ -153,12 +153,12 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `KernelStateStage` | `workload`, `mapping` | `placement_alternatives`, `placement_reserves` | `workload`, `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
 | `LeafStage` |  |  |  |  |  |
 | `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |
-| `ONNXModelParserStage` | `workload_path`, `output_path` |  | `onnx_model`, `workload` |  |  |
+| `ONNXModelParserStage` | `workload_path`, `output_path` | `artifacts` | `onnx_model`, `workload` |  |  |
 | `PlacementGenerationStage` | `workload`, `mapping`, `accelerator` |  | `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
 | `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits`, `nb_cols_to_use`, `route_alternatives` |  | `allocation_problem` |  |  |
 | `StructuralDedupStage` | `workload` |  | `block_classes` |  |  |
 | `TileSearchStage` | `workload`, `mapping`, `output_path` | `tile_search` | `mapping`, `output_path`, `placement_alternatives`, `placement_reserves` | `allocation` | `output_path` |
-| `TilingGenerationStage` | `workload`, `mapping`, `output_path` |  | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |
+| `TilingGenerationStage` | `workload`, `mapping`, `output_path` | `artifacts` | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |
 
 A test checks this table against the stages' declarations. Constraint families follow the same rule one level down: a family declares the quantities it `requires` and `provides`, and the model builder orders and checks them (see [Constraint families](#constraint-families)).
 
