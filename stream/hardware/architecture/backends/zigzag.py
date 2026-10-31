@@ -7,6 +7,7 @@ both backends are first-class citizens in the framework.
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Iterable, Mapping
 from typing import Literal
 
 from zigzag.datatypes import MemoryOperand
@@ -51,6 +52,11 @@ def memory_operand(role: str) -> MemoryOperand:
     raise ValueError(f"role {role!r} has no memory operand.")
 
 
+def top_levels(levels: Mapping[str, Iterable[Hashable]]) -> set[str]:
+    """Of the memory levels named innermost first with the operands each holds, the highest level of each operand."""
+    return set({operand: name for name, operands in levels.items() for operand in operands}.values())
+
+
 class ZigZagCoreBackend(_ZigZagAccelerator):
     """Thin wrapper around the ZigZag ``Accelerator`` that adds the backend protocol.
 
@@ -66,9 +72,8 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
 
     def _top_levels(self) -> dict[str, MemoryLevel]:
         """The highest memory level of each operand, by instance name."""
-        hierarchy = self.memory_hierarchy
-        levels = (hierarchy.get_memory_levels(op)[-1] for op in hierarchy.get_operands())
-        return {level.name: level for level in levels}
+        levels = {level.name: level for level in self.memory_hierarchy.mem_level_list}
+        return {name: levels[name] for name in top_levels({name: level.operands for name, level in levels.items()})}
 
     def top_instances(self) -> frozenset[str]:
         """The core's top-level memory instances: the highest level of each operand."""

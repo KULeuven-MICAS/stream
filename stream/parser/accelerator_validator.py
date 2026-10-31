@@ -9,6 +9,7 @@ from cerberus import Validator
 from zigzag.utils import open_yaml
 
 from stream.datatypes import ELEMENT_BITS
+from stream.hardware.architecture.backends.zigzag import top_levels
 from stream.hardware.ports import PortKey
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
@@ -70,7 +71,7 @@ def parse_memory_view(view: str) -> MemoryView:
     return int(core), instance
 
 
-def _levels(core_data: dict[str, Any]) -> dict[str, Any]:
+def memory_levels(core_data: dict[str, Any]) -> dict[str, Any]:
     """A core's memory levels by name: an aie2 core's one ``memory``, or a ZigZag core's ``memories``."""
     if "memory" in core_data:
         return {"memory": core_data["memory"]}
@@ -79,14 +80,11 @@ def _levels(core_data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _top_levels(core_data: dict[str, Any]) -> set[str]:
-    """A core's top-level memory instances: per operand, the last level in file order that holds it."""
+    """A core's top-level memory instances: an aie2 core's one ``memory``, else the highest level of each operand."""
     if "memory" in core_data:
         return {"memory"}
-    tops: dict[str, str] = {}
-    for name, level in _levels(core_data).items():
-        for operand in level.get("operands", ()) if isinstance(level, dict) else ():
-            tops[str(operand)] = name
-    return set(tops.values())
+    levels = memory_levels(core_data)
+    return top_levels({name: level.get("operands", ()) for name, level in levels.items() if isinstance(level, dict)})
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
@@ -393,7 +391,7 @@ class AcceleratorValidator:
         # Each memory level's banks, a Stream field the namespace validators do not know
         memory_banks = {
             name: level.pop("banks")
-            for name, level in _levels(core_data).items()
+            for name, level in memory_levels(core_data).items()
             if isinstance(level, dict) and "banks" in level
         }
 
@@ -564,7 +562,7 @@ class AcceleratorValidator:
         core_data = self.data["cores"][core_id]
         if not isinstance(core_data, dict):
             return None  # the core failed to load
-        levels = _levels(core_data)
+        levels = memory_levels(core_data)
         if instance not in levels:
             self.invalidate(
                 f"`memories.{name}`: core {core_id} declares no memory `{instance}`. Known: {sorted(levels)}."

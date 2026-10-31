@@ -73,16 +73,16 @@ class SolveOptions:
     ``stage_options`` carries what a plugin's stages read from the context, such as the generic mapping
     generator's ``fusion_cut_points`` and ``intra_core_tiling``, or the AIE code generator's ``npu``,
     ``trace_size`` and ``trace_max_tiles``. ``instrumentation`` names observers of the run, such as ``timing``.
-    ``artifacts`` writes the reports, traces and figures of each allocation solve; a sweep turns them off.
-    ``solver_log`` prints the solver's log, and ``time_limit_s`` bounds each allocation solve, after which its best
-    incumbent is taken. ``families`` are the constraint families the allocation model is built from, by name or
-    ``{name: options}``; None builds :func:`default_families`. ``route_alternatives`` is how many routes each placement
-    of a transfer is offered: the fastest and others over comparably fast links. The solve picks one.
+    ``artifacts`` writes the pictures of the hardware and the workload and the reports, traces and figures of each
+    allocation solve; a sweep turns them off. ``solver_log`` prints the solver's log, and ``time_limit_s`` bounds each
+    allocation solve, after which its best incumbent is taken. ``families`` are the constraint families the allocation
+    model is built from, by name or ``{name: options}``; None builds :func:`default_families`. ``route_alternatives`` is
+    how many routes each placement of a transfer is offered: the fastest and others over comparably fast links. The
+    solve picks one.
     """
 
     backend: str = "ortools_gscip"
     nb_cols_to_use: int = 4
-    route_alternatives: int = 1
     temporal_mapping_type: str = "uneven"
     kernel_library: KernelLibrary | str | Mapping[str, Any] | None = None
     tile_search: bool = False
@@ -92,10 +92,13 @@ class SolveOptions:
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
     families: Sequence[FamilySpec] | None = None
+    route_alternatives: int = 1
 
     def __post_init__(self) -> None:
-        if self.route_alternatives < 1:
-            raise ValueError(f"route_alternatives must be at least 1, not {self.route_alternatives}")
+        if not isinstance(self.route_alternatives, int) or self.route_alternatives < 1:
+            raise ValueError(
+                f"SolveOptions.route_alternatives must be an integer of at least 1, got {self.route_alternatives!r}"
+            )
         if not self.time_limit_s > 0:
             raise ValueError(f"SolveOptions.time_limit_s must be positive, got {self.time_limit_s}")
 

@@ -516,7 +516,7 @@ def test_two_shim_ports_alike_on_one_link_leave_a_transfer_no_dma():
 
 
 def test_a_route_over_two_columns_links_passes_one_shim_port_per_link():
-    """A DRAM route to two columns passes one shim port per link, so asking for a single port fails."""
+    """A DRAM route to two columns passes one shim port per link."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
     dram = accelerator.offchip_memory
     links = [data["cl"] for u, v, data in accelerator.network.edges(data=True) if u is dram and v.col_id in (0, 1)]
@@ -525,9 +525,9 @@ def test_a_route_over_two_columns_links_passes_one_shim_port_per_link():
         "mm2s_c0": ["tile_0_1"],
         "mm2s_c1": ["tile_1_1"],
     }
-    with pytest.raises(ValueError, match=r"memory dram over .*: the links pass ports \['mm2s_c0', 'mm2s_c1'\]"):
-        accelerator.ports.memory_port(dram, READ, input_role(1), links)
-    assert accelerator.ports.memory_port(dram, READ, input_role(1), links[:1]).key.port == "mm2s_c0"
+    assert [port.key.port for port in accelerator.ports.memory_ports(dram, READ, input_role(1), links[:1])] == [
+        "mm2s_c0"
+    ]
 
 
 def _dram_space(accelerator: Accelerator) -> DecisionSpace:
@@ -720,10 +720,14 @@ def test_cores_of_one_memory_may_each_have_their_own_port(tmp_path):
     assert [port.key.port for port in accelerator.ports.ports_of(accelerator.get_core(1))] == ["r_1", "w_1"]
     l1_a, l1_b = accelerator.memories["l1_a"], accelerator.memories["l1_b"]
     through_zero, through_one = _link(accelerator, "l1_a", "l1_b"), _link(accelerator, "l1_a", "l1_b", 1)
-    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_zero]).key.port == "r_0"
-    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, [through_one]).key.port == "r_1"
-    assert accelerator.ports.memory_port(l1_b, WRITE, OUTPUT, [through_one]).key.port == "w_port_1"
-    assert accelerator.ports.memory_port(l1_a, READ, OUTPUT, []) is None
+
+    def passed(memory, direction, links):
+        return [port.key.port for port in accelerator.ports.memory_ports(memory, direction, OUTPUT, links)]
+
+    assert passed(l1_a, READ, [through_zero]) == ["r_0"]
+    assert passed(l1_a, READ, [through_one]) == ["r_1"]
+    assert passed(l1_b, WRITE, [through_one]) == ["w_port_1"]
+    assert passed(l1_a, READ, []) == []
 
 
 def test_views_naming_their_ports_apart_leave_a_transfer_no_port(tmp_path):

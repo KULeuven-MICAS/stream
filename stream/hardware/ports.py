@@ -184,17 +184,6 @@ class PortRegistry:
                 by_port[port] = (*by_port.get(port, ()), link)
         return by_port
 
-    def memory_port(
-        self, memory: Memory, direction: str, operand: str, links: Iterable[CommunicationLink]
-    ) -> Port | None:
-        """The single port of :meth:`memory_ports`; None if there is none, an error if there are several."""
-        links = tuple(links)
-        ports = self.memory_ports(memory, direction, operand, links)
-        if len(ports) > 1:
-            names = sorted(port.key.port for port in ports)
-            raise ValueError(f"memory {memory.name} over {sorted(map(str, links))}: the links pass ports {names}")
-        return next(iter(ports), None)
-
 
 def candidate_ports(ports: tuple[Port, ...], direction: str, operand: str) -> list[Port]:
     """The ports ``operand`` may use in ``direction``, by preference: those serving that operand (or every operand),

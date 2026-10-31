@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from stream.hardware.bundle import HardwareBundle
+from stream.parser.accelerator_validator import memory_levels
 from stream.plugins import load_group
 
 __all__ = [
@@ -137,7 +138,7 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
 
     core_costs: list[CoreCost] = []
     for core_id, core in sorted(cores_data.items()):
-        private = [name for name in _levels(core) if (core_id, name) not in viewed]
+        private = [name for name in memory_levels(core) if (core_id, name) not in viewed]
         memories = [_memory_cost(name, [(core_id, core, name)], True, density, warnings) for name in private]
         core_name = str(core.get("name", f"core_{core_id}"))
         compute = _compute_cost(core_id, core_name, core, density)
@@ -186,11 +187,6 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
         off_die_access_energy_pj_per_cycle=sum(m.instances * m.nb_ports * m.read_energy_pj for m in off_die_memories),
         warnings=warnings,
     )
-
-
-def _levels(core: dict[str, Any]) -> list[str]:
-    """The memory levels a core file declares: a ZigZag core's by name, an AIE tile's one `memory`."""
-    return list(core["memories"]) if "memories" in core else ["memory"]
 
 
 def _level(core: dict[str, Any], name: str) -> tuple[int, int, dict[str, int]]:

@@ -57,12 +57,10 @@ def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
     assert {link.ports[dram] for link in links} == {("rw_port_1", "rw_port_2", "rw_port_3")}
     roles = (input_role(1), input_role(2), OUTPUT)
     for direction in (READ, WRITE):
-        names = {role: registry.memory_port(dram, direction, role, links) for role in roles}
-        assert {role: port and port.key.port for role, port in names.items()} == {
-            "input1": "rw_port_1",
-            "input2": "rw_port_2",
-            "output": "rw_port_3",
+        names = {
+            role: [port.key.port for port in registry.memory_ports(dram, direction, role, links)] for role in roles
         }
+        assert names == {"input1": ["rw_port_1"], "input2": ["rw_port_2"], "output": ["rw_port_3"]}
 
 
 def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fusemax: Accelerator):

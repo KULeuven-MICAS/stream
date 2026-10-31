@@ -330,6 +330,7 @@ def test_the_first_alternative_is_the_fastest_route(accelerator):
     assert first == route(accelerator, ("m6",), (0, 3), demand)
 
 
+@pytest.mark.slow
 def test_more_routes_never_make_a_solve_slower(tmp_path):
     """The routes offered with alternatives include the one offered without, so the solve can only do better."""
     latencies = [  # simba's mesh offers several equally fast routes between most chiplets
