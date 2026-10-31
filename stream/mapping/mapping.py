@@ -42,6 +42,23 @@ class FusedGroup:
                 raise ValueError(f"Tile for '{dim}' must be a positive int, got {tile!r}.")
 
 
+@dataclass(frozen=True, slots=True)
+class EdgeLayout:
+    """Where an edge's tensor lives: block ``s`` of the whole tensor along ``axis`` in ``memories[s]``, or, without an
+    axis, all of it in each."""
+
+    memories: tuple[Memory, ...]
+    axis: int | None = None
+
+    def block(self, position: int, extent: int) -> tuple[int, int]:
+        """The inclusive index range along the axis the memory at ``position`` holds, of an axis ``extent`` long."""
+        if extent % len(self.memories):
+            names = [memory.name for memory in self.memories]
+            raise ValueError(f"axis {self.axis} of extent {extent} does not split evenly over {names}")
+        size = extent // len(self.memories)
+        return position * size, (position + 1) * size - 1
+
+
 @dataclass(slots=True)
 class NodeMapping:
     """Mapping attributes for a single workload Node. A Node can be either a ComputationNode or a TransferNode."""
@@ -89,6 +106,7 @@ class Mapping:
         initial: dict[Node, NodeMapping] | None = None,
         fused_groups: Iterable[FusedGroup] | None = None,
         runtime_args: dict[str, str] | None = None,
+        edge_layouts: dict[str, EdgeLayout] | None = None,
     ) -> None:
         self._by_node: dict[Node, NodeMapping] = {}
         self._fused_groups: tuple[FusedGroup, ...] = tuple(fused_groups or ())
@@ -99,6 +117,7 @@ class Mapping:
             for node, layer_mapping in initial.items():
                 self.set(node, layer_mapping)
         self._runtime_args = runtime_args or {}
+        self._edge_layouts = edge_layouts or {}
 
     def set(self, node: Node, layer_mapping: NodeMapping) -> None:
         if node is None:
@@ -236,6 +255,10 @@ class Mapping:
             "nodes": nodes_ir,
             "fused_groups": fused_groups_ir,
             "runtime_args": dict(self._runtime_args),
+            "edge_layouts": {
+                name: {"memories": [memory.name for memory in layout.memories], "axis": layout.axis}
+                for name, layout in self._edge_layouts.items()
+            },
         }
 
     def to_dict(self) -> dict[str, dict[str, Any]]:
@@ -279,7 +302,9 @@ class Mapping:
                 intra_core_tiling=tuple(new_tilings),
             )
             new_fused_groups.append(new_fused_group)
-        new_mapping = Mapping(fused_groups=new_fused_groups, runtime_args=self.runtime_args)
+        new_mapping = Mapping(
+            fused_groups=new_fused_groups, runtime_args=self.runtime_args, edge_layouts=self._edge_layouts
+        )
         for node in self.nodes():
             updated_node = new_workload.get_node_by_name(node.name)
             new_mapping.set(updated_node, self.get(node))
@@ -291,16 +316,31 @@ class Mapping:
 
     def with_fused_groups(self, fused_groups: Iterable[FusedGroup]) -> Mapping:
         """The same per-node mapping under different fused groups (e.g. another intra-core tiling)."""
-        return Mapping(initial=dict(self._by_node), fused_groups=fused_groups, runtime_args=self._runtime_args)
+        return Mapping(
+            initial=dict(self._by_node),
+            fused_groups=fused_groups,
+            runtime_args=self._runtime_args,
+            edge_layouts=self._edge_layouts,
+        )
 
     def copy(self) -> Mapping:
         """A detached mapping a consumer may rewrite in place."""
         cloned = {node: replace(nm) for node, nm in self._by_node.items()}
-        return Mapping(initial=cloned, fused_groups=self._fused_groups, runtime_args=self._runtime_args)
+        return Mapping(
+            initial=cloned,
+            fused_groups=self._fused_groups,
+            runtime_args=self._runtime_args,
+            edge_layouts=self._edge_layouts,
+        )
 
     @property
     def runtime_args(self) -> dict[str, str]:
         return self._runtime_args
+
+    @property
+    def edge_layouts(self) -> dict[str, EdgeLayout]:
+        """The layout of each edge the mapping declares one for, by edge name."""
+        return self._edge_layouts
 
 
 def role_of(node: ComputationNode, tensor: Tensor) -> str:
@@ -336,10 +376,18 @@ def the_one[T](options: tuple[T, ...], node: Node, what: str) -> T:
 
 
 def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
-    """The candidate memories ``node`` holds its ``role`` operand in, one per position: off-chip for an edge, the
-    memory allocation for a transfer, and for a computation the memory each core keeps that operand in. Cores sharing
-    a memory repeat it."""
+    """The candidate memories ``node`` holds its ``role`` operand in, one per position: for an edge the memories of
+    its layout, else the off-chip memory; the memory allocation for a transfer, and for a computation the memory each
+    core keeps that operand in. Cores sharing a memory repeat it. An input needs a layout when there are several
+    off-chip memories."""
     if isinstance(node, InEdge | OutEdge):
+        if layout := mapping.edge_layouts.get(node.name):
+            return (layout.memories,)
+        if isinstance(node, InEdge) and len(offchip := accelerator.offchip_memories) > 1:
+            raise ValueError(
+                f"input {node.name} has no layout over the off-chip memories {[memory.name for memory in offchip]}; "
+                "declare one in the mapping's runtime_args"
+            )
         return ((offchip_memory(accelerator),),)
     if isinstance(node, TransferNode):
         return mapping.get(node).memory_allocation

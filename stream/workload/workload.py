@@ -2,8 +2,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import cached_property
 from itertools import combinations, pairwise
-from math import prod
-from typing import TYPE_CHECKING, cast
+from math import ceil, prod
+from typing import TYPE_CHECKING, Any, cast
 
 import networkx as nx
 import numpy as np
@@ -783,22 +783,71 @@ class Workload(DiGraphWrapper[Node]):
                 t, [node], self._tile_sizes(tiling), dict.fromkeys(placed, 0) | self._position(tiling, core)
             )
 
-        boxes: dict[tuple[int, int], list[list[tuple[int, int]]]] = {}
-        for tensor in transfer.outputs:
-            found = self._reader(tensor, transfer)
-            if found is None or not self.get_windows(tensor, transfer, mapping, [d for d, _ in tiling]):
-                continue
-            moved = self.get_tensor_of_transfer_to_single_core(tensor, transfer, mapping, ssis=ssis)
-            for i in range(prod(f for _, f in src_tiling)):
-                have = bounds(source, src, src_tiling, i)
-                for j in range(prod(f for _, f in tiling)):
-                    want = bounds(found[0], found[1], tiling, j)
-                    box = [
-                        (max(h[0], w[0]), min(h[1], w[1])) if w[2] else (0, m - 1)
-                        for h, w, m in zip(have, want, moved.shape, strict=True)
-                    ]
-                    boxes.setdefault((i, j), []).append(box)
-        return boxes
+        def boxes_held(
+            blocks: list[list[tuple[int, int]]] | None,
+        ) -> dict[tuple[int, int], list[list[tuple[int, int]]]]:
+            boxes: dict[tuple[int, int], list[list[tuple[int, int]]]] = {}
+            for tensor in transfer.outputs:
+                found = self._reader(tensor, transfer)
+                if found is None or not self.get_windows(tensor, transfer, mapping, [d for d, _ in tiling]):
+                    continue
+                moved = self.get_tensor_of_transfer_to_single_core(tensor, transfer, mapping, ssis=ssis)
+                for i in range(len(blocks) if blocks else prod(f for _, f in src_tiling)):
+                    have = blocks[i] if blocks else bounds(source, src, src_tiling, i)
+                    for j in range(prod(f for _, f in tiling)):
+                        want = bounds(found[0], found[1], tiling, j)
+                        box = [
+                            (max(h[0], w[0]), min(h[1], w[1])) if w[2] else (0, m - 1)
+                            for h, w, m in zip(have, want, moved.shape, strict=True)
+                        ]
+                        boxes.setdefault((i, j), []).append(box)
+            return boxes
+
+        def load(boxes: dict[tuple[int, int], list[list[tuple[int, int]]]]) -> int:
+            held: dict[int, list[list[tuple[int, int]]]] = {}
+            for (i, _), found in boxes.items():
+                held.setdefault(i, []).extend(box for box in found if all(lo <= hi for lo, hi in box))
+            return max((_union(found) for found in held.values()), default=0)
+
+        return _busiest([boxes_held(blocks) for blocks in self._walked_blocks(src, source, mapping) or [None]], load)
+
+    @staticmethod
+    def _walked_blocks(edge: Node, tensor: Tensor, mapping: "Mapping") -> list[list[list[tuple[int, int]]]] | None:
+        """For each iteration walking ``tensor``'s split axis, the box of the whole tensor the memory at each position
+        of ``edge``'s layout holds, moved to the iteration-0 coordinates the read boxes are in; one iteration where the
+        axis is not walked, None unless the layout splits the tensor."""
+        layout = mapping.edge_layouts.get(edge.name) if isinstance(edge, InEdge | OutEdge) else None
+        if layout is None or layout.axis is None:
+            return None
+        shape, axis = tensor.subview.source.type.get_shape(), layout.axis
+        extent = shape[axis]
+        step = min(tensor.shape[axis], extent)
+        blocks = [layout.block(s, extent) for s in range(len(layout.memories))]
+        whole = [(0, n - 1) for n in shape]
+        return [
+            [[*whole[:axis], (lo - k * step, hi - k * step), *whole[axis + 1 :]] for lo, hi in blocks]
+            for k in range(ceil(extent / step))
+        ]
+
+    def layout_shares(
+        self, edge: Node, tensor: Tensor, mapping: "Mapping", boxes: Sequence
+    ) -> dict[Memory, float] | None:
+        """The share each memory of ``edge``'s layout serves of ``boxes``, what an iteration moves of ``tensor``, over
+        all iterations walking the split axis; None unless the layout splits the tensor."""
+        from stream.cost_model.communication_manager import box_bits  # noqa: PLC0415
+
+        if not (walk := self._walked_blocks(edge, tensor, mapping)):
+            return None
+        covered = [
+            sum(box_bits([part for box in boxes if (part := _meet(box, blocks[s]))], 1) for blocks in walk)
+            for s in range(len(walk[0]))
+        ]
+        if not (total := sum(covered)):
+            return None
+        shares: dict[Memory, float] = {}
+        for memory, bits in zip(mapping.edge_layouts[edge.name].memories, covered, strict=True):
+            shares[memory] = shares.get(memory, 0.0) + bits / total
+        return shares
 
     def get_transfer_demand(  # noqa: PLR0913
         self,
@@ -810,6 +859,7 @@ class Workload(DiGraphWrapper[Node]):
         by_spatial_index: bool,
         targets: Sequence[Memory],
         reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]],
+        cost: Callable[[Sequence["DemandItem"]], tuple[float, ...]],
     ) -> tuple["DemandItem", ...]:
         """What each of the ``n_targets`` targets of ``transfer`` reads, and which of the ``n_sources`` sources hold it.
 
@@ -817,9 +867,13 @@ class Workload(DiGraphWrapper[Node]):
         ``targets`` (``reads_in`` gives a reader's memory per core), each target reads what those readers read there,
         under their own splits. A window overlapping neighbouring tiles is served by the sources whose tiles it
         overlaps. Otherwise each side holds the tiles of its split in core order; a tile copied on several cores is
-        served by the nearest, and a partial sum over a split reduction dimension is needed from every source.
-        ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``, ``j + m``, ..., as a code
-        generator does."""
+        served by the nearest, and a partial sum over a split reduction dimension is needed from every source. An
+        input edge whose layout splits its tensor holds block s of the whole tensor at source s, and an output edge
+        receives block t at target t (:class:`EdgeLayout`); where the iterations walk the split axis, the demand is
+        that of the iteration ``cost`` finds busiest. Time thus takes the busiest iteration of a walk, an upper bound
+        that prefetching more than one tile ahead may beat, while traffic and energy take the average over the walk
+        (:meth:`layout_shares`). ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``,
+        ``j + m``, ..., as a code generator does."""
         from stream.cost_model.communication_manager import DemandItem  # noqa: PLC0415
 
         source, src = transfer.inputs[0], next(self.predecessors(transfer))
@@ -846,29 +900,45 @@ class Workload(DiGraphWrapper[Node]):
         read, reader = found or (source, src)
         held = (source, src) if isinstance(src, ComputationNode) else (read, reader)
         partial = isinstance(src, ComputationNode) and self.splits_reduction(src, src_tiling)
-        items: list[DemandItem] = []
-        for t in range(n_targets):
-            wants = [
+        wants = [
+            [
                 box(r_read, r_node, r_split, p, len(r_memories))
                 for r_read, r_node, r_split, r_memories in readers
                 for p, memory in enumerate(r_memories)
                 if memory == targets[t]
             ]
-            for want in wants or [box(read, reader, tiling, t, n_targets)]:
-                if by_spatial_index:
-                    narrow = min(n_sources, n_targets)
-                    feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
-                    parts = zip(feeding, _split(want, len(feeding)), strict=True)
-                    items += [DemandItem(t, (s,), part) for s, part in parts if all(lo <= hi for lo, hi in part)]
-                    continue
-                holders: dict[tuple[tuple[int, int], ...], list[int]] = {}
-                for s in range(n_sources):
-                    have = box(held[0], held[1], src_tiling, s, n_sources)
-                    part = tuple((max(h[0], w[0]), min(h[1], w[1])) for h, w in zip(have, want, strict=True))
-                    if all(lo <= hi for lo, hi in part):
-                        holders.setdefault(part, []).append(s)
-                items += [DemandItem(t, tuple(sources), part, partial) for part, sources in holders.items()]
-        return tuple(items)
+            or [box(read, reader, tiling, t, n_targets)]
+            for t in range(n_targets)
+        ]
+        haves = [box(held[0], held[1], src_tiling, s, n_sources) for s in range(n_sources)]
+
+        def demand(held_blocks: list | None, target_blocks: list | None) -> list[DemandItem]:
+            items: list[DemandItem] = []
+            for t in range(n_targets):
+                for want in [target_blocks[t]] if target_blocks else wants[t]:
+                    if by_spatial_index:
+                        narrow = min(n_sources, n_targets)
+                        feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
+                        parts = zip(feeding, _split(want, len(feeding)), strict=True)
+                        items += [DemandItem(t, (s,), part) for s, part in parts if all(lo <= hi for lo, hi in part)]
+                        continue
+                    holders: dict[tuple[tuple[int, int], ...], list[int]] = {}
+                    for s, have in enumerate(held_blocks or haves):
+                        part = tuple((max(h[0], w[0]), min(h[1], w[1])) for h, w in zip(have, want, strict=True))
+                        if all(lo <= hi for lo, hi in part):
+                            holders.setdefault(part, []).append(s)
+                    items += [DemandItem(t, tuple(sources), part, partial) for part, sources in holders.items()]
+            return items
+
+        out = next((n for n in self.successors(transfer) if isinstance(n, OutEdge)), None)
+        held_walk = self._walked_blocks(src, source, mapping)
+        target_walk = self._walked_blocks(out, source, mapping) if out else None
+        walk = held_walk or target_walk or [None]
+        options = [
+            demand(held_walk[k] if held_walk else None, target_walk[k] if target_walk else None)
+            for k in range(len(walk))
+        ]
+        return tuple(_busiest(options, cost))
 
     def _readers_on(
         self,
@@ -1388,6 +1458,16 @@ def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int]
     lo, hi = box[axis]
     edges = [lo + (hi - lo + 1) * k // parts for k in range(parts + 1)]
     return [tuple(box[:axis] + [(edges[k], edges[k + 1] - 1)] + box[axis + 1 :]) for k in range(parts)]
+
+
+def _meet(box: Sequence[tuple[int, int]], other: Sequence[tuple[int, int]]) -> tuple[tuple[int, int], ...] | None:
+    part = tuple((max(a[0], b[0]), min(a[1], b[1])) for a, b in zip(box, other, strict=True))
+    return part if all(lo <= hi for lo, hi in part) else None
+
+
+def _busiest[T](options: list[T], cost: Callable[[T], Any]) -> T:
+    """The option that costs most, the first of those as costly."""
+    return max(options, key=cost) if len(options) > 1 else options[0]
 
 
 def _union(boxes: list[list[tuple[int, int]]]) -> int:

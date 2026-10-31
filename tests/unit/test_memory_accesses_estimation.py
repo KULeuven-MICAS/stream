@@ -23,9 +23,11 @@ def _stage(hardware: str) -> MemoryAccessesEstimationStage:
 def test_an_edge_access_moves_what_the_allocation_models_the_off_chip_memory_at():
     """Off-chip accesses use Strix's measured one-way DRAM rate, or whole_array's widest shim port."""
     strix = _stage("stream/inputs/aie/hardware/whole_array_strix.yaml")
-    assert strix._offchip_bandwidth(READ) == strix._offchip_bandwidth(WRITE) == 148.3
+    dram = strix.accelerator.offchip_memory
+    assert strix._offchip_bandwidth(dram, READ) == strix._offchip_bandwidth(dram, WRITE) == 148.3
     plain = _stage("stream/inputs/aie/hardware/whole_array.yaml")
-    assert plain._offchip_bandwidth(READ) == plain._offchip_bandwidth(WRITE) == 128
+    dram = plain.accelerator.offchip_memory
+    assert plain._offchip_bandwidth(dram, READ) == plain._offchip_bandwidth(dram, WRITE) == 128
 
 
 def _core() -> Core:

@@ -72,8 +72,10 @@ class MappingValidator:
             "type": "dict",
             "schema": {
                 "layout": {"type": "string"},
+                "memories": {"type": "list", "schema": {"type": "string"}, "minlength": 1},
+                "split": {"type": "integer", "min": 0, "dependencies": "memories"},
             },
-            "allow_unknown": {"type": "string"},
+            "allow_unknown": True,
         },
         "required": False,
         "default": {},
@@ -135,13 +137,8 @@ class MappingValidator:
         self._validate_positive_tiling_values()
 
         runtime_args = root.get("runtime_args", {}) or {}
-        self.normalized["runtime_args"] = runtime_args
-        # TODO: Validate runtime args properly
-        # if not self.runtime_args_validator.validate(  # type: ignore[arg-type]
-        #     runtime_args,
-        #     schema=self.SCHEMA_RUNTIME_ARGS,
-        # ):
-        #     self.invalidate(f"The following runtime args restrictions apply: {self.runtime_args_validator.errors}")
+        if not self.runtime_args_validator.validate(runtime_args, schema={"rows": self.SCHEMA_RUNTIME_ARGS}):  # type: ignore[arg-type]
+            self.invalidate(f"The following runtime args restrictions apply: {self.runtime_args_validator.errors}")
         self.normalized["runtime_args"] = runtime_args
         return self.is_valid
 

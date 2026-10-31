@@ -7,9 +7,14 @@ from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.tensor import Tensor
 from stream.workload.workload import InEdge, OutEdge, determine_fusion_cut_points
 
 logger = logging.getLogger(__name__)
+
+
+def _edge_tensor(edge: InEdge | OutEdge) -> Tensor:
+    return edge.outputs[0] if isinstance(edge, InEdge) else edge.inputs[0]
 
 
 class FixedMappingGenerationStage(Stage):
@@ -51,12 +56,13 @@ class FixedMappingGenerationStage(Stage):
         )
 
         full_runtime_args = mapping_data.get("runtime_args", {})
+        declared = self._declared_per_tensor(full_runtime_args, sub_workloads)
         sub_mappings = []
         for i, sub_workload in enumerate(sub_workloads):
             per_group_data: dict[str, Any] = {
                 "layers": mapping_data["layers"],
                 "fused_groups": [fused_groups_data[i]],
-                "runtime_args": self._runtime_args_for_group(full_runtime_args, sub_workload),
+                "runtime_args": self._runtime_args_for_group(full_runtime_args, sub_workload, declared),
             }
             factory = MappingFactory(per_group_data, sub_workload, self.accelerator)
             sub_mappings.append(factory.create())
@@ -67,20 +73,42 @@ class FixedMappingGenerationStage(Stage):
         yield from sub_stage.run()
 
     @staticmethod
-    def _runtime_args_for_group(full_runtime_args: dict[str, Any], sub_workload) -> dict[str, Any]:
+    def _runtime_args_for_group(
+        full_runtime_args: dict[str, Any], sub_workload, declared: dict[Tensor, dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
         """Select the runtime args (boundary tensors) belonging to one fusion group.
 
         A sub-workload's runtime args are its InEdge/OutEdge boundary nodes: model
         inputs/initializers it consumes, the output(s) it produces, and any
         inter-group fusion-boundary edge introduced by the split. Explicit layouts
-        from the full mapping are preserved; boundary edges default to the standard
-        (identity) layout via an empty entry.
+        from the full mapping are preserved; the two ends of a fusion cut both take
+        the entry ``declared`` for the cut's tensor, merged over its ends, else the
+        standard (identity) layout via an empty entry.
         """
+        declared = declared or {}
         return {
-            node.name: full_runtime_args.get(node.name, {})
+            node.name: declared.get(_edge_tensor(node), full_runtime_args.get(node.name, {}))
             for node in sub_workload.nodes
             if isinstance(node, (InEdge, OutEdge))
         }
+
+    @staticmethod
+    def _declared_per_tensor(full_runtime_args: dict[str, Any], sub_workloads) -> dict[Tensor, dict[str, Any]]:
+        """The runtime args declared for each edge tensor, merged over its edges; the two ends of a fusion cut must not
+        declare one key differently."""
+        declared: dict[Tensor, dict[str, tuple[str, Any]]] = {}
+        for node in (node for sub_workload in sub_workloads for node in sub_workload.nodes):
+            if not isinstance(node, (InEdge, OutEdge)) or node.name not in full_runtime_args:
+                continue
+            merged = declared.setdefault(_edge_tensor(node), {})
+            for key, value in full_runtime_args[node.name].items():
+                name, first = merged.setdefault(key, (node.name, value))
+                if first != value:
+                    raise ValueError(
+                        f"{name} and {node.name} are the two ends of one fusion cut but declare {key} {first} and "
+                        f"{value}"
+                    )
+        return {tensor: {key: value for key, (_, value) in merged.items()} for tensor, merged in declared.items()}
 
     @staticmethod
     def _cut_points_from_fused_groups(fused_groups_data: list[dict[str, Any]]) -> list[str]:

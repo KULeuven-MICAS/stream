@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.workload.tensor import Tensor
 
 
@@ -14,14 +15,14 @@ class AccessCount:
 
 class CoreMemoryAccesses:
     """
-    Tracks read/write access counts per Core and Tensor, and per Tensor for the off-chip memory.
+    Tracks read/write access counts per Core and Tensor, and per off-chip memory and Tensor.
     Uses nested defaultdict for automatic handling of missing keys.
     """
 
     def __init__(self):
         # Structure: {core: {tensor: AccessCount}}
         self.accesses: dict[Core, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
-        self.offchip: dict[Tensor, AccessCount] = defaultdict(AccessCount)
+        self.offchip: dict[Memory, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
 
     def add_read(self, core: Core, tensor: Tensor, count: int = 1) -> None:
         """Add read accesses for a core-tensor pair."""
@@ -31,20 +32,20 @@ class CoreMemoryAccesses:
         """Add write accesses for a core-tensor pair."""
         self.accesses[core][tensor].write += count
 
-    def add_offchip_read(self, tensor: Tensor, count: int) -> None:
-        """Add read accesses of the off-chip memory for a tensor."""
-        self.offchip[tensor].read += count
+    def add_offchip_read(self, memory: Memory, tensor: Tensor, count: int) -> None:
+        """Add read accesses of an off-chip memory for a tensor."""
+        self.offchip[memory][tensor].read += count
 
-    def add_offchip_write(self, tensor: Tensor, count: int) -> None:
-        """Add write accesses of the off-chip memory for a tensor."""
-        self.offchip[tensor].write += count
+    def add_offchip_write(self, memory: Memory, tensor: Tensor, count: int) -> None:
+        """Add write accesses of an off-chip memory for a tensor."""
+        self.offchip[memory][tensor].write += count
 
     def to_ir(self) -> dict:
         """Serialise the accesses for inspection: per core, per tensor, read/write counts.
 
         Counts are in *bandwidth-wide transfers* (a tensor tile's bits divided by the port bandwidth,
         times how many times it fires) -- the unit the cost model charges. Each tensor's ``size_bits``
-        is carried alongside so a consumer can recover the bytes moved. ``offchip`` holds the off-chip
+        is carried alongside so a consumer can recover the bytes moved. ``offchip`` holds each off-chip
         memory's counts per tensor.
         """
         cores: list[dict] = []
@@ -75,7 +76,11 @@ class CoreMemoryAccesses:
                 }
             )
         cores.sort(key=lambda c: c["core_id"])
-        offchip = [_tensor_row(tensor, counts) for tensor, counts in self.offchip.items()]
+        offchip = [
+            {"memory": memory.name, **_tensor_row(tensor, counts)}
+            for memory, tensors in self.offchip.items()
+            for tensor, counts in tensors.items()
+        ]
         return {"cores": cores, "offchip": offchip}
 
     def __repr__(self) -> str:
