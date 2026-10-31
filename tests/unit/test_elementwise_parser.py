@@ -78,3 +78,13 @@ def test_right_aligned_broadcast_of_lower_rank_operand():
     assert len(bias_map.results) == 1  # rank-1 operand
     assert isinstance(bias_map.results[0], AffineDimExpr)
     assert bias_map.results[0].position == 2  # aligned to the last output axis
+
+
+def test_exp_parses_to_an_elementwise_node():
+    """Exp, the exponential of a softmax written out node by node, is one elementwise node over its input."""
+    node = _parse_single(
+        helper.make_node("Exp", ["A"], ["C"], name="exp"),
+        [_vi("A", (4, 8))],
+        [_vi("C", (4, 8))],
+    )
+    assert (node.type, node.num_dims, len(node.operand_mapping)) == ("Exp", 2, 2)
