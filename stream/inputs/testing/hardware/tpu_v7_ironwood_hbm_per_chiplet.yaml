@@ -1,0 +1,169 @@
+# Google TPU7x "Ironwood" (TPU v7), a two-chip slice, as stream/inputs/examples/hardware/tpu_v7_ironwood.yaml but
+# with each chiplet's four HBM3E stacks a memory of its own (96 GiB at 3.69 TB/s) rather than one pooled HBM: a
+# TensorCore reading another chiplet's HBM crosses the die-to-die link, or ICI to the other chip.
+#
+# Bandwidths are bits per cycle at 2.2 GHz (1 GB/s = 3.636 bits per cycle).
+#
+# Core map (per TensorCore: MXU, MXU, VPU, VMEM):
+#   chip 0: TC0 = 0, 1, 2, 3     TC1 = 4, 5, 6, 7
+#   chip 1: TC2 = 8, 9, 10, 11   TC3 = 12, 13, 14, 15
+name: tpu_v7_ironwood_hbm_per_chiplet
+
+cores:
+  0: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  1: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  2: stream/inputs/examples/hardware/cores/tpu_v7_vpu.yaml
+  3: stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml
+  4: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  5: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  6: stream/inputs/examples/hardware/cores/tpu_v7_vpu.yaml
+  7: stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml
+  8: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  9: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  10: stream/inputs/examples/hardware/cores/tpu_v7_vpu.yaml
+  11: stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml
+  12: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  13: stream/inputs/examples/hardware/cores/tpu_v7_mxu.yaml
+  14: stream/inputs/examples/hardware/cores/tpu_v7_vpu.yaml
+  15: stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml
+
+# [col, row]: one column per TensorCore, so all four VMEMs are usable as on-chip memory cores
+# (col_id < nb_cols_to_use).
+core_coordinates:
+  0: [0, 0]
+  1: [0, 1]
+  2: [0, 2]
+  3: [0, 3]
+  4: [1, 0]
+  5: [1, 1]
+  6: [1, 2]
+  7: [1, 3]
+  8: [2, 0]
+  9: [2, 1]
+  10: [2, 2]
+  11: [2, 3]
+  12: [3, 0]
+  13: [3, 1]
+  14: [3, 2]
+  15: [3, 3]
+
+unit_energy_cost: 0
+
+# HBM3E is read and written 32 bytes at a time (a 32-bit pseudo-channel, burst length 8), so a
+# transfer whose contiguous runs are shorter, a tile of a tensor laid out another way, uses only part
+# of each access.
+bandwidth:
+  hbm_0.rw_port_1:
+    ceiling: 13400
+    contiguous: 13400
+    burst: 32
+  hbm_1.rw_port_1:
+    ceiling: 13400
+    contiguous: 13400
+    burst: 32
+  hbm_2.rw_port_1:
+    ceiling: 13400
+    contiguous: 13400
+    burst: 32
+  hbm_3.rw_port_1:
+    ceiling: 13400
+    contiguous: 13400
+    burst: 32
+
+# ── Physical cost ──
+# `area: 0` in the core files is not "free": area and access energy are computed from the declared
+# capacities, widths, port counts and array dimensions by `stream.hardware.cost`.
+technology_node: n3
+
+# Each TensorCore's VMEM core, MXUs and VPU share its VMEM.
+memories:
+  vmem_0:
+    offchip: false
+    views: [0.vmem, 1.vmem, 2.vmem, 3.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0, 1, 2, 3]}
+      w_port_1: {from: w_port_1, cores: [0, 1, 2, 3]}
+  vmem_1:
+    offchip: false
+    views: [4.vmem, 5.vmem, 6.vmem, 7.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [4, 5, 6, 7]}
+      w_port_1: {from: w_port_1, cores: [4, 5, 6, 7]}
+  vmem_2:
+    offchip: false
+    views: [8.vmem, 9.vmem, 10.vmem, 11.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [8, 9, 10, 11]}
+      w_port_1: {from: w_port_1, cores: [8, 9, 10, 11]}
+  vmem_3:
+    offchip: false
+    views: [12.vmem, 13.vmem, 14.vmem, 15.vmem]
+    ports:
+      r_port_1: {from: r_port_1, cores: [12, 13, 14, 15]}
+      w_port_1: {from: w_port_1, cores: [12, 13, 14, 15]}
+  hbm_0:
+    offchip: true
+    views: []
+    capacity_bits: 824633720832
+    ports:
+      rw_port_1: {bandwidth: 13400, serves: {any: [read, write]}, read_energy: 4, write_energy: 4}
+  hbm_1:
+    offchip: true
+    views: []
+    capacity_bits: 824633720832
+    ports:
+      rw_port_1: {bandwidth: 13400, serves: {any: [read, write]}, read_energy: 4, write_energy: 4}
+  hbm_2:
+    offchip: true
+    views: []
+    capacity_bits: 824633720832
+    ports:
+      rw_port_1: {bandwidth: 13400, serves: {any: [read, write]}, read_energy: 4, write_energy: 4}
+  hbm_3:
+    offchip: true
+    views: []
+    capacity_bits: 824633720832
+    ports:
+      rw_port_1: {bandwidth: 13400, serves: {any: [read, write]}, read_energy: 4, write_energy: 4}
+
+connections:
+  # ── Within a chip, the two chiplets' VMEMs meet over the die-to-die link, ~600 GB/s each way. ──
+  - type: link
+    ends:
+      vmem_0: [r_port_1, w_port_1]
+      vmem_1: [r_port_1, w_port_1]
+    bandwidth: 2182
+  - type: link
+    ends:
+      vmem_2: [r_port_1, w_port_1]
+      vmem_3: [r_port_1, w_port_1]
+    bandwidth: 2182
+
+  # ── Between the chips: one ICI link between their second chiplets, 100 GB/s each way. ──
+  - type: link
+    ends:
+      vmem_1: [r_port_1, w_port_1]
+      vmem_3: [r_port_1, w_port_1]
+    bandwidth: 364
+
+  # ── HBM: each chiplet's VMEM reaches its own four stacks at 3.69 TB/s. ──
+  - type: link
+    ends:
+      vmem_0: [r_port_1, w_port_1]
+      hbm_0: [rw_port_1]
+    bandwidth: 13400
+  - type: link
+    ends:
+      vmem_1: [r_port_1, w_port_1]
+      hbm_1: [rw_port_1]
+    bandwidth: 13400
+  - type: link
+    ends:
+      vmem_2: [r_port_1, w_port_1]
+      hbm_2: [rw_port_1]
+    bandwidth: 13400
+  - type: link
+    ends:
+      vmem_3: [r_port_1, w_port_1]
+      hbm_3: [rw_port_1]
+    bandwidth: 13400
