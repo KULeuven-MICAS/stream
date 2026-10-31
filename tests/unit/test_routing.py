@@ -286,8 +286,8 @@ def _plans(accelerator: Accelerator, sources, targets, demand, alternatives: int
     )
 
 
-def test_a_transfer_is_offered_each_of_two_equally_fast_connections(tmp_path):
-    """With two equal links between the same memories, the alternatives use one link each."""
+def _parallel(tmp_path: Path) -> Accelerator:
+    """Two cores whose activation memories are joined by two equal links, beside a slow bus."""
     path = _hardware(
         tmp_path / "parallel.yaml",
         "parallel",
@@ -296,12 +296,27 @@ def test_a_transfer_is_offered_each_of_two_equally_fast_connections(tmp_path):
         "[{type: link, memories: [m0, m1], bandwidth: 64}, {type: link, memories: [m0, m1], bandwidth: 64},"
         " {type: bus, memories: [m0, m1, w0, w1, m2], bandwidth: 8}]",
     )
-    plans = _plans(parse_accelerator(path), (0,), (1,), [DemandItem(0, (0,), WHOLE)], 3)
+    return parse_accelerator(path)
+
+
+def test_a_transfer_is_offered_each_of_two_equally_fast_connections(tmp_path):
+    """With two equal links between the same memories, the alternatives use one link each."""
+    plans = _plans(_parallel(tmp_path), (0,), (1,), [DemandItem(0, (0,), WHOLE)], 3)
     assert sorted(str(link) for plan in plans for link in plan.links_used) == [
         "CL#1(m0, m1, bw=64)",
         "CL(m0, m1, bw=64)",
     ]
     assert all(share == 1.0 for plan in plans for _, share in plan.link_shares)
+
+
+def test_routes_over_the_same_links_that_share_them_differently_are_each_offered(tmp_path):
+    """Two parts from one memory take one link each; the next alternative swaps them, which loads the links
+    differently, so it is offered too."""
+    demand = [DemandItem(0, (0,), ((0, 11), (0, 15))), DemandItem(0, (1,), ((12, 15), (0, 15)))]
+    plans = _plans(_parallel(tmp_path), (0, 0), (1,), demand, 3)
+    assert len({frozenset(plan.links_used) for plan in plans}) == 1
+    assert sorted(tuple(sorted(shares(plan).values())) for plan in plans) == [(0.25, 0.75)] * 2
+    assert shares(plans[0]) != shares(plans[1])
 
 
 def test_a_transfer_with_one_way_there_is_offered_one_route(accelerator):

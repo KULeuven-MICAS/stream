@@ -14,7 +14,7 @@ from xdsl.ir.affine import AffineMap
 from stream.allocation.lowering import reader_positions
 from stream.api import evaluate_mapping
 from stream.cost_model.bandwidth import BandwidthModel
-from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan
+from stream.cost_model.communication_manager import DemandItem
 from stream.hardware.architecture.accelerator import Accelerator, MemoryGraph
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, READ, WRITE, Port, PortKey, input_role
@@ -433,29 +433,69 @@ def test_a_route_over_two_columns_links_passes_one_shim_port_per_link():
     assert accelerator.ports.memory_port(dram, READ, input_role(1), links[:1]).key.port == "mm2s_c0"
 
 
-def test_a_side_over_two_shims_splits_its_bits_and_moves_at_their_rate_together():
-    """A DRAM read split over two shim ports charges each its fraction and is paced by the busiest one."""
-    accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
-    dram = accelerator.offchip_memory
-    tiles = [accelerator.memories[f"tile_{column}_1"] for column in (0, 1)]
-    links = [data["cl"] for u, v, data in accelerator.network.edges(data=True) if u is dram and v in tiles]
-    hops = tuple((dram, link.receiver, link) for link in links)
-    plan = MulticastPathPlan(
-        (dram,), tuple(tiles), 2, tuple(links), ((0, 0), (0, 1)), tuple((link, 0.5) for link in links), hops
-    )
+def _dram_space(accelerator: Accelerator) -> DecisionSpace:
+    """A decision space over ``accelerator`` that reads only the side ports of a first-input transfer."""
     space = object.__new__(DecisionSpace)
     space.accelerator, space.shared_bandwidth = accelerator, {}
     space.operand_role = lambda tr, read_side: input_role(1)  # type: ignore[method-assign]
-    fractions = {port.key.port: fraction for port, fraction in space.side_ports(None, plan, dram, READ).items()}
-    assert fractions == {"mm2s_c0": 0.5, "mm2s_c1": 0.5}
-    assert space.side_bandwidth(None, plan, dram, READ).ceiling == 2 * 128
-    uneven = MulticastPathPlan(
-        (dram,), tuple(tiles), 2, tuple(links), ((0, 0), (0, 1)), ((links[0], 0.75), (links[1], 0.25)), hops
+    return space
+
+
+@pytest.mark.parametrize(
+    ("needs", "shares"),
+    [
+        ({"tile_0_1": (0, 11)}, {"mm2s_c0": 1}),
+        ({"tile_0_1": (0, 11), "tile_1_1": (0, 11)}, {"mm2s_c0": 1, "mm2s_c1": 1}),
+        ({"tile_0_1": (0, 11), "tile_1_1": (0, 11), "tile_2_1": (0, 11)}, {"mm2s_c0": 1, "mm2s_c1": 1, "mm2s_c2": 1}),
+        ({"tile_0_1": (0, 5), "tile_1_1": (6, 11)}, {"mm2s_c0": 1 / 2, "mm2s_c1": 1 / 2}),
+        ({"tile_0_1": (0, 8), "tile_1_1": (9, 11)}, {"mm2s_c0": 3 / 4, "mm2s_c1": 1 / 4}),
+        (
+            {"tile_0_1": (0, 3), "tile_1_1": (4, 7), "tile_2_1": (8, 11)},
+            {"mm2s_c0": 1 / 3, "mm2s_c1": 1 / 3, "mm2s_c2": 1 / 3},
+        ),
+        ({"tile_0_1": (0, 7), "tile_1_1": (4, 11)}, {"mm2s_c0": 2 / 3, "mm2s_c1": 2 / 3}),
+        (
+            {"tile_0_1": (0, 5), "tile_1_1": (3, 8), "tile_2_1": (6, 11)},
+            {"mm2s_c0": 1 / 2, "mm2s_c1": 1 / 2, "mm2s_c2": 1 / 2},
+        ),
+        ({"tile_0_2": (0, 7), "tile_0_3": (4, 11), "tile_1_1": (0, 2)}, {"mm2s_c0": 1, "mm2s_c1": 1 / 4}),
+    ],
+    ids=["one", "broadcast2", "broadcast3", "split2", "uneven2", "split3", "overlap2", "overlap3", "behind"],
+)
+def test_each_shim_port_carries_what_the_tiles_behind_it_need(needs, shares):
+    """A DRAM read passes each shim port it leaves through with the union of what the tiles behind that port need:
+    all of a broadcast, its part of a split. Ports work in parallel, so the busiest one paces the side."""
+    accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
+    dram = accelerator.offchip_memory
+    tiles = tuple(accelerator.memories[name] for name in needs)
+    demand = tuple(DemandItem(j, (0,), (rows, (0, 15))) for j, rows in enumerate(needs.values()))
+    plan, _ = accelerator.communication_manager.route((dram,), tiles, demand, 16, lambda one, other: False)
+    space = _dram_space(accelerator)
+    side = {port.key.port: share for port, share in space.side_ports(None, plan, dram, READ).items()}
+    assert side == pytest.approx(shares)
+    assert space.side_bandwidth(None, plan, dram, READ).ceiling == pytest.approx(128 / max(shares.values()))
+    assert side[space.side_port(None, plan, dram, READ).key.port] == max(side.values())
+
+
+@pytest.mark.parametrize(
+    ("needs", "written"),
+    [
+        ({"tile_0_1": (0, 11), "tile_1_1": (0, 11)}, [1, 1]),
+        ({"tile_0_1": (0, 8), "tile_1_1": (9, 11)}, [3 / 4, 1 / 4]),
+        ({"tile_0_2": (0, 5), "tile_0_3": (6, 11)}, [1 / 2, 1 / 2]),
+    ],
+    ids=["broadcast", "split", "passed_on"],
+)
+def test_each_tile_writes_the_part_of_a_dram_read_it_needs(needs, written):
+    """Each tile writes what it needs of the read, not what it passes on: all of a broadcast, its part of a split."""
+    accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
+    tiles = tuple(accelerator.memories[name] for name in needs)
+    demand = tuple(DemandItem(j, (0,), (rows, (0, 15))) for j, rows in enumerate(needs.values()))
+    plan, _ = accelerator.communication_manager.route(
+        (accelerator.offchip_memory,), tiles, demand, 16, lambda one, other: False
     )
-    assert space.side_bandwidth(None, uneven, dram, READ).ceiling == 128 / 0.75  # the busier shim paces the side
-    assert space.side_port(None, plan, dram, READ).key.port in fractions
-    one = MulticastPathPlan((dram,), (tiles[0],), 1, links[:1], ((0, 0),), ((links[0], 1.0),), hops[:1])
-    assert space.side_bandwidth(None, one, dram, READ).ceiling == 128
+    space = _dram_space(accelerator)
+    assert [sum(space.side_ports(None, plan, tile, WRITE).values()) for tile in tiles] == pytest.approx(written)
 
 
 def test_a_measured_dram_keeps_its_shim_dma_channels():

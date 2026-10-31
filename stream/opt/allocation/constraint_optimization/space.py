@@ -303,14 +303,13 @@ class DecisionSpace:
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
     ) -> dict[Port, float]:
         """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
-        fraction of the side's bits it carries. Empty when the route moves no bits through a port of ``memory``."""
+        share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`). Empty when the route moves no
+        bits through a port of ``memory``."""
         role = self.operand_role(tr, read_side=direction == READ)
-        links = choice.links_at(memory, direction == READ)
-        by_port = self.accelerator.ports.memory_ports(memory, direction, role, links)
-        shares = dict(choice.link_shares)
-        carried = {port: sum(shares.get(link, 0.0) for link in port_links) for port, port_links in by_port.items()}
-        total = sum(carried.values())
-        return {port: bits / total for port, bits in carried.items() if bits}
+        leaving = direction == READ
+        by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))
+        shares = {port: choice.share_at(memory, leaving, port_links) for port, port_links in by_port.items()}
+        return {port: share for port, share in shares.items() if share}
 
     def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
         """Of :meth:`side_ports`, the one carrying the most of the side's bits; None where none is."""
@@ -322,7 +321,7 @@ class DecisionSpace:
     ) -> BandwidthModel | None:
         """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else the ports
         the side passes, else nothing (None). Ports work in parallel, so the side is as slow as the port that needs
-        longest for its fraction of the bits: that port's rate divided by its fraction."""
+        longest for its share of the bits: that port's rate divided by its share."""
         if memory in self.shared_bandwidth:
             return self.shared_bandwidth[memory]
         ports = self.side_ports(tr, choice, memory, direction)

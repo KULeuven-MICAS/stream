@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PortShare:
-    """``share`` of a stream's bits pass ``port`` in ``direction`` (1/|sources| on a read, 1 on a write) at
-    ``efficiency`` of the port's rate for the stream's access pattern."""
+    """``share`` of a stream's bits pass ``port`` in ``direction`` at ``efficiency`` of the port's rate for the
+    stream's access pattern."""
 
     port: Port
     direction: str
@@ -49,34 +49,17 @@ class NodeTraffic:
     slot: int
 
 
-def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None) -> float:
-    """Share of the bits a transfer moves one target receives, on average over the targets of ``choice`` (its first
-    route by default): 1 for a broadcast, every target receiving the whole tensor."""
-    choice = choice or ctx.space.path_choices[tr][0]
-    moved = ctx.space.moved_bits(tr, choice)
-    targets = range(len(choice.targets))
-    return sum(ctx.space.moved_bits(tr, choice, target_at=j) for j in targets) / moved / len(targets)
-
-
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
-    """The share of the transfer's bits each port of each memory on route ``choice`` passes. A memory's share sums
-    over its positions (a broadcast reaches each memory once) and is split over its ports as in
-    :meth:`DecisionSpace.side_ports`."""
+    """The share of the transfer's bits each port of each memory on route ``choice`` passes, as
+    :meth:`DecisionSpace.side_ports` gives it."""
     space = ctx.space
     sides: list[PortShare] = []
     runs = dict(zip((READ, WRITE), space.layouts.runs(tr, choice), strict=True))
-    moved = space.moved_bits(tr, choice)
-    broadcast = _target_share(ctx, tr, choice) == 1.0
     for memories, direction in ((choice.sources, READ), (choice.targets, WRITE)):
         for memory in dict.fromkeys(memories):
-            positions = [i for i, m in enumerate(memories) if m is memory]
-            if direction == WRITE and broadcast:
-                positions = positions[:1]  # targets in one memory receive a broadcast once, into it
-            at = "source_at" if direction == READ else "target_at"
-            share = sum(space.moved_bits(tr, choice, **{at: position}) / moved for position in positions)
-            for port, fraction in space.side_ports(tr, choice, memory, direction).items():
+            for port, share in space.side_ports(tr, choice, memory, direction).items():
                 efficiency = port.bandwidth.efficiency(runs[direction], direction)
-                sides.append(PortShare(port, direction, share * fraction, efficiency))
+                sides.append(PortShare(port, direction, share, efficiency))
     return sides
 
 
