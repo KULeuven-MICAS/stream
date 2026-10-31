@@ -85,11 +85,13 @@ Data lives in memories. A core computes out of its top-level memory instances (p
 
 | Field | Required | Meaning |
 |-------|:---:|---------|
-| `offchip` | yes | Whether it is the off-chip memory, where the workload's inputs and outputs live. An accelerator has at most one, every other memory has a route to it, and no core views it. |
+| `offchip` | yes | Whether it is an off-chip memory, where the workload's inputs and outputs live. Every other memory has a route from one, and no core views it. |
 | `views` | yes | The core instances that see this memory, as `<core id>.<instance>`, e.g. `[0.l1, 1.tcdm]`. Empty for a memory no core computes out of, such as DRAM. |
 | `capacity_bits` | only without views | Its capacity in bits. A memory with views takes the size its views declare. |
 | `ports` | yes | Its ports by name, see [Memory ports](#memory-ports). |
 | `dma` | no | The DMA behind its `channels` ports: `buffer_descriptors` and `iterations` per descriptor. Given exactly when a port has `channels`. Only the `aie2` namespace bounds DMA channels: there the off-chip memory has `dma` and every one of its ports has `channels`. The AIE code generator chains re-reads within these limits. |
+
+An accelerator may have several off-chip memories, each with its own capacity, ports and bandwidth, such as an HBM stack per chiplet. `Accelerator.offchip_memories` lists them in the order they are declared. With several, the latency times the links of each through the `overlap` family's off-chip contention, so a selection without it is refused, and the AIE code generator, whose runtime sequence reaches one, refuses the hardware.
 
 The allocation places tensors in memories; a memory's capacity bounds what all its cores hold in it together. A node reads input `k` from the memory its core's `I<k>` instance views, and writes to the one its `O` instance views.
 

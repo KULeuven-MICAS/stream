@@ -108,6 +108,12 @@ class AIECodeGenerationStage(Stage):
         ctx: StageContext,
     ):
         super().__init__(list_of_callables, ctx)
+        accelerator = self.ctx.get("accelerator")
+        if len(accelerator.offchip_memories) > 1:
+            raise ValueError(
+                f"{accelerator.name} has off-chip memories {[memory.name for memory in accelerator.offchip_memories]}; "
+                "the AIE runtime sequence reaches one"
+            )
 
         # set up the correct xDSL context
         self.context: AIEContext = AIEContext()

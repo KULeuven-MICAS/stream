@@ -89,31 +89,29 @@ class DmaChannels:
 
 
 def _port_channels(ctx: FormulationContext) -> tuple[dict[tuple[Memory, Port], Any], ...]:
-    """The channels transfers drive into and out of each DMA port of the off-chip memory, keyed by (memory, port).
+    """The channels transfers drive into and out of each DMA port of each off-chip memory, keyed by (memory, port).
     Each link of a route passes one DMA port (:meth:`Memory.dma_port`); a route spreads the transfer's fan over its
     ports in proportion to the bits each carries, with at least one fifo per port."""
     space = ctx.space
     usage: tuple[dict[tuple[Memory, Port], Any], ...] = (defaultdict(int), defaultdict(int))
-    memory = space.accelerator.offchip_memory
-    if memory is None:
-        return usage
-    for tr in space.transfer_nodes:
-        for choice in space.path_choices[tr]:
-            link_shares = dict(choice.link_shares)
-            for incoming, side in ((True, choice.targets), (False, choice.sources)):
-                if memory not in side:
-                    continue
-                direction = WRITE if incoming else READ
-                operand = space.operand_role(tr, read_side=not incoming)
-                carried: dict[Port, float] = defaultdict(float)
-                for link in choice.links_at(memory, leaving=not incoming):
-                    dma = memory.dma_port(link.ports[memory], direction, operand)
-                    if dma is not None:
-                        carried[dma] += link_shares.get(link, 0.0)
-                total, fan = sum(carried.values()), _fan(space, tr, incoming)
-                for port, bits in carried.items():
-                    fifos = max(1, ceil(fan * (bits / total if total else 1.0 / len(carried))))
-                    usage[0 if incoming else 1][(memory, port)] += fifos * ctx.vars.y[(tr, choice)]._raw
+    for memory in space.accelerator.offchip_memories:
+        for tr in space.transfer_nodes:
+            for choice in space.path_choices[tr]:
+                link_shares = dict(choice.link_shares)
+                for incoming, side in ((True, choice.targets), (False, choice.sources)):
+                    if memory not in side:
+                        continue
+                    direction = WRITE if incoming else READ
+                    operand = space.operand_role(tr, read_side=not incoming)
+                    carried: dict[Port, float] = defaultdict(float)
+                    for link in choice.links_at(memory, leaving=not incoming):
+                        dma = memory.dma_port(link.ports[memory], direction, operand)
+                        if dma is not None:
+                            carried[dma] += link_shares.get(link, 0.0)
+                    total, fan = sum(carried.values()), _fan(space, tr, incoming)
+                    for port, bits in carried.items():
+                        fifos = max(1, ceil(fan * (bits / total if total else 1.0 / len(carried))))
+                        usage[0 if incoming else 1][(memory, port)] += fifos * ctx.vars.y[(tr, choice)]._raw
     return usage
 
 
