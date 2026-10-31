@@ -304,9 +304,9 @@ class DecisionSpace:
     ) -> dict[Port, float]:
         """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
         share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`). Empty when the route moves no
-        bits through a port of ``memory``."""
-        role = self.operand_role(tr, read_side=direction == READ)
+        bits through a port of ``memory``. A target passing data on reads it in the role it holds it in."""
         leaving = direction == READ
+        role = self.operand_role(tr, read_side=leaving and memory in choice.sources)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))
         shares = {port: choice.share_at(memory, leaving, port_links) for port, port_links in by_port.items()}
         return {port: share for port, share in shares.items() if share}
