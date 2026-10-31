@@ -73,7 +73,7 @@ class AcceleratorCompilerView(BaseModel):
 class AcceleratorIR(BaseModel):
     """Typed Pydantic model wrapping Accelerator.get_ir() output.
 
-    schema_version '1.0': minor bumps (1.1) for additive fields, major bumps (2.0) for
+    schema_version '2.0': minor bumps (2.1) for additive fields, major bumps (3.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 

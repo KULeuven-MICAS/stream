@@ -240,7 +240,7 @@ class AllocationHardwareView(BaseModel):
     reasoning about physical resource usage and memory placement per node.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node resource and memory allocation: use resource_allocation and memory_allocation fields"
     )
@@ -253,7 +253,7 @@ class AllocationCompilerView(BaseModel):
     Suitable for compiler engineers performing code generation and transfer routing.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node tiling and core mapping: use inter_core_tiling and resource_allocation fields"
     )
@@ -527,7 +527,7 @@ class AllocationPerformanceView(BaseModel):
     `compute_cores_available`, and per-node `mac_spatial_utilization` / `compute_efficiency`.
     """
 
-    schema_version: Literal["1.1"] = "1.1"
+    schema_version: Literal["2.0"] = "2.0"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     bottleneck: BottleneckIR = Field(description="Per-iteration compute-bound vs transfer/DMA-bound cycle split")
     aggregate: PerformanceAggregateIR = Field(description="Accelerator-wide core usage and MAC utilization")
@@ -540,7 +540,7 @@ class AllocationPerformanceView(BaseModel):
     )
     memory_occupancy: list[MemoryOccupancyIR] = Field(
         default_factory=list,
-        description="Per-core solved residency vs declared capacity: the floor on any capacity reduction",
+        description="Per-memory solved residency vs capacity: the floor on any capacity reduction",
     )
     memory_ports: list[ResourceActivityIR] = Field(
         default_factory=list,
@@ -557,18 +557,18 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping Allocation.get_ir() output.
 
-    schema_version '2.0': minor bumps for additive fields, major bumps (2.0) for
+    schema_version '3.0': minor bumps (3.1) for additive fields, major bumps (4.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream/allocation_ir/v1",
+            "$id": "stream/allocation_ir/v3",
         }
     )
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["3.0"] = "3.0"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(

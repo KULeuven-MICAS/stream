@@ -87,10 +87,10 @@ class InfeasibilityReportIR(BaseModel):
     instead of crashing on an infeasible mapping."""
 
     model_config = ConfigDict(
-        json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/infeasibility/v1"}
+        json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/infeasibility/v2"}
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     feasible: Literal[False] = False
     status: str = Field(description="Solver status, e.g. 'INFEASIBLE' or 'TIME_LIMIT'")
     backend: str = Field(description="Solver backend, e.g. 'GUROBI'")

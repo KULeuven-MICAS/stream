@@ -10,10 +10,14 @@ Mock objects provide .get_ir() -> dict for from_internal() tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from unittest.mock import MagicMock
 
-from stream.ir import AcceleratorIR, AllocationIR, WorkloadIR
+import pytest
+from pydantic import BaseModel
+
+from stream.ir import AcceleratorIR, AllocationIR, WorkloadGraphView, WorkloadIR
 from stream.ir.accelerator import (
     AcceleratorCompilerView,
     AcceleratorHardwareView,
@@ -23,11 +27,13 @@ from stream.ir.allocation import (
     AllocationAlgorithmicView,
     AllocationCompilerView,
     AllocationHardwareView,
+    AllocationPerformanceView,
     ConstraintFamilyIR,
     FusedGroupIR,
     LatencyInfo,
     NodeAllocationIR,
 )
+from stream.ir.infeasibility import InfeasibilityReportIR
 from stream.ir.workload import (
     NodeIR,
     WorkloadAlgorithmicView,
@@ -444,11 +450,11 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '2.0'."""
+        """AllocationIR.model_json_schema() must include schema_version const '3.0'."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
+        assert sv.get("const") == "3.0", f"Expected const='3.0', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
@@ -480,7 +486,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "2.0"
+        assert ir.schema_version == "3.0"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_allocation) constructs correctly."""
@@ -494,7 +500,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "2.0"
+        assert ir.schema_version == "3.0"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -555,7 +561,7 @@ class TestAllocationIR:
         view = ir.hardware_view()
 
         assert isinstance(view, AllocationHardwareView)
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
         assert "MatMul" in view.mapping_nodes
         assert "ReLU" in view.mapping_nodes
         matmul_node = view.mapping_nodes["MatMul"]
@@ -574,7 +580,7 @@ class TestAllocationIR:
         view = ir.compiler_view()
 
         assert isinstance(view, AllocationCompilerView)
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
         assert "MatMul" in view.mapping_nodes
         matmul_node = view.mapping_nodes["MatMul"]
         assert isinstance(matmul_node, NodeAllocationIR)
@@ -605,7 +611,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "2.0"
+        assert parsed["schema_version"] == "3.0"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
@@ -765,3 +771,39 @@ def test_the_hardware_ir_names_the_cores_sharing_a_memory_and_what_a_specialized
     assert ir.memories["sram"] == {"offchip": False, "views": ["0.sram", "1.sram"]}
     served = {core.id: core.extra_fields["operator_types"] for core in ir.cores}
     assert served[0] is None and "MaxPool" in served[1]
+
+
+def _without_descriptions(schema):
+    if isinstance(schema, dict):
+        return {key: _without_descriptions(value) for key, value in schema.items() if key != "description"}
+    if isinstance(schema, list):
+        return [_without_descriptions(value) for value in schema]
+    return schema
+
+
+@pytest.mark.parametrize(
+    ("model", "version", "shape"),
+    [
+        (WorkloadIR, "1.0", "da563145b6951db0"),
+        (WorkloadAlgorithmicView, "1.0", "7176eeaaca2a5cbe"),
+        (WorkloadCompilerView, "1.0", "9a5606454526afca"),
+        (WorkloadGraphView, "1.1", "42005772943e08a8"),
+        (AcceleratorIR, "2.0", "0c669dc5e59ce14b"),
+        (AcceleratorHardwareView, "2.0", "714be362a16d96b8"),
+        (AcceleratorCompilerView, "2.0", "c09a97ce83accdbd"),
+        (AllocationIR, "3.0", "a66cee130dbc2ad0"),
+        (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
+        (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
+        (AllocationCompilerView, "2.0", "2e7aaa321471109e"),
+        (AllocationPerformanceView, "2.0", "b4c9df810d67eaaa"),
+        (InfeasibilityReportIR, "2.0", "f916a400b3ad105e"),
+    ],
+)
+def test_each_ir_version_pins_its_shape(model: type[BaseModel], version: str, shape: str):
+    """A change to an IR's fields must come with a new schema_version: bump it, then pin the new shape here."""
+    schema = model.model_json_schema()
+    digest = hashlib.sha256(json.dumps(_without_descriptions(schema), sort_keys=True).encode()).hexdigest()[:16]
+    assert schema["properties"]["schema_version"]["const"] == version
+    assert digest == shape
+    if "$id" in schema:
+        assert schema["$id"].endswith(f"/v{version.split('.', 1)[0]}")
