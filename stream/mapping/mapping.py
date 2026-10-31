@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from math import prod
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from xdsl.ir.affine import AffineMap
@@ -19,7 +20,7 @@ from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
 from stream.workload.tensor import Tensor
 from stream.workload.utils import get_equivalent_dimension, operand_inputs
-from stream.workload.workload import Node, Workload
+from stream.workload.workload import Node, Workload, position_of
 
 if TYPE_CHECKING:
     # AIEKernel lives in stream.compiler (AIE codegen), an optional install. Only used as an
@@ -328,6 +329,15 @@ class Mapping:
             edge_layouts=self._edge_layouts,
         )
 
+    def with_edge_layouts(self, edge_layouts: dict[str, EdgeLayout]) -> Mapping:
+        """The same mapping with ``edge_layouts`` added to the layouts it declares."""
+        return Mapping(
+            initial=dict(self._by_node),
+            fused_groups=self._fused_groups,
+            runtime_args=self._runtime_args,
+            edge_layouts=self._edge_layouts | edge_layouts,
+        )
+
     def copy(self) -> Mapping:
         """A detached mapping a consumer may rewrite in place."""
         cloned = {node: replace(nm) for node, nm in self._by_node.items()}
@@ -449,6 +459,58 @@ def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None,
         return (offchip_memory(accelerator),)
     held_in = the_one(placements_of(accelerator, mapping, src, OUTPUT), src, "placements")
     return tuple(map(accelerator.nearest_offchip, held_in))
+
+
+def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNode) -> EdgeLayout | None:
+    """Where ``src``'s output landed without a layout (:func:`landing_of`), as one: a block along the axis its first
+    split dim indexes in the memory the cores holding that block land it in, or all of it in one; None if the cores
+    holding one block land it in several."""
+    positions = landing_of(accelerator, mapping, None, src)
+    if len(set(positions)) == 1:
+        return EdgeLayout(positions[:1])
+    tilings = mapping.get(src).inter_core_tiling
+    tiling = tilings[0] if tilings else ()
+    if not tiling:
+        return None
+    (dim, factor), tiles = tiling[0], prod(f for _, f in tiling)
+    blocks: dict[int, set[Memory]] = defaultdict(set)
+    for core, memory in enumerate(positions):
+        blocks[position_of(core, len(positions), tiling) // (tiles // factor)].add(memory)
+    if any(len(memories) > 1 for memories in blocks.values()):
+        return None
+    access = src.get_mapping(src.outputs[0])
+    axis = next(
+        axis
+        for axis, result in enumerate(access.results)
+        if dim.position in map_dim_positions(AffineMap(access.num_dims, 0, (result,)))
+    )
+    return EdgeLayout(tuple(next(iter(blocks[b])) for b in range(factor)), axis)
+
+
+def with_cut_landings(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> list[Mapping]:
+    """``mappings`` with the input end of each fusion cut declaring no layout reading where its output end landed
+    (:func:`landed_layout`), when there are several off-chip memories."""
+    if len(accelerator.offchip_memories) <= 1:
+        return list(mappings)
+    landed: dict[Tensor, EdgeLayout] = {}
+    for workload, mapping in zip(workloads, mappings, strict=True):
+        for edge in workload.nodes:
+            src = next(iter(workload.predecessors(edge)), None) if isinstance(edge, OutEdge) else None
+            if isinstance(src, ComputationNode) and edge.name not in mapping.edge_layouts:
+                if (layout := landed_layout(accelerator, mapping, src)) is not None:
+                    landed[edge_tensor(edge)] = layout
+    return [
+        mapping.with_edge_layouts(
+            {
+                edge.name: landed[edge_tensor(edge)]
+                for edge in workload.nodes
+                if isinstance(edge, InEdge) and edge.name not in mapping.edge_layouts and edge_tensor(edge) in landed
+            }
+        )
+        for workload, mapping in zip(workloads, mappings, strict=True)
+    ]
 
 
 def offchip_holdings(
