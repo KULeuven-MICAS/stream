@@ -12,6 +12,7 @@ from stream.inputs.testing.workload.make_decode_attention import make_decode_att
 
 TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
 MXU_TYPES = {"Einsum"}
+HBM_BITS_PER_CYCLE = 53600
 
 
 def _attention(q, k, v):
@@ -51,3 +52,10 @@ def test_decode_streams_the_cache_from_hbm(tmp_path, make, batch):
     cache_bytes = 2 * batch * 8 * 256 * 128 * 2
     offchip = next(level for level in point["levels"] if level["name"] == OFFCHIP_MEMORY)
     assert offchip["bytes"] >= cache_bytes
+
+
+def test_plain_decode_over_a_long_context_streams_the_cache_at_the_hbm_rate(tmp_path):
+    path = make_decode_attention(tmp_path / "decode.onnx", 1, 32768)
+    estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+    cache_bits = 2 * 8 * 32768 * 128 * 16
+    assert estimate.cycles < 1.3 * cache_bits / HBM_BITS_PER_CYCLE

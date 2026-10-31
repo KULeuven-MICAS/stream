@@ -72,11 +72,9 @@ class CapacityTiler:
         # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
         per_core: dict[LayerDim, int] = {}
         divisors: dict[LayerDim, list[int]] = {}
+        slices = self._slices(unroll)
         for dim in dict.fromkeys(lead(d)[0] for cn in cns for d in self.sub_workload.get_dims(cn)):
-            full = self.sub_workload.get_dimension_size(dim)
-            u = unroll.get(dim, 1)
-            size = full // u if u > 1 and full % u == 0 else full
-            if dim not in protected and size > 1:
+            if dim not in protected and (size := slices[dim]) > 1:
                 per_core[dim] = size
                 divisors[dim] = _divisors_desc(size)
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
@@ -314,12 +312,12 @@ class CapacityTiler:
         resident: dict[LayerDim, int],
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
     ) -> dict[LayerDim, int]:
-        """The extent of every unique dim on one core running ``cn`` when the group's cores hold ``resident``: under
-        its own split (``node_unroll``, else the group's ``unroll`` on a multi-core node)."""
+        """The extent of every unique dim on one core running ``cn`` when the group's cores hold ``resident``, and their
+        whole slice along the dims it does not name: under its own split (``node_unroll``, else the group's ``unroll``
+        on a multi-core node)."""
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
-        unique, _ = self.sub_workload.unique_dimensions()
-        full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
+        full = self._slices({})
         if node_unroll is not None:
             own = {lead(d)[0]: f for d, f in node_unroll.get(cn, {}).items()}
         else:
@@ -328,7 +326,14 @@ class CapacityTiler:
                 if len(cores_per_node.get(cn, [])) > 1
                 else {}
             )
-        return full | {d: min(full[d], r * unroll.get(d, 1) // own.get(d, 1)) for d, r in resident.items()}
+        tiles = self._slices(unroll) | resident
+        return {d: min(full[d], r * unroll.get(d, 1) // own.get(d, 1)) for d, r in tiles.items()}
+
+    def _slices(self, unroll: dict[LayerDim, int]) -> dict[LayerDim, int]:
+        """Each unique dim's extent on one core under the group's split ``unroll``; whole where it does not divide."""
+        unique, _ = self.sub_workload.unique_dimensions()
+        full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
+        return {z: n // u if (u := unroll.get(z, 1)) > 1 and n % u == 0 else n for z, n in full.items()}
 
     def memory_bits(
         self,

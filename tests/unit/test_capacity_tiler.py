@@ -12,6 +12,7 @@ from onnx import TensorProto, helper
 
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
+from stream.inputs.testing.workload.make_decode_attention import make_decode_attention
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.parser.mapping_validator import MappingValidator
@@ -167,6 +168,20 @@ def test_a_node_left_on_one_core_holds_its_tensors_whole():
         {"dim": "Gemm.D0", "tile": 16},
         {"dim": "Gemm.D2", "tile": 8},
     ]
+
+
+def test_a_dim_split_whole_across_cores_counts_one_slice_per_core(tmp_path):
+    """Decode over a 32k context, its 8 KV heads split one per MXU: each VMEM holds the K and V of its two MXUs' heads,
+    32 of its 64 MiB, so the group fits as it is rather than as if every core held all 8 heads."""
+    acc, parsed = _parse(
+        "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml", make_decode_attention(tmp_path / "d.onnx", 1, 32768)
+    )
+    w = expand_normalizations(parsed)
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    (sub,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
+    cns = tuple(sub.get_computation_nodes())
+    seed = gen._auto_fusion_tiling(sub, cns) or gen._whole_layer_tiling(sub, cns)
+    assert gen._build_intra_core_tiling(sub, cns) == seed
 
 
 def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
