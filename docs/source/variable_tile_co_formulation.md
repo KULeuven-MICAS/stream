@@ -6,7 +6,7 @@ alongside memory allocation, transfer scheduling, and FIFO sizing.
 
 ## Background
 
-The CO allocates tensors to cores, selects transfer paths, and schedules
+The CO allocates tensors to memories, selects transfer paths, and schedules
 timeslots for an AIE array. Each workload dimension (e.g. seq_len, embedding,
 hidden) has a **tile size** that determines how much data each core processes
 per invocation. This note describes tile sizes as decision variables *inside*
@@ -32,7 +32,7 @@ name the code that implements the fixed-tile form of the other sections.
 | `S` | scalar | Spatial unrolling factor (fixed per dimension) |
 | `T` | scalar | Temporal loop iterations = workload_size / (K * S) |
 | `y[tr, path]` | BINARY | 1 if transfer `tr` uses a particular multicast path |
-| `u` | BINARY | 1 if a tensor is placed on a specific core |
+| `u` | BINARY | 1 if a tensor is placed in a specific memory |
 | `lc` | CONTINUOUS | Auxiliary variable for linearizing expression * binary |
 | `M` | scalar | Big-M bound, computed as tight per-constraint maximum |
 | `per_iter_net` | CONTINUOUS | Per-iteration net latency: sum(slot_lat) - overlap |
@@ -88,10 +88,10 @@ the expression evaluates to the correct pre-computed size.
 
 ## 3. Memory capacity constraints
 
-Each tensor placed on a core contributes to that core's memory load. The
+Each tensor placed in a memory contributes to that memory's load. The
 contribution depends on three things:
 
-- **u**: whether the tensor is on this core (binary)
+- **u**: whether the tensor is in this memory (binary)
 - **z_stop**: which reuse level is selected (binary)
 - **tensor size**: now a linear expression over tile candidates
 
@@ -104,7 +104,7 @@ uz = u AND z_stop[t, s]                    (binary product)
 lc <= combined_tile_expr                    (upper-bound by expression value)
 lc <= M * uz                               (zero when uz = 0)
 lc >= combined_tile_expr - M * (1 - uz)    (equals expression when uz = 1)
-core_load[c] += lc
+memory_load[m] += lc
 ```
 
 The big-M bound is tight: `M = max over all candidate combos of

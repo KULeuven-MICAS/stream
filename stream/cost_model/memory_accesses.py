@@ -14,13 +14,14 @@ class AccessCount:
 
 class CoreMemoryAccesses:
     """
-    Tracks read/write access counts for different Core and Tensor combinations.
+    Tracks read/write access counts per Core and Tensor, and per Tensor for the off-chip memory.
     Uses nested defaultdict for automatic handling of missing keys.
     """
 
     def __init__(self):
         # Structure: {core: {tensor: AccessCount}}
         self.accesses: dict[Core, dict[Tensor, AccessCount]] = defaultdict(lambda: defaultdict(AccessCount))
+        self.offchip: dict[Tensor, AccessCount] = defaultdict(AccessCount)
 
     def add_read(self, core: Core, tensor: Tensor, count: int = 1) -> None:
         """Add read accesses for a core-tensor pair."""
@@ -30,13 +31,21 @@ class CoreMemoryAccesses:
         """Add write accesses for a core-tensor pair."""
         self.accesses[core][tensor].write += count
 
-    def to_ir(self, offchip_core_id: int | None = None) -> dict:
+    def add_offchip_read(self, tensor: Tensor, count: int) -> None:
+        """Add read accesses of the off-chip memory for a tensor."""
+        self.offchip[tensor].read += count
+
+    def add_offchip_write(self, tensor: Tensor, count: int) -> None:
+        """Add write accesses of the off-chip memory for a tensor."""
+        self.offchip[tensor].write += count
+
+    def to_ir(self) -> dict:
         """Serialise the accesses for inspection: per core, per tensor, read/write counts.
 
         Counts are in *bandwidth-wide transfers* (a tensor tile's bits divided by the port bandwidth,
         times how many times it fires) -- the unit the cost model charges. Each tensor's ``size_bits``
-        is carried alongside so a consumer can recover the bytes moved, and the port bandwidths and an
-        ``is_offchip`` flag let it separate off-chip (DRAM/HBM) traffic from on-chip.
+        is carried alongside so a consumer can recover the bytes moved. ``offchip`` holds the off-chip
+        memory's counts per tensor.
         """
         cores: list[dict] = []
         for core, tensors in self.accesses.items():
@@ -50,28 +59,13 @@ class CoreMemoryAccesses:
             for tensor, counts in tensors.items():
                 core_read += counts.read
                 core_write += counts.write
-                size_bits = 0
-                try:
-                    size_bits = int(tensor.size_bits())
-                except Exception:  # noqa: BLE001
-                    pass
-                tensor_rows.append(
-                    {
-                        "tensor": getattr(tensor, "name", str(tensor)),
-                        "read": counts.read,
-                        "write": counts.write,
-                        "size_bits": size_bits,
-                    }
-                )
+                tensor_rows.append(_tensor_row(tensor, counts))
             tensor_rows.sort(key=lambda t: -(t["read"] + t["write"]))
-            kind = getattr(core, "type", None) or getattr(core, "kind", None)
-            is_offchip = (offchip_core_id is not None and core.id == offchip_core_id) or kind in ("offchip", "shim")
             cores.append(
                 {
                     "core_id": core.id,
-                    "core_name": getattr(core, "name", f"core_{core.id}"),
-                    "kind": kind,
-                    "is_offchip": bool(is_offchip),
+                    "core_name": core.name,
+                    "kind": core.kind,
                     "read_bandwidth": read_bw,
                     "write_bandwidth": write_bw,
                     "read": core_read,
@@ -81,7 +75,8 @@ class CoreMemoryAccesses:
                 }
             )
         cores.sort(key=lambda c: c["core_id"])
-        return {"cores": cores}
+        offchip = [_tensor_row(tensor, counts) for tensor, counts in self.offchip.items()]
+        return {"cores": cores, "offchip": offchip}
 
     def __repr__(self) -> str:
         """String representation of all accesses."""
@@ -90,3 +85,7 @@ class CoreMemoryAccesses:
             for tensor, counts in tensors.items():
                 result += f"  {core} - {tensor}: read={counts.read}, write={counts.write}\n"
         return result
+
+
+def _tensor_row(tensor: Tensor, counts: AccessCount) -> dict:
+    return {"tensor": tensor.name, "read": counts.read, "write": counts.write, "size_bits": tensor.size_bits()}

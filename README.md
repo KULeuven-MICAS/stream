@@ -4,7 +4,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![Docs](https://img.shields.io/badge/docs-stream-blue)](https://kuleuven-micas.github.io/stream/)
 
-**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
+**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths between memories. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
 ### 📖 [**Explore the Documentation**](https://kuleuven-micas.github.io/stream/)
 ### 🚀 [**Getting Started Guide**](https://kuleuven-micas.github.io/stream/getting-started/)
@@ -80,13 +80,13 @@ Price a small two-Conv workload (a committed test fixture) on a TPU-like quad-co
 
 ## 🧩 Hardware and Core Types
 
-An accelerator in Stream is described as a **system of heterogeneous dataflow cores**. Core roles include compute, memory, shim, and offchip; example dataflow core types include **AIE**, **TPU-like**, and **pooling**.
+An accelerator in Stream is described as a **system of heterogeneous dataflow cores** that compute out of **memories**, joined by links and buses. Several cores can share one memory, and off-chip DRAM is a memory too. Example dataflow core types include **AIE**, **TPU-like**, and **pooling**. See the [Hardware docs](https://kuleuven-micas.github.io/stream/hardware/) for the format.
 
 Hardware and mapping files are organized as follows:
 
 - `stream/inputs/examples/hardware/` - system-level hardware YAMLs (e.g. `tpu_like_quad_core.yaml`, `eyeriss_like_*.yaml`, `simba*.yaml`, `fusemax.yaml`).
-- `stream/inputs/examples/hardware/cores/` - per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `offchip.yaml`, `eyeriss_like.yaml`).
-- `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` - AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`, `shim_dma.yaml`).
+- `stream/inputs/examples/hardware/cores/` - per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `eyeriss_like.yaml`).
+- `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` - AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`).
 - `stream/inputs/examples/mapping/`, `stream/inputs/aie/mapping/`, and `stream/inputs/testing/mapping/` - mapping descriptions.
 
 A mapping can be generated (as in Quick Start above) or hand-written and passed as `mapping`.
@@ -152,7 +152,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print("cycles:", estimate.cycles)
 ```
 
-A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`, whose useful keys are `allocation`, `workload`, `accelerator` and `group_latencies`. `SolveOptions` sets the solver backend, the number of columns, the constraint families of the allocation model, the kernel library, the tile search, the solve's time limit and solver log, whether each solve writes its reports, traces and figures (`artifacts`), and instrumentation (such as `timing`), and its `stage_options` carries what a plugin's stages read, such as `fusion_cut_points` and `intra_core_tiling` for the generic mapping generator or `npu` and `trace_size` for the AIE code generator.
+A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`, whose useful keys are `allocation`, `workload`, `accelerator` and `group_latencies`. `SolveOptions` sets the solver backend, the number of columns, the constraint families of the allocation model, the kernel library, the tile search, the solve's time limit and solver log, whether the run writes its pictures and each solve its reports, traces and figures (`artifacts`), and instrumentation (such as `timing`), and its `stage_options` carries what a plugin's stages read, such as `fusion_cut_points` and `intra_core_tiling` for the generic mapping generator or `npu` and `trace_size` for the AIE code generator.
 
 Whatever depends on the hardware is found through entry-point groups, so a separate package extends Stream without a fork: `stream.frontends` (workload formats), `stream.mapping_generators` (a mapping when none is given), `stream.namespaces` (namespace facts and the constraint families a namespace adds), `stream.constraint_families` (the constraint families the allocation model is built from), `stream.core_cost_backends` (per-core cost) and `stream.codegen_backends` (code generation).
 

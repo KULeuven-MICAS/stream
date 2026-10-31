@@ -18,8 +18,8 @@ def _parse(path):
 
 def test_the_strix_array_declares_its_off_chip_bandwidth_and_reconfiguration():
     accelerator = _parse("stream/inputs/aie/hardware/whole_array_strix.yaml")
-    assert set(accelerator.bandwidth) == {accelerator.offchip_core_id}
-    assert isinstance(accelerator.bandwidth[accelerator.offchip_core_id], BandwidthModel)
+    assert set(accelerator.bandwidth) == {accelerator.offchip_memory}
+    assert isinstance(accelerator.bandwidth[accelerator.offchip_memory], BandwidthModel)
     assert accelerator.reconfiguration == {"cycles_per_column": 40000, "reset_cycles": 63000}
 
 

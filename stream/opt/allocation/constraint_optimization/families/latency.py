@@ -38,7 +38,7 @@ class SlotLatency:
         for (tr, choice), y in ctx.vars.y.items():
             latency = _active_transfer_latency(ctx, tr, choice, y)
             q.add("transfer_latency", latency._raw, index=(tr, choice))
-            model.add_constr(slot_latency[space.slot_of[tr]] >= latency, name=f"tr_lat_{tr.name}_{hash(choice)}")
+            model.add_constr(slot_latency[space.slot_of[tr]] >= latency, name=f"tr_lat_{space.route_name(tr, choice)}")
         q.add(SLOT_PRESSURE, 0, index="slot_latency", upper_bound=_longest_step(space))
 
 

@@ -1,4 +1,4 @@
-"""A tensor a transfer produces is held only on the cores the transfer's chosen path writes to."""
+"""A tensor a transfer produces is held only in the memories the transfer's chosen path writes to."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ class _Node:
 
 
 class _Tile:
+    """A stand-in memory with only an id and a name."""
+
     def __init__(self, core_id: int, name: str):
         self.id, self.name = core_id, name
 
@@ -42,7 +44,7 @@ def _placed(one_tile: bool) -> tuple[str, ...]:
     path = "one" if one_tile else "two"
     y = {(transfer, path): model.add_var(vtype=SolverVarType.BINARY, name="y")}
     model.add_constr(y[(transfer, path)] == 1)
-    space.choice_dst_cores = {(transfer, path): {tile_a} if one_tile else {tile_a, tile_b}}
+    space.choice_dst_memories = {(transfer, path): {tile_a} if one_tile else {tile_a, tile_b}}
     space.choice_has_empty_path = {(transfer, path): False}
     ctx = FormulationContext(space, DecisionVariables(x, y, {}, {}, {}), model, QuantityRegistry(), ResourceLedger())
     destination_coherence(ctx, transfer, (path,))

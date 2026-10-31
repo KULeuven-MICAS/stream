@@ -44,8 +44,8 @@ memories:
   # VMEM as the vector unit sees it: the same 128 MiB scratchpad the MXU streams from.
   operand_buffer:
     size: 1073741824
-    r_cost: 120
-    w_cost: 130
+    r_cost: 200
+    w_cost: 220
     area: 0
     latency: 1
     operands: [I1, I2, O]

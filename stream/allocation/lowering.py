@@ -1,6 +1,7 @@
 """Lowering of a fused group to its steady state: the transfers made explicit, each with the placements and
 routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
 
+from collections.abc import Sequence
 from dataclasses import replace
 from itertools import combinations, count
 from math import ceil, prod
@@ -15,7 +16,9 @@ from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import Mapping
+from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import OUTPUT
+from stream.mapping.mapping import Mapping, offchip_memory, placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand, streamed_operands
@@ -43,6 +46,26 @@ from stream.workload.utils import (
 from stream.workload.workload import Workload, position_of
 
 
+def reader_positions(
+    tensor: Tensor, readers: Sequence[tuple[HasInputs, Sequence[Core | None], Sequence[Memory]]]
+) -> tuple[Memory, ...]:
+    """The memory a copy of ``tensor`` lands in at each position, one per reading core. Each reader gives its cores
+    and the memory each core reads the copy in. Positions keep the readers' core order, since that order pairs a
+    spatial index with a core. A core must read the copy in the same memory for every reader. A reader without a core
+    (an output edge) gets a position of its own."""
+    found: dict[object, tuple[HasInputs, Memory]] = {}
+    for reader, cores, memories in readers:
+        for core, memory in zip(cores, memories, strict=True):
+            key = core if core is not None else object()  # unique key: shared with no other position
+            first, held = found.setdefault(key, (reader, memory))
+            if held is not memory:
+                raise ValueError(
+                    f"core {key.id} reads {tensor.name} in {memory.name} for {reader.name} but in {held.name} for "
+                    f"{first.name}: a copy lands in one memory per core"
+                )
+    return tuple(memory for _, memory in found.values())
+
+
 def largest_divisor_leq(n: int, cap: int) -> int:
     """Largest divisor of ``n`` at most ``cap`` (never below 1)."""
     cap = max(1, min(cap, n))
@@ -59,19 +82,30 @@ def lower_steady_state(  # noqa: PLR0913
     fusion_splits: dict[LayerDim, int],
     cost_lut: CoreCostLUT,
     nb_cols_to_use: int,
+    route_alternatives: int,
 ) -> AllocationProblem:
-    """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``."""
-    return _Lowering(workload, accelerator, mapping, nb_cols_to_use).lower(fusion_splits, cost_lut)
+    """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``, each
+    placement of a transfer offered up to ``route_alternatives`` routes."""
+    lowering = _Lowering(workload, accelerator, mapping, nb_cols_to_use, route_alternatives)
+    return lowering.lower(fusion_splits, cost_lut)
 
 
 class _Lowering:
     """The state the lowering threads through its steps: a mapping it rewrites as the transfer graph grows."""
 
-    def __init__(self, workload: Workload, accelerator: Accelerator, mapping: Mapping, nb_cols_to_use: int):
+    def __init__(  # noqa: PLR0913
+        self,
+        workload: Workload,
+        accelerator: Accelerator,
+        mapping: Mapping,
+        nb_cols_to_use: int,
+        route_alternatives: int,
+    ):
         self.workload = workload
         self.accelerator = accelerator
         self.mapping = mapping.copy()
         self.nb_cols_to_use = nb_cols_to_use
+        self.route_alternatives = route_alternatives
         self.hardware = build_hardware_facts(accelerator, nb_cols_to_use)
 
     def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> AllocationProblem:
@@ -149,11 +183,11 @@ class _Lowering:
             # Named after the tensor it moves, apart from the export's transfer, which reads the same renamed copy.
             name = f"Transfer({tensor.name})" if exports and group is readers else None
             if staged:
-                hop_type = self.determine_transfer_type(src, group, dst_type="memory")
+                hop_type = self.determine_transfer_type(src, group, tensor, dst_type="memory")
                 hop, (copy,) = self.generate_transfer_node([src], copy, hop_type, next(names), name)
                 new_nodes[hop.name] = hop
                 name = None
-            transfer_type = self.determine_transfer_type(src, group, src_type="memory" if staged else None)
+            transfer_type = self.determine_transfer_type(src, group, tensor, src_type="memory" if staged else None)
             out_name = tensor.name if group is exports else next(names)
             placements = [self._placement(dst, tensor) for dst in group]
             transfer_node, updated_tensors = self.generate_transfer_node(
@@ -198,7 +232,7 @@ class _Lowering:
         serves every core from its own. And a producer and consumer that disagree on layout need the
         tensor re-laid out between them, which is the tile's other job.
         """
-        if not self._get_accelerator_memory_cores():
+        if not self._mem_tiles():
             return False
         if isinstance(src, InEdge) or any(isinstance(dst, OutEdge) for dst in dsts):
             return True
@@ -386,44 +420,33 @@ class _Lowering:
 
     def determine_possible_memory_allocations(
         self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]
-    ) -> tuple[tuple[Core, ...], ...]:
-        """
-        Determine the memory allocation of the transfer node.
-        The memory alloc is always for the destination side tensors. For input transfers, the
-        MEM_TO_MEM output tensor is allocated on memory cores; for output transfers the
-        COMPUTE_TO_MEM output tensor is. Otherwise, allocations follow destination nodes.
-        """
+    ) -> tuple[tuple[Memory, ...], ...]:
+        """The candidate memories the transfer's copies land in, one per target position. An input transfer's
+        MEM_TO_MEM copy and an output transfer's COMPUTE_TO_MEM copy land in memory tiles. Any other copy lands where
+        its readers read it."""
         if node.transfer_type in (TransferType.MEM_TO_MEM,) and isinstance(src, InEdge):
             # Find the dst with max number of compute allocations to determine possible memory cores
             compute_dsts = get_compute_predecessors_successors(
                 tr=node, workload=self.ssw
             )  # won't have any compute preds
             dst = get_node_with_largest_resource_allocation(compute_dsts, self.mapping)
-            possible_memory_cores = self._get_possible_memory_core_allocations(dst, node)
-        elif node.transfer_type in (TransferType.MEM_TO_MEM,) and any(isinstance(dst, OutEdge) for dst in dsts):
+            return self._mem_tile_placements(dst, node)
+        if node.transfer_type in (TransferType.MEM_TO_MEM,) and any(isinstance(dst, OutEdge) for dst in dsts):
             assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
-            dst = dsts[0]
-            possible_memory_cores = self._retrieve_core_allocation(dst)
-        elif node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
-            possible_memory_cores = self._get_possible_memory_core_allocations(src, node)
-            if not possible_memory_cores:
-                # No on-chip memory tiles — fall back to offchip core as the destination
-                offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-                possible_memory_cores = ((offchip_core,),)
-        else:
-            # The destination order is the order the consumers declared, because that is what
-            # pairs a spatial index with a core. Sorting here would silently hand each index a
-            # different core than the computation node it feeds whenever a layer's cores are
-            # not listed in ascending id order.
-            destinations: dict[Core, None] = {}
-            for dst in dsts:
-                assert len(self._retrieve_core_allocation(dst)) == 1, "TODO: Support multiple compute allocations."
-                destinations.update(dict.fromkeys(self._retrieve_core_allocation(dst)[0]))
-            possible_memory_cores = (tuple(destinations),)
-        return possible_memory_cores
+            return (self._target_placement(dsts[0], node),)
+        if node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
+            staged = self._mem_tile_placements(src, node)
+            # No on-chip memory tiles: the copy lands off-chip.
+            return staged or ((offchip_memory(self.accelerator),),)
+        readers = []
+        for dst in dsts:
+            # An output edge is read off chip, by no core.
+            allocation = ((None,),) if isinstance(dst, OutEdge) else self.mapping.get(dst).resource_allocation
+            readers.append((dst, the_one(allocation, dst, "cores"), self._target_placement(dst, node)))
+        return (reader_positions(node.inputs[0], readers),)
 
     def determine_possible_inter_core_tiling(
-        self, node: TransferNode, possible_dst_allocs: tuple[tuple[Core, ...], ...], dsts: tuple[HasInputs, ...]
+        self, node: TransferNode, possible_dst_allocs: tuple[tuple[Memory, ...], ...], dsts: tuple[HasInputs, ...]
     ) -> tuple[InterCoreTiling, ...]:
         possible_inter_core_tiling = []
         # A tensor its largest consumer does not split is held whole by every tile it sits on,
@@ -467,7 +490,7 @@ class _Lowering:
         return tuple(possible_inter_core_tiling)
 
     def get_inter_core_tiling_for_transfer(
-        self, node: TransferNode, memory_allocs: tuple[tuple[Core, ...], ...]
+        self, node: TransferNode, memory_allocs: tuple[Memory, ...]
     ) -> tuple[InterCoreTiling, ...]:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
         assert node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM), (
@@ -488,7 +511,7 @@ class _Lowering:
         return (mem_tiling,)
 
     def get_matching_tiling(
-        self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]
+        self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Memory, ...]
     ) -> tuple[LayerDim, int]:
         # TODO: Make sure that the selected tiling_loop is relevant for the transfer node
         nb_allocs = len(dst_allocs)
@@ -512,12 +535,12 @@ class _Lowering:
         self,
         node: TransferNode,
         src: HasOutputs,
-        possible_dst_allocs: tuple[tuple[Core, ...], ...],
+        possible_dst_allocs: tuple[tuple[Memory, ...], ...],
         possible_tilings: tuple[InterCoreTiling, ...],
     ) -> tuple[MulticastPathPlan, ...]:
         """The route of each placement of ``node``, moving what each target reads from the sources that hold it."""
         all_possible_resource_plans = []
-        possible_src_allocs = self._retrieve_core_allocation(src)
+        possible_src_allocs = self._source_placements(src)
         bitwidth = node.inputs[0].operand_type.bitwidth
         for src_allocs in possible_src_allocs:
             for dst_allocs, tiling in zip(possible_dst_allocs, possible_tilings, strict=True):
@@ -529,9 +552,10 @@ class _Lowering:
                     len(dst_allocs),
                     self.hardware.pairs_by_spatial_index((*src_allocs, *dst_allocs)),
                     dst_allocs,
+                    self._reads_in,
                 )
                 possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
-                    src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory
+                    src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
                 )
                 all_possible_resource_plans.extend(possible_resource_plans)
         return tuple(all_possible_resource_plans)
@@ -542,78 +566,66 @@ class _Lowering:
         # For now, return the minimum number of iterations across all nodes
         return min(iterations_per_node.values())
 
-    def _retrieve_core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
-        if isinstance(node, InEdge):
-            return ((self.accelerator.get_core(self.accelerator.offchip_core_id),),)
-        if isinstance(node, OutEdge):
-            return ((self.accelerator.get_core(self.accelerator.offchip_core_id),),)
-        if isinstance(node, HasOutputs):
-            if isinstance(node, TransferNode):
-                return self.mapping.get(node).memory_allocation
-            return self.mapping.get(node).resource_allocation
-        raise ValueError(f"Unexpected source node type: {type(node)}")
+    def _source_placements(self, node: HasOutputs) -> tuple[tuple[Memory, ...], ...]:
+        """The memories ``node`` may hold its output in, one per position."""
+        return placements_of(self.accelerator, self.mapping, node, OUTPUT)
+
+    def _target_placement(self, dst: HasInputs, transfer: TransferNode) -> tuple[Memory, ...]:
+        """The memories ``dst`` reads ``transfer``'s copy in, one per position."""
+        return self._destination_memories(dst, next(t for t in transfer.outputs if t in dst.inputs))
+
+    def _reads_in(self, node: ComputationNode, tensor: Tensor) -> tuple[Memory, ...]:
+        """The memory each of ``node``'s cores reads its input ``tensor`` in."""
+        return the_one(placements_of(self.accelerator, self.mapping, node, role_of(node, tensor)), node, "placements")
 
     def determine_transfer_type(
-        self, src: HasOutputs, dsts: tuple[HasInputs, ...], src_type: str | None = None, dst_type: str | None = None
-    ) -> TransferType:  # noqa: PLR0912
-        """Determine the type of transfer needed based on the allocation types of src and dst nodes."""
+        self,
+        src: HasOutputs,
+        dsts: list[HasInputs],
+        tensor: Tensor,
+        src_type: str | None = None,
+        dst_type: str | None = None,
+    ) -> TransferType:
+        """The type of transfer moving ``tensor`` from ``src`` to ``dsts``, by the kinds of memory it leaves and
+        lands in."""
         if src_type is None:
-            src_allocation = self._retrieve_core_allocation(src)
+            src_allocation = self._source_placements(src)
             assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
             src_type = self._effective_allocation_type(src_allocation[0])
         if dst_type is None:
-            dst_allocations = [self._retrieve_core_allocation(dst)[0] for dst in dsts]
-            # A constant input/output may be spread across a mix of allocations -- a compute core that
-            # produces/consumes it and a memory/offchip core that stages it. Resolve to the type the
-            # transfer must actually serve (compute when any allocation is compute; the PE is where the
-            # data originates or is needed) instead of asserting the allocations are homogeneous.
-            dst_type = self._effective_allocation_type([alloc for dst_alloc in dst_allocations for alloc in dst_alloc])
+            landing = [m for dst in dsts for m in self._destination_memories(dst, tensor)]
+            dst_type = self._effective_allocation_type(landing)
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
-        elif src_type == "compute" and dst_type in ("memory", "shim", "offchip"):
+        elif src_type == "compute" and dst_type in ("memory", "offchip"):
             return TransferType.COMPUTE_TO_MEM
-        elif src_type in ("memory", "shim", "offchip") and dst_type == "compute":
+        elif src_type in ("memory", "offchip") and dst_type == "compute":
             return TransferType.MEM_TO_COMPUTE
-        elif src_type in ("memory", "shim", "offchip") and dst_type in ("memory", "shim", "offchip"):
+        elif src_type in ("memory", "offchip") and dst_type in ("memory", "offchip"):
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
-    def _effective_allocation_type(self, allocs: list[Core]) -> str:
-        """The transfer type a set of (possibly mixed) allocations must serve.
+    def _destination_memories(self, dst: HasInputs, tensor: Tensor) -> tuple[Memory, ...]:
+        """The memories ``dst`` reads ``tensor`` in: off-chip for an output edge, else the memory each of the
+        computation's cores reads it in."""
+        if isinstance(dst, OutEdge):
+            return (offchip_memory(self.accelerator),)
+        assert isinstance(dst, ComputationNode), f"Unexpected destination node type: {type(dst)}"
+        return self._reads_in(dst, tensor)
 
-        Homogeneous allocations return their single type. Mixed allocations -- a constant that is on a
-        compute core *and* staged in memory/offchip -- resolve to ``compute`` when any allocation is
-        compute (that is where the data originates or is needed), else to the memory-family type. This
-        keeps the transfer graph well-defined for the valid allocations the MILP can produce, instead
-        of asserting homogeneity.
-        """
-        alloc_types = set(alloc.type for alloc in allocs)
-        if not alloc_types:
+    def _effective_allocation_type(self, allocs: Sequence[Memory]) -> str:
+        """The memory kind a set of (possibly mixed) memories serves as: ``compute`` if any is a compute memory (that is
+        where the data originates or is needed), else ``offchip``, else ``memory``."""
+        kinds = {alloc.kind for alloc in allocs}
+        if not kinds:
             raise ValueError("no allocations to determine transfer type")
-        if len(alloc_types) == 1:
-            return alloc_types.pop()
-        if "compute" in alloc_types:
-            return "compute"
-        for preferred in ("offchip", "shim", "memory"):
-            if preferred in alloc_types:
-                return preferred
-        return alloc_types.pop()
+        return next(kind for kind in ("compute", "offchip", "memory") if kind in kinds)
 
-    def _get_accelerator_memory_cores(self) -> set[Core]:
-        """
-        Get all memory cores in the accelerator.
-        """
-        memory_cores = set()
-        for core in self.accelerator.core_list:
-            if (
-                core.type == "memory"
-                and not core.id == self.accelerator.offchip_core_id
-                and core.col_id < self.nb_cols_to_use
-            ):
-                memory_cores.add(core)
-        return memory_cores
+    def _mem_tiles(self) -> list[Memory]:
+        """The memory tiles within the column budget, in column order."""
+        return sorted(self.hardware.mem_memories, key=lambda memory: (memory.col_id, memory))
 
-    def _get_possible_memory_core_allocations(self, src: HasOutputs, node: Node) -> tuple[tuple[Core, ...], ...]:
+    def _mem_tile_placements(self, src: HasOutputs, node: Node) -> tuple[tuple[Memory, ...], ...]:
         # An input transfer feeds every unrolled destination separately; an output transfer is
         # gathered per column, since a column's compute cores share its memory tile.
         MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE = {
@@ -624,33 +636,33 @@ class _Lowering:
         inter_core_tiling_src = inter_core_tiling_entries[0] if inter_core_tiling_entries else ()
         total_relevant_unrolling = self._relevant_unrolling(src, node)
         columns = self._columns_of(src)
-        all_mem_cores = sorted(self._get_accelerator_memory_cores(), key=lambda core: (core.col_id, core.id))
+        mem_tiles = self._mem_tiles()
         if node.transfer_type is TransferType.MEM_TO_MEM and self._each_column_reads_whole(src, node):
-            return (tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src)),)
+            return (tuple(c for c in mem_tiles if c.col_id in self._column_ids_of(src)),)
         if columns and node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
             # A column's cores share its one memory tile, so both need one tile per occupied column, not per core.
-            required_nb_memory_cores = min(columns, total_relevant_unrolling)
+            required_nb_mem_tiles = min(columns, total_relevant_unrolling)
         else:
-            required_nb_memory_cores = ceil(
+            required_nb_mem_tiles = ceil(
                 total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
             )
         # Snap the count down to a divisor of the compute split so the transfer is one even inter-core tiling.
         if total_relevant_unrolling > 1:
-            required_nb_memory_cores = largest_divisor_leq(total_relevant_unrolling, required_nb_memory_cores)
+            required_nb_mem_tiles = largest_divisor_leq(total_relevant_unrolling, required_nb_mem_tiles)
         # Unrolling binds allocation position to spatial index, so column order keeps a tile with its own cores.
-        candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
+        candidates = [tuple(combo) for combo in combinations(mem_tiles, required_nb_mem_tiles)]
         # A tensor its consumers do not split is held whole, so a single tile can be left
         # feeding every column. One copy per occupied column is the alternative: each tile
         # serves its own column, and the shim broadcasts the tensor to them.
         if total_relevant_unrolling == 1 and node.transfer_type is TransferType.MEM_TO_MEM:
-            per_column = tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src))
+            per_column = tuple(c for c in mem_tiles if c.col_id in self._column_ids_of(src))
             if len(per_column) > 1 and per_column not in candidates:
                 candidates.append(per_column)
         # Partial sums of a reduction the source splits across columns are completed a slice per column's memory tile,
         # a reduce-scatter: no link carries more than when one tile completes them all, and the slices leave in
         # parallel.
         if node.transfer_type is TransferType.COMPUTE_TO_MEM and self.ssw.splits_reduction(src, inter_core_tiling_src):
-            per_column = tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src))
+            per_column = tuple(c for c in mem_tiles if c.col_id in self._column_ids_of(src))
             if len(per_column) > 1 and self._slice_of(node, len(per_column)):
                 return (per_column,)
         return tuple(candidates)
@@ -660,7 +672,7 @@ class _Lowering:
         whole copy in each column's memory serves them without data crossing columns, where the code generator does
         not pair the cores by spatial index."""
         allocations, tilings = self.mapping.get(dst).resource_allocation, self.mapping.get(dst).inter_core_tiling
-        if not allocations or not tilings or self.hardware.pairs_by_spatial_index(allocations[0]):
+        if not allocations or not tilings or self.hardware.pairs_by_spatial_index(self._source_placements(dst)[0]):
             return False
         cores, tiling = allocations[0], tilings[0]
         node_dims = set(self.ssw.get_dims(node))

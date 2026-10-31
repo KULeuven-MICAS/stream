@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from itertools import pairwise, product
@@ -60,6 +60,7 @@ from stream.compiler.dialects.stream import (
     YieldOp,
 )
 from stream.compiler.fifo_depths import FifoDepths, elem_bits, object_bytes
+from stream.compiler.transforms.aie_tiles import COMPUTE, MEMORY, OFFCHIP, AIETileLocation
 from stream.compiler.transforms.unroll import iterate_spat_vars
 from stream.datatypes import LayerDim
 
@@ -157,15 +158,23 @@ def _consumer_point(groups: Sequence[Sequence[StrensorVar]], outer: dict[LayerDi
     return {StrensorVar(StrensorVarType.POINT, index, dim) for dim, index in merged.items()}
 
 
-def _endpoint_order(op: PushOp | PullOp) -> tuple[int, str, str]:
-    """A fixed order over a channel's pushes or pulls, the one splitting the most dimensions first."""
+def _endpoint_order(op: PushOp | PullOp, tiles: Mapping[str, AIETileLocation]) -> tuple:
+    """A fixed order over a channel's pushes or pulls: the one splitting the most dimensions first, then by where it
+    is placed, DRAM first and tiles by column and row."""
     strensor = op.input.type if isinstance(op, PushOp) else op.output.type
+    assert isinstance(strensor, StrensorType)
     index = op.spatial_index
-    return (-len(index.data.vars) if index is not None else 0, str(index), str(strensor))
+    places = tuple(tiles[name.data].order for name in strensor.core_allocation)
+    return (-len(index.data.vars) if index is not None else 0, str(index), places, str(strensor))
 
 
-def _first_endpoint(channel: SSAValue, kind: type[PushOp] | type[PullOp]) -> PushOp | PullOp:
-    return min((use.operation for use in channel.uses if isinstance(use.operation, kind)), key=_endpoint_order)
+def _first_endpoint(
+    channel: SSAValue, kind: type[PushOp] | type[PullOp], tiles: Mapping[str, AIETileLocation]
+) -> PushOp | PullOp:
+    return min(
+        (use.operation for use in channel.uses if isinstance(use.operation, kind)),
+        key=lambda op: _endpoint_order(op, tiles),
+    )
 
 
 def _reads_point(index: set[StrensorVar], point: set[StrensorVar]) -> bool:
@@ -296,14 +305,10 @@ NB_COLUMNS = 8
 PING_PONG = 2
 
 
-def column_of(tile: str) -> int:
-    """The column of a tile named ``tile_<column>_<row>``."""
-    return int(tile.split("_")[1])
-
-
 @dataclass
 class ChannelToObjectFifoPass(RewritePattern):
     shim_tiles: dict[int, SSAValue]
+    tiles: Mapping[str, AIETileLocation]
     of_count: int = 0
     depths: FifoDepths | None = None
     """
@@ -725,16 +730,19 @@ class ChannelToObjectFifoPass(RewritePattern):
             ofs.extend(spat_ofs)
         return ofs
 
-    def get_tile(self, op: PushOp | PullOp, destination: str = "") -> SSAValue:
+    def get_tile(self, op: PushOp | PullOp, destination: str | None = None) -> SSAValue:
+        """The tile ``op`` runs on: its core's, or, in the runtime sequence, the shim of the column of the placement
+        ``destination`` its transfer's other end has."""
         parent = op.parent_op()
         while not isinstance(parent, CoreOp | RuntimeSequenceOp):
             assert parent is not None
             parent = parent.parent_op()
         if isinstance(parent, CoreOp):
             return parent.tile
-        # In the runtime sequence the tile is a shim, one per column, so it is the
-        # destination's column that picks it and not the row it happens to sit on.
-        return self.shim_tiles[column_of(destination)]
+        if destination is None:
+            raise ValueError("an op of the runtime sequence reaches DRAM through the shim of its other end's column")
+        column, _ = self.tiles[destination].tile
+        return self.shim_tiles[column]
 
     def shim_to_mem(
         self,
@@ -922,28 +930,25 @@ class ChannelToObjectFifoPass(RewritePattern):
         outer = variables[: len(variables) - strensor.reuse_index.data]
         return strensor.buffers.data if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
 
-    @classmethod
-    def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:
+    def held_shape(self, strensor: StrensorType) -> tuple[int, ...]:
         """The shape the tile this strensor lives on holds of it.
 
         A memory tile stages a whole block and redistributes it kernel tile by kernel
         tile, so it holds the block; a core holds a single kernel tile.
         """
-        if cls.is_mem(strensor.core_allocation.data[0].data):
+        if self.is_mem(strensor.core_allocation.data[0].data):
             return strensor.get_local_shape() + strensor.get_kernel_shape()
         return strensor.get_kernel_shape()
 
-    @staticmethod
-    def is_shim(tile: str):
-        return tile[-1] == "0"
+    def is_shim(self, placement: str) -> bool:
+        """Whether ``placement`` is DRAM, which the runtime sequence reaches through a shim."""
+        return self.tiles[placement].kind == OFFCHIP
 
-    @staticmethod
-    def is_mem(tile: str):
-        return tile[-1] == "1"
+    def is_mem(self, placement: str) -> bool:
+        return self.tiles[placement].kind == MEMORY
 
-    @staticmethod
-    def is_compute(tile: str):
-        return int(tile[-1]) > 1
+    def is_compute(self, placement: str) -> bool:
+        return self.tiles[placement].kind == COMPUTE
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, channel: ChannelOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
@@ -963,8 +968,8 @@ class ChannelToObjectFifoPass(RewritePattern):
                 consumers.append(use.operation)
             else:
                 raise RuntimeError("channel used by non-push/pull operation")
-        producers.sort(key=_endpoint_order)
-        consumers.sort(key=_endpoint_order)
+        producers.sort(key=lambda op: _endpoint_order(op, self.tiles))
+        consumers.sort(key=lambda op: _endpoint_order(op, self.tiles))
         assert isinstance(in_type := producers[0].input.type, StrensorType)
         assert isinstance(out_type := consumers[0].output.type, StrensorType)
         in_ss = in_type.ssis.data
@@ -1253,7 +1258,7 @@ class RealizeLinks(RewritePattern):
             held.properties["elemNumber"] = cls.scale_depth(held.elemNumber, prod(shape) // need)
 
 
-def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]:
+def transfer_endpoints(op: PushOp | PullOp, tiles: Mapping[str, AIETileLocation]) -> tuple[StrensorType, StrensorType]:
     """The strensor where this transfer first lands and where it finally lands.
 
     A transfer reaches its compute tile either directly or by way of a memory tile, so
@@ -1263,18 +1268,18 @@ def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]
     which is the one the memory tile's layout serves.
     """
     if isinstance(op, PushOp):
-        stops = [_first_endpoint(op.channel, PullOp)]
+        stops = [_first_endpoint(op.channel, PullOp, tiles)]
         while onward := min(
             (u.operation for u in stops[-1].output.uses if isinstance(u.operation, PushOp)),
-            key=_endpoint_order,
+            key=lambda push: _endpoint_order(push, tiles),
             default=None,
         ):
-            stops.append(_first_endpoint(onward.channel, PullOp))
+            stops.append(_first_endpoint(onward.channel, PullOp, tiles))
         first, last = stops[0].output.type, stops[-1].output.type
     else:
-        stops = [_first_endpoint(op.channel, PushOp)]
+        stops = [_first_endpoint(op.channel, PushOp, tiles)]
         while isinstance(back := stops[-1].input.owner, PullOp):
-            stops.append(_first_endpoint(back.channel, PushOp))
+            stops.append(_first_endpoint(back.channel, PushOp, tiles))
         first, last = stops[0].input.type, stops[-1].input.type
     assert isinstance(first, StrensorType) and isinstance(last, StrensorType)
     return first, last
@@ -1282,12 +1287,14 @@ def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]
 
 @dataclass
 class TransferToRuntimeSequence(RewritePattern):
+    tiles: Mapping[str, AIETileLocation]
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
         if not isinstance(runtime_sequence := op.parent_op(), RuntimeSequenceOp):
             return
 
-        mem_strensor, compute_strensor = transfer_endpoints(op)
+        mem_strensor, compute_strensor = transfer_endpoints(op, self.tiles)
 
         # iterate the zipped mem and compute strensors in reverse (innermost -> outermost)
         def iter_strensors() -> Iterable[tuple[StrensorVar, StrensorVar]]:
@@ -1877,6 +1884,7 @@ class AIEConvertOfs(ModulePass):
     """
 
     name = "aie-convert-ofs"
+    tiles: Mapping[str, AIETileLocation]
     depths: FifoDepths | None = None
     # The buffer descriptors a shim tile has and the steps one iterates; without both every loop stays unrolled.
     shim_descriptors: int = 0
@@ -1887,12 +1895,12 @@ class AIEConvertOfs(ModulePass):
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
         shim_tiles = {column: TileOp(column, 0) for column in range(NB_COLUMNS)}
         PatternRewriteWalker(
-            ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()}, depths=self.depths)
+            ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()}, self.tiles, depths=self.depths)
         ).rewrite_module(op)
         Rewriter().insert_op(
             [x for x in shim_tiles.values() if x.result.uses], InsertPoint.at_start(device.region.block)
         )
-        PatternRewriteWalker(TransferToRuntimeSequence(), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(TransferToRuntimeSequence(self.tiles), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StrensorToMemref()).rewrite_module(op)
         if self.shim_descriptors and self.shim_iterations:
             PatternRewriteWalker(

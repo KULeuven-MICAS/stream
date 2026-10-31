@@ -76,17 +76,13 @@ def _core_label(core: Core) -> str:
 
 
 def _link_label(link: CommunicationLink) -> str:
-    bw = getattr(link, "bandwidth", "?")
-    sender_id = getattr(link.sender, "id", "?")
-    receiver_id = getattr(link.receiver, "id", "?")
-    return f"Link {sender_id}→{receiver_id} (bw={bw})"
+    return f"Link {link}"
 
 
 def _path_label(path: MulticastPathPlan) -> str:
     """Short but complete label for a path of CommunicationLinks used as a track name."""
-    hops = "→".join(str(getattr(lnk.receiver, "id", "?")) for lnk in path.links_used)
-    src = getattr(path.sources[0], "id", "?") if path.links_used else "?"
-    return f"Path {src}→{hops}"
+    sources = ", ".join(memory.name for memory in path.sources)
+    return f"Path from {sources}: {', '.join(map(str, path.links_used))}"
 
 
 def _resource_label(res) -> str:
@@ -107,12 +103,9 @@ def _resource_sort_key(res) -> int:
         col = getattr(res, "col_id", 0) or 0
         row = getattr(res, "row_id", 0) or 0
         return col * 1000 + row
-    # Links sorted after all cores, then by sender id
-    return (
-        1_000_000
-        + getattr(getattr(res, "sender", None), "id", 0) * 1000
-        + getattr(getattr(res, "receiver", None), "id", 0)
-    )
+    # Links sorted after all cores, then by the lowest core id viewing each of their first two memories
+    first, second = (min((core.id for core in memory.cores), default=0) for memory in res.memories[:2])
+    return 1_000_000 + first * 1000 + second
 
 
 def _core_group_label(cores: tuple[Core, ...]) -> str:

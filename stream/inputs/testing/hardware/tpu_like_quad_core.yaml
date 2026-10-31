@@ -7,67 +7,139 @@ cores:
   3: tpu_like.yaml
   4: pooling.yaml
   5: simd.yaml
-  6: offchip.yaml
 
-offchip_core_id: 6
+memories:
+  tpu_like_0:
+    offchip: false
+    views: [0.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  tpu_like_1:
+    offchip: false
+    views: [1.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  tpu_like_2:
+    offchip: false
+    views: [2.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  tpu_like_3:
+    offchip: false
+    views: [3.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [3]}
+      w_port_1: {from: w_port_1, cores: [3]}
+  pooling:
+    offchip: false
+    views: [4.sram_128KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [4]}
+      w_port_1: {from: w_port_1, cores: [4]}
+  simd:
+    offchip: false
+    views: [5.sram_128KB_2rw]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [5]}
+      rw_port_2: {from: rw_port_2, cores: [5]}
+  offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
 
-core_connectivity:
+connections:
   # -------- 2-D mesh among compute cores (point-to-point links) ------------- #
   - type: link
-    cores: [0, 1]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      tpu_like_1: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [1, 2]
+    ends:
+      tpu_like_1: [r_port_1, w_port_1]
+      tpu_like_2: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [2, 3]
+    ends:
+      tpu_like_2: [r_port_1, w_port_1]
+      tpu_like_3: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [3, 0]
+    ends:
+      tpu_like_3: [r_port_1, w_port_1]
+      tpu_like_0: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
 
   # -------------- Pooling core (id 4) linked to each compute core ----------- #
   - type: link
-    cores: [0, 4]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [1, 4]
+    ends:
+      tpu_like_1: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [2, 4]
+    ends:
+      tpu_like_2: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [3, 4]
+    ends:
+      tpu_like_3: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 128
     unit_energy_cost: 0
 
   # -------------- SIMD core (id 5) linked to each compute core -------------- #
   - type: link
-    cores: [0, 5]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [1, 5]
+    ends:
+      tpu_like_1: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [2, 5]
+    ends:
+      tpu_like_2: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 128
     unit_energy_cost: 0
   - type: link
-    cores: [3, 5]
+    ends:
+      tpu_like_3: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 128
     unit_energy_cost: 0
 
   # -------- Shared off-chip memory bus: all cores share one medium ---------- #
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6]  # includes the DRAM controller itself
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      tpu_like_1: [r_port_1, w_port_1]
+      tpu_like_2: [r_port_1, w_port_1]
+      tpu_like_3: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
+      offchip: [rw_port_1]
     bandwidth: 512               # fatter than on-chip links
     unit_energy_cost: 0

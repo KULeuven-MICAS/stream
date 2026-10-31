@@ -44,11 +44,14 @@ class AcceleratorHardwareView(BaseModel):
     and full connectivity. Suitable for hardware engineers reasoning about resource budgets.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     name: str = Field(description="Accelerator name")
-    num_cores: int = Field(description="Total number of cores including offchip")
+    num_cores: int = Field(description="Total number of cores")
     cores: list[CoreIR] = Field(description="All cores with full resource info (including extra_fields)")
-    core_connectivity: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between cores")
+    memories: dict[str, dict[str, Any]] = Field(
+        description="Each memory by name: whether off-chip, and its views '<core id>.<instance>'"
+    )
+    connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
 
 class AcceleratorCompilerView(BaseModel):
@@ -58,39 +61,38 @@ class AcceleratorCompilerView(BaseModel):
     Suitable for compiler engineers performing placement and routing decisions.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     name: str = Field(description="Accelerator name")
     cores: list[CoreIR] = Field(description="All cores — use id, core_type, row_id, col_id for placement")
-    core_connectivity: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between cores")
+    memories: dict[str, dict[str, Any]] = Field(
+        description="Each memory by name: whether off-chip, and its views '<core id>.<instance>'"
+    )
+    connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
 
 class AcceleratorIR(BaseModel):
     """Typed Pydantic model wrapping Accelerator.get_ir() output.
 
-    schema_version '1.0': minor bumps (1.1) for additive fields, major bumps (2.0) for
+    schema_version '2.0': minor bumps (2.1) for additive fields, major bumps (3.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream/accelerator_ir/v1",
+            "$id": "stream/accelerator_ir/v2",
         }
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     name: str = Field(description="Accelerator name as declared in hardware YAML")
-    num_cores: int = Field(description="Total number of cores (including offchip core if present)")
-    offchip_core_id: int | None = Field(
-        description="ID of the offchip memory core, or None if the accelerator has no offchip core"
-    )
-    nb_shared_mem_groups: int = Field(description="Number of shared memory groups in the accelerator")
-    core_memory_sharing: list[list[int]] = Field(
-        default_factory=list, description="The ids of each group of cores that share one top-level memory"
+    num_cores: int = Field(description="Total number of cores")
+    memories: dict[str, dict[str, Any]] = Field(
+        description="Each memory by name: whether off-chip ('offchip'), and its views '<core id>.<instance>' ('views')"
     )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
-    core_connectivity: list[dict[str, Any]] = Field(
-        description="Connectivity entries: bus (bidirectional, multiple cores) or link (directed pair)"
+    connections: list[dict[str, Any]] = Field(
+        description="The links and buses between memories, as the hardware description declares them"
     )
 
     @classmethod
@@ -121,11 +123,9 @@ class AcceleratorIR(BaseModel):
         return cls(
             name=raw["name"],
             num_cores=raw["num_cores"],
-            offchip_core_id=raw["offchip_core_id"],
-            nb_shared_mem_groups=raw["nb_shared_mem_groups"],
-            core_memory_sharing=raw["core_memory_sharing"],
+            memories=raw["memories"],
             cores=cores,
-            core_connectivity=raw["core_connectivity"],
+            connections=raw["connections"],
         )
 
     def hardware_view(self) -> AcceleratorHardwareView:
@@ -134,7 +134,8 @@ class AcceleratorIR(BaseModel):
             name=self.name,
             num_cores=self.num_cores,
             cores=self.cores,
-            core_connectivity=self.core_connectivity,
+            memories=self.memories,
+            connections=self.connections,
         )
 
     def compiler_view(self) -> AcceleratorCompilerView:
@@ -142,5 +143,6 @@ class AcceleratorIR(BaseModel):
         return AcceleratorCompilerView(
             name=self.name,
             cores=self.cores,
-            core_connectivity=self.core_connectivity,
+            memories=self.memories,
+            connections=self.connections,
         )

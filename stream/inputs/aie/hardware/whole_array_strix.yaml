@@ -1,49 +1,41 @@
 name: whole_array_strix
 kernel_library: ../kernels/aie2p.toml
 cores:
-  0: ./cores/shim_dma.yaml
   1: ./cores/mem_tile_512KB.yaml
   2: ./cores/aie_tile.yaml
   3: ./cores/aie_tile.yaml
   4: ./cores/aie_tile.yaml
   5: ./cores/aie_tile.yaml
-  6: ./cores/shim_dma.yaml
   7: ./cores/mem_tile_512KB.yaml
   8: ./cores/aie_tile.yaml
   9: ./cores/aie_tile.yaml
   10: ./cores/aie_tile.yaml
   11: ./cores/aie_tile.yaml
-  12: ./cores/shim_dma.yaml
   13: ./cores/mem_tile_512KB.yaml
   14: ./cores/aie_tile.yaml
   15: ./cores/aie_tile.yaml
   16: ./cores/aie_tile.yaml
   17: ./cores/aie_tile.yaml
-  18: ./cores/shim_dma.yaml
   19: ./cores/mem_tile_512KB.yaml
   20: ./cores/aie_tile.yaml
   21: ./cores/aie_tile.yaml
   22: ./cores/aie_tile.yaml
   23: ./cores/aie_tile.yaml
-  24: ./cores/shim_dma.yaml
   25: ./cores/mem_tile_512KB.yaml
   26: ./cores/aie_tile.yaml
   27: ./cores/aie_tile.yaml
   28: ./cores/aie_tile.yaml
   29: ./cores/aie_tile.yaml
-  30: ./cores/shim_dma.yaml
   31: ./cores/mem_tile_512KB.yaml
   32: ./cores/aie_tile.yaml
   33: ./cores/aie_tile.yaml
   34: ./cores/aie_tile.yaml
   35: ./cores/aie_tile.yaml
-  36: ./cores/shim_dma.yaml
   37: ./cores/mem_tile_512KB.yaml
   38: ./cores/aie_tile.yaml
   39: ./cores/aie_tile.yaml
   40: ./cores/aie_tile.yaml
   41: ./cores/aie_tile.yaml
-  42: ./cores/shim_dma.yaml
   43: ./cores/mem_tile_512KB.yaml
   44: ./cores/aie_tile.yaml
   45: ./cores/aie_tile.yaml
@@ -51,7 +43,6 @@ cores:
   47: ./cores/aie_tile.yaml
 core_coordinates:
 # code id: [col, row]
-  0: [0, 0]
   1: [0, 1]
   2: [0, 2]
   3: [0, 3]
@@ -92,9 +83,8 @@ core_coordinates:
   45: [7, 3]
   46: [7, 4]
   47: [7, 5]
-offchip_core_id: 0
 bandwidth:
-  0:
+  dram:
     ceiling: 296.6
     contiguous: 148.3
     strided:
@@ -103,241 +93,643 @@ bandwidth:
 reconfiguration:  # a dispatch of SwiGLU's five designs from IRON costs 1.0-1.3 ms over its groups
   cycles_per_column: 40000
   reset_cycles: 63000
-core_connectivity:
-  # ───── Connect shim_dma to mem_tile (Column 0) ─────
+memories:
+  dram:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    dma:
+      buffer_descriptors: 16
+      iterations: 64
+    ports:
+      mm2s_c0: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c0: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c1: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c1: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c2: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c2: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c3: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c3: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c4: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c4: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c5: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c5: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c6: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c6: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+      mm2s_c7: {bandwidth: 128, channels: 2, serves: {any: [read]}, read_energy: 0, write_energy: 0}
+      s2mm_c7: {bandwidth: 128, channels: 2, serves: {any: [write]}, read_energy: 0, write_energy: 0}
+  tile_0_1:
+    offchip: false
+    views: [1.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [1]}
+      s2mm: {from: s2mm, cores: [1]}
+  tile_0_2:
+    offchip: false
+    views: [2.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [2]}
+      s2mm: {from: s2mm, cores: [2]}
+  tile_0_3:
+    offchip: false
+    views: [3.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [3]}
+      s2mm: {from: s2mm, cores: [3]}
+  tile_0_4:
+    offchip: false
+    views: [4.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [4]}
+      s2mm: {from: s2mm, cores: [4]}
+  tile_0_5:
+    offchip: false
+    views: [5.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [5]}
+      s2mm: {from: s2mm, cores: [5]}
+  tile_1_1:
+    offchip: false
+    views: [7.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [7]}
+      s2mm: {from: s2mm, cores: [7]}
+  tile_1_2:
+    offchip: false
+    views: [8.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [8]}
+      s2mm: {from: s2mm, cores: [8]}
+  tile_1_3:
+    offchip: false
+    views: [9.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [9]}
+      s2mm: {from: s2mm, cores: [9]}
+  tile_1_4:
+    offchip: false
+    views: [10.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [10]}
+      s2mm: {from: s2mm, cores: [10]}
+  tile_1_5:
+    offchip: false
+    views: [11.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [11]}
+      s2mm: {from: s2mm, cores: [11]}
+  tile_2_1:
+    offchip: false
+    views: [13.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [13]}
+      s2mm: {from: s2mm, cores: [13]}
+  tile_2_2:
+    offchip: false
+    views: [14.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [14]}
+      s2mm: {from: s2mm, cores: [14]}
+  tile_2_3:
+    offchip: false
+    views: [15.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [15]}
+      s2mm: {from: s2mm, cores: [15]}
+  tile_2_4:
+    offchip: false
+    views: [16.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [16]}
+      s2mm: {from: s2mm, cores: [16]}
+  tile_2_5:
+    offchip: false
+    views: [17.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [17]}
+      s2mm: {from: s2mm, cores: [17]}
+  tile_3_1:
+    offchip: false
+    views: [19.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [19]}
+      s2mm: {from: s2mm, cores: [19]}
+  tile_3_2:
+    offchip: false
+    views: [20.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [20]}
+      s2mm: {from: s2mm, cores: [20]}
+  tile_3_3:
+    offchip: false
+    views: [21.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [21]}
+      s2mm: {from: s2mm, cores: [21]}
+  tile_3_4:
+    offchip: false
+    views: [22.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [22]}
+      s2mm: {from: s2mm, cores: [22]}
+  tile_3_5:
+    offchip: false
+    views: [23.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [23]}
+      s2mm: {from: s2mm, cores: [23]}
+  tile_4_1:
+    offchip: false
+    views: [25.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [25]}
+      s2mm: {from: s2mm, cores: [25]}
+  tile_4_2:
+    offchip: false
+    views: [26.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [26]}
+      s2mm: {from: s2mm, cores: [26]}
+  tile_4_3:
+    offchip: false
+    views: [27.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [27]}
+      s2mm: {from: s2mm, cores: [27]}
+  tile_4_4:
+    offchip: false
+    views: [28.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [28]}
+      s2mm: {from: s2mm, cores: [28]}
+  tile_4_5:
+    offchip: false
+    views: [29.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [29]}
+      s2mm: {from: s2mm, cores: [29]}
+  tile_5_1:
+    offchip: false
+    views: [31.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [31]}
+      s2mm: {from: s2mm, cores: [31]}
+  tile_5_2:
+    offchip: false
+    views: [32.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [32]}
+      s2mm: {from: s2mm, cores: [32]}
+  tile_5_3:
+    offchip: false
+    views: [33.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [33]}
+      s2mm: {from: s2mm, cores: [33]}
+  tile_5_4:
+    offchip: false
+    views: [34.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [34]}
+      s2mm: {from: s2mm, cores: [34]}
+  tile_5_5:
+    offchip: false
+    views: [35.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [35]}
+      s2mm: {from: s2mm, cores: [35]}
+  tile_6_1:
+    offchip: false
+    views: [37.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [37]}
+      s2mm: {from: s2mm, cores: [37]}
+  tile_6_2:
+    offchip: false
+    views: [38.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [38]}
+      s2mm: {from: s2mm, cores: [38]}
+  tile_6_3:
+    offchip: false
+    views: [39.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [39]}
+      s2mm: {from: s2mm, cores: [39]}
+  tile_6_4:
+    offchip: false
+    views: [40.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [40]}
+      s2mm: {from: s2mm, cores: [40]}
+  tile_6_5:
+    offchip: false
+    views: [41.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [41]}
+      s2mm: {from: s2mm, cores: [41]}
+  tile_7_1:
+    offchip: false
+    views: [43.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [43]}
+      s2mm: {from: s2mm, cores: [43]}
+  tile_7_2:
+    offchip: false
+    views: [44.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [44]}
+      s2mm: {from: s2mm, cores: [44]}
+  tile_7_3:
+    offchip: false
+    views: [45.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [45]}
+      s2mm: {from: s2mm, cores: [45]}
+  tile_7_4:
+    offchip: false
+    views: [46.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [46]}
+      s2mm: {from: s2mm, cores: [46]}
+  tile_7_5:
+    offchip: false
+    views: [47.memory]
+    ports:
+      mm2s: {from: mm2s, cores: [47]}
+      s2mm: {from: s2mm, cores: [47]}
+
+connections:
+  # ───── Connect DRAM to the column's mem tile (Column 0) ─────
   - type: link
-    cores: [0, 1]
+    ends:
+      dram: [mm2s_c0, s2mm_c0]
+      tile_0_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 0) ─────
   - type: link
-    cores: [1, 2]
+    ends:
+      tile_0_1: [mm2s, s2mm]
+      tile_0_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 0) ─────
   - type: link
-    cores: [2, 3]
+    ends:
+      tile_0_2: [mm2s, s2mm]
+      tile_0_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [3, 4]
+    ends:
+      tile_0_3: [mm2s, s2mm]
+      tile_0_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [4, 5]
+    ends:
+      tile_0_4: [mm2s, s2mm]
+      tile_0_5: [mm2s, s2mm]
     bandwidth: 64
 
-  # ───── Connect shim_dma to mem_tile (Column 1) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 1) ─────
   - type: link
-    cores: [0, 7]
+    ends:
+      dram: [mm2s_c1, s2mm_c1]
+      tile_1_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 1) ─────
   - type: link
-    cores: [7, 8]
+    ends:
+      tile_1_1: [mm2s, s2mm]
+      tile_1_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 1) ─────
   - type: link
-    cores: [8, 9]
+    ends:
+      tile_1_2: [mm2s, s2mm]
+      tile_1_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [9, 10]
+    ends:
+      tile_1_3: [mm2s, s2mm]
+      tile_1_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [10, 11]
+    ends:
+      tile_1_4: [mm2s, s2mm]
+      tile_1_5: [mm2s, s2mm]
     bandwidth: 64
 
-  # ───── Connect shim_dma to mem_tile (Column 2) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 2) ─────
   - type: link
-    cores: [0, 13]
+    ends:
+      dram: [mm2s_c2, s2mm_c2]
+      tile_2_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 2) ─────
   - type: link
-    cores: [13, 14]
+    ends:
+      tile_2_1: [mm2s, s2mm]
+      tile_2_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 2) ─────
   - type: link
-    cores: [14, 15]
+    ends:
+      tile_2_2: [mm2s, s2mm]
+      tile_2_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [15, 16]
+    ends:
+      tile_2_3: [mm2s, s2mm]
+      tile_2_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [16, 17]
+    ends:
+      tile_2_4: [mm2s, s2mm]
+      tile_2_5: [mm2s, s2mm]
     bandwidth: 64
 
-  # ───── Connect shim_dma to mem_tile (Column 3) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 3) ─────
   - type: link
-    cores: [0, 19]
+    ends:
+      dram: [mm2s_c3, s2mm_c3]
+      tile_3_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 3) ─────
   - type: link
-    cores: [19, 20]
+    ends:
+      tile_3_1: [mm2s, s2mm]
+      tile_3_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 3) ─────
   - type: link
-    cores: [20, 21]
+    ends:
+      tile_3_2: [mm2s, s2mm]
+      tile_3_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [21, 22]
+    ends:
+      tile_3_3: [mm2s, s2mm]
+      tile_3_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [22, 23]
+    ends:
+      tile_3_4: [mm2s, s2mm]
+      tile_3_5: [mm2s, s2mm]
     bandwidth: 64
-  # ───── Connect shim_dma to mem_tile (Column 4) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 4) ─────
   - type: link
-    cores: [0, 25]
+    ends:
+      dram: [mm2s_c4, s2mm_c4]
+      tile_4_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 4) ─────
   - type: link
-    cores: [25, 26]
+    ends:
+      tile_4_1: [mm2s, s2mm]
+      tile_4_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 4) ─────
   - type: link
-    cores: [26, 27]
+    ends:
+      tile_4_2: [mm2s, s2mm]
+      tile_4_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [27, 28]
+    ends:
+      tile_4_3: [mm2s, s2mm]
+      tile_4_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [28, 29]
+    ends:
+      tile_4_4: [mm2s, s2mm]
+      tile_4_5: [mm2s, s2mm]
     bandwidth: 64
-  # ───── Connect shim_dma to mem_tile (Column 5) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 5) ─────
   - type: link
-    cores: [0, 31]
+    ends:
+      dram: [mm2s_c5, s2mm_c5]
+      tile_5_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 5) ─────
   - type: link
-    cores: [31, 32]
+    ends:
+      tile_5_1: [mm2s, s2mm]
+      tile_5_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 5) ─────
   - type: link
-    cores: [32, 33]
+    ends:
+      tile_5_2: [mm2s, s2mm]
+      tile_5_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [33, 34]
+    ends:
+      tile_5_3: [mm2s, s2mm]
+      tile_5_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [34, 35]
+    ends:
+      tile_5_4: [mm2s, s2mm]
+      tile_5_5: [mm2s, s2mm]
     bandwidth: 64
-  # ───── Connect shim_dma to mem_tile (Column 6) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 6) ─────
   - type: link
-    cores: [0, 37]
+    ends:
+      dram: [mm2s_c6, s2mm_c6]
+      tile_6_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 6) ─────
   - type: link
-    cores: [37, 38]
+    ends:
+      tile_6_1: [mm2s, s2mm]
+      tile_6_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 6) ─────
   - type: link
-    cores: [38, 39]
+    ends:
+      tile_6_2: [mm2s, s2mm]
+      tile_6_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [39, 40]
+    ends:
+      tile_6_3: [mm2s, s2mm]
+      tile_6_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [40, 41]
+    ends:
+      tile_6_4: [mm2s, s2mm]
+      tile_6_5: [mm2s, s2mm]
     bandwidth: 64
-  # ───── Connect shim_dma to mem_tile (Column 7) ─────
+  # ───── Connect DRAM to the column's mem tile (Column 7) ─────
   - type: link
-    cores: [0, 43]
+    ends:
+      dram: [mm2s_c7, s2mm_c7]
+      tile_7_1: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect mem_tile to aie_tile (Column 7) ─────
   - type: link
-    cores: [43, 44]
+    ends:
+      tile_7_1: [mm2s, s2mm]
+      tile_7_2: [mm2s, s2mm]
     bandwidth: 64
   # ───── Connect aie_tile to aie_tile (Column 7) ─────
   - type: link
-    cores: [44, 45]
+    ends:
+      tile_7_2: [mm2s, s2mm]
+      tile_7_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [45, 46]
+    ends:
+      tile_7_3: [mm2s, s2mm]
+      tile_7_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [46, 47]
+    ends:
+      tile_7_4: [mm2s, s2mm]
+      tile_7_5: [mm2s, s2mm]
     bandwidth: 64
 
   # ───── Connect adjacent aie_tiles across columns (West-East) ─────
   # Row 2
   - type: link
-    cores: [2, 8]
+    ends:
+      tile_0_2: [mm2s, s2mm]
+      tile_1_2: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [8, 14]
+    ends:
+      tile_1_2: [mm2s, s2mm]
+      tile_2_2: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [14, 20]
+    ends:
+      tile_2_2: [mm2s, s2mm]
+      tile_3_2: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [20, 26]
+    ends:
+      tile_3_2: [mm2s, s2mm]
+      tile_4_2: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [26, 32]
+    ends:
+      tile_4_2: [mm2s, s2mm]
+      tile_5_2: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [32, 38]
+    ends:
+      tile_5_2: [mm2s, s2mm]
+      tile_6_2: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [38, 44]
+    ends:
+      tile_6_2: [mm2s, s2mm]
+      tile_7_2: [mm2s, s2mm]
     bandwidth: 64
   # Row 3
   - type: link
-    cores: [3, 9]
+    ends:
+      tile_0_3: [mm2s, s2mm]
+      tile_1_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [9, 15]
+    ends:
+      tile_1_3: [mm2s, s2mm]
+      tile_2_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [15, 21]
+    ends:
+      tile_2_3: [mm2s, s2mm]
+      tile_3_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [21, 27]
+    ends:
+      tile_3_3: [mm2s, s2mm]
+      tile_4_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [27, 33]
+    ends:
+      tile_4_3: [mm2s, s2mm]
+      tile_5_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [33, 39]
+    ends:
+      tile_5_3: [mm2s, s2mm]
+      tile_6_3: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [39, 45]
+    ends:
+      tile_6_3: [mm2s, s2mm]
+      tile_7_3: [mm2s, s2mm]
     bandwidth: 64
   # Row 4
   - type: link
-    cores: [4, 10]
+    ends:
+      tile_0_4: [mm2s, s2mm]
+      tile_1_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [10, 16]
+    ends:
+      tile_1_4: [mm2s, s2mm]
+      tile_2_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [16, 22]
+    ends:
+      tile_2_4: [mm2s, s2mm]
+      tile_3_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [22, 28]
+    ends:
+      tile_3_4: [mm2s, s2mm]
+      tile_4_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [28, 34]
+    ends:
+      tile_4_4: [mm2s, s2mm]
+      tile_5_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [34, 40]
+    ends:
+      tile_5_4: [mm2s, s2mm]
+      tile_6_4: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [40, 46]
+    ends:
+      tile_6_4: [mm2s, s2mm]
+      tile_7_4: [mm2s, s2mm]
     bandwidth: 64
   # Row 5
   - type: link
-    cores: [5, 11]
+    ends:
+      tile_0_5: [mm2s, s2mm]
+      tile_1_5: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [11, 17]
+    ends:
+      tile_1_5: [mm2s, s2mm]
+      tile_2_5: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [17, 23]
+    ends:
+      tile_2_5: [mm2s, s2mm]
+      tile_3_5: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [23, 29]
+    ends:
+      tile_3_5: [mm2s, s2mm]
+      tile_4_5: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [29, 35]
+    ends:
+      tile_4_5: [mm2s, s2mm]
+      tile_5_5: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [35, 41]
+    ends:
+      tile_5_5: [mm2s, s2mm]
+      tile_6_5: [mm2s, s2mm]
     bandwidth: 64
   - type: link
-    cores: [41, 47]
+    ends:
+      tile_6_5: [mm2s, s2mm]
+      tile_7_5: [mm2s, s2mm]
     bandwidth: 64

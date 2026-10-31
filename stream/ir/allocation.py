@@ -78,8 +78,8 @@ class NodeAllocationIR(BaseModel):
     inter_core_tiling: list[list[list[Any]]] = Field(
         description="Per-slot tiling as [[dim_str, factor], ...] specifying how the node is split across cores"
     )
-    memory_allocation: list[list[int]] = Field(
-        description="Per-slot list of core IDs indicating where tensors are placed in memory"
+    memory_allocation: list[list[str]] = Field(
+        description="Per slot, the memory a transfer's copy lands in at each target position"
     )
 
 
@@ -188,7 +188,7 @@ class SteadyStateTensorIR(BaseModel):
     shape: list[int]
     bits: int
     loops: list[SteadyStateIterationIR] = Field(description="Its solved loop nest, outermost first")
-    placement: list[int] = Field(description="The cores it is placed on")
+    placement: list[str] = Field(description="The memory it sits in at each position")
     reuse_level: int | None = Field(description="The temporal loop it is reused up to")
     depth: int | None = Field(description="The buffers it is kept in")
     single_buffered: bool
@@ -203,10 +203,10 @@ class SteadyStateIR(BaseModel):
         description=(
             "The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}. With the "
             "per-core detail, a computation node also carries its dims, loops, cores, output tile per core position "
-            "and whether a reader waits on it; a transfer its copies, sources, targets and links, the window and moved "
-            "tile per copy a target holds, its halos, what each source hands each target, its moved bits, route cycles "
-            "and reuse factor. Where a window slides, both also carry their work per fused tile and how far they run "
-            "ahead"
+            "and whether a reader waits on it; a transfer its source and target memories and links, the window and "
+            "moved tile per copy a target holds, its halos, what each source hands each target, its moved bits, route "
+            "cycles and reuse factor. Where a window slides, both also carry their work per fused tile and how far "
+            "they run ahead"
         )
     )
     iterations: int | None = Field(default=None, description="Steady-state iterations of the group")
@@ -240,7 +240,7 @@ class AllocationHardwareView(BaseModel):
     reasoning about physical resource usage and memory placement per node.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node resource and memory allocation: use resource_allocation and memory_allocation fields"
     )
@@ -253,7 +253,7 @@ class AllocationCompilerView(BaseModel):
     Suitable for compiler engineers performing code generation and transfer routing.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node tiling and core mapping: use inter_core_tiling and resource_allocation fields"
     )
@@ -306,7 +306,7 @@ class BottleneckIR(BaseModel):
 class PerformanceAggregateIR(BaseModel):
     """Accelerator-wide utilization aggregates."""
 
-    compute_cores_available: int = Field(description="Non-offchip cores in the accelerator")
+    compute_cores_available: int = Field(description="Cores of kind compute in the accelerator")
     compute_cores_used: int = Field(description="Distinct cores any computation node is mapped to")
     latency_weighted_mac_spatial_utilization: float | None = Field(
         default=None,
@@ -392,12 +392,12 @@ class ResidentTensorIR(BaseModel):
 
 
 class MemoryOccupancyIR(BaseModel):
-    """How full one core's memory actually is under the solved placement."""
+    """How full one memory actually is under the solved placement."""
 
-    core_id: int
-    core_name: str
-    resident_bits: int = Field(description="Bits the solved placement keeps on this core in the steady state")
-    capacity_bits: int = Field(description="The core's declared top-level memory capacity")
+    memory: str = Field(description="The memory's name")
+    cores: list[int] = Field(description="The cores computing out of it")
+    resident_bits: int = Field(description="Bits the solved placement keeps in this memory in the steady state")
+    capacity_bits: int = Field(description="Its capacity, less what the toolchain reserves on its cores")
     utilization: float | None = Field(default=None, description="resident_bits / capacity_bits")
     tensors: list[ResidentTensorIR] = Field(
         default_factory=list, description="Largest resident tensors first: what sets the floor on a shrink"
@@ -408,7 +408,9 @@ class ResourceActivityIR(BaseModel):
     """One resource under the memory_ports family, in ZigZag's port-activity terms."""
 
     kind: str = Field(default="memory_port", description="'memory_port', 'shared_bandwidth' or 'link'")
-    resource: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
+    resource: str = Field(
+        description="'<memory>.<port>', the memory's name for a measured one, or '<sender>-><receiver>' for a link"
+    )
     core_ids: list[int] = Field(description="Cores sharing the resource")
     core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
     bw_bits_per_cycle: float = Field(description="Port bandwidth")
@@ -438,11 +440,11 @@ class LayoutSideIR(BaseModel):
     access: list[list[int]] = Field(
         description="The [size, stride] loops, outermost first, in elements, the DMA walks the tile in on this side"
     )
-    memory: str | None = Field(description="The memory instance whose port it passes, None for a measured bandwidth")
-    port: str | None = Field(description="That port, `measured` for a core's measured shared bandwidth")
+    memory: str = Field(description="The memory it reads or writes")
+    port: str | None = Field(description="The port of that memory it passes, `measured` for a measured bandwidth")
     bits_per_cycle: float | None = Field(description="Its contiguous rate")
     burst_bytes: int | None = Field(description="Bytes it moves per access, where declared")
-    banks: MemoryBanksIR | None = Field(description="The banks of the core's memory, where declared")
+    banks: MemoryBanksIR | None = Field(description="The banks of that memory, where declared")
 
 
 class AxisDimsIR(BaseModel):
@@ -473,8 +475,8 @@ class TransferLayoutIR(BaseModel):
     tile_shape: list[int] = Field(description="The tile it moves per firing, per axis")
     full_shape: list[int] = Field(description="The whole tensor the tile belongs to, per axis")
     element_bits: int = Field(description="Bits per element")
-    source_cores: list[int] = Field(description="The cores it reads from")
-    target_cores: list[int] = Field(description="The cores it writes to")
+    source_memories: list[str] = Field(description="The memory it reads from at each source position")
+    target_memories: list[str] = Field(description="The memory it writes to at each target position")
     source_order: list[int] = Field(description="Axis order it reads, outermost first")
     target_order: list[int] = Field(description="Axis order it writes, outermost first")
     converts: bool = Field(description="Whether it lays its tile out anew, as a DMA does on the fly")
@@ -525,7 +527,7 @@ class AllocationPerformanceView(BaseModel):
     `compute_cores_available`, and per-node `mac_spatial_utilization` / `compute_efficiency`.
     """
 
-    schema_version: Literal["1.1"] = "1.1"
+    schema_version: Literal["2.0"] = "2.0"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     bottleneck: BottleneckIR = Field(description="Per-iteration compute-bound vs transfer/DMA-bound cycle split")
     aggregate: PerformanceAggregateIR = Field(description="Accelerator-wide core usage and MAC utilization")
@@ -538,7 +540,7 @@ class AllocationPerformanceView(BaseModel):
     )
     memory_occupancy: list[MemoryOccupancyIR] = Field(
         default_factory=list,
-        description="Per-core solved residency vs declared capacity: the floor on any capacity reduction",
+        description="Per-memory solved residency vs capacity: the floor on any capacity reduction",
     )
     memory_ports: list[ResourceActivityIR] = Field(
         default_factory=list,
@@ -555,18 +557,18 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping Allocation.get_ir() output.
 
-    schema_version '2.0': minor bumps for additive fields, major bumps (2.0) for
+    schema_version '3.0': minor bumps (3.1) for additive fields, major bumps (4.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream/allocation_ir/v1",
+            "$id": "stream/allocation_ir/v3",
         }
     )
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["3.0"] = "3.0"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(

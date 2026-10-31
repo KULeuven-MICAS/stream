@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ResourceRefIR(BaseModel):
     """A physical hardware resource a constraint binds -- the thing to highlight on the architecture view."""
 
-    kind: str = Field(description="Physical resource kind, e.g. 'core' or 'link'")
+    kind: str = Field(description="Physical resource kind: 'core', 'memory' or 'link'")
     id: str = Field(description="Stable id matching the accelerator IR (e.g. a core id as a string)")
     label: str = Field(description="Human label, e.g. 'Core 0'")
     detail: dict[str, str] = Field(default_factory=dict, description="Tooltip facts, e.g. capacity vs. required")
@@ -46,7 +46,7 @@ class UnmetConstraintIR(BaseModel):
 
     family: str = Field(description="Constraint family, e.g. 'memory_capacity'")
     statement: str = Field(description="One-line intuitive inequality with numbers")
-    demand_label: str = Field(description="What is demanded, e.g. 'tensors resident on Core 3'")
+    demand_label: str = Field(description="What is demanded, e.g. 'tensors resident in Memory l1'")
     demand_value: float
     demand_input: str = Field(description="Input(s) that set the demand, e.g. 'workload tensor sizes x mapping tiling'")
     bound_label: str = Field(description="The hardware limit, e.g. 'Core 3 on-chip memory'")
@@ -87,10 +87,10 @@ class InfeasibilityReportIR(BaseModel):
     instead of crashing on an infeasible mapping."""
 
     model_config = ConfigDict(
-        json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/infeasibility/v1"}
+        json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/infeasibility/v2"}
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     feasible: Literal[False] = False
     status: str = Field(description="Solver status, e.g. 'INFEASIBLE' or 'TIME_LIMIT'")
     backend: str = Field(description="Solver backend, e.g. 'GUROBI'")

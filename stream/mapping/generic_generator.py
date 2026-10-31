@@ -23,6 +23,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
+from stream.mapping.mapping import role_of
 from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import map_dim_positions
@@ -208,7 +209,7 @@ class GenericMappingGenerator:
     def _select_cores_for_node(self, node: ComputationNode) -> list[Core]:
         """Select cores that can execute *node* according to operator_types.
 
-        Excludes offchip, shim, and memory cores unconditionally.  Selection priority:
+        Excludes memory cores unconditionally.  Selection priority:
         1. Specialized cores (operator_types is not None and node.type in list).
            If any specialized cores match, use them exclusively.
         2. Generic cores (operator_types is None — accepts all ops).
@@ -218,7 +219,7 @@ class GenericMappingGenerator:
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
         Conv/Gemm go to the generic compute cores that split it fastest.
         """
-        _SKIP_TYPES = {"offchip", "shim", "memory"}
+        _SKIP_TYPES = {"memory"}
         node_op = node.type
 
         specialized_cores: list[Core] = []
@@ -378,22 +379,27 @@ class GenericMappingGenerator:
         sliding = {sub_workload.leading_dim(d)[0] for d in self._sliding_dims(sub_workload, cns)}
         if not sliding and sliding_only:
             return {}
-        operands: list[tuple[int, frozenset[LayerDim]]] = []
-        capacity = math.inf
+        # Per operand: its bits, the dims indexing it, and the memories the node's cores hold it in.
+        operands: list[tuple[int, frozenset[LayerDim], frozenset[str]]] = []
+        capacities: dict[str, int] = {}
         for cn in cns:
             if len(cores := self._select_cores_for_node(cn)) <= 1:
                 continue
-            capacity = min(capacity, *(c.get_memory_capacity() for c in cores))
             dims = sub_workload.get_dims(cn)
             for t in cn.tensors:
                 lead = frozenset(sub_workload.leading_dim(dims[p])[0] for p in map_dim_positions(cn.get_mapping(t)))
-                operands.append((_tensor_bits(t.shape, t), lead))
+                held_in = {self.accelerator.memory_of(core, role_of(cn, t)) for core in cores}
+                capacities |= {memory.name: memory.capacity_bits for memory in held_in}
+                operands.append((_tensor_bits(t.shape, t), lead, frozenset(memory.name for memory in held_in)))
         held: dict[LayerDim, tuple[float, float]] = {}
-        for dim in {d for _, lead in operands for d in lead}:
+        for dim in {d for _, lead, _ in operands for d in lead}:
             factor = math.gcd(n_cores, sub_workload.get_dimension_size(dim))
-            share = [(bits / factor if dim in lead else bits, lead) for bits, lead in operands]
-            resident = sum(bits for bits, lead in share if not lead & sliding)
-            held[dim] = (max(0.0, resident - capacity / 2), sum(bits for bits, _ in share))
+            share = [(bits / factor if dim in lead else bits, lead, held_in) for bits, lead, held_in in operands]
+            overflow = max(
+                sum(bits for bits, lead, held_in in share if name in held_in and not lead & sliding) - capacity / 2
+                for name, capacity in capacities.items()
+            )
+            held[dim] = (max(0.0, overflow), sum(bits for bits, *_ in share))
         return held
 
     def _global_dims_at(
@@ -746,24 +752,36 @@ class GenericMappingGenerator:
             return []
         unroll = self._inter_core_unrolling(sub_workload, cns).get(fusion_dim, 1)
         per_core = full // unroll if unroll > 1 and full % unroll == 0 else full
-        capacity_bits = min(
-            (cores[0].get_memory_capacity() for cn in cns if (cores := self._select_cores_for_node(cn))),
-            default=0,
-        )
-        budget = capacity_bits // 2  # the fusion intermediate shares L1 with weights + activations
+        # Each intermediate's budget is half the smallest memory a core of the group holds it in, since it shares
+        # that memory with weights and activations.
+        budgets = {
+            t: min(
+                (
+                    self.accelerator.memory_of(core, role_of(cn, t)).capacity_bits
+                    for cn in cns
+                    if t in cn.tensors
+                    for core in self._select_cores_for_node(cn)
+                ),
+                default=0,
+            )
+            // 2
+            for t in streamed
+        }
+        budgets = {t: budget for t, budget in budgets.items() if budget > 0}
 
-        def resident_bits(tile: int) -> int:
+        def fits(tile: int) -> bool:
             factor = full // tile
-            return max(
+            return all(
                 _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)], readers=True), t)
-                for t in streamed
+                <= budget
+                for t, budget in budgets.items()
             )
 
         # Only tile when the whole per-core slice does not fit (the layer-fusion trigger).
-        if budget <= 0 or resident_bits(per_core) <= budget:
+        if fits(per_core):
             return []
         divisors = sorted((t for t in range(1, per_core + 1) if per_core % t == 0), reverse=True)
-        tile = next((t for t in divisors if resident_bits(t) <= budget), divisors[-1])
+        tile = next((t for t in divisors if fits(t)), divisors[-1])
         for cn in cns:
             dims = sub_workload.get_dims(cn)
             if fusion_dim in dims:

@@ -172,7 +172,7 @@ class AllocationModel:
         with span("milp_extract"):
             tensor_alloc = self.get_tensor_allocations()
             routing = self.get_transfer_routing()
-            memory_cores = self.get_chosen_memory_cores(tensor_alloc)
+            memory_placements = self.get_chosen_memory_placements(tensor_alloc)
             reuse_levels = self.get_tensor_reuse_levels()
             slot_latencies = {s: float(v.X) for s, v in self.vars.slot_latency.items()}
             reuse_factors = {tr: value(factor.expr) for tr, factor in q.indexed("reuse_factor").items()}
@@ -191,7 +191,7 @@ class AllocationModel:
             return AllocationSolution(
                 tensor_placements=tensor_alloc,
                 transfer_routes=routing,
-                memory_cores=memory_cores,
+                memory_placements=memory_placements,
                 reuse_levels=reuse_levels,
                 depths={t: space.tiles_needed_levels[(t, stop)] for t, stop in reuse_levels.items()},
                 single_buffered=frozenset(self.get_single_buffered()),
@@ -228,18 +228,18 @@ class AllocationModel:
             routing[tr] = chosen[0]
         return routing
 
-    def get_chosen_memory_cores(self, tensor_alloc: TensorAlloc) -> MemoryAlloc:
+    def get_chosen_memory_placements(self, tensor_alloc: TensorAlloc) -> MemoryAlloc:
         """The placement of the tensor each constant I/O transfer reads or writes."""
-        chosen_memory_cores: MemoryAlloc = {}
+        chosen: MemoryAlloc = {}
         for tr in self.space.transfer_nodes:
             if not self.space.is_const_io(tr):
                 continue
             tensor = self.space.constant_transfer_tensor(tr)
             if tensor in tensor_alloc:
-                chosen_memory_cores[tr] = tensor_alloc[tensor]
+                chosen[tr] = tensor_alloc[tensor]
             else:
-                chosen_memory_cores[tr] = self.space.fixed_choice(tensor)
-        return chosen_memory_cores
+                chosen[tr] = self.space.fixed_choice(tensor)
+        return chosen
 
     def get_tensor_allocations(self) -> TensorAlloc:
         tensor_alloc: TensorAlloc = {}

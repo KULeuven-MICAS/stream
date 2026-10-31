@@ -8,9 +8,11 @@ import logging
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeAlias
 
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.ir.infeasibility import (
     ConstraintTermIR,
     ImplicatedResourceIR,
@@ -23,11 +25,13 @@ from stream.ir.infeasibility import (
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 
 if TYPE_CHECKING:
-    from stream.mapping.mapping import Resource
     from stream.opt.allocation.constraint_optimization.formulation import ResourceLedger
     from stream.opt.solver import SolverModel
 
 _logger = logging.getLogger(__name__)
+
+HardwareResource: TypeAlias = Core | Memory | CommunicationLink
+"""What a constraint binds or is attributed to."""
 
 
 @dataclass(frozen=True)
@@ -58,7 +62,7 @@ class ConstraintTag(NamedTuple):
     """What one constraint stands for: the ``resource`` it binds or is attributed to, the hardware limit ``kind``
     it is part of, the tensor ``subject`` whose demand on the resource it carries, or the ``rule`` it enforces."""
 
-    resource: Resource | None = None
+    resource: HardwareResource | None = None
     kind: ResourceKind | None = None
     subject: str | None = None
     rule: StructuralRule | None = None
@@ -114,7 +118,9 @@ def infeasibility_report(
             unbound.append(name)
             continue
         ref = resource_ref(tag.resource)
-        entry = grouped.setdefault(f"{ref.kind}:{ref.id}", {"ref": ref, "kinds": set(), "constraints": []})
+        entry = grouped.setdefault(
+            f"{ref.kind}:{ref.id}", {"resource": tag.resource, "ref": ref, "kinds": set(), "constraints": []}
+        )
         if tag.kind is not None:
             entry["kinds"].add(tag.kind)
         entry["constraints"].append(name)
@@ -127,7 +133,7 @@ def infeasibility_report(
     conflicts = _structural_conflicts(ledger, structural_names)
 
     quantified = next((r for r in resources if r.unmet is not None), None)
-    involved_cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
+    involved = ", ".join(r.resource.label for r in resources if r.resource.kind in ("core", "memory"))
     if quantified is not None and quantified.unmet is not None:
         nature = "capacity"
         summary = f"Infeasible mapping — {quantified.resource.label}: {quantified.unmet.statement}"
@@ -135,15 +141,15 @@ def infeasibility_report(
         nature = "structural"
         lead = conflicts[0]
         summary = f"Infeasible mapping — structural conflict: {lead.title.lower()}. {lead.explanation}" + (
-            f" Involves {involved_cores}." if involved_cores else ""
+            f" Involves {involved}." if involved else ""
         )
     elif resources:
         nature = "unknown"
-        summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved_cores}" if involved_cores else "")
+        summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved}" if involved else "")
     elif not iis_available:
         nature = "unknown"
         summary = (
-            f"Infeasible mapping ({status}); no single per-core capacity is over its recorded budget, "
+            f"Infeasible mapping ({status}); no single core or memory limit is over its recorded budget, "
             f"so the conflict is structural (e.g. transfer routing). The {stats.backend} backend cannot "
             "compute an IIS -- re-run with the Gurobi backend for the minimal conflict set."
         )
@@ -182,13 +188,14 @@ def _structural_conflicts(ledger: ResourceLedger, names: list[str]) -> list[Stru
     return list(buckets.values())
 
 
-def resource_ref(resource: Resource) -> ResourceRefIR:
+def resource_ref(resource: HardwareResource) -> ResourceRefIR:
     """A physical resource as the IR the architecture view highlights."""
     if isinstance(resource, Core):
         detail = {"core_type": str(resource.core_type)}
-        with suppress(AssertionError):
-            detail["memory_capacity_bits"] = str(resource.get_memory_capacity())
-        return ResourceRefIR(kind="core", id=str(resource.id), label=f"Core {resource.id}", detail=detail)
+        return ResourceRefIR(kind="core", id=str(resource.id), label=resource_key(resource), detail=detail)
+    if isinstance(resource, Memory):
+        detail = {"cores": ",".join(str(c.id) for c in resource.cores), "capacity_bits": str(resource.capacity_bits)}
+        return ResourceRefIR(kind="memory", id=resource.name, label=resource_key(resource), detail=detail)
     return ResourceRefIR(kind="link", id=resource_key(resource), label=resource_key(resource))
 
 
@@ -196,11 +203,11 @@ def _implicated_resource(ledger: ResourceLedger, entry: dict[str, Any]) -> Impli
     """The diagnosis of one implicated resource: its reason and, when a quantified limit among its conflicts is
     over its bound, that limit's unmet inequality."""
     kinds: list[ResourceKind] = sorted(entry["kinds"], key=lambda kind: kind.name)
-    ref = entry["ref"]
+    resource, ref = entry["resource"], entry["ref"]
     unmet: UnmetConstraintIR | None = None
-    if ref.kind == "core" and ref.id.isdigit():
+    if isinstance(resource, Core | Memory):
         for kind in kinds:
-            unmet = _unmet(ledger, kind, int(ref.id), _forced_terms(ledger, kind, int(ref.id), entry["constraints"]))
+            unmet = _unmet(ledger, kind, resource, _forced_terms(ledger, kind, resource, entry["constraints"]))
             if unmet is not None:
                 break
     if unmet is not None and unmet.gap > 0:
@@ -222,31 +229,33 @@ def _implicated_resource(ledger: ResourceLedger, entry: dict[str, Any]) -> Impli
     )
 
 
-def _forced_terms(ledger: ResourceLedger, kind: ResourceKind, core_id: int, names: Iterable[str]) -> dict[str, Any]:
-    """The demand terms the IIS actually forces onto this core: the tensors whose demand on it, under this limit or
-    under none in particular, one of its constraints carries."""
-    terms = ledger.terms.get((kind, core_id), {})
+def _forced_terms(
+    ledger: ResourceLedger, kind: ResourceKind, resource: Core | Memory, names: Iterable[str]
+) -> dict[str, Any]:
+    """The demand terms the IIS actually forces onto this core or memory: the tensors whose demand on it, under this
+    limit or under none in particular, one of its constraints carries."""
+    terms = ledger.terms.get((kind, resource), {})
     forced: dict[str, Any] = {}
     for name in names:
         tag = ledger.tags.get(name)
         if tag is None or tag.subject not in terms or tag.kind not in (None, kind):
             continue
-        if isinstance(tag.resource, Core) and tag.resource.id == core_id:
+        if tag.resource is resource:
             forced[tag.subject] = terms[tag.subject]
     return forced
 
 
 def _unmet(
-    ledger: ResourceLedger, kind: ResourceKind, core_id: int, forced: dict[str, Any]
+    ledger: ResourceLedger, kind: ResourceKind, resource: Core | Memory, forced: dict[str, Any]
 ) -> UnmetConstraintIR | None:
-    """The ``demand <= bound`` inequality of a limit on one core from the selected demand terms, with the input
-    each side comes from and the levers that would make it fit; None for an unquantified limit."""
-    bound = ledger.bounds.get((kind, core_id))
+    """The ``demand <= bound`` inequality of a limit on one core or memory from the selected demand terms, with the
+    input each side comes from and the levers that would make it fit; None for an unquantified limit."""
+    bound = ledger.bounds.get((kind, resource))
     if not kind.unit or bound is None or not forced:
         return None
     demand = sum(_term_value(v) for v in forced.values())
     gap = demand - bound
-    core = f"Core {core_id}"
+    named = resource_key(resource)
     terms = []
     for label, info in sorted(forced.items(), key=lambda kv: -_term_value(kv[1])):
         dims, dtype = _term_meta(info)
@@ -262,51 +271,44 @@ def _unmet(
     return UnmetConstraintIR(
         family=kind.name,
         statement=(
-            f"{kind.demand_label} {core} need {_fmt_qty(demand, kind.unit)}, but the "
-            f"{kind.bound_label} {core} is {_fmt_qty(bound, kind.unit)} (short by {_fmt_qty(gap, kind.unit)})"
+            f"{kind.demand_label} {named} need {_fmt_qty(demand, kind.unit)}, but the "
+            f"{kind.bound_label} {named} is {_fmt_qty(bound, kind.unit)} (short by {_fmt_qty(gap, kind.unit)})"
         ),
-        demand_label=f"{kind.demand_label} {core}",
+        demand_label=f"{kind.demand_label} {named}",
         demand_value=demand,
         demand_input=kind.demand_input,
-        bound_label=f"{kind.bound_label} {core}",
+        bound_label=f"{kind.bound_label} {named}",
         bound_value=bound,
         bound_input=kind.bound_input,
         operator="<=",
         gap=gap,
         unit=kind.unit,
         terms=terms,
-        levers=[lever.format(core=core) for lever in kind.levers],
+        levers=[lever.format(resource=named) for lever in kind.levers],
     )
 
 
 def _direct_capacity_overflows(ledger: ResourceLedger) -> list[ImplicatedResourceIR]:
     """Backend-agnostic diagnosis for a solver without an IIS (OR-Tools): each limit whose recorded demand on a core
     exceeds its non-zero bound, most over first, as the same unmet inequality the IIS path produces."""
-    cores_by_id = {tag.resource.id: tag.resource for tag in ledger.tags.values() if isinstance(tag.resource, Core)}
-    overflows: list[tuple[float, str, ResourceKind, int]] = []
-    for (kind, core_id), terms in ledger.terms.items():
-        bound = ledger.bounds.get((kind, core_id))
+    overflows: list[tuple[float, str, ResourceKind, Core | Memory]] = []
+    for (kind, resource), terms in ledger.terms.items():
+        bound = ledger.bounds.get((kind, resource))
         if not bound or bound <= 0:
             continue
         demand = sum(_term_value(v) for v in terms.values())
         if demand > bound:
-            overflows.append((demand - bound, kind.name, kind, core_id))
-    overflows.sort(key=lambda o: (o[0], o[1], o[3]), reverse=True)
+            overflows.append((demand - bound, kind.name, kind, resource))
+    overflows.sort(key=lambda o: (o[0], o[1], resource_key(o[3])), reverse=True)
     resources: list[ImplicatedResourceIR] = []
-    for _gap, _name, kind, core_id in overflows:
-        core = cores_by_id.get(core_id)
-        ref = (
-            resource_ref(core)
-            if core is not None
-            else ResourceRefIR(kind="core", id=str(core_id), label=f"Core {core_id}")
-        )
+    for _gap, _name, kind, resource in overflows:
         resources.append(
             ImplicatedResourceIR(
-                resource=ref,
+                resource=resource_ref(resource),
                 constraint_kinds=[kind.name],
                 reason=kind.reason,
                 constraints=[],
-                unmet=_unmet(ledger, kind, core_id, dict(ledger.terms[(kind, core_id)])),
+                unmet=_unmet(ledger, kind, resource, dict(ledger.terms[(kind, resource)])),
             )
         )
     return resources

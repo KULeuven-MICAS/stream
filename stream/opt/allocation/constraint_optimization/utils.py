@@ -2,6 +2,7 @@ from math import ceil, prod
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.node import Node, TransferNode
 from stream.workload.steady_state.iteration_space import LoopEffect, SteadyStateIterationSpace
@@ -10,10 +11,13 @@ from stream.workload.workload import ComputationNode
 MAX_KEY_LENGTH = 255
 
 
-def resource_key(res: Core | CommunicationLink | tuple[CommunicationLink, ...] | None) -> str:
-    """A core's, link's or path's name in the model: ``Core <id>``, the link, or ``Path[...]`` cut to fit."""
+def resource_key(res: Core | Memory | CommunicationLink | tuple[CommunicationLink, ...] | None) -> str:
+    """A core's, memory's, link's or path's name in the model: ``Core <id>``, ``Memory <name>``, the link, or
+    ``Path[...]`` cut to fit."""
     if isinstance(res, Core):
         return f"Core {res.id}"
+    if isinstance(res, Memory):
+        return f"Memory {res.name}"
     if isinstance(res, CommunicationLink):
         return str(res)
     if isinstance(res, tuple):

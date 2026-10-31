@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from stream.cost_model.communication_manager import MulticastPathPlan
-    from stream.hardware.architecture.core import Core
-    from stream.opt.solver import SolveStats
-    from stream.workload.node import Tensor, TransferNode
+from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
+from stream.opt.solver import SolveStats
+from stream.workload.node import Tensor, TransferNode
 
 
 @dataclass(frozen=True)
@@ -27,9 +27,9 @@ class AllocationSolution:
     transfer the iterations one firing serves and the cycles its route takes, the solver's metrics, and the reports,
     each None when it could not be computed."""
 
-    tensor_placements: Mapping[Tensor, tuple[Core, ...]]
+    tensor_placements: Mapping[Tensor, tuple[Memory, ...]]
     transfer_routes: Mapping[TransferNode, MulticastPathPlan]
-    memory_cores: Mapping[TransferNode, tuple[Core, ...]]
+    memory_placements: Mapping[TransferNode, tuple[Memory, ...]]
     reuse_levels: Mapping[Tensor, int]
     depths: Mapping[Tensor, int]
     single_buffered: frozenset[Tensor]
@@ -41,5 +41,5 @@ class AllocationSolution:
     solve_stats: SolveStats
     metrics: dict[str, Any]
     performance: dict[str, Any] | None
-    capacity_slack: Mapping[int, dict[str, float]] | None
+    capacity_slack: Mapping[Core | Memory, dict[str, float]] | None
     slot_latency_breakdown: dict[str, Any] | None

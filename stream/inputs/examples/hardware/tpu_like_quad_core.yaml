@@ -1,4 +1,4 @@
-# Four TPU-like compute cores + pooling, SIMD and off-chip DRAM controller
+# Four TPU-like compute cores + pooling, SIMD and off-chip DRAM
 name: tpu_like_quad_core
 
 cores:
@@ -8,7 +8,6 @@ cores:
   3: ./cores/tpu_like.yaml   # compute D
   4: ./cores/pooling.yaml    # pooling engine
   5: ./cores/simd.yaml       # SIMD unit
-  6: ./cores/offchip.yaml    # DRAM controller
 
 core_coordinates:
   0: [0, 0]
@@ -17,55 +16,128 @@ core_coordinates:
   3: [0, 1]
   4: [2, 0]
   5: [2, 1]
-  6: [1, 2]
 
-offchip_core_id: 6     # core that fronts external memory
-unit_energy_cost: 0    # default energy for core_connectivity
+unit_energy_cost: 0    # default energy for the connections
 
-core_connectivity:
+memories:
+  tpu_like_0:
+    offchip: false
+    views: [0.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  tpu_like_1:
+    offchip: false
+    views: [1.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  tpu_like_2:
+    offchip: false
+    views: [2.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  tpu_like_3:
+    offchip: false
+    views: [3.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [3]}
+      w_port_1: {from: w_port_1, cores: [3]}
+  pooling:
+    offchip: false
+    views: [4.sram_128KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [4]}
+      w_port_1: {from: w_port_1, cores: [4]}
+  simd:
+    offchip: false
+    views: [5.sram_128KB_2rw]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [5]}
+      rw_port_2: {from: rw_port_2, cores: [5]}
+  offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+
+connections:
   # ───── 2-D mesh among the four compute cores ─────
   - type: link
-    cores: [0, 1]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      tpu_like_1: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    cores: [1, 2]
+    ends:
+      tpu_like_1: [r_port_1, w_port_1]
+      tpu_like_2: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    cores: [2, 3]
+    ends:
+      tpu_like_2: [r_port_1, w_port_1]
+      tpu_like_3: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    cores: [3, 0]
+    ends:
+      tpu_like_3: [r_port_1, w_port_1]
+      tpu_like_0: [r_port_1, w_port_1]
     bandwidth: 32
 
   # ───── Pooling core connected to every compute core ─────
   - type: link
-    cores: [0, 4]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    cores: [1, 4]
+    ends:
+      tpu_like_1: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    cores: [2, 4]
+    ends:
+      tpu_like_2: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 32
   - type: link
-    cores: [3, 4]
+    ends:
+      tpu_like_3: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
     bandwidth: 32
 
   # ───── SIMD core connected to every compute core ─────
   - type: link
-    cores: [0, 5]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 32
   - type: link
-    cores: [1, 5]
+    ends:
+      tpu_like_1: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 32
   - type: link
-    cores: [2, 5]
+    ends:
+      tpu_like_2: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 32
   - type: link
-    cores: [3, 5]
+    ends:
+      tpu_like_3: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
     bandwidth: 32
 
   # ───── Shared bus to off-chip memory (all cores ↔ DRAM) ─────
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6]
+    ends:
+      tpu_like_0: [r_port_1, w_port_1]
+      tpu_like_1: [r_port_1, w_port_1]
+      tpu_like_2: [r_port_1, w_port_1]
+      tpu_like_3: [r_port_1, w_port_1]
+      pooling: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
+      offchip: [rw_port_1]
     bandwidth: 128        # wider than on-chip point-to-point links

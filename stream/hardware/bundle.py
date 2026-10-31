@@ -83,11 +83,6 @@ class HardwareBundle:
         node = self.accelerator.get("technology_node")
         return str(node).lower() if node else None
 
-    @property
-    def memory_aliases(self) -> list[list[str]]:
-        """Groups of ``<core id>.<memory name>`` refs that are views of one physical memory."""
-        return [list(group) for group in self.accelerator.get("memory_aliases", []) or []]
-
     # Output forms
 
     def to_data(self) -> dict[str, Any]:

@@ -9,6 +9,7 @@ from functools import cache
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.plugins import load_group
 
 logger = logging.getLogger(__name__)
@@ -124,27 +125,29 @@ class HardwareFacts:
     accelerator has cores of."""
 
     accelerator: Accelerator
-    offchip_core_id: int | None
-    mem_cores: list[Core]
+    mem_memories: list[Memory]
     namespaces: tuple[HardwareNamespace, ...] = ()
 
-    def shares_memory(self, one: Core, other: Core) -> bool:
-        """Whether the two cores use one memory, or a namespace lets one reach the other's."""
-        if self.accelerator.memory_of(one) == self.accelerator.memory_of(other):
+    def shares_memory(self, one: Memory, other: Memory) -> bool:
+        """Whether the two memories are one, or a namespace lets the cores of one reach the other."""
+        if one is other:
             return True
-        return any(ns.shares_memory(one, other) for ns in self.namespaces)
+        return any(ns.shares_memory(a, b) for ns in self.namespaces for a in one.cores for b in other.cores)
 
-    def pairs_by_spatial_index(self, cores: Sequence[Core]) -> bool:
-        """Whether a namespace of these cores pairs a transfer's sources and targets by spatial index."""
+    def pairs_by_spatial_index(self, memories: Sequence[Memory]) -> bool:
+        """Whether a namespace of these memories' cores pairs a transfer's sources and targets by spatial index."""
+        cores = [core for memory in memories for core in memory.cores]
         return any(ns.pairs_by_spatial_index and ns.applies_to(core) for ns in self.namespaces for core in cores)
 
     def circuit_switched(self, cores: Sequence[Core]) -> bool:
         """Whether a namespace of these cores gives a transfer each link it crosses to itself for its slot."""
         return any(ns.circuit_switched and ns.applies_to(core) for ns in self.namespaces for core in cores)
 
-    def reserved_memory_bits(self, core: Core) -> int:
-        """Bits the toolchain claims on this core, summed over the namespaces that own it."""
-        return sum(ns.reserved_memory_bits(core) for ns in self.namespaces if ns.applies_to(core))
+    def reserved_memory_bits(self, memory: Memory) -> int:
+        """Bits the toolchain claims in this memory, summed over its cores and the namespaces that own them."""
+        return sum(
+            ns.reserved_memory_bits(core) for core in memory.cores for ns in self.namespaces if ns.applies_to(core)
+        )
 
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
         """Configuration cycles one dispatch pays, summed over the namespaces."""
@@ -194,21 +197,15 @@ def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[Ha
 
 
 def build_hardware_facts(accelerator: Accelerator, nb_cols_to_use: int) -> HardwareFacts:
-    """The facts of ``accelerator`` for a solve on its first ``nb_cols_to_use`` columns; the memory cores it may
-    cache on are its on-chip memory cores inside that budget."""
-    offchip_core_id = accelerator.offchip_core_id
-    mem_cores: list[Core] = [
-        c
-        for c in accelerator.core_list
-        if isinstance(c, Core)
-        and c.id != offchip_core_id
-        and c.kind == "memory"
-        and c.col_id is not None
-        and c.col_id < nb_cols_to_use
+    """The facts of ``accelerator`` for a solve on its first ``nb_cols_to_use`` columns. Tensors may be staged in
+    the staging memories (:attr:`Memory.staging`) within those columns."""
+    mem_memories = [
+        memory
+        for memory in accelerator.memories.values()
+        if memory.staging and memory.col_id is not None and memory.col_id < nb_cols_to_use
     ]
     return HardwareFacts(
         accelerator=accelerator,
-        offchip_core_id=offchip_core_id,
-        mem_cores=mem_cores,
+        mem_memories=mem_memories,
         namespaces=tuple(namespaces_for(accelerator, NamespaceConfig(accelerator))),
     )

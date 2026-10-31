@@ -10,10 +10,14 @@ Mock objects provide .get_ir() -> dict for from_internal() tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from unittest.mock import MagicMock
 
-from stream.ir import AcceleratorIR, AllocationIR, WorkloadIR
+import pytest
+from pydantic import BaseModel
+
+from stream.ir import AcceleratorIR, AllocationIR, WorkloadGraphView, WorkloadIR
 from stream.ir.accelerator import (
     AcceleratorCompilerView,
     AcceleratorHardwareView,
@@ -23,11 +27,13 @@ from stream.ir.allocation import (
     AllocationAlgorithmicView,
     AllocationCompilerView,
     AllocationHardwareView,
+    AllocationPerformanceView,
     ConstraintFamilyIR,
     FusedGroupIR,
     LatencyInfo,
     NodeAllocationIR,
 )
+from stream.ir.infeasibility import InfeasibilityReportIR
 from stream.ir.workload import (
     NodeIR,
     WorkloadAlgorithmicView,
@@ -99,10 +105,12 @@ WORKLOAD_RAW: dict = {
 
 ACCELERATOR_RAW: dict = {
     "name": "test_aie2_accel",
-    "num_cores": 3,
-    "offchip_core_id": 2,
-    "nb_shared_mem_groups": 1,
-    "core_memory_sharing": [],
+    "num_cores": 2,
+    "memories": {
+        "tile0": {"offchip": False, "views": ["0.memory"]},
+        "tile1": {"offchip": False, "views": ["1.memory"]},
+        "offchip": {"offchip": True, "views": []},
+    },
     "cores": [
         {
             "id": 0,
@@ -126,27 +134,17 @@ ACCELERATOR_RAW: dict = {
             "memory": {"capacity_bits": 65536},
             "max_object_fifo_depth": 4,
         },
-        {
-            "id": 2,
-            "name": "offchip",
-            "core_type": "offchip",
-            "type": "offchip",
-            "row_id": -1,
-            "col_id": -1,
-            "utilization": 0.0,
-        },
     ],
-    "core_connectivity": [
+    "connections": [
         {
             "type": "bus",
-            "cores": [0, 1],
+            "ends": {"tile0": ["mm2s", "s2mm"], "tile1": ["mm2s", "s2mm"]},
             "bandwidth": 32.0,
             "unit_energy_cost": 0.5,
         },
         {
             "type": "link",
-            "from_core": 1,
-            "to_core": 2,
+            "ends": {"tile1": ["mm2s", "s2mm"], "offchip": ["rw"]},
             "bandwidth": 64.0,
             "unit_energy_cost": 1.0,
         },
@@ -295,11 +293,11 @@ class TestWorkloadIR:
 
 class TestAcceleratorIR:
     def test_json_schema(self):
-        """AcceleratorIR.model_json_schema() must include schema_version const '1.0'."""
+        """AcceleratorIR.model_json_schema() must include schema_version const '2.0'."""
         schema = AcceleratorIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "1.0", f"Expected const='1.0', got: {sv}"
+        assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
 
     def test_from_dict(self):
         """AcceleratorIR constructed from raw get_ir() dict validates without error."""
@@ -323,14 +321,13 @@ class TestAcceleratorIR:
         ir = AcceleratorIR(
             name=raw["name"],
             num_cores=raw["num_cores"],
-            offchip_core_id=raw["offchip_core_id"],
-            nb_shared_mem_groups=raw["nb_shared_mem_groups"],
+            memories=raw["memories"],
             cores=cores,
-            core_connectivity=raw["core_connectivity"],
+            connections=raw["connections"],
         )
         assert ir.name == "test_aie2_accel"
-        assert ir.num_cores == 3
-        assert ir.schema_version == "1.0"
+        assert ir.num_cores == 2
+        assert ir.schema_version == "2.0"
 
     def test_from_internal(self):
         """AcceleratorIR.from_internal(mock_accelerator) constructs a valid model."""
@@ -341,10 +338,9 @@ class TestAcceleratorIR:
 
         mock_accelerator.get_ir.assert_called_once()
         assert ir.name == "test_aie2_accel"
-        assert ir.num_cores == 3
-        assert ir.offchip_core_id == 2
-        assert ir.schema_version == "1.0"
-        assert len(ir.cores) == 3
+        assert ir.num_cores == 2
+        assert ir.schema_version == "2.0"
+        assert len(ir.cores) == 2
 
     def test_hardware_view(self):
         """AcceleratorIR.hardware_view() returns AcceleratorHardwareView with cores and connectivity."""
@@ -356,10 +352,10 @@ class TestAcceleratorIR:
 
         assert isinstance(view, AcceleratorHardwareView)
         assert view.name == "test_aie2_accel"
-        assert view.num_cores == 3
-        assert len(view.cores) == 3
-        assert len(view.core_connectivity) == 2
-        assert view.schema_version == "1.0"
+        assert view.num_cores == 2
+        assert len(view.cores) == 2
+        assert len(view.connections) == 2
+        assert view.schema_version == "2.0"
 
     def test_compiler_view(self):
         """AcceleratorIR.compiler_view() returns AcceleratorCompilerView with topology info."""
@@ -371,11 +367,11 @@ class TestAcceleratorIR:
 
         assert isinstance(view, AcceleratorCompilerView)
         assert view.name == "test_aie2_accel"
-        assert len(view.cores) == 3
+        assert len(view.cores) == 2
         # compiler view should have core topology data
         assert view.cores[0].id == 0
         assert view.cores[0].core_type == "aie2.compute"
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
 
     def test_json_round_trip(self):
         """model_dump_json() on AcceleratorIR produces valid JSON that round-trips through json.loads."""
@@ -387,8 +383,8 @@ class TestAcceleratorIR:
         parsed = json.loads(json_str)
 
         assert parsed["name"] == "test_aie2_accel"
-        assert parsed["schema_version"] == "1.0"
-        assert len(parsed["cores"]) == 3
+        assert parsed["schema_version"] == "2.0"
+        assert len(parsed["cores"]) == 2
 
     def test_extra_fields_for_core_types(self):
         """AcceleratorIR cores with extra_fields dict for type-specific data validate correctly."""
@@ -402,17 +398,12 @@ class TestAcceleratorIR:
         assert "max_object_fifo_depth" in compute_core.extra_fields
         assert compute_core.extra_fields["memory"]["capacity_bits"] == 65536
 
-        # offchip core should have empty extra_fields
-        offchip_core = ir.cores[2]
-        assert offchip_core.extra_fields == {}
-
-    def test_offchip_core_id_none(self):
-        """AcceleratorIR with offchip_core_id=None validates correctly."""
-        raw = {**ACCELERATOR_RAW, "offchip_core_id": None}
+    def test_memories_say_whether_off_chip(self):
+        """Each memory carries whether it is off-chip and its views; an off-chip memory no core views has none."""
         mock_accelerator = MagicMock()
-        mock_accelerator.get_ir.return_value = raw
+        mock_accelerator.get_ir.return_value = ACCELERATOR_RAW
         ir = AcceleratorIR.from_internal(mock_accelerator)
-        assert ir.offchip_core_id is None
+        assert ir.memories["offchip"] == {"offchip": True, "views": []}
 
 
 # ---------------------------------------------------------------------------
@@ -432,12 +423,12 @@ ALLOCATION_RAW: dict = {
             "MatMul": {
                 "resource_allocation": [[{"type": "core", "id": 0}, {"type": "core", "id": 1}]],
                 "inter_core_tiling": [[["K", 2], ["M", 1]]],
-                "memory_allocation": [[0]],
+                "memory_allocation": [["m0"]],
             },
             "ReLU": {
                 "resource_allocation": [[{"type": "core", "id": 2}]],
                 "inter_core_tiling": [[["N", 1]]],
-                "memory_allocation": [[2]],
+                "memory_allocation": [["m2"]],
             },
         },
         "fused_groups": [
@@ -459,11 +450,11 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '2.0'."""
+        """AllocationIR.model_json_schema() must include schema_version const '3.0'."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
+        assert sv.get("const") == "3.0", f"Expected const='3.0', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
@@ -495,7 +486,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "2.0"
+        assert ir.schema_version == "3.0"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_allocation) constructs correctly."""
@@ -509,7 +500,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "2.0"
+        assert ir.schema_version == "3.0"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -570,7 +561,7 @@ class TestAllocationIR:
         view = ir.hardware_view()
 
         assert isinstance(view, AllocationHardwareView)
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
         assert "MatMul" in view.mapping_nodes
         assert "ReLU" in view.mapping_nodes
         matmul_node = view.mapping_nodes["MatMul"]
@@ -578,7 +569,7 @@ class TestAllocationIR:
         # resource_allocation and memory_allocation are accessible
         assert len(matmul_node.resource_allocation) == 1
         assert matmul_node.resource_allocation[0][0] == {"type": "core", "id": 0}
-        assert matmul_node.memory_allocation[0] == [0]
+        assert matmul_node.memory_allocation[0] == ["m0"]
 
     def test_compiler_view(self):
         """AllocationIR.compiler_view() returns AllocationCompilerView with node-to-core mapping, fused_groups."""
@@ -589,7 +580,7 @@ class TestAllocationIR:
         view = ir.compiler_view()
 
         assert isinstance(view, AllocationCompilerView)
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "2.0"
         assert "MatMul" in view.mapping_nodes
         matmul_node = view.mapping_nodes["MatMul"]
         assert isinstance(matmul_node, NodeAllocationIR)
@@ -620,7 +611,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "2.0"
+        assert parsed["schema_version"] == "3.0"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
@@ -777,6 +768,42 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
 def test_the_hardware_ir_names_the_cores_sharing_a_memory_and_what_a_specialized_core_runs():
     """FuseMax's array and vector core share one memory; only the vector core restricts its operators."""
     ir = AcceleratorIR.from_internal(parse_accelerator("stream/inputs/examples/hardware/fusemax.yaml"))
-    assert ir.core_memory_sharing == [[0, 1]]
+    assert ir.memories["sram"] == {"offchip": False, "views": ["0.sram", "1.sram"]}
     served = {core.id: core.extra_fields["operator_types"] for core in ir.cores}
     assert served[0] is None and "MaxPool" in served[1]
+
+
+def _without_descriptions(schema):
+    if isinstance(schema, dict):
+        return {key: _without_descriptions(value) for key, value in schema.items() if key != "description"}
+    if isinstance(schema, list):
+        return [_without_descriptions(value) for value in schema]
+    return schema
+
+
+@pytest.mark.parametrize(
+    ("model", "version", "shape"),
+    [
+        (WorkloadIR, "1.0", "da563145b6951db0"),
+        (WorkloadAlgorithmicView, "1.0", "7176eeaaca2a5cbe"),
+        (WorkloadCompilerView, "1.0", "9a5606454526afca"),
+        (WorkloadGraphView, "1.1", "42005772943e08a8"),
+        (AcceleratorIR, "2.0", "0c669dc5e59ce14b"),
+        (AcceleratorHardwareView, "2.0", "714be362a16d96b8"),
+        (AcceleratorCompilerView, "2.0", "c09a97ce83accdbd"),
+        (AllocationIR, "3.0", "a66cee130dbc2ad0"),
+        (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
+        (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
+        (AllocationCompilerView, "2.0", "2e7aaa321471109e"),
+        (AllocationPerformanceView, "2.0", "b4c9df810d67eaaa"),
+        (InfeasibilityReportIR, "2.0", "f916a400b3ad105e"),
+    ],
+)
+def test_each_ir_version_pins_its_shape(model: type[BaseModel], version: str, shape: str):
+    """A change to an IR's fields must come with a new schema_version: bump it, then pin the new shape here."""
+    schema = model.model_json_schema()
+    digest = hashlib.sha256(json.dumps(_without_descriptions(schema), sort_keys=True).encode()).hexdigest()[:16]
+    assert schema["properties"]["schema_version"]["const"] == version
+    assert digest == shape
+    if "$id" in schema:
+        assert schema["$id"].endswith(f"/v{version.split('.', 1)[0]}")

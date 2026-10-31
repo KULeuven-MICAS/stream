@@ -1,4 +1,4 @@
-# Four Eyeriss-like compute cores with pooling, SIMD and an off-chip DRAM controller
+# Four Eyeriss-like compute cores with pooling, SIMD and off-chip DRAM
 name: eyeriss_like_quad_core
 
 cores:
@@ -8,39 +8,96 @@ cores:
   3: eyeriss_like.yaml   # compute D
   4: pooling.yaml        # pooling helper
   5: simd.yaml           # SIMD helper
-  6: offchip.yaml        # DRAM controller
 
-offchip_core_id: 6       # core that fronts external memory
 unit_energy_cost: 0      # default energy per transferred word
 
-core_connectivity:
+memories:
+  eyeriss_like_0:
+    offchip: false
+    views: [0.sram_1M]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [0]}
+      rw_port_2: {from: rw_port_2, cores: [0]}
+  eyeriss_like_1:
+    offchip: false
+    views: [1.sram_1M]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [1]}
+      rw_port_2: {from: rw_port_2, cores: [1]}
+  eyeriss_like_2:
+    offchip: false
+    views: [2.sram_1M]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [2]}
+      rw_port_2: {from: rw_port_2, cores: [2]}
+  eyeriss_like_3:
+    offchip: false
+    views: [3.sram_1M]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [3]}
+      rw_port_2: {from: rw_port_2, cores: [3]}
+  pooling:
+    offchip: false
+    views: [4.sram_128KB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [4]}
+      w_port_1: {from: w_port_1, cores: [4]}
+  simd:
+    offchip: false
+    views: [5.sram_128KB_2rw]
+    ports:
+      rw_port_1: {from: rw_port_1, cores: [5]}
+      rw_port_2: {from: rw_port_2, cores: [5]}
+  offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+
+connections:
   # ───── 2-D mesh links among compute cores ─────
   - type: link
-    cores: [0, 1]
+    ends:
+      eyeriss_like_0: [rw_port_1, rw_port_2]
+      eyeriss_like_1: [rw_port_1, rw_port_2]
     bandwidth: 32
   - type: link
-    cores: [1, 2]
+    ends:
+      eyeriss_like_1: [rw_port_1, rw_port_2]
+      eyeriss_like_2: [rw_port_1, rw_port_2]
     bandwidth: 32
   - type: link
-    cores: [2, 3]
+    ends:
+      eyeriss_like_2: [rw_port_1, rw_port_2]
+      eyeriss_like_3: [rw_port_1, rw_port_2]
     bandwidth: 32
   - type: link            # extra link as in original spec
-    cores: [3, 1]
+    ends:
+      eyeriss_like_3: [rw_port_1, rw_port_2]
+      eyeriss_like_1: [rw_port_1, rw_port_2]
     bandwidth: 32
 
   # ───── Pooling core connected to every compute core ─────
-  - {type: link, cores: [0, 4], bandwidth: 32}
-  - {type: link, cores: [1, 4], bandwidth: 32}
-  - {type: link, cores: [2, 4], bandwidth: 32}
-  - {type: link, cores: [3, 4], bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_0: [rw_port_1, rw_port_2], pooling: [r_port_1, w_port_1]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_1: [rw_port_1, rw_port_2], pooling: [r_port_1, w_port_1]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_2: [rw_port_1, rw_port_2], pooling: [r_port_1, w_port_1]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_3: [rw_port_1, rw_port_2], pooling: [r_port_1, w_port_1]}, bandwidth: 32}
 
   # ───── SIMD core connected to every compute core ─────
-  - {type: link, cores: [0, 5], bandwidth: 32}
-  - {type: link, cores: [1, 5], bandwidth: 32}
-  - {type: link, cores: [2, 5], bandwidth: 32}
-  - {type: link, cores: [3, 5], bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_0: [rw_port_1, rw_port_2], simd: [rw_port_1, rw_port_2]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_1: [rw_port_1, rw_port_2], simd: [rw_port_1, rw_port_2]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_2: [rw_port_1, rw_port_2], simd: [rw_port_1, rw_port_2]}, bandwidth: 32}
+  - {type: link, ends: {eyeriss_like_3: [rw_port_1, rw_port_2], simd: [rw_port_1, rw_port_2]}, bandwidth: 32}
 
   # ───── Shared bus to off-chip DRAM ─────
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6]   # all on-chip cores + controller
+    ends:   # every memory
+      eyeriss_like_0: [rw_port_1, rw_port_2]
+      eyeriss_like_1: [rw_port_1, rw_port_2]
+      eyeriss_like_2: [rw_port_1, rw_port_2]
+      eyeriss_like_3: [rw_port_1, rw_port_2]
+      pooling: [r_port_1, w_port_1]
+      simd: [rw_port_1, rw_port_2]
+      offchip: [rw_port_1]
     bandwidth: 128                 # wider than on-chip point-to-point links

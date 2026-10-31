@@ -1,12 +1,6 @@
 name: simba_chiplet
 type: compute
 
-# The global buffer is four banks of 2048 x 256-bit words; its 1024-bit ports take a word of each bank per cycle, so
-# consecutive words interleave across the banks.
-banks:
-  count: 4
-  width: 32
-
 memories:
 
   weight_registers:
@@ -101,6 +95,11 @@ memories:
 
   global_buffer:
     size: 2097152  # 2048 depth * 256 width * 4 banks
+    # four banks of 2048 x 256-bit words; its 1024-bit ports take a word of each bank per cycle, so consecutive words
+    # interleave across the banks
+    banks:
+      count: 4
+      width: 32
     r_cost: 10  # Example cost, refine with more details
     w_cost: 10
     area: 0

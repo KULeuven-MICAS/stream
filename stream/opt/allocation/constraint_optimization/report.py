@@ -6,12 +6,14 @@ import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
 from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
@@ -29,9 +31,6 @@ if TYPE_CHECKING:
     from stream.opt.solver import SolveStats
 
 logger = logging.getLogger(__name__)
-
-_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
-"""Core kinds that model a memory or DMA endpoint, never in a compute roofline."""
 
 VAR_THRESHOLD = 0.5
 """A MILP binary comes back as 0.9999...; anything above the midpoint is a 1."""
@@ -54,10 +53,10 @@ def solved_reports(
     reuse_levels: dict[Tensor, int],
     total_latency: int,
     total_mac_ops: int | None,
-) -> tuple[dict[str, Any] | None, dict[int, dict[str, float]] | None, dict[str, Any] | None]:
+) -> tuple[dict[str, Any] | None, dict[Core | Memory, dict[str, float]] | None, dict[str, Any] | None]:
     """The performance report of the solved allocation -- where its latency goes, what binds its overlap, what each
-    tensor and memory holds, and the families' sections --, the unused capacity per core and the slot latency
-    breakdown, each read off the solution once and None when it cannot be."""
+    tensor and memory holds, and the families' sections --, the unused capacity per core and memory and the slot
+    latency breakdown, each read off the solution once and None when it cannot be."""
     reuse = guarded("tensor reuse", tensor_reuse_breakdown, ctx, reuse_levels)
     slack = guarded("resource slack", resource_slack, ctx)
     occupancy = guarded("memory occupancy", memory_occupancy, ctx)
@@ -166,27 +165,32 @@ def _iterations(
 _NO_PARENS = str.maketrans("", "", "()")
 
 
-def _layout_side(
-    space: DecisionSpace, tr: TransferNode, cores: Sequence[Core], direction: str, layout: Layout, walk: Layout
+def _layout_side(  # noqa: PLR0913
+    space: DecisionSpace,
+    tr: TransferNode,
+    choice: MulticastPathPlan,
+    direction: str,
+    layout: Layout,
+    walk: Layout,
 ) -> dict[str, Any]:
     """One side of a transfer: the buffer its copy sits in and that buffer's strides, the loops the DMA walks it in,
-    and the memory, port, rate, burst and banks it goes through on its first core."""
+    and the memory, port, rate, burst and banks it goes through at its first position."""
     copy = tr.inputs[0] if direction == READ else tr.outputs[0]
     full = tuple(copy.subview.source.type.get_shape())
     extent = space.layouts.extent(copy, full)
-    core = cores[0]
-    port = None if core.id in space.shared_bandwidth else space.side_port(tr, core, direction)
-    model = space.side_bandwidth(tr, core, direction)
-    banks = getattr(core, "banks", None)
+    memory = (choice.sources if direction == READ else choice.targets)[0]
+    measured = memory in space.shared_bandwidth
+    port = None if measured else space.side_port(tr, choice, memory, direction)
+    model = space.side_bandwidth(tr, choice, memory, direction)
     return {
         "extent": list(extent),
         "strides": list(layout.strides(extent)),
         "access": [list(loop) for loop in layout.access(tuple(copy.shape), extent, walk)],
-        "memory": port.key.memory if port is not None else None,
-        "port": "measured" if core.id in space.shared_bandwidth else port.key.port if port is not None else None,
+        "memory": memory.name,
+        "port": "measured" if measured else port.key.port if port is not None else None,
         "bits_per_cycle": _json_scalar(model.contiguous) if model is not None else None,
         "burst_bytes": model.burst if model is not None else None,
-        "banks": asdict(banks) if banks is not None else None,
+        "banks": asdict(memory.banks) if memory.banks is not None else None,
     }
 
 
@@ -212,8 +216,8 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
                 "tile_shape": list(tensor.shape),
                 "full_shape": list(full),
                 "element_bits": tensor.operand_type.bitwidth,
-                "source_cores": [core.id for core in choice.sources],
-                "target_cores": [core.id for core in choice.targets],
+                "source_memories": [memory.name for memory in choice.sources],
+                "target_memories": [memory.name for memory in choice.targets],
                 "source_order": list(source.order),
                 "target_order": list(target.order),
                 "converts": not source.same_data_order(target, full),
@@ -222,8 +226,8 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
                 "streams_in": "source" if walk == source else "target",
                 "axes": _axis_dims(touch),
                 "iterations": _iterations(space, tr, touch),
-                "read": _layout_side(space, tr, choice.sources, READ, source, walk),
-                "write": _layout_side(space, tr, choice.targets, WRITE, target, walk),
+                "read": _layout_side(space, tr, choice, READ, source, walk),
+                "write": _layout_side(space, tr, choice, WRITE, target, walk),
             }
         )
     return rows
@@ -277,13 +281,12 @@ def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_laten
     total_active = sum(d["latency_cycles"] for d in nodes) or 1
     weighted_util = sum((d["mac_spatial_utilization"] or 0.0) * d["latency_cycles"] for d in nodes) / total_active
     utils = [d["mac_spatial_utilization"] for d in nodes if d["mac_spatial_utilization"] is not None]
-    offchip_id = space.accelerator.offchip_core_id
     degenerate_nodes = [name for name, d in per_node.items() if d["fallback"]]
     mac_utilization = guarded(
         "MAC utilization", end_to_end_mac_utilization, space.accelerator, total_mac_ops, total_latency
     )
     aggregate = {
-        "compute_cores_available": sum(1 for c in space.accelerator.core_list if c.id != offchip_id),
+        "compute_cores_available": sum(1 for c in space.accelerator.core_list if c.kind == "compute"),
         "compute_cores_used": len({c.id for n in space.ssc_nodes for c in lut.get_cores(n)}),
         "latency_weighted_mac_spatial_utilization": _json_scalar(weighted_util),
         "min_mac_spatial_utilization": _json_scalar(min(utils) if utils else None),
@@ -317,13 +320,14 @@ def _json_scalar(v: Any) -> Any:
 
 def mac_roofline_peak(accelerator: Accelerator) -> tuple[int, int]:
     """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
-    units = [u for core in accelerator.core_list if runs_macs(core) and (u := compute_units(accelerator, core))]
+    units = [compute_units(core) for core in accelerator.core_list if runs_macs(core)]
+    units = [u for u in units if u]
     return sum(units), len(units)
 
 
-def compute_units(accelerator: Accelerator, core: Any) -> int:
-    """The units of ``core``'s operational array, 0 for the off-chip core and memory and DMA endpoints."""
-    if core.id == accelerator.offchip_core_id or core.type in _NON_COMPUTE_CORE_TYPES:
+def compute_units(core: Any) -> int:
+    """The units of ``core``'s operational array, 0 for a core that does not compute."""
+    if core.kind != "compute":
         return 0
     return int(getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0)
 
@@ -405,25 +409,22 @@ def tensor_reuse_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
 def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
     """Per memory: the bits the solved placement keeps resident against its capacity, largest tensors first."""
     ledger = ctx.ledger
-    cores = {c.id: c for c in ctx.space.accelerator.core_list}
     rows: list[dict[str, Any]] = []
-    for core_id, terms in sorted(ledger.memory.items()):
-        core = cores.get(core_id)
-        if core is None:
-            continue
+    for memory, terms in sorted(ledger.memory.items(), key=lambda item: item[0].name):
         per_tensor: dict[str, int] = defaultdict(int)
         for indicator, bits, tensor_name in terms:
             if indicator.X > VAR_THRESHOLD:
                 per_tensor[tensor_name] += bits
         per_tensor = {name: bits for name, bits in per_tensor.items() if bits > 0}
-        if handed := ledger.handover_bits.get(core_id, 0):
+        handed = ledger.handover_bits.get(memory, 0)
+        if handed:
             per_tensor["handover"] = handed
         resident = sum(per_tensor.values())
-        capacity = int(ledger.bounds[(MEMORY_CAPACITY, core_id)] * 8)
+        capacity = int(ledger.bounds[(MEMORY_CAPACITY, memory)] * 8)
         rows.append(
             {
-                "core_id": core_id,
-                "core_name": str(getattr(core, "type", "")) or str(core),
+                "memory": memory.name,
+                "cores": [c.id for c in memory.cores],
                 "resident_bits": resident,
                 "capacity_bits": capacity,
                 "utilization": resident / capacity if capacity else None,
@@ -436,18 +437,22 @@ def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
     return rows
 
 
-def capacity_slack(ctx: FormulationContext, occupancy: list[dict[str, Any]] | None) -> dict[int, dict[str, float]]:
-    """Unused capacity per core: memory in bytes, and each bounded limit (fifo depth, buffer descriptors) in slots."""
-    ledger = ctx.ledger
-    slack: dict[int, dict[str, float]] = {}
+def capacity_slack(
+    ctx: FormulationContext, occupancy: list[dict[str, Any]] | None
+) -> dict[Core | Memory, dict[str, float]]:
+    """Unused capacity per resource: memory in bytes, and each bounded limit (fifo depth, buffer descriptors) in
+    slots."""
+    ledger, memories = ctx.ledger, ctx.space.accelerator.memories
+    slack: dict[Core | Memory, dict[str, float]] = {}
     for row in occupancy or ():
-        slack.setdefault(row["core_id"], {})["memory_bytes"] = (row["capacity_bits"] - row["resident_bits"]) / 8
-    for (kind, core_id), terms in ledger.loads.items():
-        bound = ledger.bounds.get((kind, core_id))
+        free = (row["capacity_bits"] - row["resident_bits"]) / 8
+        slack.setdefault(memories[row["memory"]], {})["memory_bytes"] = free
+    for (kind, resource), terms in ledger.loads.items():
+        bound = ledger.bounds.get((kind, resource))
         if bound is None:
             continue
         used = sum(count for var, count in terms if var.X > VAR_THRESHOLD)
-        slack.setdefault(core_id, {})[kind.name] = bound - used
+        slack.setdefault(resource, {})[kind.name] = bound - used
     return slack
 
 
@@ -498,7 +503,7 @@ def slot_latency_breakdown(
             "overlap_cycles": _json_scalar(overlap),
             "initiation_interval_cycles": _json_scalar(per_iteration - overlap),
             "total_latency_cycles": _json_scalar(value(q.get("total_latency").expr)),
-            "shared_busy_cycles": {core: _json_scalar(value(busy.expr)) for core, busy in shared.items()},
+            "shared_busy_cycles": {memory.name: _json_scalar(value(busy.expr)) for memory, busy in shared.items()},
         },
         "resource_slack": slack,
         "tensor_reuse": reuse,

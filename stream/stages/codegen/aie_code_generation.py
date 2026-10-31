@@ -31,6 +31,7 @@ from stream.compiler.transforms.aie_add_tracing_script import MAX_TRACED_TILES, 
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
 from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
+from stream.compiler.transforms.aie_tiles import OFFCHIP, AIETileLocation
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import (
     ConvertStreamToAIEPass,
@@ -40,8 +41,9 @@ from stream.compiler.transforms.iteration_space_to_for import IterationSpaceToFo
 from stream.compiler.transforms.unroll import SpatialUnrollPass
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
+from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.hardware.cost import OFF_DIE_KINDS
+from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -65,6 +67,34 @@ from stream.workload.workload import (
     TransferNode,
     Workload,
 )
+
+
+def placement(at: Core | Memory) -> StringAttr:
+    """How the generated code names where something is placed: a memory by its name, a core as ``core<id>``."""
+    if isinstance(at, Memory):
+        return StringAttr(at.name)
+    return StringAttr(f"core{at.id}")
+
+
+def aie_tiles(accelerator: Accelerator) -> dict[str, AIETileLocation]:
+    """Where on the array each placement of ``accelerator`` is, by its name: each memory and each core."""
+    tiles = {memory.name: _location(memory) for memory in accelerator.memories.values()}
+    for core in accelerator.core_list:
+        name = placement(core).data
+        if name in tiles:
+            raise ValueError(f"memory {name} has the name the generated code gives core {core.id}: rename it")
+        tiles[name] = _location(core)
+    return tiles
+
+
+def _location(at: Core | Memory) -> AIETileLocation:
+    if isinstance(at, Memory) and at.offchip:
+        return AIETileLocation(OFFCHIP, None, None)
+    # On aie2 an on-chip memory is a view of exactly one tile (the namespace validator checks).
+    core = at.core if isinstance(at, Memory) else at
+    if core.col_id is None or core.row_id is None:
+        raise ValueError(f"core {core.id} has no coordinates")
+    return AIETileLocation(at.kind, core.col_id, core.row_id)
 
 
 class AIECodeGenerationStage(Stage):
@@ -129,17 +159,13 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(input_type, StrensorType)
         path_plan = mapping.resource_allocation[0]
         assert isinstance(path_plan, MulticastPathPlan)
-        cores = []
-        for target in path_plan.targets:
-            assert target.row_id is not None
-            assert target.col_id is not None
-            cores.append(StringAttr(f"tile_{target.col_id}_{target.row_id}"))
+        cores = [placement(target) for target in path_plan.targets]
 
         if len(cores) == 1:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
                 raise ValueError("Spatial Strensor for single-core transfer found.")
 
-        if all(target.type in OFF_DIE_KINDS for target in path_plan.targets):
+        if all(target.offchip for target in path_plan.targets):
             shape = cast(ShapedType, node.output.subview.source.type).get_shape()
             layer_dims = (
                 x[0]
@@ -158,8 +184,10 @@ class AIECodeGenerationStage(Stage):
             result_types = []
             for (index, space), reader, output in zip(spaces, self._readers(node, workload), node.outputs, strict=True):
                 allocation = full_mapping.get(reader).resource_allocation[0]
-                reader_cores = allocation.sources if isinstance(allocation, MulticastPathPlan) else allocation
-                cores_attr = [StringAttr(f"tile_{c.col_id}_{c.row_id}") for c in reader_cores]
+                if isinstance(allocation, MulticastPathPlan):
+                    cores_attr = [placement(memory) for memory in allocation.sources]
+                else:
+                    cores_attr = [placement(core) for core in allocation]
                 result_types.append(
                     StrensorType(input_type.element_type, space, cores_attr, index, self._buffers(output))
                 )
@@ -226,13 +254,7 @@ class AIECodeGenerationStage(Stage):
                 break
 
         # # add spatio-temporal dims to get only inner shape:
-        cores = mapping.resource_allocation[0]
-        cores_attrs = []
-        for core in cores:
-            assert isinstance(core, Core)
-            assert core.row_id is not None
-            assert core.col_id is not None
-            cores_attrs.append(StringAttr(f"tile_{core.col_id}_{core.row_id}"))
+        cores_attrs = [placement(core) for core in mapping.resource_allocation[0]]
 
         result_type = StrensorType(
             node.output.operand_type,
@@ -330,10 +352,17 @@ class AIECodeGenerationStage(Stage):
                     if isinstance(other_node, HasOutputs) and inp in other_node.outputs:
                         yield ops[other_node].results[other_node.outputs.index(inp)]
 
-        for node in workload.topological_sort():
+        # Ensure nodes are emitted in the same order as the scheduler reasoned about them.
+        timeslots = self.ctx.get("allocation").problem.timeslots
+        for node in sorted(workload, key=lambda n: timeslots[n]):
             if isinstance(node, InEdge):
                 shape = cast(ShapedType, node.output.subview.source.type).get_shape()
-                layer_dims = reversed(tuple(get_layer_dims([x for x in workload.successors(node)][0].output)))
+                # A tensor consumed by more than one node is multicast: its transfer has
+                # several outputs carrying the *same* tensor to different destinations, so
+                # any of them gives the layer dimensions. `.output` asserts there is only
+                # one, which a SwiGLU trips immediately -- its input feeds both projections.
+                successor = [x for x in workload.successors(node)][0]
+                layer_dims = reversed(tuple(get_layer_dims(successor.outputs[0])))
                 ops[node] = InEdgeOp(
                     node.name,
                     StrensorType(
@@ -344,7 +373,7 @@ class AIECodeGenerationStage(Stage):
                                 for (s, d) in zip(shape, layer_dims, strict=True)
                             )
                         ),
-                        [StringAttr("tile_0_0")],
+                        [placement(self.ctx.get("accelerator").offchip_memory)],
                     ),
                 )
             if isinstance(node, OutEdge):
@@ -411,31 +440,32 @@ class AIECodeGenerationStage(Stage):
         return module
 
     def _shim_limits(self) -> tuple[int, int]:
-        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates,
-        as the accelerator declares them; 0 where it does not. A trace writes its buffer out through
-        one descriptor."""
-        shims = [core for core in self.ctx.get("accelerator").core_list if core.type == "shim"]
-        descriptors = min((core.dma_buffer_descriptors for core in shims), default=0)
-        iterations = min((core.dma_iterations for core in shims), default=0)
-        return descriptors - 1 if descriptors and self.trace_size else descriptors, iterations
+        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates, from the
+        off-chip memory's DMA; 0 if it declares none, which leaves every loop unrolled. A trace uses one descriptor."""
+        offchip = self.ctx.get("accelerator").offchip_memory
+        if offchip is None or offchip.dma is None:
+            return 0, 0
+        descriptors = offchip.dma.buffer_descriptors
+        return descriptors - 1 if self.trace_size else descriptors, offchip.dma.iterations
 
     def _fifo_depths(self) -> FifoDepths | None:
-        """A depth policy funded by the capacity the solved allocation left unused."""
+        """A depth policy funded by the capacity the solved allocation left unused on chip."""
         allocation = self.ctx.get("allocation")
         slack = allocation.solution.capacity_slack
         if not slack:
             return None
+        accelerator = allocation.problem.accelerator
         budgets: dict[tuple[int, int], TileBudget] = {}
-        for core in allocation.problem.accelerator.core_list:
-            per_core = slack.get(core.id)
-            if per_core is None or core.col_id is None or core.row_id is None:
+        for memory in accelerator.memories.values():
+            free = slack.get(memory)
+            if memory.offchip or free is None:
                 continue
-            slots = min(
-                per_core.get("object_fifo_depth", float("inf")),
-                per_core.get("buffer_descriptors", float("inf")),
-            )
-            budgets[(core.col_id, core.row_id)] = TileBudget(
-                bytes_free=per_core.get("memory_bytes", 0.0),
+            tile = memory.core
+            if tile.col_id is None or tile.row_id is None:
+                continue
+            slots = min(free.get("object_fifo_depth", float("inf")), free.get("buffer_descriptors", float("inf")))
+            budgets[(tile.col_id, tile.row_id)] = TileBudget(
+                bytes_free=free.get("memory_bytes", 0.0),
                 bds_free=0.0 if slots == float("inf") else slots,
             )
         return FifoDepths(budgets)
@@ -470,16 +500,17 @@ class AIECodeGenerationStage(Stage):
         SpatialUnrollPass().apply(self.context, module)
         with open(output_path + "/unrolled.mlir", "w") as f:
             f.write(str(module))
-        AIEDispatchPass(self.npu).apply(self.context, module)
+        tiles = aie_tiles(self.ctx.get("accelerator"))
+        AIEDispatchPass(self.npu, tiles).apply(self.context, module)
         with open(output_path + "/dispatched.mlir", "w") as f:
             f.write(str(module))
         IterationSpaceToFor().apply(self.context, module)
         with open(output_path + "/with_for.mlir", "w") as f:
             f.write(str(module))
         descriptors, iterations = self._shim_limits()
-        AIEConvertOfs(depths=self._fifo_depths(), shim_descriptors=descriptors, shim_iterations=iterations).apply(
-            self.context, module
-        )
+        AIEConvertOfs(
+            tiles, depths=self._fifo_depths(), shim_descriptors=descriptors, shim_iterations=iterations
+        ).apply(self.context, module)
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)

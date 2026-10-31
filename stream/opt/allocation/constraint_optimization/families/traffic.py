@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PortShare:
-    """``share`` of a stream's bits pass ``port`` in ``direction`` (1/|sources| on a read, 1 on a write) at
-    ``efficiency`` of the port's rate for the stream's access pattern."""
+    """``share`` of a stream's bits pass ``port`` in ``direction`` at ``efficiency`` of the port's rate for the
+    stream's access pattern."""
 
     port: Port
     direction: str
@@ -49,33 +49,17 @@ class NodeTraffic:
     slot: int
 
 
-def _target_share(ctx: FormulationContext, tr: TransferNode, choice: Any = None) -> float:
-    """Share of the bits a transfer moves one target receives, on average over the targets of ``choice`` (its first
-    route by default): 1 for a broadcast, every target receiving the whole tensor."""
-    choice = choice or ctx.space.path_choices[tr][0]
-    moved = ctx.space.moved_bits(tr, choice)
-    return sum(ctx.space.moved_bits(tr, choice, target=t) for t in choice.targets) / moved / len(choice.targets)
-
-
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
-    ports = ctx.space.accelerator.ports
+    """The share of the transfer's bits each port of each memory on route ``choice`` passes, as
+    :meth:`DecisionSpace.side_ports` gives it."""
+    space = ctx.space
     sides: list[PortShare] = []
-    runs = dict(zip((READ, WRITE), ctx.space.layouts.runs(tr, choice), strict=True))
-    moved = ctx.space.moved_bits(tr, choice)
-    broadcast = _target_share(ctx, tr, choice) == 1.0
-    for cores, direction in ((choice.sources, READ), (choice.targets, WRITE)):
-        operand = ctx.space.operand_role(tr, read_side=direction == READ)
-        for core in cores:
-            side = {"source": core} if direction == READ else {"target": core}
-            share = ctx.space.moved_bits(tr, choice, **side) / moved
-            port = ports.port_for(core, direction, operand)
-            if port is None:
-                continue
-            # Targets in one core_memory_sharing group receive a broadcast once, into their shared memory.
-            broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
-            if direction == WRITE and broadcast and broadcast_again:
-                continue
-            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(runs[direction], direction)))
+    runs = dict(zip((READ, WRITE), space.layouts.runs(tr, choice), strict=True))
+    for memories, direction in ((choice.sources, READ), (choice.targets, WRITE)):
+        for memory in dict.fromkeys(memories):
+            for port, share in space.side_ports(tr, choice, memory, direction).items():
+                efficiency = port.bandwidth.efficiency(runs[direction], direction)
+                sides.append(PortShare(port, direction, share, efficiency))
     return sides
 
 
@@ -102,15 +86,17 @@ def placed_cores(ctx: FormulationContext, node: ComputationNode) -> list[Core]:
 
 
 def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
-    """The top-level port traffic of each node from its cost backend, on the physical core it runs on."""
+    """The top-level port traffic of each node from its cost backend, on each core it runs on, at a port of the
+    memory that core holds the operand in."""
     traffic: list[NodeTraffic] = []
     backends: dict[Core, CoreCostBackend] = {}
+    accelerator = ctx.space.accelerator
     for node in ctx.space.ssc_nodes:
         fraction = active_fraction(node, ctx.space.ssis)
         for core in placed_cores(ctx, node):
             backend = backends.setdefault(core, select_backend(core))
             for operand, direction, bits in port_traffic(backend, ctx.space.cost_lut.get_cost(node, core)):
-                port = ctx.space.accelerator.ports.port_for(core, direction, operand)
+                port = accelerator.ports.port_for(core, direction, operand, accelerator.memory_holding(core, operand))
                 if port is not None:
                     traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))
     return traffic
@@ -122,10 +108,12 @@ def port_name(key: PortKey) -> str:
 
 
 def link_name(link: Any) -> str:
-    """How reports name a link: ``bus <cores>`` for a bus, else ``<sender>-><receiver>``."""
+    """How reports name a link: ``bus <memories>`` for a bus, else ``<sender>-><receiver>``, with ``#<n>`` for the
+    n-th of several between the same memories."""
+    nth = f"#{link.parallel}" if link.parallel else ""
     if link.members:
-        return "bus " + ",".join(str(core.id) for core in link.members)
-    return "->".join(str(getattr(end, "id", end)) for end in (link.sender, link.receiver))
+        return f"bus{nth} " + ",".join(memory.name for memory in link.members)
+    return f"{link.sender.name}->{link.receiver.name}{nth}"
 
 
 def link_cores(link: Any) -> tuple[int, ...]:

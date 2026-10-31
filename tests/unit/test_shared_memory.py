@@ -5,6 +5,7 @@ from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.ports import OUTPUT
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
@@ -53,17 +54,20 @@ def solved_model(accelerator: Accelerator) -> AllocationModel:
     return solved[0]
 
 
-def test_cores_sharing_a_memory_use_the_first_cores():
+def test_cores_sharing_a_memory_use_one_memory_of_them_both():
     accelerator = fusemax()
-    assert [accelerator.memory_of(accelerator.get_core(i)).id for i in (0, 1, 2)] == [0, 0, 2]
-    assert accelerator.nb_shared_mem_groups == 2
+    memories = [accelerator.memory_of(accelerator.get_core(i), OUTPUT) for i in (0, 1)]
+    assert [m.name for m in memories] == ["sram", "sram"]
+    assert [c.id for c in memories[0].cores] == [0, 1]
+    assert accelerator.offchip_memory.name == "dram"
+    assert len(accelerator.memories) == 2
 
 
 def test_cores_sharing_a_memory_fit_their_tiles_in_it_together():
     # Together the two cores hold 184 KB here, bounded by the one 300 KB memory.
     rows = solve_swiglu(fusemax(sram_kb=300)).get("allocation").solution.performance["memory_occupancy"]
-    (sram,) = [row for row in rows if row["core_id"] in (0, 1)]
-    assert sram["core_id"] == 0
+    (sram,) = [row for row in rows if row["memory"] == "sram"]
+    assert sram["cores"] == [0, 1]
     assert sram["resident_bits"] <= sram["capacity_bits"] == 300 * 8192
 
 
@@ -79,7 +83,7 @@ def test_a_handover_between_cores_sharing_a_memory_stays_in_it():
     handovers = [
         tr
         for tr in alloc.space.transfer_nodes
-        if {c.id for choice in alloc.space.path_choices[tr] for c in (*choice.sources, *choice.targets)} == {0, 1}
+        if {m.name for choice in alloc.space.path_choices[tr] for m in (*choice.sources, *choice.targets)} == {"sram"}
     ]
     assert handovers
     for tr in handovers:
@@ -89,7 +93,7 @@ def test_a_handover_between_cores_sharing_a_memory_stays_in_it():
     # Each copy is its source's buffer, and these hold nothing beyond their sources.
     copies = {t.name for tr in handovers for t in tr.outputs}
     beyond = dict.fromkeys(copies, 0)
-    for indicator, bits, name in alloc.context.ledger.memory[0]:
+    for indicator, bits, name in alloc.context.ledger.memory[alloc.space.accelerator.memories["sram"]]:
         if name in copies and float(indicator.X) > 0.5:
             beyond[name] += bits
     assert all(bits <= 0 for bits in beyond.values())
