@@ -2,6 +2,9 @@
 sums, pipeline each layer's weight stream, and every workload the generator maps solves fused and layer by layer."""
 
 import math
+import os
+import subprocess
+import sys
 import tempfile
 
 import onnx
@@ -83,6 +86,40 @@ def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_l
     )
     weights = 3 * 4096 * 14336 * 16 / (4 * 13400)
     assert weights < estimate.cycles < 1.2 * weights
+
+
+_SOLVE = """
+import hashlib, json, os, sys, tempfile
+from stream.api import SolveOptions, evaluate_mapping
+from stream.ir import AllocationIR
+from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
+models = tempfile.mkdtemp()
+solve = AllocationModel.solve
+def write_then_solve(self, *args, **kwargs):
+    self.model.write(os.path.join(models, f"{len(os.listdir(models))}.mps"))
+    return solve(self, *args, **kwargs)
+AllocationModel.solve = write_then_solve
+estimate = evaluate_mapping(*sys.argv[1:3], tempfile.mkdtemp(), sys.argv[3], SolveOptions(artifacts=False))
+written = [open(os.path.join(models, name)).read() for name in sorted(os.listdir(models))]
+result = AllocationIR.from_internal(estimate.context.get("allocation")).model_dump(exclude={"solve"})
+print(hashlib.sha256(json.dumps([written, result], sort_keys=True).encode()).hexdigest())
+"""
+
+
+def test_the_model_and_its_solution_do_not_depend_on_the_hash_seed():
+    """The fused SwiGLU builds the same variables and constraints, in the same order, and solves to the same result."""
+    mapping = "stream/inputs/examples/mapping/swiglu_tpu_v7_fused.yaml"
+    solved = {
+        subprocess.run(
+            [sys.executable, "-c", _SOLVE, TPU_V7, SWIGLU, mapping],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()[-1]
+        for seed in range(2)
+    }
+    assert len(solved) == 1
 
 
 def test_a_layer_that_fits_is_still_cut_into_pipeline_tiles_the_arrays_take_whole():

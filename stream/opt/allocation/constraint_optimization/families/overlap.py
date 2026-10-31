@@ -278,7 +278,7 @@ def _skipped_step_floor(
                     continue
                 ctx.add_constr(
                     overlap <= iteration - busy - (1.0 - fraction) * latency[key],
-                    name=f"skip_floor_{n.name}_{resource_key(core)}_{tr.name}_{hash(choice)}",
+                    name=f"skip_floor_{n.name}_{resource_key(core)}_{space.route_name(tr, choice)}",
                     resource=core,
                 )
 
@@ -372,16 +372,14 @@ def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:
             else []
         )
         choices = whole + [(prod(sizes[s + 1 :]), single, f"single_L{s}") for s, single in singles[t]]
-        held = [
-            (tiles, ctx.binary_product(a=y, b=z, base_name=f"fill_{tr.name}_{hash(choice)}_{name}"))
-            for tiles, z, name in choices
-        ]
+        route = space.route_name(tr, choice)
+        held = [(tiles, ctx.binary_product(a=y, b=z, base_name=f"fill_{route}_{name}")) for tiles, z, name in choices]
         if not held:
             continue
         cycles = space.transfer_latency_for_path(tr, choice)
         model.add_constr(
             fill >= model.quicksum(tiles * cycles * w._raw for tiles, w in held),
-            name=f"fill_{tr.name}_{hash(choice)}",
+            name=f"fill_{route}",
         )
         for memory, bandwidth in space.shared_bandwidth.items():
             share = space.shared_cycles(memory, tr, choice, bandwidth.ceiling)

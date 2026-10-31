@@ -165,6 +165,10 @@ class DecisionSpace:
         assert len(choices) == 1, f"Tensor {t.name} is not fixed."
         return choices[0]
 
+    def route_name(self, tr: TransferNode, choice: MulticastPathPlan) -> str:
+        """``tr``'s name with the index of ``choice`` among its routes, to name what the model builds per route."""
+        return f"{tr.name}_choice_{self.path_choices[tr].index(choice)}"
+
     def candidate_memories(self, t: Tensor) -> set[Memory]:
         """Every memory one of ``t``'s placements uses; the set is shared, so callers do not change it."""
         if t not in self._candidates:

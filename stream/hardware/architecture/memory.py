@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zlib
 from collections.abc import Iterable
 
 from stream.hardware.architecture.core import Core
@@ -97,6 +98,13 @@ class Memory:
         if len(columns) > 1:
             raise ValueError(f"memory {self.name} spans columns {sorted(columns, key=str)}")
         return next(iter(columns), None)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Memory) and self.name == other.name
+
+    def __hash__(self) -> int:
+        """By a digest of its name that every run shares, so sets of memories iterate alike and build the same model."""
+        return zlib.crc32(self.name.encode())
 
     def __lt__(self, other: Memory) -> bool:
         return self.name < other.name

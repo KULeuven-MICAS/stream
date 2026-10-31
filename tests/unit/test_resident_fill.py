@@ -38,7 +38,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
     model.set_param(SolverParams.VERBOSITY, 0)
     space = object.__new__(DecisionSpace)
     space.shared_bandwidth = {_Node("memory"): SimpleNamespace(ceiling=1.0)}
-    cycles = {}
+    cycles, space.path_choices = {}, {}
     y, z_stop, z_single = {}, {}, {}
     space.tensors_to_optimize_reuse_for, space.ssis = [], {}
     space.rotation_levels, space.tiles_needed_levels, space.warmup = {}, {}, {}
@@ -46,6 +46,7 @@ def _fill(*, rotating: bool, single: bool = False) -> float:
         tensor = _Node(name)
         transfer = _Node(f"Transfer({name})", [tensor])
         cycles[transfer] = cost
+        space.path_choices[transfer] = ("path",)
         y[(transfer, "path")] = chosen = model.add_var(vtype=SolverVarType.BINARY, name=f"y_{name}")
         z = model.add_var(vtype=SolverVarType.BINARY, name=f"z_{name}")
         model.add_constr(chosen == 1)
