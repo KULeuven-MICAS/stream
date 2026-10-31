@@ -184,10 +184,10 @@ def test_a_dim_split_whole_across_cores_counts_one_slice_per_core(tmp_path):
     assert gen._build_intra_core_tiling(sub, cns) == seed
 
 
-def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
+def test_a_group_no_tiling_fits_is_cut_where_the_operators_before_stop_fitting(tmp_path):
     """A 4096-wide attention fused on four Eyeriss-like cores cannot hold its projections' weights next to the softmax
-    of every head: no tiling fits, so each operator is a group of its own, the softmax with all the sub-ops it expands
-    into."""
+    of every head: it is cut after the longest runs that fit, two projections, the third, then the attention with
+    all the sub-ops its softmax expands into."""
     acc, parsed = _parse(
         "stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml",
         make_multi_head_attention(tmp_path / "mha.onnx", seq=512),
@@ -195,11 +195,11 @@ def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
     w = expand_normalizations(parsed)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     (fused,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
-    assert gen._unfit_nodes(fused)
+    assert gen._unfit_nodes(fused) == ["proj_Q", "proj_V"]
     _, groups = gen.generate_all_groups()
     operators = [{source_operator(n) for n in g.get_computation_nodes()} for g in groups]
-    assert sorted(operators, key=min) == [{n.name} for n in sorted(parsed.get_computation_nodes(), key=str)]
-    assert len(groups[operators.index({"softmax"})].get_computation_nodes()) > 1
+    assert operators == [{"proj_K", "proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
+    assert all(gen._fits(group) for group in groups)
 
 
 @pytest.mark.parametrize(

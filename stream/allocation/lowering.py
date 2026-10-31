@@ -1,7 +1,7 @@
 """Lowering of a fused group to its steady state: the transfers made explicit, each with the placements and
 routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
@@ -19,7 +19,7 @@ from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.ports import OUTPUT
+from stream.hardware.ports import OUTPUT, READ, WRITE
 from stream.mapping.mapping import Mapping, landing_of, placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
@@ -621,23 +621,17 @@ class _Lowering:
     ) -> tuple[float, float]:
         """What one iteration's demand costs: the cycles the busiest off-chip memory takes at its rate, then the bits
         times the links they cross from the nearest source holding them."""
-        held: dict[Memory, list[Box]] = defaultdict(list)
+        held: dict[tuple[Memory, str], list[Box]] = defaultdict(list)
         carried = 0.0
         for item in items:
             target = targets[item.target]
             source = min((sources[s] for s in item.sources), key=lambda memory: self.accelerator.hops(memory, target))
-            for memory in {source, target}:
+            for memory, direction in ((source, READ), (target, WRITE)):
                 if memory.offchip:
-                    held[memory].append(item.box)
+                    held[(memory, direction)].append(item.box)
             carried += box_bits([item.box], bitwidth) * self.accelerator.hops(source, target)
-        cycles = (box_bits(boxes, bitwidth) / self._offchip_rate(memory) for memory, boxes in held.items())
+        cycles = (box_bits(boxes, bitwidth) / self.accelerator.offchip_rate(*side) for side, boxes in held.items())
         return max(cycles, default=0.0), carried
-
-    def _offchip_rate(self, memory: Memory) -> float:
-        """Bits per cycle an off-chip memory moves: its measured contiguous rate, else its ports' together."""
-        if (measured := self.accelerator.bandwidth.get(memory)) is not None:
-            return measured.contiguous
-        return sum(port.bits_per_cycle for port in self.accelerator.ports if port.key.memory == memory.name)
 
     def _effective_allocation_type(self, allocs: Sequence[Memory]) -> str:
         """The memory kind a set of (possibly mixed) memories serves as: ``compute`` if any is a compute memory (that is
@@ -697,7 +691,8 @@ class _Lowering:
 
     def _own_mem_tiles(self, src: HasOutputs, node: TransferNode) -> tuple[tuple[Memory, ...], InterCoreTiling] | None:
         """The memory tiles ``src``'s cores work in, where each holds a block of ``node``'s tensor of its own cores, in
-        block order, and the split of the tensor over them; None where they do not."""
+        block order, and the split of the tensor over them; None where they do not. Tiles may share a block only when
+        ``node`` brings in an input copied in several memories, each tile then served from its nearest copy."""
         allocations = self.mapping.get(src).resource_allocation
         cores = allocations[0] if allocations else ()
         loops = tuple(self.ssw.get_unique_dims_inter_core_tiling(src, self.mapping))
@@ -725,10 +720,19 @@ class _Lowering:
             for tile, slices in held.items()
         )
         split = tuple((loops[i][0], loops[i][1] // width) for i, width in zip(axes, span, strict=True))
-        if not blocks or len(set(starts.values())) != len(held) or prod(f for _, f in split) != len(held):
+        sharing = Counter(starts.values())
+        if not blocks or prod(f for _, f in split) != len(sharing) or len(set(sharing.values())) != 1:
             return None
-        order = sorted(held, key=lambda tile: tuple(start // w for start, w in zip(starts[tile], span, strict=True)))
+        if len(sharing) != len(held) and not self._copied(node):
+            return None
+        order = sorted(held, key=lambda tile: (*(s // w for s, w in zip(starts[tile], span, strict=True)), tile))
         return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
+
+    def _copied(self, node: TransferNode) -> bool:
+        """Whether ``node`` brings in a workload input its layout copies into several memories."""
+        src = next(iter(self.ssw.predecessors(node)))
+        layout = self.mapping.edge_layouts.get(src.name) if isinstance(src, InEdge) else None
+        return layout is not None and layout.axis is None and len(layout.memories) > 1
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

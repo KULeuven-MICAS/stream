@@ -93,6 +93,26 @@ def structural_infeasibility(reason: str, model: SolverModel | None = None) -> I
     )
 
 
+def overflow_infeasibility(
+    kind: ResourceKind, memory: Memory, held: dict[str, float], bound: float, summary: str
+) -> InfeasibilityReportIR:
+    """The report of a memory whose ``held`` terms overflow its ``bound`` before any model is built, stated as the
+    solver's capacity diagnosis states it."""
+    unmet = _unmet(bound, kind, memory, held)
+    resource = ImplicatedResourceIR(
+        resource=resource_ref(memory), constraint_kinds=[kind.name], reason=kind.reason, constraints=[], unmet=unmet
+    )
+    return InfeasibilityReportIR(
+        status="INFEASIBLE",
+        backend="n/a",
+        solver="n/a",
+        iis_available=False,
+        nature="capacity",
+        resources=[resource],
+        summary=summary,
+    )
+
+
 def infeasibility_report(
     model: SolverModel, ledger: ResourceLedger, status: str, group: str | None = None
 ) -> InfeasibilityReportIR:
@@ -207,7 +227,8 @@ def _implicated_resource(ledger: ResourceLedger, entry: dict[str, Any]) -> Impli
     unmet: UnmetConstraintIR | None = None
     if isinstance(resource, Core | Memory):
         for kind in kinds:
-            unmet = _unmet(ledger, kind, resource, _forced_terms(ledger, kind, resource, entry["constraints"]))
+            forced = _forced_terms(ledger, kind, resource, entry["constraints"])
+            unmet = _unmet(ledger.bounds.get((kind, resource)), kind, resource, forced)
             if unmet is not None:
                 break
     if unmet is not None and unmet.gap > 0:
@@ -246,11 +267,10 @@ def _forced_terms(
 
 
 def _unmet(
-    ledger: ResourceLedger, kind: ResourceKind, resource: Core | Memory, forced: dict[str, Any]
+    bound: float | None, kind: ResourceKind, resource: Core | Memory, forced: dict[str, Any]
 ) -> UnmetConstraintIR | None:
     """The ``demand <= bound`` inequality of a limit on one core or memory from the selected demand terms, with the
     input each side comes from and the levers that would make it fit; None for an unquantified limit."""
-    bound = ledger.bounds.get((kind, resource))
     if not kind.unit or bound is None or not forced:
         return None
     demand = sum(_term_value(v) for v in forced.values())
@@ -302,13 +322,14 @@ def _direct_capacity_overflows(ledger: ResourceLedger) -> list[ImplicatedResourc
     overflows.sort(key=lambda o: (o[0], o[1], resource_key(o[3])), reverse=True)
     resources: list[ImplicatedResourceIR] = []
     for _gap, _name, kind, resource in overflows:
+        bound = ledger.bounds[(kind, resource)]
         resources.append(
             ImplicatedResourceIR(
                 resource=resource_ref(resource),
                 constraint_kinds=[kind.name],
                 reason=kind.reason,
                 constraints=[],
-                unmet=_unmet(ledger, kind, resource, dict(ledger.terms[(kind, resource)])),
+                unmet=_unmet(bound, kind, resource, dict(ledger.terms[(kind, resource)])),
             )
         )
     return resources

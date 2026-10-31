@@ -44,12 +44,12 @@ class AcceleratorHardwareView(BaseModel):
     and full connectivity. Suitable for hardware engineers reasoning about resource budgets.
     """
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["2.1"] = "2.1"
     name: str = Field(description="Accelerator name")
     num_cores: int = Field(description="Total number of cores")
     cores: list[CoreIR] = Field(description="All cores with full resource info (including extra_fields)")
     memories: dict[str, dict[str, Any]] = Field(
-        description="Each memory by name: whether off-chip, and its views '<core id>.<instance>'"
+        description="Each memory by name: whether off-chip, its capacity in bits and its views '<core id>.<instance>'"
     )
     connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
@@ -61,11 +61,11 @@ class AcceleratorCompilerView(BaseModel):
     Suitable for compiler engineers performing placement and routing decisions.
     """
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["2.1"] = "2.1"
     name: str = Field(description="Accelerator name")
     cores: list[CoreIR] = Field(description="All cores — use id, core_type, row_id, col_id for placement")
     memories: dict[str, dict[str, Any]] = Field(
-        description="Each memory by name: whether off-chip, and its views '<core id>.<instance>'"
+        description="Each memory by name: whether off-chip, its capacity in bits and its views '<core id>.<instance>'"
     )
     connections: list[dict[str, Any]] = Field(description="The links and buses between memories")
 
@@ -84,11 +84,12 @@ class AcceleratorIR(BaseModel):
         }
     )
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["2.1"] = "2.1"
     name: str = Field(description="Accelerator name as declared in hardware YAML")
     num_cores: int = Field(description="Total number of cores")
     memories: dict[str, dict[str, Any]] = Field(
-        description="Each memory by name: whether off-chip ('offchip'), and its views '<core id>.<instance>' ('views')"
+        description="Each memory by name: whether off-chip ('offchip'), its capacity ('capacity_bits') and its views "
+        "'<core id>.<instance>' ('views')"
     )
     cores: list[CoreIR] = Field(description="All cores with common and type-specific fields")
     connections: list[dict[str, Any]] = Field(

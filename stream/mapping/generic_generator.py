@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from collections.abc import Callable, Iterable
+from itertools import pairwise
 from typing import Any
 
 import yaml
@@ -98,8 +99,8 @@ class GenericMappingGenerator:
         Args:
             cut_points: Node names to split at, in addition to FusionEdge boundaries. Defaults to the
                 affine barriers ``determine_fusion_cut_points`` derives, cut again where a group's weights
-                cannot stay on its cores (see ``_cut_points``), and, unless ``intra_core_tiling`` is given, at every
-                node of a group no tiling fits (see ``_unfit_nodes``).
+                cannot stay on its cores (see ``_cut_points``), and, unless ``intra_core_tiling`` is given, between
+                the runs of a group no tiling fits whole (see ``_unfit_nodes``).
 
         Returns:
             A tuple ``(paths, sub_workloads)`` where *paths* is a list of
@@ -611,14 +612,25 @@ class GenericMappingGenerator:
         return cuts
 
     def _unfit_nodes(self, sub_workload: Workload) -> list[str]:
-        """The operators of a fused group no tiling fits on its cores, each to be a group of its own: an operator alone
-        has the memories to itself and the whole tile budget, as a layer-by-layer mapping gives it; the sub-ops of an
-        expanded normalization stay together. [] for a group that fits."""
+        """Where to cut a fused group no tiling fits on its cores: after the longest run of operators from the start
+        that fits as a group of its own, again from there, so an operator stands alone only where it fits with no
+        neighbour; the sub-ops of an expanded normalization stay together. [] for a group that fits."""
+        if len(sub_workload.get_computation_nodes()) == 1 or self._fits(sub_workload):
+            return []
+        operators = list(dict.fromkeys(map(source_operator, sub_workload.get_computation_nodes())))
+        cuts: list[str] = []
+        for previous, op in pairwise(operators):
+            groups = sub_workload.split_fusion_groups(cut_points=[*cuts, op])
+            grown = next(g for g in groups if op in map(source_operator, g.get_computation_nodes()))
+            if not self._fits(grown):
+                cuts.append(previous)
+        return cuts
+
+    def _fits(self, sub_workload: Workload) -> bool:
+        """Whether some tiling fits the group's operators fused on their cores."""
         cns = tuple(sub_workload.get_computation_nodes())
         seed = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
-        if len(cns) == 1 or self._capacity_refine(sub_workload, cns, seed) is not None:
-            return []
-        return [source_operator(cn) for cn in cns]
+        return self._capacity_refine(sub_workload, cns, seed) is not None
 
     def _weight_overflow(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> float:
         """How far ``cns``' weights overflow half their cores under the split that suits them best (0 when they fit)."""

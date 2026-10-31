@@ -90,6 +90,20 @@ class Accelerator:
             raise ValueError(f"{memory.name} has no route to any off-chip memory to write its output to")
         return nearest
 
+    def offchip_rate(self, memory: Memory, direction: str) -> float:
+        """Bits per cycle off-chip ``memory`` moves in ``direction``: its measured contiguous rate if it has one, else
+        its widest port serving the direction."""
+        if (measured := self.bandwidth.get(memory)) is not None:
+            return measured.contiguous
+        widths = [
+            port.bits_per_cycle
+            for port in self.ports
+            if port.key.memory == memory.name and any(d == direction for _, d in port.serves)
+        ]
+        if not widths:
+            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
+        return max(widths)
+
     def get_core(self, core_id: int) -> Core:
         """
         Return the core with id 'core_id'.
@@ -161,6 +175,7 @@ class Accelerator:
             "memories": {
                 memory.name: {
                     "offchip": memory.offchip,
+                    "capacity_bits": memory.capacity_bits,
                     "views": [f"{core.id}.{instance}" for core, instance in memory.views],
                 }
                 for memory in self.memories.values()

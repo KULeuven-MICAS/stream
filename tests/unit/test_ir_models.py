@@ -293,11 +293,11 @@ class TestWorkloadIR:
 
 class TestAcceleratorIR:
     def test_json_schema(self):
-        """AcceleratorIR.model_json_schema() must include schema_version const '2.0'."""
+        """AcceleratorIR.model_json_schema() must include schema_version const '2.1'."""
         schema = AcceleratorIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "2.0", f"Expected const='2.0', got: {sv}"
+        assert sv.get("const") == "2.1", f"Expected const='2.1', got: {sv}"
 
     def test_from_dict(self):
         """AcceleratorIR constructed from raw get_ir() dict validates without error."""
@@ -327,7 +327,7 @@ class TestAcceleratorIR:
         )
         assert ir.name == "test_aie2_accel"
         assert ir.num_cores == 2
-        assert ir.schema_version == "2.0"
+        assert ir.schema_version == "2.1"
 
     def test_from_internal(self):
         """AcceleratorIR.from_internal(mock_accelerator) constructs a valid model."""
@@ -339,7 +339,7 @@ class TestAcceleratorIR:
         mock_accelerator.get_ir.assert_called_once()
         assert ir.name == "test_aie2_accel"
         assert ir.num_cores == 2
-        assert ir.schema_version == "2.0"
+        assert ir.schema_version == "2.1"
         assert len(ir.cores) == 2
 
     def test_hardware_view(self):
@@ -355,7 +355,7 @@ class TestAcceleratorIR:
         assert view.num_cores == 2
         assert len(view.cores) == 2
         assert len(view.connections) == 2
-        assert view.schema_version == "2.0"
+        assert view.schema_version == "2.1"
 
     def test_compiler_view(self):
         """AcceleratorIR.compiler_view() returns AcceleratorCompilerView with topology info."""
@@ -371,7 +371,7 @@ class TestAcceleratorIR:
         # compiler view should have core topology data
         assert view.cores[0].id == 0
         assert view.cores[0].core_type == "aie2.compute"
-        assert view.schema_version == "2.0"
+        assert view.schema_version == "2.1"
 
     def test_json_round_trip(self):
         """model_dump_json() on AcceleratorIR produces valid JSON that round-trips through json.loads."""
@@ -383,7 +383,7 @@ class TestAcceleratorIR:
         parsed = json.loads(json_str)
 
         assert parsed["name"] == "test_aie2_accel"
-        assert parsed["schema_version"] == "2.0"
+        assert parsed["schema_version"] == "2.1"
         assert len(parsed["cores"]) == 2
 
     def test_extra_fields_for_core_types(self):
@@ -768,7 +768,7 @@ def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
 def test_the_hardware_ir_names_the_cores_sharing_a_memory_and_what_a_specialized_core_runs():
     """FuseMax's array and vector core share one memory; only the vector core restricts its operators."""
     ir = AcceleratorIR.from_internal(parse_accelerator("stream/inputs/examples/hardware/fusemax.yaml"))
-    assert ir.memories["sram"] == {"offchip": False, "views": ["0.sram", "1.sram"]}
+    assert ir.memories["sram"] == {"offchip": False, "capacity_bits": 2 * 2**20 * 8, "views": ["0.sram", "1.sram"]}
     served = {core.id: core.extra_fields["operator_types"] for core in ir.cores}
     assert served[0] is None and "MaxPool" in served[1]
 
@@ -788,9 +788,9 @@ def _without_descriptions(schema):
         (WorkloadAlgorithmicView, "1.0", "7176eeaaca2a5cbe"),
         (WorkloadCompilerView, "1.0", "9a5606454526afca"),
         (WorkloadGraphView, "1.1", "42005772943e08a8"),
-        (AcceleratorIR, "2.0", "0c669dc5e59ce14b"),
-        (AcceleratorHardwareView, "2.0", "714be362a16d96b8"),
-        (AcceleratorCompilerView, "2.0", "c09a97ce83accdbd"),
+        (AcceleratorIR, "2.1", "0f52880a13485ad4"),
+        (AcceleratorHardwareView, "2.1", "8c99f01169c52638"),
+        (AcceleratorCompilerView, "2.1", "90a2ac03ca7c3355"),
         (AllocationIR, "3.1", "3e3638bb5a6216c0"),
         (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
         (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),

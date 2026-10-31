@@ -1,7 +1,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import cached_property
-from itertools import combinations, pairwise
+from itertools import combinations, pairwise, product
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, cast
 
@@ -834,12 +834,12 @@ class Workload(DiGraphWrapper[Node]):
     ) -> dict[Memory, float] | None:
         """The share each memory of ``edge``'s layout serves of ``boxes``, what an iteration moves of ``tensor``, over
         all iterations walking the split axis; None unless the layout splits the tensor."""
-        from stream.cost_model.communication_manager import box_bits  # noqa: PLC0415
+        from stream.cost_model.communication_manager import box_bits, meet  # noqa: PLC0415
 
         if not (walk := self._walked_blocks(edge, tensor, mapping)):
             return None
         covered = [
-            sum(box_bits([part for box in boxes if (part := _meet(box, blocks[s]))], 1) for blocks in walk)
+            sum(box_bits([part for box in boxes if (part := meet(box, blocks[s]))], 1) for blocks in walk)
             for s in range(len(walk[0]))
         ]
         if not (total := sum(covered)):
@@ -870,7 +870,8 @@ class Workload(DiGraphWrapper[Node]):
         served by the nearest, and a partial sum over a split reduction dimension is needed from every source. An
         input edge whose layout splits its tensor holds block s of the whole tensor at source s, and an output edge
         receives block t at target t (:class:`EdgeLayout`); where the iterations walk the split axis, the demand is
-        that of the iteration ``cost`` finds busiest. Time thus takes the busiest iteration of a walk, an upper bound
+        that of the iteration ``cost`` finds busiest, each pairing of the two walks where an input and an output split
+        along different axes. Time thus takes the busiest iteration of a walk, an upper bound
         that prefetching more than one tile ahead may beat, while traffic and energy take the average over the walk
         (:meth:`layout_shares`). ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``,
         ``j + m``, ..., as a code generator does."""
@@ -933,12 +934,10 @@ class Workload(DiGraphWrapper[Node]):
         out = next((n for n in self.successors(transfer) if isinstance(n, OutEdge)), None)
         held_walk = self._walked_blocks(src, source, mapping)
         target_walk = self._walked_blocks(out, source, mapping) if out else None
-        walk = held_walk or target_walk or [None]
-        options = [
-            demand(held_walk[k] if held_walk else None, target_walk[k] if target_walk else None)
-            for k in range(len(walk))
-        ]
-        return tuple(_busiest(options, cost))
+        layouts = mapping.edge_layouts
+        one_axis = bool(held_walk and target_walk and out and layouts[src.name].axis == layouts[out.name].axis)
+        walks = walked_iterations(held_walk, target_walk, one_axis)
+        return tuple(_busiest([demand(held, target) for held, target in walks], cost))
 
     def _readers_on(
         self,
@@ -1452,17 +1451,22 @@ def position_of(core: int, cores: int, tiling: InterCoreTiling) -> int:
     return core // (cores // tiles) if cores % tiles == 0 else core * tiles // cores
 
 
+def walked_iterations[T](
+    held: list[T] | None, target: list[T] | None, one_axis: bool
+) -> list[tuple[T | None, T | None]]:
+    """The blocks an input and an output layout hold in each iteration of their walks: side by side where one axis is
+    walked for both, else every pairing, as nested loops walk two axes."""
+    if one_axis:
+        return list(zip(held or [], target or [], strict=True))
+    return list(product(held or [None], target or [None]))
+
+
 def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int], ...]]:
     """``box`` cut into ``parts`` near-equal boxes along its longest axis."""
     axis = max(range(len(box)), key=lambda a: box[a][1] - box[a][0])
     lo, hi = box[axis]
     edges = [lo + (hi - lo + 1) * k // parts for k in range(parts + 1)]
     return [tuple(box[:axis] + [(edges[k], edges[k + 1] - 1)] + box[axis + 1 :]) for k in range(parts)]
-
-
-def _meet(box: Sequence[tuple[int, int]], other: Sequence[tuple[int, int]]) -> tuple[tuple[int, int], ...] | None:
-    part = tuple((max(a[0], b[0]), min(a[1], b[1])) for a, b in zip(box, other, strict=True))
-    return part if all(lo <= hi for lo, hi in part) else None
 
 
 def _busiest[T](options: list[T], cost: Callable[[T], Any]) -> T:

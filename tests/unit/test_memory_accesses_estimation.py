@@ -14,20 +14,14 @@ from stream.stages.parsing.accelerator_parser import parse_accelerator
 from stream.workload.node import TransferType
 
 
-def _stage(hardware: str) -> MemoryAccessesEstimationStage:
-    stage = MemoryAccessesEstimationStage.__new__(MemoryAccessesEstimationStage)
-    stage.accelerator = parse_accelerator(hardware)
-    return stage
-
-
 def test_an_edge_access_moves_what_the_allocation_models_the_off_chip_memory_at():
     """Off-chip accesses use Strix's measured one-way DRAM rate, or whole_array's widest shim port."""
-    strix = _stage("stream/inputs/aie/hardware/whole_array_strix.yaml")
-    dram = strix.accelerator.offchip_memory
-    assert strix._offchip_bandwidth(dram, READ) == strix._offchip_bandwidth(dram, WRITE) == 148.3
-    plain = _stage("stream/inputs/aie/hardware/whole_array.yaml")
-    dram = plain.accelerator.offchip_memory
-    assert plain._offchip_bandwidth(dram, READ) == plain._offchip_bandwidth(dram, WRITE) == 128
+    strix = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
+    dram = strix.offchip_memory
+    assert strix.offchip_rate(dram, READ) == strix.offchip_rate(dram, WRITE) == 148.3
+    plain = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
+    dram = plain.offchip_memory
+    assert plain.offchip_rate(dram, READ) == plain.offchip_rate(dram, WRITE) == 128
 
 
 def _core() -> Core:
@@ -91,11 +85,11 @@ def test_a_transfer_into_the_memory_its_reader_computes_out_of_stages_nothing():
     memory = Memory.__new__(Memory)
     memory.name, memory.views, memory.offchip = "vmem_0", ((vmem, "vmem"), (mxu, "buf")), False
     stage = MemoryAccessesEstimationStage.__new__(MemoryAccessesEstimationStage)
-    stage.core_memory_accesses = CoreMemoryAccesses()
+    stage.core_memory_accesses = CoreMemoryAccesses(None)
     stage.mapping = SimpleNamespace(get=lambda node: SimpleNamespace(memory_allocation=((memory,),)))
     ssis = SimpleNamespace(get_applicable_temporal_sizes=lambda: [1], reuse_factor=lambda: 1)
     stage.get_mem_core_accesses(SimpleNamespace(transfer_type=TransferType.MEM_TO_COMPUTE, inputs=[], outputs=[]), ssis)
-    assert str(stage.core_memory_accesses) == str(CoreMemoryAccesses())  # nothing counted
+    assert str(stage.core_memory_accesses) == str(CoreMemoryAccesses(None))  # nothing counted
 
 
 def test_memory_tiles_are_counted_once_each():
