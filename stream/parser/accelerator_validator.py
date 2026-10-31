@@ -12,10 +12,14 @@ from stream.datatypes import ELEMENT_BITS
 from stream.hardware.architecture.backends.zigzag import top_levels
 from stream.hardware.ports import PortKey
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
+from stream.plugins import load_group
 
 logger = logging.getLogger(__name__)
 
 INPUT_DIR_LOCATION = "stream/inputs/"
+
+# Overlay keys: the name is the key, the object a cerberus `rule` and `check(accelerator, value) -> list[str]`.
+ACCELERATOR_KEYS_GROUP = "stream.accelerator_keys"
 
 FILENAME_REGEX = (
     r"^(?:\.\/)?"  # optional "./"
@@ -238,7 +242,11 @@ class AcceleratorValidator:
     def __init__(self, data: Any, accelerator_path: str | Path):
         """Initialize Validator object, assign schema and store normalize user-given data"""
         self.validator = Validator()
-        self.validator.schema = AcceleratorValidator.SCHEMA  # type: ignore
+        declared = load_group(ACCELERATOR_KEYS_GROUP)
+        if clash := sorted(f"{p.name} ({p.distribution})" for p in declared if p.name in self.SCHEMA):
+            raise ValueError(f"overlay accelerator keys reuse a built-in key: {', '.join(clash)}")
+        self.extra_keys = {p.name: p.obj for p in declared}
+        self.validator.schema = self.SCHEMA | {name: key.rule for name, key in self.extra_keys.items()}  # type: ignore
         self.data: dict[str, Any] = self.validator.normalized(data)  # type: ignore
         self.is_valid = True
         self.accelerator_dirname = os.path.dirname(accelerator_path)
@@ -259,6 +267,10 @@ class AcceleratorValidator:
             return False  # the checks below rely on the schema
 
         # Validation outside of schema
+        for name, key in self.extra_keys.items():
+            if name in self.data:
+                for problem in key.check(self.data, self.data[name]):
+                    self.invalidate(f"`{name}`: {problem}")
         self.validate_core_ids()
         self.validate_kernel_library()
         self.validate_all_cores()
