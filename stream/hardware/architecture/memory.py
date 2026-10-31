@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import zlib
 from collections.abc import Iterable
+from functools import cached_property
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.ports import MemoryDma, Port, candidate_ports
@@ -99,15 +99,21 @@ class Memory:
             raise ValueError(f"memory {self.name} spans columns {sorted(columns, key=str)}")
         return next(iter(columns), None)
 
+    @cached_property
+    def _order(self) -> tuple[bool, tuple[tuple[int, str], ...], str]:
+        return self.offchip, tuple(sorted((core.id, instance) for core, instance in self.views)), self.name
+
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Memory) and self.name == other.name
+        return isinstance(other, Memory) and self._order == other._order
 
     def __hash__(self) -> int:
-        """By a digest of its name that every run shares, so sets of memories iterate alike and build the same model."""
-        return zlib.crc32(self.name.encode())
+        """By its cores, so neither the run nor the memory's name changes how sets of memories iterate."""
+        return hash((self.offchip, tuple(core_id for core_id, _ in self._order[1])))
 
     def __lt__(self, other: Memory) -> bool:
-        return self.name < other.name
+        """Off-chip last, the others by the cores viewing them, as cores order by id; the name parts only memories no
+        core views."""
+        return self._order < other._order
 
     def __str__(self) -> str:
         return f"Memory({self.name})"

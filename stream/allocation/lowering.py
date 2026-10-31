@@ -623,7 +623,7 @@ class _Lowering:
 
     def _mem_tiles(self) -> list[Memory]:
         """The memory tiles within the column budget, in column order."""
-        return sorted(self.hardware.mem_memories, key=lambda memory: (memory.col_id, memory.name))
+        return sorted(self.hardware.mem_memories, key=lambda memory: (memory.col_id, memory))
 
     def _mem_tile_placements(self, src: HasOutputs, node: Node) -> tuple[tuple[Memory, ...], ...]:
         # An input transfer feeds every unrolled destination separately; an output transfer is

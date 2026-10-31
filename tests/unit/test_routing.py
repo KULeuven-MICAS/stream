@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -343,3 +344,40 @@ def test_more_routes_never_make_a_solve_slower(tmp_path):
         for n in (1, 3)
     ]
     assert latencies[1] <= latencies[0]
+
+
+def _solved(hardware: Path, tmp_path: Path, name_of: dict[str, str]) -> tuple[float, float, list]:
+    """The latency, energy and routes of the two-convolution workload on ``hardware``, its memories named back."""
+    context = evaluate_mapping(
+        str(hardware),
+        "stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx",
+        str(tmp_path / hardware.stem),
+        options=SolveOptions(artifacts=False),
+    ).context
+    energy = sum(group["performance"]["energy"]["total_pj"] for group in context.get("group_allocations").values())
+
+    def names(memories) -> tuple[str, ...]:
+        return tuple(name_of[memory.name] for memory in memories)
+
+    def route(plan: MulticastPathPlan) -> tuple:
+        links = sorted((names(link.memories), link.parallel) for link in plan.links_used)
+        return names(plan.sources), names(plan.targets), links
+
+    routes = sorted((tr.name, *route(plan)) for tr, plan in context.get("allocation").solution.transfer_routes.items())
+    return context.get("total_latency"), energy, routes
+
+
+def test_renaming_the_memories_changes_neither_the_solve_nor_its_routes(tmp_path):
+    """Equal routes are told apart by the cores viewing their memories, as before memories had names, not by name."""
+    source = Path("stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml")
+    shutil.copytree(source.parent / "cores", tmp_path / "cores")
+    data = yaml.safe_load(source.read_text())
+    names = sorted(data["memories"])
+    renamed = {name: f"m{len(names) - i}" for i, name in enumerate(names)}
+    data["memories"] = {renamed[name]: memory for name, memory in data["memories"].items()}
+    for connection in data["connections"]:
+        connection["ends"] = {renamed[name]: ports for name, ports in connection["ends"].items()}
+    shutil.copy(source, tmp_path / "original.yaml")
+    (tmp_path / "renamed.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    original = _solved(tmp_path / "original.yaml", tmp_path, {name: name for name in names})
+    assert _solved(tmp_path / "renamed.yaml", tmp_path, {new: old for old, new in renamed.items()}) == original

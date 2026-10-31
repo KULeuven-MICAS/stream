@@ -121,7 +121,7 @@ class CommunicationManager:
             for u, v, data in self.accelerator.network.edges(data=True):
                 adjacency[u].append((v, data["cl"]))
             for links in adjacency.values():
-                links.sort(key=lambda edge: edge[0].name)
+                links.sort(key=lambda edge: edge[0])
             self.accelerator.__dict__["_route_adjacency"] = adjacency
         return adjacency
 
@@ -199,7 +199,7 @@ class CommunicationManager:
                 in_place.setdefault(local[0], set()).add(target)
                 continue
             distance = self._distances(target)
-            s = min(item.sources, key=lambda s: (distance.get(sources[s], float("inf")), sources[s].name))
+            s = min(item.sources, key=lambda s: (distance.get(sources[s], float("inf")), sources[s]))
             if sources[s] not in distance:
                 raise nx.NetworkXNoPath(f"no route from {sources[s]} to {target}")
             pairs.add((s, item.target))
@@ -208,7 +208,7 @@ class CommunicationManager:
         taken = taken or {}
         load: dict[CommunicationLink, float] = dict(taken)
         hops: dict[Hop, dict[DemandItem, None]] = {}
-        ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s].name))
+        ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s]))
         for s in ranked:
             delivered += [i.box for i in served[s]]
             for hop, carried in self._multicast(sources[s], targets, served[s], bitwidth, load).items():
@@ -310,14 +310,14 @@ class CommunicationManager:
                 ]
                 return hops + ([((collector, target, last), cut)] if last is not None else [])
 
-            options = [(plan(c, last), c.name) for c, last in collectors if memories <= self._distances(c).keys()]
+            options = [(plan(c, last), c) for c, last in collectors if memories <= self._distances(c).keys()]
             if not options:
                 raise nx.NetworkXNoPath(f"no route to reduce into {target} from {sorted(m.name for m in memories)}")
 
             def bits_of(carried: list[DemandItem]) -> float:
                 return box_bits((item.box for item in carried), bitwidth)
 
-            def busy(option: tuple[list[tuple[Hop, list[DemandItem]]], str]) -> tuple[float, float, int, str]:
+            def busy(option: tuple[list[tuple[Hop, list[DemandItem]]], Memory]) -> tuple[float, float, int, Memory]:
                 cycles = [
                     (load.get(link, 0.0) + bits_of(carried)) / link.bandwidth for (_, _, link), carried in option[0]
                 ]
@@ -354,7 +354,7 @@ class CommunicationManager:
             reachable = [t for t in remaining if t in cost]
             if not reachable:
                 raise nx.NetworkXNoPath(f"no route from {source} to {sorted(t.name for t in remaining)}")
-            nearest = min(reachable, key=lambda t: (cost[t], t.name))
+            nearest = min(reachable, key=lambda t: (cost[t], t))
             node = nearest
             while node not in tree:
                 u, link = previous[node]
@@ -389,15 +389,15 @@ def _dijkstra(
     weight: Callable[[CommunicationLink], float],
 ) -> tuple[dict[Memory, float], dict[Memory, tuple[Memory, CommunicationLink]]]:
     """Cheapest cost from any of ``roots`` to every memory, and the edge each is reached by; ties go to fewer hops,
-    then the lower memory name. Off-chip memory ends a route but never relays one: data between two memories does not
-    pass through DRAM."""
+    then the memory that sorts first. Off-chip memory ends a route but never relays one: data between two memories does
+    not pass through DRAM."""
     cost = {root: 0.0 for root in roots}
     previous: dict[Memory, tuple[Memory, CommunicationLink]] = {}
-    heap = [(0.0, 0, root.name, root) for root in roots]
+    heap = [(0.0, 0, root) for root in roots]
     heapq.heapify(heap)
     done: set[Memory] = set()
     while heap:
-        c, hops, _, u = heapq.heappop(heap)
+        c, hops, u = heapq.heappop(heap)
         if u in done:
             continue
         done.add(u)
@@ -408,5 +408,5 @@ def _dijkstra(
             if v not in done and nc < cost.get(v, float("inf")):
                 cost[v] = nc
                 previous[v] = (u, link)
-                heapq.heappush(heap, (nc, hops + 1, v.name, v))
+                heapq.heappush(heap, (nc, hops + 1, v))
     return cost, previous
