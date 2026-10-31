@@ -23,9 +23,7 @@ SPLIT_N = {"memories": HBMS, "split": 1}
 K_TILE = ("D2", 128)
 
 
-def _estimate(tmp_path, w, out=SPLIT_N, tiles=(), k=1024, n=512, hardware=RING):  # noqa: PLR0913
-    """A decode step's 1 x k by k x n matmul, its n split over the four cores and tiled over time by ``tiles``, ``w``
-    and ``out`` laid out as given."""
+def _matmul(tmp_path, k=1024, n=512):
     tmp_path.mkdir(exist_ok=True)
     inputs = [
         helper.make_tensor_value_info("a", TensorProto.BFLOAT16, [1, k]),
@@ -34,6 +32,12 @@ def _estimate(tmp_path, w, out=SPLIT_N, tiles=(), k=1024, n=512, hardware=RING):
     result = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [1, n])
     graph = helper.make_graph([helper.make_node("MatMul", ["a", "w"], ["out"], name="MatMul")], "g", inputs, [result])
     onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "matmul.onnx")
+
+
+def _estimate(tmp_path, w, out=SPLIT_N, tiles=(), k=1024, n=512, hardware=RING):  # noqa: PLR0913
+    """A decode step's 1 x k by k x n matmul, its n split over the four cores and tiled over time by ``tiles``, ``w``
+    and ``out`` laid out as given."""
+    _matmul(tmp_path, k, n)
     layer = {"name": "MatMul", "core_allocation": [[0, 1, 2, 3]], "inter_core_tiling": [[{"dim": "D1", "split": 4}]]}
     tiling = [{"dim": f"MatMul.{dim}", "tile": tile} for dim, tile in tiles]
     runtime_args = {name: args for name, args in (("a", {"memories": HBMS}), ("w", w), ("out", out)) if args}
@@ -285,6 +289,40 @@ def test_other_runtime_args_are_left_to_their_readers():
 def test_a_layout_names_off_chip_memories(tmp_path):
     with pytest.raises(ValueError, match=r"w lives in \['sram_0'\], but the off-chip memories are"):
         _solve(tmp_path, {"memories": ["sram_0"]})
+
+
+def _generated(tmp_path, w):
+    """The matmul mapped by the generic generator from a mapping file that only lays out its edges, and the split it
+    chose across the cores."""
+    _matmul(tmp_path)
+    runtime_args = {"a": {"memories": HBMS}, "w": w, "out": SPLIT_N}
+    (tmp_path / "layouts.yaml").write_text(yaml.safe_dump({"runtime_args": runtime_args}))
+    estimate = evaluate_mapping(
+        RING,
+        str(tmp_path / "matmul.onnx"),
+        str(tmp_path),
+        str(tmp_path / "layouts.yaml"),
+        SolveOptions(artifacts=False),
+    )
+    (layer,) = open_yaml(tmp_path / "group_0" / "mapping.yaml")["layers"]
+    return estimate.context.get("allocation"), layer["inter_core_tiling"]
+
+
+def test_the_generic_generator_splits_the_cores_as_a_layout_splits_the_weight(tmp_path):
+    allocation, split = _generated(tmp_path, SPLIT_N)
+    assert split == [[{"dim": "D1", "split": 4}]]
+    tr, route = _route(allocation, "w")
+    assert _ring_share(route) == 0
+    assert _hbm_shares(allocation, tr, route) == dict.fromkeys(HBMS, 0.25)
+
+
+def test_the_generic_generator_prefers_the_axis_a_layout_splits(tmp_path):
+    """Split along k, each core reduces the block of its own slice's HBM, the iterations walking n rather than k."""
+    allocation, split = _generated(tmp_path, {"memories": HBMS, "split": 0})
+    assert split == [[{"dim": "D2", "split": 4}]]
+    tr, route = _route(allocation, "w")
+    assert _ring_share(route) == 0
+    assert _hbm_shares(allocation, tr, route) == dict.fromkeys(HBMS, 0.25)
 
 
 def _mlp(tmp_path, runtime_args, hardware=RING):

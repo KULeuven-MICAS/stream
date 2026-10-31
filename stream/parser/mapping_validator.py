@@ -148,10 +148,10 @@ class MappingValidator:
         if not isinstance(data, dict):
             self.invalidate("Mapping file must be a mapping with a top-level 'layers' list.")
             return {"layers": [], "fused_groups": []}
-        if "layers" not in data:
-            self.invalidate("Mapping file must contain a 'layers' entry.")
+        if "layers" not in data and "runtime_args" not in data:
+            self.invalidate("Mapping file must contain a 'layers' or a 'runtime_args' entry.")
             return {"layers": [], "fused_groups": []}
-        return data
+        return {"layers": [], **data}
 
     def _normalize_inter_core_tiling(self, layer_data: dict[str, Any]) -> None:
         raw_entries = layer_data.get("inter_core_tiling", []) or []
