@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.memory import Memory, size_text
 from stream.hardware.ports import OUTPUT, input_role
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
@@ -397,3 +399,71 @@ def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: 
             for cores in mapping.get(node).resource_allocation
         )
     raise ValueError(f"{node} holds no operand to place")
+
+
+def edge_tensor(edge: InEdge | OutEdge) -> Tensor:
+    """The workload input ``edge`` brings in or the output it takes out."""
+    return edge.outputs[0] if isinstance(edge, InEdge) else edge.inputs[0]
+
+
+def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None, src: Node) -> tuple[Memory, ...]:
+    """The off-chip memories an output from ``src`` lands in, one per position: those of the layout of ``edge``, the
+    output edge reading it, else the off-chip memory, or of several the one nearest each memory ``src`` holds it in."""
+    if edge is not None and (layout := mapping.edge_layouts.get(edge.name)):
+        return layout.memories
+    if len(accelerator.offchip_memories) <= 1:
+        return (offchip_memory(accelerator),)
+    held_in = the_one(placements_of(accelerator, mapping, src, OUTPUT), src, "placements")
+    return tuple(map(accelerator.nearest_offchip, held_in))
+
+
+def offchip_holdings(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> dict[Memory, dict[Tensor, Fraction]]:
+    """The share of each workload input and output each off-chip memory holds, a tensor once over the groups and the
+    two ends of a fusion cut: a block per position it lives in, all of it in each memory of a copy."""
+    held: dict[Memory, dict[Tensor, Fraction]] = defaultdict(dict)
+    counted: set[Tensor] = set()
+    for workload, mapping in zip(workloads, mappings, strict=True):
+        for edge in workload.nodes:
+            if not isinstance(edge, InEdge | OutEdge) or (tensor := edge_tensor(edge)) in counted:
+                continue
+            counted.add(tensor)
+            layout = mapping.edge_layouts.get(edge.name)
+            if layout is not None and layout.axis is None:
+                shares = dict.fromkeys(layout.memories, Fraction(1))
+            else:
+                positions = (
+                    landing_of(accelerator, mapping, edge, next(iter(workload.predecessors(edge))))
+                    if isinstance(edge, OutEdge)
+                    else the_one(placements_of(accelerator, mapping, edge, OUTPUT), edge, "placements")
+                )
+                shares = {memory: Fraction(n, len(positions)) for memory, n in Counter(positions).items()}
+            for memory, share in shares.items():
+                held[memory][tensor] = share
+    return held
+
+
+def check_offchip_capacity(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> None:
+    """Refuse workload inputs and outputs that overflow an off-chip memory they live in (:func:`offchip_holdings`),
+    when there are several off-chip memories or a layout places them."""
+    if len(accelerator.offchip_memories) <= 1 and not any(mapping.edge_layouts for mapping in mappings):
+        return
+    for memory, held in offchip_holdings(accelerator, workloads, mappings).items():
+        bits = float(
+            sum(
+                share * tensor.size_bits(tuple(tensor.subview.source.type.get_shape()))
+                for tensor, share in held.items()
+            )
+        )
+        if bits > memory.capacity_bits:
+            terms = " + ".join(_share_text(tensor.name, share) for tensor, share in held.items())
+            raise ValueError(f"{memory.name} holds {terms} = {size_text(bits)} > {size_text(memory.capacity_bits)}")
+
+
+def _share_text(name: str, share: Fraction) -> str:
+    if share == 1:
+        return name
+    return f"{name}/{share.denominator}" if share.numerator == 1 else f"{name}*{share}"

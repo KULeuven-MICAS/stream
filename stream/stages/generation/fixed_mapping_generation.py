@@ -3,6 +3,7 @@ from typing import Any
 
 from zigzag.utils import open_yaml
 
+from stream.mapping.mapping import edge_tensor
 from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
@@ -11,10 +12,6 @@ from stream.workload.tensor import Tensor
 from stream.workload.workload import InEdge, OutEdge, determine_fusion_cut_points
 
 logger = logging.getLogger(__name__)
-
-
-def _edge_tensor(edge: InEdge | OutEdge) -> Tensor:
-    return edge.outputs[0] if isinstance(edge, InEdge) else edge.inputs[0]
 
 
 class FixedMappingGenerationStage(Stage):
@@ -87,7 +84,7 @@ class FixedMappingGenerationStage(Stage):
         """
         declared = declared or {}
         return {
-            node.name: declared.get(_edge_tensor(node), full_runtime_args.get(node.name, {}))
+            node.name: declared.get(edge_tensor(node), full_runtime_args.get(node.name, {}))
             for node in sub_workload.nodes
             if isinstance(node, (InEdge, OutEdge))
         }
@@ -100,7 +97,7 @@ class FixedMappingGenerationStage(Stage):
         for node in (node for sub_workload in sub_workloads for node in sub_workload.nodes):
             if not isinstance(node, (InEdge, OutEdge)) or node.name not in full_runtime_args:
                 continue
-            merged = declared.setdefault(_edge_tensor(node), {})
+            merged = declared.setdefault(edge_tensor(node), {})
             for key, value in full_runtime_args[node.name].items():
                 name, first = merged.setdefault(key, (node.name, value))
                 if first != value:

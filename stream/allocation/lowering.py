@@ -9,7 +9,6 @@ from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
-import networkx as nx
 import numpy as np
 from xdsl.ir.affine import AffineMap
 
@@ -21,7 +20,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT
-from stream.mapping.mapping import Mapping, offchip_memory, placements_of, role_of, the_one
+from stream.mapping.mapping import Mapping, landing_of, placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand, streamed_operands
@@ -110,7 +109,6 @@ class _Lowering:
         self.nb_cols_to_use = nb_cols_to_use
         self.route_alternatives = route_alternatives
         self.hardware = build_hardware_facts(accelerator, nb_cols_to_use)
-        self._hop_counts: dict[tuple[Memory, Memory], float] = {}
 
     def lower(self, fusion_splits: dict[LayerDim, int], cost_lut: CoreCostLUT) -> AllocationProblem:
         with span("transfer_graph"):
@@ -614,29 +612,9 @@ class _Lowering:
         return self._reads_in(dst, tensor)
 
     def _offchip_landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
-        """The off-chip memories a copy of ``src``'s output lands in, one per position: those of the layout of the
-        output edge reading it, else, with several off-chip memories, the one nearest each memory ``src`` holds it
-        in."""
-        if edge := next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_layouts), None):
-            return self.mapping.edge_layouts[edge.name].memories
-        if len(self.accelerator.offchip_memories) <= 1:
-            return (offchip_memory(self.accelerator),)
-        return tuple(map(self._nearest_offchip, the_one(self._source_placements(src), src, "placements")))
-
-    def _nearest_offchip(self, memory: Memory) -> Memory:
-        """The off-chip memory the fewest hops from ``memory``, the first in memory order of those as near."""
-        nearest = min(self.accelerator.offchip_memories, key=lambda offchip: (self._hops(memory, offchip), offchip))
-        if self._hops(memory, nearest) == float("inf"):
-            raise ValueError(f"{memory.name} has no route to any off-chip memory to write its output to")
-        return nearest
-
-    def _hops(self, one: Memory, other: Memory) -> float:
-        """Links from ``one`` to ``other``, infinite without a route."""
-        if (one, other) not in self._hop_counts:
-            network = self.accelerator.network
-            reached = nx.has_path(network, one, other)
-            self._hop_counts[(one, other)] = nx.shortest_path_length(network, one, other) if reached else float("inf")
-        return self._hop_counts[(one, other)]
+        """The off-chip memories a copy of ``src``'s output lands in, one per position (:func:`landing_of`)."""
+        edge = next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_layouts), None)
+        return landing_of(self.accelerator, self.mapping, edge, src)
 
     def _iteration_cost(
         self, sources: Sequence[Memory], targets: Sequence[Memory], bitwidth: float, items: Sequence[DemandItem]
@@ -647,11 +625,11 @@ class _Lowering:
         carried = 0.0
         for item in items:
             target = targets[item.target]
-            source = min((sources[s] for s in item.sources), key=lambda memory: self._hops(memory, target))
+            source = min((sources[s] for s in item.sources), key=lambda memory: self.accelerator.hops(memory, target))
             for memory in {source, target}:
                 if memory.offchip:
                     held[memory].append(item.box)
-            carried += box_bits([item.box], bitwidth) * self._hops(source, target)
+            carried += box_bits([item.box], bitwidth) * self.accelerator.hops(source, target)
         cycles = (box_bits(boxes, bitwidth) / self._offchip_rate(memory) for memory, boxes in held.items())
         return max(cycles, default=0.0), carried
 

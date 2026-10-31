@@ -111,10 +111,14 @@ def test_a_weight_split_along_the_axis_walked_over_time_waits_on_one_hbm(tmp_pat
     assert wrong.estimated_cycles > 3 * local.estimated_cycles
 
 
-def test_each_hbm_with_a_measured_bandwidth_is_held_for_its_own_block(tmp_path):
+def _ring_data():
     validator = AcceleratorValidator(open_yaml(RING), RING)
     assert validator.validate()
-    data = validator.normalized_data
+    return validator.normalized_data
+
+
+def test_each_hbm_with_a_measured_bandwidth_is_held_for_its_own_block(tmp_path):
+    data = _ring_data()
     data["bandwidth"] = {hbm: {"ceiling": 8, "contiguous": 8, "burst": 32} for hbm in HBMS}
     allocation = _solve(tmp_path, SPLIT_N, hardware=AcceleratorFactory(data).create())
     tr, route = _route(allocation, "w")
@@ -126,6 +130,23 @@ def test_each_hbm_with_a_measured_bandwidth_is_held_for_its_own_block(tmp_path):
     rows = [row for row in report if row.kind == "shared_bandwidth"]
     assert sorted(row.resource for row in rows) == HBMS
     assert all(row.bits_per_iteration / row.bw_bits_per_cycle <= row.allowed_cycle for row in rows)
+
+
+def _ring_with_hbms_of(capacity_bits):
+    data = _ring_data()
+    for hbm in HBMS:
+        data["memories"][hbm]["capacity_bits"] = capacity_bits
+    return AcceleratorFactory(data).create()
+
+
+def test_a_weight_copied_in_each_hbm_over_its_capacity_is_refused_by_what_each_holds(tmp_path):
+    """The 1 MiB weight whole in each 512 KiB HBM stack, the output a quarter in each, landing beside its core."""
+    with pytest.raises(ValueError, match=r"^hbm_0 holds a \+ w \+ out/4 = 1 MiB > 512 KiB$"):
+        _solve(tmp_path, {"memories": HBMS}, out={}, hardware=_ring_with_hbms_of(4 * 2**20))
+
+
+def test_a_weight_split_over_the_hbms_fits_where_a_copy_in_each_does_not(tmp_path):
+    assert _solve(tmp_path, SPLIT_N, out={}, hardware=_ring_with_hbms_of(4 * 2**20))
 
 
 def _offchip_reads(tmp_path, w, tiles=()):
@@ -299,6 +320,11 @@ def test_a_layout_declared_for_one_end_of_a_fusion_cut_holds_for_the_other(tmp_p
     layouts = [mapping.edge_layouts for mapping in _mlp(tmp_path, LAID_OUT | {"Up_cut_out": SPLIT_N})]
     assert layouts[0]["Up_cut_out"] == layouts[1]["Up_cut_in"]
     assert [memory.name for memory in layouts[1]["Up_cut_in"].memories] == HBMS
+
+
+def test_a_tensor_crossing_a_fusion_cut_is_held_once(tmp_path):
+    with pytest.raises(ValueError, match=r"^hbm_0 holds a \+ w1/4 \+ hidden/4 \+ w2/4 \+ out/4 = 193 KiB > 100 KiB$"):
+        _mlp(tmp_path, LAID_OUT | {"Up_cut_out": SPLIT_N}, hardware=_ring_with_hbms_of(100 * 8 * 2**10))
 
 
 def test_the_two_ends_of_a_fusion_cut_must_agree(tmp_path):

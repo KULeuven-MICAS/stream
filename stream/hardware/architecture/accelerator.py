@@ -65,6 +65,7 @@ class Accelerator:
         self.port_bandwidth = port_bandwidth or {}
         self.reconfiguration = reconfiguration or {}
         self.communication_manager = CommunicationManager(self)
+        self._hop_counts: dict[tuple[Memory, Memory], float] = {}
 
     @property
     def offchip_memory(self) -> Memory | None:
@@ -72,6 +73,22 @@ class Accelerator:
         if len(self.offchip_memories) > 1:
             raise ValueError("several off-chip memories; use offchip_memories")
         return next(iter(self.offchip_memories), None)
+
+    def hops(self, one: Memory, other: Memory) -> float:
+        """Links from ``one`` to ``other``, infinite without a route."""
+        if (one, other) not in self._hop_counts:
+            reached = nx.has_path(self.network, one, other)
+            self._hop_counts[(one, other)] = (
+                nx.shortest_path_length(self.network, one, other) if reached else float("inf")
+            )
+        return self._hop_counts[(one, other)]
+
+    def nearest_offchip(self, memory: Memory) -> Memory:
+        """The off-chip memory the fewest hops from ``memory``, the first in memory order of those as near."""
+        nearest = min(self.offchip_memories, key=lambda offchip: (self.hops(memory, offchip), offchip))
+        if self.hops(memory, nearest) == float("inf"):
+            raise ValueError(f"{memory.name} has no route to any off-chip memory to write its output to")
+        return nearest
 
     def get_core(self, core_id: int) -> Core:
         """
