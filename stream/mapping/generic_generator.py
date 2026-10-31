@@ -23,7 +23,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
-from stream.mapping.mapping import role_of
+from stream.mapping.mapping import edge_tensor, layout_split_bits, role_of, runtime_args_per_group
 from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import map_dim_positions
@@ -70,6 +70,7 @@ class GenericMappingGenerator:
         workload: Workload,
         output_dir: str,
         intra_core_tiling: list[dict[str, Any]] | None = None,
+        runtime_args: dict[str, Any] | None = None,
     ) -> None:
         self.accelerator = accelerator
         self.workload = workload
@@ -78,6 +79,9 @@ class GenericMappingGenerator:
         # {"dim": "NodeName.D{n}", "tile": size}; they override the trivial default in
         # _build_intra_core_tiling, filtered per group to the nodes that group actually contains.
         self.intra_core_tiling = intra_core_tiling
+        # The mapping file's runtime args, which lay out the workload's inputs and outputs over the off-chip memories.
+        self.runtime_args = runtime_args
+        self._split_axes = self._split_axes_of([workload])
         self._activations = {t.name for cn in workload.get_computation_nodes() for t in cn.outputs}
         self._accumulates_across_cores = all(
             cls.accumulates_across_cores for cls in namespace_classes(accelerator).values()
@@ -109,22 +113,31 @@ class GenericMappingGenerator:
             and (unfit := [n for sub in sub_workloads for n in self._unfit_nodes(sub)])
         ):
             sub_workloads = self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
-        paths: list[str] = []
-        for i, sub_workload in enumerate(sub_workloads):
-            path = self._generate_group_yaml(sub_workload, i)
-            paths.append(path)
+        self._split_axes = self._split_axes_of(sub_workloads)
+        runtime_args = (
+            runtime_args_per_group(self.runtime_args, sub_workloads)
+            if self.runtime_args is not None
+            else [None] * len(sub_workloads)
+        )
+        paths = [
+            self._generate_group_yaml(sub_workload, i, args)
+            for i, (sub_workload, args) in enumerate(zip(sub_workloads, runtime_args, strict=True))
+        ]
         return paths, sub_workloads
 
     # ---------------------------------------------------------------------- #
     # Private helpers                                                        #
     # ---------------------------------------------------------------------- #
 
-    def _generate_group_yaml(self, sub_workload: Workload, group_idx: int) -> str:
+    def _generate_group_yaml(
+        self, sub_workload: Workload, group_idx: int, runtime_args: dict[str, Any] | None = None
+    ) -> str:
         """Build, validate, and write the mapping YAML for one fusion group.
 
         Args:
             sub_workload: The sub-workload for this group.
             group_idx:    Zero-based index used for directory naming.
+            runtime_args: The runtime args of the group's input and output edges, if the run was given any.
 
         Returns:
             Absolute path to the written YAML file.
@@ -133,6 +146,8 @@ class GenericMappingGenerator:
             ValueError: If the generated mapping fails MappingValidator.
         """
         mapping_dict = self._build_mapping_dict(sub_workload)
+        if runtime_args is not None:
+            mapping_dict["runtime_args"] = runtime_args
 
         validator = MappingValidator(mapping_dict)
         if not validator.validate():
@@ -206,6 +221,17 @@ class GenericMappingGenerator:
 
         return {"layers": layers, "fused_groups": [fused_group]}
 
+    def _split_axes_of(self, workloads: list[Workload]) -> dict[str, int]:
+        """The axis a layout splits each workload input or output along over the off-chip memories, by tensor name."""
+        if self.runtime_args is None:
+            return {}
+        return {
+            edge_tensor(workload.get_node_by_name(name)).name: args["split"]
+            for workload, group in zip(workloads, runtime_args_per_group(self.runtime_args, workloads), strict=True)
+            for name, args in group.items()
+            if args.get("split") is not None
+        }
+
     def _select_cores_for_node(self, node: ComputationNode) -> list[Core]:
         """Select cores that can execute *node* according to operator_types.
 
@@ -272,6 +298,9 @@ class GenericMappingGenerator:
         (a "dataflow-style" split). Each factor divides its dimension's size, so the
         resulting tiling is always valid.
 
+        The dimension indexing the axis layouts split the most operand bits along over the off-chip memories goes
+        first, so the cores split those tensors as their memories do.
+
         Parallel output dimensions (OY/OX/K) are consumed before reduction ones, so a
         contraction only absorbs what the output axes could not: splitting a reduction
         leaves every core holding a partial sum that has to be reduced across the mesh.
@@ -329,6 +358,8 @@ class GenericMappingGenerator:
         def outer(idx: int) -> int:
             return -next((axis for axis, read in enumerate(output) if idx in read), len(output))
 
+        laid_out = layout_split_bits(cn, self._split_axes)
+
         # A dim a node of the group reduces over is not one all of them split, so their tiles do not line up along
         # it: it is preferred only for the weights it fits.
         group = self._group_footprints(sub_workload, n_cores)
@@ -342,6 +373,7 @@ class GenericMappingGenerator:
         dim_sizes = sorted(
             ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
             key=lambda pair: (
+                laid_out.get(pair[0], 0),
                 ranks_as_parallel(pair[0]),
                 tuple(-x for x in group.get(sub_workload.leading_dim(dims[pair[0]])[0], (math.inf, math.inf))),
                 -footprint(*pair),
@@ -571,7 +603,7 @@ class GenericMappingGenerator:
             for cn, cores in cores_per_node.items()
             if len(cores) > 1
         }
-        refined = CapacityTiler(sub_workload, self.accelerator).plan(
+        refined = CapacityTiler(sub_workload, self.accelerator, split_axes=self._split_axes).plan(
             cns, cores_per_node, unroll, protected, seed_tiling, node_unroll
         )
         return refined if refined is None else refined or seed_tiling

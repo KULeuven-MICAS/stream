@@ -6,12 +6,15 @@ from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from xdsl.ir.affine import AffineMap
+
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory, size_text
 from stream.hardware.ports import OUTPUT, input_role
+from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
 from stream.workload.tensor import Tensor
@@ -404,6 +407,37 @@ def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: 
 def edge_tensor(edge: InEdge | OutEdge) -> Tensor:
     """The workload input ``edge`` brings in or the output it takes out."""
     return edge.outputs[0] if isinstance(edge, InEdge) else edge.inputs[0]
+
+
+def runtime_args_per_group(runtime_args: dict[str, Any], workloads: Sequence[Workload]) -> list[dict[str, Any]]:
+    """The runtime args of each group's input and output edges: those declared for its tensor, which the two ends of
+    a fusion cut share and must not declare differently, else an empty entry for the standard layout."""
+    declared: dict[Tensor, dict[str, tuple[str, Any]]] = {}
+    edges = [[node for node in workload.nodes if isinstance(node, InEdge | OutEdge)] for workload in workloads]
+    for edge in (edge for group in edges for edge in group if edge.name in runtime_args):
+        merged = declared.setdefault(edge_tensor(edge), {})
+        for key, value in runtime_args[edge.name].items():
+            name, first = merged.setdefault(key, (edge.name, value))
+            if first != value:
+                raise ValueError(
+                    f"{name} and {edge.name} are the two ends of one fusion cut but declare {key} {first} and {value}"
+                )
+    return [
+        {edge.name: {key: value for key, (_, value) in declared.get(edge_tensor(edge), {}).items()} for edge in group}
+        for group in edges
+    ]
+
+
+def layout_split_bits(node: ComputationNode, split_axes: dict[str, int]) -> dict[int, int]:
+    """Per position of ``node``'s dims, the bits of its operands whose layout splits an axis that dim indexes, by the
+    axis ``split_axes`` gives each tensor name."""
+    bits: dict[int, int] = {}
+    for tensor in node.tensors:
+        if (axis := split_axes.get(tensor.name)) is not None:
+            access = node.get_mapping(tensor)
+            for p in map_dim_positions(AffineMap(access.num_dims, 0, (access.results[axis],))):
+                bits[p] = bits.get(p, 0) + tensor.size_bits()
+    return bits
 
 
 def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None, src: Node) -> tuple[Memory, ...]:
