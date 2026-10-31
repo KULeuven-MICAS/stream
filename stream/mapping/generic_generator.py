@@ -34,7 +34,7 @@ from stream.workload.iterator_type import (
     nonlinear_reduction_dims,
     sequential_dims,
 )
-from stream.workload.node import ComputationNode
+from stream.workload.node import ComputationNode, OutEdge
 from stream.workload.normalization import operator_types_of, source_operator
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload, determine_fusion_cut_points
@@ -82,6 +82,7 @@ class GenericMappingGenerator:
         # The mapping file's runtime args, which lay out the workload's inputs and outputs over the off-chip memories.
         self.runtime_args = runtime_args
         self._split_axes = self._split_axes_of([workload])
+        self._laid_out_bits: dict[tuple[Workload, ComputationNode], dict[int, int]] = {}
         self._activations = {t.name for cn in workload.get_computation_nodes() for t in cn.outputs}
         self._accumulates_across_cores = all(
             cls.accumulates_across_cores for cls in namespace_classes(accelerator).values()
@@ -114,6 +115,7 @@ class GenericMappingGenerator:
         ):
             sub_workloads = self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         self._split_axes = self._split_axes_of(sub_workloads)
+        self._laid_out_bits = {}
         runtime_args = (
             runtime_args_per_group(self.runtime_args, sub_workloads)
             if self.runtime_args is not None
@@ -212,6 +214,7 @@ class GenericMappingGenerator:
                 }
             )
 
+        self._split_axes |= self._leaving_split_axes(sub_workload, protected)
         intra_core_tiling = self._build_intra_core_tiling(sub_workload, cns)
         fused_group: dict[str, Any] = {
             "name": "Fused_Group_1",
@@ -231,6 +234,56 @@ class GenericMappingGenerator:
             for name, args in group.items()
             if args.get("split") is not None
         }
+
+    def _laid_out(self, sub_workload: Workload, cn: ComputationNode, protected: set[LayerDim]) -> dict[int, int]:
+        """:func:`layout_split_bits` of ``cn`` under the layouts and the splits of its producers that followed one."""
+        if not self._split_axes:
+            return {}
+        key = (sub_workload, cn)
+        if key not in self._laid_out_bits:
+            producers = {t.name: node for node in sub_workload.get_computation_nodes() for t in node.outputs}
+            axes = dict(self._split_axes)
+            for tensor in cn.inputs:
+                if (producer := producers.get(tensor.name)) is not None:
+                    axes |= self._made_split_axes(sub_workload, producer, protected)
+            self._laid_out_bits[key] = layout_split_bits(cn, axes)
+        return self._laid_out_bits[key]
+
+    def _leaving_split_axes(self, sub_workload: Workload, protected: set[LayerDim]) -> dict[str, int]:
+        """The split axes of the group's outputs a later group reads (:meth:`_made_split_axes`), which land a block
+        beside each core and so are laid out for their readers as a layout would."""
+        if not self._split_axes:
+            return {}
+        leaving = {edge_tensor(edge).name for edge in sub_workload.nodes if isinstance(edge, OutEdge)}
+        made = [self._made_split_axes(sub_workload, cn, protected) for cn in sub_workload.get_computation_nodes()]
+        return {
+            name: axis
+            for axes in made
+            for name, axis in axes.items()
+            if name in leaving and name not in self._split_axes
+        }
+
+    def _made_split_axes(self, sub_workload: Workload, cn: ComputationNode, protected: set[LayerDim]) -> dict[str, int]:
+        """The axis of each output of ``cn`` its cores split it along, where that split followed a layout."""
+        cores = self._select_cores_for_node(cn)
+        laid_out = self._laid_out(sub_workload, cn, protected)
+        followed = [
+            dim
+            for dim, _ in (
+                self._factor_split_across_dims(sub_workload, cn, len(cores), protected) if len(cores) > 1 else []
+            )
+            if laid_out.get(dim)
+        ]
+        if not followed:
+            return {}
+        axes: dict[str, int] = {}
+        for tensor in cn.outputs:
+            access = cn.get_mapping(tensor)
+            for axis, result in enumerate(access.results):
+                if followed[0] in map_dim_positions(AffineMap(access.num_dims, 0, (result,))):
+                    axes[tensor.name] = axis
+                    break
+        return axes
 
     def _select_cores_for_node(self, node: ComputationNode) -> list[Core]:
         """Select cores that can execute *node* according to operator_types.
@@ -299,7 +352,8 @@ class GenericMappingGenerator:
         resulting tiling is always valid.
 
         The dimension indexing the axis layouts split the most operand bits along over the off-chip memories goes
-        first, so the cores split those tensors as their memories do.
+        first, so the cores split those tensors as their memories do; an input made in the group by a node whose split
+        followed a layout counts as laid out along the axis that node split it, so it stays where it was made.
 
         Parallel output dimensions (OY/OX/K) are consumed before reduction ones, so a
         contraction only absorbs what the output axes could not: splitting a reduction
@@ -358,7 +412,7 @@ class GenericMappingGenerator:
         def outer(idx: int) -> int:
             return -next((axis for axis, read in enumerate(output) if idx in read), len(output))
 
-        laid_out = layout_split_bits(cn, self._split_axes)
+        laid_out = self._laid_out(sub_workload, cn, protected)
 
         # A dim a node of the group reduces over is not one all of them split, so their tiles do not line up along
         # it: it is preferred only for the weights it fits.

@@ -28,7 +28,6 @@ COPIED = {"memories": HBMS}
 HBM_BITS_PER_CYCLE = {"ring": 1, "ironwood": 13400}
 ICI_BITS_PER_CYCLE = 364
 CONTEXT = {"ring": 256, "ironwood": 8192}
-MXUS, VPUS = [0, 1, 4, 5, 8, 9, 12, 13], [2, 6, 10, 14]
 
 
 def _validated(path):
@@ -37,15 +36,12 @@ def _validated(path):
     return validator.normalized_data
 
 
-def _hardware(name, hbm_capacity_bits=None):
+def _hardware(name):
     """The ring with its HBM stacks streaming a bit a cycle, slower than its cores attend (their arrays unroll no
     dimension of an einsum), so that its decode waits on the HBMs as Ironwood's does; or the per-chiplet Ironwood."""
     data = _validated(RING if name == "ring" else IRONWOOD)
-    for hbm in HBMS:
-        if name == "ring":
-            data["memories"][hbm]["ports"]["rw_port_1"]["bandwidth"] = HBM_BITS_PER_CYCLE["ring"]
-        if hbm_capacity_bits:
-            data["memories"][hbm]["capacity_bits"] = hbm_capacity_bits
+    for hbm in HBMS if name == "ring" else ():
+        data["memories"][hbm]["ports"]["rw_port_1"]["bandwidth"] = HBM_BITS_PER_CYCLE["ring"]
     for connection in data["connections"] if name == "ring" else ():
         if set(connection["ends"]) & set(HBMS):
             connection["bandwidth"] = HBM_BITS_PER_CYCLE["ring"]
@@ -57,8 +53,8 @@ def _layouts(cache, q=BY_HEADS):
 
 
 def _decode(tmp_path, hardware, layouts, batch=1, context=None, make=make_decode_attention, layers=(), tiling=()):  # noqa: PLR0913
-    """``make``'s decode step on ``hardware``, by name or built, mapped by the generic generator from a mapping file
-    that only lays out its edges, or by ``layers`` fused in one group tiled by ``tiling``."""
+    """``make``'s decode step on ``hardware`` mapped by the generic generator from a mapping file that only lays out
+    its edges, or by ``layers`` fused in one group tiled by ``tiling``."""
     tmp_path.mkdir(exist_ok=True)
     workload = make(tmp_path / "decode.onnx", batch, context or CONTEXT[hardware])
     mapping = {"runtime_args": layouts}
@@ -67,7 +63,7 @@ def _decode(tmp_path, hardware, layouts, batch=1, context=None, make=make_decode
         mapping |= {"layers": list(layers), "fused_groups": [group]}
     (tmp_path / "mapping.yaml").write_text(yaml.safe_dump(mapping))
     return evaluate_mapping(
-        _hardware(hardware) if isinstance(hardware, str) else hardware,
+        _hardware(hardware),
         workload,
         str(tmp_path),
         str(tmp_path / "mapping.yaml"),
@@ -190,47 +186,47 @@ def test_a_cache_split_on_the_batch_the_iterations_walk_waits_on_one_hbm_at_a_ti
     assert 3.5 * split.cycles < wrong.cycles <= 4 * split.cycles
 
 
-def _flash_layers(einsum_cores, vector_cores):
-    """Each part attended to in its own slice, the parts split over the slices, and the combine split by heads."""
-    per_part = ["scores", "part_max", "part_shift", "part_exp", "part_sum", "part_context"]
-    combine = ["max", "shift", "weight", "weigh_sum", "sum", "weigh_context", "combine", "normalize"]
-
-    def layer(name, dim):
-        cores = einsum_cores if name in ("scores", "part_context") else vector_cores
-        split = [{"dim": dim, "split": 4}] + ([{"dim": "D1", "split": len(cores) // 4}] if len(cores) > 4 else [])
-        return {"name": name, "core_allocation": [cores], "inter_core_tiling": [split]}
-
-    return [layer(name, "D2") for name in per_part] + [layer(name, "D1") for name in combine]
-
-
-@pytest.mark.parametrize(
-    ("hardware", "layers"),
-    [("ring", _flash_layers([0, 1, 2, 3], [0, 1, 2, 3])), ("ironwood", _flash_layers(MXUS, VPUS))],
-)
-def test_flash_decoding_with_its_parts_split_over_the_hbms_moves_only_its_partials(tmp_path, hardware, layers):
-    """Each slice attends to the part of the sequence in its own HBM; only each part's maximum, sum and context
-    cross between slices to be combined, and the step costs about what the split by heads does."""
+@pytest.mark.parametrize("hardware", ["ring", "ironwood"])
+def test_flash_decoding_with_its_parts_split_over_the_hbms_moves_only_the_combine_between_slices(tmp_path, hardware):
+    """Each slice attends to the part of the sequence in its own HBM, every operator on a part following the split of
+    what it reads; only the combine's maximum, sum and context cross between slices, and the step costs about what
+    the split by heads does."""
     plain = _decode(tmp_path / "plain", hardware, _layouts(BY_HEADS))
-    flash = _decode(
-        tmp_path / "flash", hardware, _layouts(BY_SEQUENCE, q=COPIED), make=make_flash_decoding, layers=layers
-    )
-    crossing = {tensor for tensor, per_link in _link_bits(flash).items() if _on_chip(per_link)}
-    assert crossing == {"m", "l", "o"}
+    flash = _decode(tmp_path / "flash", hardware, _layouts(BY_SEQUENCE, q=COPIED), make=make_flash_decoding)
+    bits = _link_bits(flash)
+    crossing = {tensor: sum(_on_chip(per_link).values()) for tensor, per_link in bits.items() if _on_chip(per_link)}
+    assert set(crossing) == {"M", "L", "N"}
+    from_hbms = sum(bits[t][link] for t in "KV" for link in bits[t] if set(link) & set(HBMS))
+    assert sum(crossing.values()) < from_hbms / 32
     assert _hbm_shares(flash) == dict.fromkeys(HBMS, 0.25)
-    assert _hbm_time(hardware) <= flash.cycles < 1.3 * plain.cycles
+    assert _hbm_time(hardware) <= flash.cycles < 1.1 * plain.cycles
 
 
-def test_a_cache_split_over_the_hbms_fits_where_its_copy_in_each_does_not(tmp_path):
-    """The 32 MiB cache whole in each 16 MiB HBM is refused naming the HBM; a quarter in each fits."""
-    hardware = _hardware("ironwood", hbm_capacity_bits=16 * 2**20 * 8)
-    with pytest.raises(ValueError, match=r"^hbm_0 holds K \+ V \+ q/4 \+ O/4 = 32 MiB > 16 MiB$"):
-        _decode(tmp_path / "copy", hardware, _layouts(COPIED), context=8192)
-    assert _decode(tmp_path / "split", hardware, _layouts(BY_HEADS), context=8192).cycles
+LONG = {"batch": 1024, "context": 32768}
+"""A batch whose 128 GiB cache overflows a chiplet's 96 GiB HBM, and whose scores spill at fusion cuts."""
 
 
 def test_a_long_batched_cache_copied_in_each_chiplet_s_hbm_overflows_it(tmp_path):
     with pytest.raises(ValueError, match=r"^hbm_0 holds .*K \+ .*V \+ .* GiB > 96 GiB$"):
-        _decode(tmp_path, "ironwood", _layouts(COPIED), batch=1024, context=32768)
+        _decode(tmp_path, "ironwood", _layouts(COPIED), **LONG)
+
+
+def test_a_long_batched_cache_split_over_the_hbms_fits_and_its_scores_stay_beside_their_cores(tmp_path):
+    """The scores spill to the HBM beside the cores that made them, and the next group reads them back from there."""
+    estimate = _decode(tmp_path, "ironwood", _layouts(BY_HEADS), **LONG)
+    assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
+    assert estimate.cycles >= _hbm_time("ironwood", **LONG)
+    (cut,) = (name for name in estimate.context.get("mapping").edge_layouts if name.endswith("_cut_in"))
+    layout = estimate.context.get("mapping").edge_layouts[cut]
+    assert [memory.name for memory in layout.memories] == HBMS and layout.axis == 1
+    assert not any(_on_chip(per_link) for per_link in _link_bits(estimate).values())
+
+
+def test_a_fusion_cut_without_a_layout_is_read_back_where_it_landed(tmp_path):
+    """16 sequences of 2M: the scores no longer fit beside the cache, so each group spills them to the HBMs."""
+    estimate = _decode(tmp_path, "ironwood", _layouts(BY_HEADS), batch=16, context=2**21)
+    assert len(estimate.context.get("group_memory_accesses")) == 3
+    assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
 
 
 @pytest.mark.parametrize("context", [CONTEXT["ironwood"], pytest.param(32768, marks=pytest.mark.slow)])
