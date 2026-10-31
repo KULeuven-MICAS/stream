@@ -6,7 +6,9 @@ import subprocess
 import sys
 import tempfile
 
+import onnx
 import pytest
+from onnx import TensorProto, helper
 
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
@@ -206,3 +208,68 @@ def test_a_reduction_runs_innermost_only_where_its_outputs_cannot_stay_while_it_
         g for g in w.split_fusion_groups(cut_points=cuts) if node in {n.name for n in g.get_computation_nodes()}
     )
     assert gen._build_intra_core_tiling(group, tuple(group.get_computation_nodes()))[0]["dim"] == innermost
+
+
+_PACKED_CORE = """
+name: packed
+type: zigzag.compute
+memories:
+  wreg:
+    {size: 8, r_cost: 0.1, w_cost: 0.1, area: 0, latency: 1, auto_cost_extraction: False, operands: [I2],
+     served_dimensions: [],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 8, bandwidth_max: 8, allocation: ["I2, tl"]},
+     {name: w_port_1, type: write, bandwidth_min: 8, bandwidth_max: 8, allocation: ["I2, fh"]}]}
+  result_buffer:
+    {size: 4096, r_cost: 0.1, w_cost: 0.1, area: 0, latency: 1, operands: [O], served_dimensions: [D2, D3],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 32, bandwidth_max: 32, allocation: ["O, tl", "O, th"]},
+     {name: w_port_1, type: write, bandwidth_min: 32, bandwidth_max: 32, allocation: ["O, fh", "O, fl"]}]}
+  l1:
+    {size: L1_BITS, r_cost: 10, w_cost: 10, area: 0, latency: 1, operands: [I1, I2, O], served_dimensions: [D1, D2, D3],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 64, bandwidth_max: 4096,
+              allocation: ["I1, tl", "I2, tl", "O, tl", "O, th"]},
+             {name: w_port_1, type: write, bandwidth_min: 64, bandwidth_max: 4096,
+              allocation: ["I1, fh", "I2, fh", "O, fh", "O, fl"]}]}
+operational_array:
+  {unit_energy: 0.02, unit_area: 1, dimensions: [D1, D2, D3], sizes: [16, 16, 4], systolic_dimensions: [D1, D2]}
+operand_precision: {input: int8, accumulator: int32}
+operator_types: [MatMul, Gemm]
+"""
+
+_PACKED_CHIP = """
+name: chip
+cores: {0: packed.yaml}
+memories:
+  l1:
+    offchip: false
+    views: [0.l1]
+    ports: {r_port_1: {from: r_port_1, cores: [0]}, w_port_1: {from: w_port_1, cores: [0]}}
+  dram:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports: {rw_port_1: {bandwidth: 256, serves: {any: [read, write]}, read_energy: 1, write_energy: 1}}
+connections: [{type: link, bandwidth: 256, ends: {l1: [r_port_1, w_port_1], dram: [rw_port_1]}}]
+"""
+
+
+def test_a_tile_keeps_the_extent_the_array_unrolls_its_dimension_over(tmp_path):
+    """An array that sums four lanes per PE spreads the contraction over 16 x 4; to fit, the output is cut instead."""
+    (tmp_path / "packed.yaml").write_text(_PACKED_CORE.replace("L1_BITS", str(32 * 8192)))
+    (tmp_path / "chip.yaml").write_text(_PACKED_CHIP)
+    graph = helper.make_graph(
+        [helper.make_node("Gemm", ["a", "w"], ["out"], name="Gemm")],
+        "g",
+        [
+            helper.make_tensor_value_info("a", TensorProto.INT8, [16, 4096]),
+            helper.make_tensor_value_info("w", TensorProto.INT8, [4096, 256]),
+        ],
+        [helper.make_tensor_value_info("out", TensorProto.INT8, [16, 256])],
+    )
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "gemm.onnx")
+    acc, w = _parse(str(tmp_path / "chip.yaml"), str(tmp_path / "gemm.onnx"))
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    (sub,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
+    cns = tuple(sub.get_computation_nodes())
+    refined = gen._capacity_refine(sub, cns, gen._whole_layer_tiling(sub, cns))
+    tiles = {entry["dim"]: entry["tile"] for entry in refined}
+    assert tiles.get("Gemm.D1", 4096) >= 64 and tiles.get("Gemm.D2", 256) < 256
