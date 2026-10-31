@@ -7,6 +7,7 @@ from stream.cost_model.roofline import hardware_roofline, run_roofline
 from stream.hardware.architecture.core import Core
 from stream.ir.allocation import AllocationIR
 from stream.ir.roofline import RooflineIR
+from stream.mapping.mapping import check_offchip_capacity
 from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -68,6 +69,7 @@ class FusionGroupIterationStage(Stage):
         assert len(sub_workloads) == len(self.sub_mappings), (
             f"Mismatch: {len(sub_workloads)} sub-workloads vs {len(self.sub_mappings)} sub-mappings"
         )
+        check_offchip_capacity(self.accelerator, sub_workloads, self.sub_mappings)
 
         for i, sub_workload in enumerate(sub_workloads):
             group_output = os.path.join(self.output_path, f"group_{i}")

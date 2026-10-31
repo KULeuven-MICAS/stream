@@ -8,6 +8,18 @@ from functools import cached_property
 from stream.hardware.architecture.core import Core
 from stream.hardware.ports import MemoryDma, Port, candidate_ports
 
+KIBI = 1024
+
+
+def size_text(bits: float) -> str:
+    """``bits`` in B, KiB, MiB, GiB or TiB, three significant digits."""
+    size, unit = bits / 8, "B"
+    for bigger in ("KiB", "MiB", "GiB", "TiB"):
+        if size < KIBI:
+            break
+        size, unit = size / KIBI, bigger
+    return f"{size:.3g} {unit}"
+
 
 class Memory:
     """A physical memory. ``views`` pairs each core that uses it with the name of that core's top-level memory
