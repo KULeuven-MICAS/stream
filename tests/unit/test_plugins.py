@@ -147,3 +147,31 @@ def test_loaded_overlays_reports_provenance(monkeypatch, entry_points):
         _EntryPoint("globex", _overlay(20), "vendor-overlay-globex"),
     ]
     assert loaded_overlays() == ("vendor-overlay-acme",)
+
+
+# --------------------------------------------------------------------------------------------- #
+# Accelerator keys
+# --------------------------------------------------------------------------------------------- #
+
+
+def test_an_overlay_accelerator_key_is_validated_by_its_rule_and_check(monkeypatch, entry_points):
+    """Without the overlay the key is unknown; with it, its rule and check decide."""
+    from stream.hardware.bundle import HardwareBundle  # noqa: PLC0415
+    from stream.parser.accelerator_validator import ACCELERATOR_KEYS_GROUP  # noqa: PLC0415
+
+    monkeypatch.delenv(plugins.OVERLAY_ALLOWLIST_ENV, raising=False)
+    bundle = HardwareBundle.from_yaml("stream/inputs/examples/hardware/tpu_like_quad_core.yaml")
+    bundle.accelerator["spare_cores"] = [0]
+    with pytest.raises(ValueError, match="spare_cores.*unknown field"):
+        bundle.validated_data()
+
+    def check(accelerator, value):
+        return [f"core {core} does not exist" for core in value if core not in accelerator["cores"]]
+
+    spare_cores = SimpleNamespace(rule={"type": "list", "schema": {"type": "integer"}}, check=check)
+    entry_points[ACCELERATOR_KEYS_GROUP] = [_EntryPoint("spare_cores", spare_cores, "vendor-overlay")]
+    assert bundle.validated_data()["spare_cores"] == [0]
+    for wrong, problem in (([99], "core 99 does not exist"), (["a"], "must be of integer type")):
+        bundle.accelerator["spare_cores"] = wrong
+        with pytest.raises(ValueError, match=problem):
+            bundle.validated_data()
