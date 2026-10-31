@@ -301,6 +301,77 @@ DRAM has no views. Its ports are the shim DMAs, one `mm2s`/`s2mm` pair per colum
 
 ---
 
+## Converting a hardware file from the core format
+
+Stream used to describe an accelerator as cores joined to cores: `offchip_core_id` named a core standing in for
+DRAM, `core_connectivity` joined cores, and `core_memory_sharing` and `memory_aliases` said which cores' memories were
+one. Such a file no longer parses. The core files stay as they are, except for `banks`; the accelerator file gains
+`memories` and `connections`. [The conversion prompt](convert_hardware_prompt.md) has an agent convert one file, and
+`scripts/check_hardware_conversion.py` checks the result against the Stream that read the old file.
+
+### Key by key
+
+| Core format | Memories format |
+|---|---|
+| `offchip_core_id: k` | Core `k` leaves `cores`, `core_coordinates` and every connection; a memory with `offchip: true`, `views: []` takes its place. |
+| ZigZag off-chip core: its top level's `size` | That memory's `capacity_bits`. |
+| its port `p`: `bandwidth_max`, `allocation`, `r_cost`, `w_cost` | `p: {bandwidth: <bandwidth_max>, serves: ..., read_energy: <r_cost / bandwidth_max>, write_energy: <w_cost / bandwidth_max>}`: an access moved `bandwidth_max` bits. `serves` lists per operand (`I1` is `input1`, `I2` `input2`, `O` `output`) `read` for `th`/`tl` and `write` for `fh`/`fl`; `any` for all three alike. |
+| `aie2.shim` off-chip core | `capacity_bits: <memory.capacity>`, `dma: {buffer_descriptors, iterations}`, ports `mm2s` and `s2mm` of `channels: <dma.mm2s>`, `bandwidth: <mm2s x channel_bits>`, `serves: {any: [read]}` (`[write]` for `s2mm`), energies 0. |
+| A core's top-level instance `i` (per operand its highest level; `memory` on an AIE tile) | A memory with `views: [<core>.i]` and, per port `p` of `i`, `p: {from: p, cores: [<core>]}`; on an AIE tile `mm2s` and `s2mm`. |
+| `core_memory_sharing: ["a, b, c"]` | One memory, `views: [a.i, b.i, c.i]`, each port `{from: p, cores: [a, b, c]}`. |
+| `memory_aliases: [[a.x, b.y]]` | One memory, `views: [a.x, b.y]`. |
+| `core_connectivity` entry `cores: [a, b, ...]` | `connections` entry, `ends:` the memories of those cores, each with the ports a transfer passes there: one per operand and direction, usually all of the memory's. `type`, `bandwidth` and `unit_energy_cost` as they were. |
+| `bandwidth` key `k` (a core) | The name of `k`'s memory; its views need not list their ports. |
+| `bandwidth` key `k.i.p` | `<memory>.<port name>`. |
+| A core file's top-level `banks` | Under the level it describes: `memories.<level>.banks`, or `memory.banks` on an AIE tile. |
+| Core kinds `offchip`, `shim` | Gone: a core is `compute` or `memory`. |
+
+`name`, `cores` (minus the off-chip core), `core_coordinates`, `kernel_library`, `reconfiguration`,
+`technology_node` and `unit_energy_cost` are unchanged. Core ids keep their values; they need not be contiguous.
+
+### What the old Stream did with a file
+
+The old Stream did not always build what a file says. A faithful conversion builds what it built; doing what the file
+says instead is a modelling change, which the checker reports.
+
+| Case | The old Stream | Faithful conversion |
+|---|---|---|
+| Two connections join the same two cores, such as links declared before a bus over all cores | Kept one edge per pair of cores, the last declared: the links never carried data (every `eyeriss_like_*`, `tpu_like_quad_core`, `simba_small` and `meta_prototype` file) | Leave such links out |
+| A link at a core of a `core_memory_sharing` group other than its first | Entered and left the group through its first core where that one had links, so the link went unused (`fusemax`'s second link to DRAM) | Leave it out; two links between the same memories are two resources |
+| A core in no connection and no sharing group | Never built it (`whole_array`'s shim cores 6, 12, 18) | Drop it |
+| A core with several top-level instances | One memory, sized by the instance holding `I1`, its links reaching all of them (`meta_prototype`: activations and weights) | One memory per instance; a link joins the `I1` one, a bus all; capacity and occupancy now split, which no faithful form avoids |
+| `memory_aliases` | Costing only: each aliased memory kept its capacity and the links between their cores, and all used the first one's ports | One memory with its capacity once and no link inside; cores declaring a port differently need a port entry each. No faithful form |
+| An `aie2.shim` linked to every column | One shim's 2 + 2 DMA channels for the whole array | One `mm2s` / `s2mm` pair on every column's link; a pair per column (`mm2s_c<col>`) gives each column its own channels |
+| A link between two cores that now view one memory | A route between them | Leave it out: the data moves in place |
+
+What the memories format has no place for: the off-chip core's `bandwidth_min`, `latency`, `area`,
+`served_dimensions`, `operational_array`, name, id and coordinates; a shim's `max_object_fifo_depth` and
+`memory.bandwidth_min`/`bandwidth_max`. Delete the off-chip core file if no other accelerator uses it.
+
+### Checking a conversion
+
+Install the Stream that read the old file next to the current one, for example
+`python -m venv /opt/stream-old && /opt/stream-old/bin/pip install "stream-dse @ git+https://github.com/KULeuven-MICAS/stream@d03bfd10"`
+(or, with the same dependencies, `--old-python "env PYTHONPATH=<old checkout> python"`), then
+
+```bash
+python scripts/check_hardware_conversion.py check OLD.yaml NEW.yaml --old-python /opt/stream-old/bin/python
+```
+
+Each file is summarised by its own Stream and the summaries compared. A memory is known by its views
+(`0.vmem+1.vmem`), the off-chip one as `offchip`, and ports and connections by their cores, operands, rates and
+energies, so names may change. Compared are: per core its type, coordinates and operators; per memory its capacity,
+ports, measured bandwidth, off-chip DMA and banks; every connection with the ports at each end; and the latency,
+energy and per-memory occupancy of one solve (the 2-conv test workload unless `--workload`, `--mapping` and `--cols`
+say otherwise; `--no-solve` skips it), within `--rtol` (1 %), the occupancy up to a permutation of equal memories.
+It prints each difference and a last line with the latency and energy of both, and exits with 1 if anything
+differs. `summarize` writes one file's summary and `compare` compares two, for a summary recorded elsewhere.
+
+The shipped files keep the links the old Stream ignored, give `meta_prototype`'s weights memories of their own and
+each AIE column its own shim ports; against the old files the checker reports these and nothing else.
+
+---
+
 ## Example systems
 
 Nine non-AIE example accelerators ship under `stream/inputs/examples/hardware/` and are exercised across both example workloads in the test matrix (see the [Workload × Hardware matrix](https://github.com/KULeuven-MICAS/stream#workload--hardware-matrix) in the README):
