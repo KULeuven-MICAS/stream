@@ -20,8 +20,12 @@ InterCoreTiling = tuple[tuple[LayerDim, int], ...]
 
 ELEMENT_BITS: dict[str, int] = {
     "int4": 4,
+    "uint4": 4,
+    "fp4": 4,
     "int8": 8,
     "uint8": 8,
+    "fp8": 8,
+    "fp8_e5m2": 8,
     "int16": 16,
     "int24": 24,
     "bf16": 16,

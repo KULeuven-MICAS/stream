@@ -6,6 +6,7 @@ import tempfile
 
 import numpy as np
 import onnx
+import pytest
 from onnx import TensorProto, helper, numpy_helper
 from zigzag.utils import open_yaml
 
@@ -93,6 +94,44 @@ def test_a_cast_converts_a_tensor_to_another_element_type(tmp_path):
     assert _types(nodes["Cast_fp16"].outputs) == ["f16"]
 
 
+def _matmul(element_type, path):
+    a = helper.make_tensor_value_info("a", element_type, [64, 128])
+    b = helper.make_tensor_value_info("b", element_type, [128, 32])
+    out = helper.make_tensor_value_info("out", element_type, [64, 32])
+    return _save([helper.make_node("MatMul", ["a", "b"], ["out"], name="MatMul")], [a, b], out, [], path)
+
+
+@pytest.mark.parametrize(
+    ("element_type", "bits"),
+    [
+        ("INT4", 4),
+        ("UINT4", 4),
+        ("FLOAT4E2M1", 4),
+        ("FLOAT8E4M3FN", 8),
+        ("FLOAT8E4M3FNUZ", 8),
+        ("FLOAT8E5M2", 8),
+        ("FLOAT8E5M2FNUZ", 8),
+    ],
+)
+def test_narrow_element_types_are_read_at_their_width(element_type, bits, tmp_path):
+    workload = _workload(_matmul(TensorProto.DataType.Value(element_type), tmp_path / "matmul.onnx"))
+    (matmul,) = [n for n in workload.nodes if isinstance(n, ComputationNode)]
+    elements = [64 * 128, 128 * 32, 64 * 32]
+    assert [t.size_bits() for t in (*matmul.inputs, *matmul.outputs)] == [n * bits for n in elements]
+
+
+@pytest.mark.parametrize(("element_type", "bits"), [("INT4", 4), ("FLOAT4E2M1", 4), ("FLOAT8E4M3FN", 8)])
+def test_the_cost_model_reads_narrow_operands_at_their_width(element_type, bits, tmp_path):
+    path = _matmul(TensorProto.DataType.Value(element_type), tmp_path / "matmul.onnx")
+    estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+    (precision,) = {
+        tuple(sorted((str(op), b) for op, b in entry.cme.layer.operand_precision.data.items()))
+        for costs in estimate.context.get("cost_lut").lut.values()
+        for entry in costs.values()
+    }
+    assert dict(precision) == {"A": bits, "B": bits, "O": 32, "O_final": bits}
+
+
 def test_the_mxu_keeps_partial_sums_at_the_precision_it_accumulates_in(tmp_path):
     """The MXU declares an fp32 accumulator: the convolution's partial sums are 32 bits wide and its result is written
     as int8. The vector unit's conversions are not accumulations, so they carry no wider partial sums."""
@@ -115,6 +154,14 @@ def test_a_core_names_its_precision_in_known_element_types():
     core["operand_precision"] = {"input": "bf16", "accumulator": "fp33"}
     validator.validate_core_data(core, "mxu")
     assert any("fp33" in error for error in validator.errors)
+
+
+def test_a_core_may_name_an_fp8_precision():
+    validator = AcceleratorValidator(open_yaml(TPU_V7), accelerator_path=TPU_V7)
+    core = open_yaml(MXU)
+    core["operand_precision"] = {"input": "fp8", "accumulator": "fp32"}
+    validator.validate_core_data(core, "mxu")
+    assert not validator.errors
 
 
 def test_a_quantized_linear_layer_solves_although_gemm_does_not_read_its_bias(tmp_path):
