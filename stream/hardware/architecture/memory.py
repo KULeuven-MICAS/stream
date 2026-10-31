@@ -12,8 +12,7 @@ from stream.hardware.ports import MemoryDma, Port, candidate_ports
 class Memory:
     """A physical memory. ``views`` pairs each core that uses it with the name of that core's top-level memory
     instance for it. ``ports`` are its ports by name. The capacity comes from the views, or from ``capacity_bits`` if
-    no core views it. ``offchip`` marks the off-chip memory; an accelerator has at most one. ``dma`` is its DMA engine,
-    if it has one."""
+    no core views it. ``offchip`` marks an off-chip memory. ``dma`` is its DMA engine, if it has one."""
 
     def __init__(  # noqa: PLR0913
         self,

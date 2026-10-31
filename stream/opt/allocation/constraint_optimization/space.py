@@ -344,10 +344,14 @@ class DecisionSpace:
 
     def offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""
-        off = self.accelerator.offchip_memory
-        if off is None:
-            return 0.0
-        return float(sum(link.bandwidth for link in self.link_set if link.receiver == off or off in link.members))
+        offchip = self.accelerator.offchip_memories
+        return float(
+            sum(
+                link.bandwidth
+                for link in self.link_set
+                if link.receiver in offchip or any(memory in link.members for memory in offchip)
+            )
+        )
 
     def placement_width(self, tensors: Iterable[Tensor]) -> int:
         """How many positions one side of a transfer occupies."""
