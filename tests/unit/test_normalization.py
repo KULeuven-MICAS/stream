@@ -11,17 +11,19 @@ import numpy as np
 import onnx
 from onnx import TensorProto, helper
 from xdsl.dialects.builtin import bf16
-from xdsl.ir.affine import AffineMap
+from xdsl.ir.affine import AffineExpr, AffineMap
 
 from stream.parser.onnx.model import ONNXModelParser
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import NormalizationNode
 from stream.workload.normalization import (
     decompose_normalization,
+    expanded_work,
     parallel_axes,
     reduction_axes,
     softmax_reference,
 )
+from stream.workload.rewrites.flash_attention import build_attention_chain
 from stream.workload.tensor import Tensor
 
 
@@ -104,3 +106,46 @@ def test_lpnorm_decomposition_registered():
     )
     dec = decompose_normalization(node)
     assert {n.type for n in dec.get_computation_nodes()} == {"ReduceSumSquare", "Sqrt", "Div"}
+
+
+def test_layernorm_is_expanded_and_priced_as_its_parts():
+    """Mean, centre, squares, divide, scale and shift on every element of a row of 16; the square root once per row."""
+    identity = AffineMap.identity(2)
+    row = AffineMap(2, 0, (AffineExpr.dimension(1),))
+    node = NormalizationNode(
+        type="LayerNormalization",
+        name="ln",
+        inputs=(
+            Tensor.create("x", bf16, (4, 16)),
+            Tensor.create("scale", bf16, (16,)),
+            Tensor.create("b", bf16, (16,)),
+        ),
+        outputs=(Tensor.create("y", bf16, (4, 16)),),
+        operand_mapping=(identity, row, row, identity),
+        reduction_axes=(1,),
+    )
+    assert expanded_work(node) == [
+        ("ReduceMean", 1.0),
+        ("Sub", 1.0),
+        ("ReduceSumSquare", 1.0),
+        ("Sqrt", 1 / 16),
+        ("Div", 1.0),
+        ("Mul", 1.0),
+        ("Add", 1.0),
+    ]
+    scale = next(n for n in decompose_normalization(node).get_computation_nodes() if n.type == "Mul")
+    assert [t.name for t in scale.inputs] == ["ln_norm", "scale"]
+
+
+def test_an_attention_block_is_priced_as_its_two_matmuls_and_its_online_softmax():
+    """Matmuls on every point of (query, key, head 64), the softmax per score, the statistics per query row."""
+    block = build_attention_chain("a", 256, 256, 64, 64, bf16).get_computation_nodes()[0]
+    parts = expanded_work(block)
+    assert {op: sum(ops for name, ops in parts if name == op) for op, _ in parts} == {
+        "MatMul": 2.0,
+        "ReduceMax": 1 / 64,
+        "Maximum": 1 / 64**2,
+        "Exp": 1 / 64 + 1 / 64**2,
+        "ReduceSum": 1 / 64,
+        "ScaleAdd": 1 / 64 + 1 / 64**2,
+    }

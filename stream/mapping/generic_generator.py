@@ -35,7 +35,7 @@ from stream.workload.iterator_type import (
     sequential_dims,
 )
 from stream.workload.node import ComputationNode
-from stream.workload.normalization import source_operator
+from stream.workload.normalization import operator_types_of, source_operator
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload, determine_fusion_cut_points
 
@@ -210,26 +210,28 @@ class GenericMappingGenerator:
         """Select cores that can execute *node* according to operator_types.
 
         Excludes memory cores unconditionally.  Selection priority:
-        1. Specialized cores (operator_types is not None and node.type in list).
+        1. Specialized cores (operator_types lists the node's type or the operator it is part of).
            If any specialized cores match, use them exclusively.
         2. Generic cores (operator_types is None — accepts all ops).
            Use all matching generic cores together.
-        3. Fallback: if nothing matches, use all cores with kind 'compute'.
+        A node no core runs is refused.
 
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
         Conv/Gemm go to the generic compute cores that split it fastest.
         """
         _SKIP_TYPES = {"memory"}
-        node_op = node.type
+        listed = operator_types_of(node)
 
         specialized_cores: list[Core] = []
         generic_cores: list[Core] = []
+        served: set[str] = set()
 
         for core in self.accelerator.core_list:
             if core.type in _SKIP_TYPES:
                 continue
             op_types = getattr(core, "operator_types", None)
-            if op_types is not None and node_op in op_types:
+            served.update(op_types or ())
+            if op_types is not None and not listed.isdisjoint(op_types):
                 # Specialized core that explicitly handles this operator type
                 specialized_cores.append(core)
             elif op_types is None:
@@ -243,10 +245,9 @@ class GenericMappingGenerator:
         if generic_cores:
             return self._fastest_even_split(generic_cores)
 
-        # fallback: no match — use all cores with kind 'compute'
-        fallback = [c for c in self.accelerator.core_list if c.type == "compute"]
-        logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
-        return fallback
+        raise ValueError(
+            f"no core of this design runs {node.type} ({node.name}); its cores run: {', '.join(sorted(served))}"
+        )
 
     @staticmethod
     def _fastest_even_split(cores: list[Core]) -> list[Core]:

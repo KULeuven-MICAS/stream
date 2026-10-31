@@ -14,7 +14,7 @@ from stream.workload.iterator_type import (
     nonlinear_reduction_dims,
     sequential_dims,
 )
-from stream.workload.node import ComputationNode, HasIterationSpace, Node, Tensor, TransferNode
+from stream.workload.node import ComputationNode, HasIterationSpace, Node, NormalizationNode, Tensor, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
@@ -38,8 +38,10 @@ def is_mac_operator_type(op_type: object) -> bool:
 
 
 def operand_inputs(node: ComputationNode) -> tuple[Tensor, ...]:
-    """The inputs that are a core's operands ``I1``, ``I2``, ... in order. A MAC has two; a further input such as a bias
-    is added into the output instead."""
+    """The inputs that are a core's operands ``I1``, ``I2``, ... in order. A MAC has two and a normalization one, its
+    data; a further input such as a bias or a layer normalization's scale and shift is read with the output instead."""
+    if isinstance(node, NormalizationNode):
+        return node.inputs[:1]
     return node.inputs[:2] if is_mac_operator_type(node.type) else node.inputs
 
 

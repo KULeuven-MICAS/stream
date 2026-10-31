@@ -4,14 +4,19 @@ The two-conv workload is used as a fast single-group proxy (< 60s).
 The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics.
 """
 
+import re
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
+import onnx
 import pytest
 import yaml
+from onnx import TensorProto, helper
 
 from stream.allocation.allocation import Allocation
 from stream.api import SolveOptions, evaluate_mapping
+from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_conv_relu_flatten_gemm import (
     make_conv_relu_flatten_gemm_workload,
@@ -28,6 +33,7 @@ from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
 from stream.stages.stage import LeafStage, MainStage
+from stream.workload.normalization import expand_normalizations
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 _TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
@@ -290,3 +296,144 @@ def test_swiglu_example_mappings_solve_on_tpu_v7(mapping, tmp_path):
         SolveOptions(artifacts=False),
     )
     assert estimate.group_cycles and all(cycles > 0 for cycles in estimate.group_cycles)
+
+
+def _save(nodes, inputs, output, path, value_info=()):
+    graph = helper.make_graph(nodes, "graph", inputs, [output], value_info=list(value_info))
+    opsets = [helper.make_opsetid("", 19), helper.make_opsetid("com.example", 1)]
+    onnx.save(helper.make_model(graph, opset_imports=opsets), path)
+    return str(path)
+
+
+def _flash_attention(path):
+    """Attention as IRON's flash workload exports it: the scores, one online-softmax step per block, the context."""
+    q = helper.make_tensor_value_info("q", TensorProto.BFLOAT16, [256, 64])
+    k_t = helper.make_tensor_value_info("k_t", TensorProto.BFLOAT16, [64, 256])
+    v = helper.make_tensor_value_info("v", TensorProto.BFLOAT16, [256, 64])
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [256, 64])
+    scores = [helper.make_tensor_value_info(n, TensorProto.BFLOAT16, [256, 256]) for n in ("scores", "probs")]
+    nodes = [
+        helper.make_node("MatMul", ["q", "k_t"], ["scores"], name="Attn_Scores"),
+        helper.make_node("PartialSoftmax", ["scores"], ["probs"], name="Attn_Softmax", domain="com.example"),
+        helper.make_node("MatMul", ["probs", "v"], ["out"], name="Attn_Context"),
+    ]
+    return _save(nodes, [q, k_t, v], out, path, scores)
+
+
+def _one_op(op_type, path, **attributes):
+    x = helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [64, 256])
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [64, 256])
+    return _save([helper.make_node(op_type, ["x"], ["out"], name=op_type, **attributes)], [x], out, path)
+
+
+def _placement(accelerator, workload):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        paths, _ = GenericMappingGenerator(accelerator, workload, tmpdir).generate_all_groups()
+        layers = [layer for path in paths for layer in yaml.safe_load(Path(path).read_text())["layers"]]
+    return {layer["name"]: {core for slot in layer["core_allocation"] for core in slot} for layer in layers}
+
+
+def _vpus(accelerator):
+    return [core for core in accelerator.core_list if getattr(core, "name", "") == "tpu_v7_vpu"]
+
+
+def test_a_core_that_runs_softmax_runs_its_online_step(tmp_path):
+    path = _flash_attention(tmp_path / "flash.onnx")
+    accelerator, workload = _parse_workload_and_accelerator(path, accelerator=_TPU_V7)
+    assert _placement(accelerator, workload)["Attn_Softmax"] == {core.id for core in _vpus(accelerator)}
+    estimate = evaluate_mapping(_TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+    assert estimate.cycles > 0
+
+
+def _ideal_cycles(path, tmp_path):
+    estimate = evaluate_mapping(_TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+    lut = estimate.context.get("cost_lut").lut
+    return {node.type: entry.ideal_cycle for node, costs in lut.items() for entry in costs.values()}
+
+
+def test_partial_softmax_costs_its_core_the_cycles_of_the_softmax_it_is_part_of(tmp_path):
+    part = _ideal_cycles(_one_op("PartialSoftmax", tmp_path / "part.onnx", domain="com.example"), tmp_path / "part")
+    whole = _ideal_cycles(_one_op("Softmax", tmp_path / "softmax.onnx", axis=1), tmp_path / "softmax")
+    assert set(whole) == {"ReduceMax", "Exp", "ReduceSum", "Div"}
+    assert part["PartialSoftmax"] == sum(whole.values())
+
+
+def _fixed_costs(path, cores, tmp_path):
+    layers = [{"name": name, "core_allocation": [ids], "inter_core_tiling": []} for name, ids in cores.items()]
+    mapping = {"layers": layers, "fused_groups": [{"name": "all", "layers": list(cores), "intra_core_tiling": []}]}
+    (tmp_path / "mapping.yaml").write_text(yaml.safe_dump(mapping))
+    options = SolveOptions(artifacts=False)
+    estimate = evaluate_mapping(_TPU_V7, path, str(tmp_path), str(tmp_path / "mapping.yaml"), options)
+    lut = estimate.context.get("cost_lut").lut
+    return {node.type: entry for node, costs in lut.items() for entry in costs.values()}
+
+
+def _one_op_on_a_vpu(op_type, tmp_path, **attributes):
+    (tmp_path / op_type).mkdir()
+    path = _one_op(op_type, tmp_path / op_type / "model.onnx", **attributes)
+    return _fixed_costs(path, {op_type: [2]}, tmp_path / op_type)[op_type]
+
+
+def test_a_fixed_mapping_prices_a_softmax_as_the_operators_it_expands_into(tmp_path):
+    """Max, exp at four cycles, sum and divide: seven cycles and four operations per element of a Relu's one."""
+    relu = _one_op_on_a_vpu("Relu", tmp_path)
+    softmax = _one_op_on_a_vpu("Softmax", tmp_path, axis=1)
+    partial = _one_op_on_a_vpu("PartialSoftmax", tmp_path, domain="com.example")
+    for priced in (softmax, partial):
+        assert priced.ideal_cycle == 7 * relu.ideal_cycle
+        assert priced.cme.mac_energy == pytest.approx(4 * relu.cme.mac_energy)
+
+
+def test_an_operator_expanded_over_fewer_points_costs_only_those(tmp_path):
+    """An L2 normalization's square root runs once per row of 256 elements, not on every element."""
+    relu = _one_op_on_a_vpu("Relu", tmp_path)
+    norm = _one_op_on_a_vpu("LpNormalization", tmp_path, axis=1)
+    assert norm.cme.mac_energy == pytest.approx((2 + 1 / 256) * relu.cme.mac_energy)
+
+
+def test_a_fixed_mapping_places_partial_softmax_on_a_core_that_lists_softmax(tmp_path):
+    cores = {"Attn_Scores": [0], "Attn_Softmax": [2], "Attn_Context": [0]}
+    assert _fixed_costs(_flash_attention(tmp_path / "flash.onnx"), cores, tmp_path)["PartialSoftmax"].ideal_cycle > 0
+
+
+def test_a_core_that_runs_softmax_runs_the_operators_it_is_expanded_into(tmp_path):
+    path = _one_op("Softmax", tmp_path / "softmax.onnx", axis=1)
+    accelerator, workload = _parse_workload_and_accelerator(path, accelerator=_TPU_V7)
+    for vpu in _vpus(accelerator):
+        vpu.operator_types = ["Softmax"]
+    placement = _placement(accelerator, expand_normalizations(workload))
+    assert len(placement) == 4
+    assert all(cores == {core.id for core in _vpus(accelerator)} for cores in placement.values())
+
+
+def test_a_layer_no_core_runs_is_refused_naming_its_operator(tmp_path):
+    accelerator, workload = _parse_workload_and_accelerator(_flash_attention(tmp_path / "flash.onnx"), _TPU_V7)
+    for vpu in _vpus(accelerator):
+        vpu.operator_types = [op for op in vpu.operator_types if op != "Softmax"]
+    served = sorted({op for core in accelerator.core_list for op in getattr(core, "operator_types", None) or ()})
+    refusal = f"no core of this design runs PartialSoftmax (Attn_Softmax); its cores run: {', '.join(served)}"
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        _placement(accelerator, workload)
+
+
+def _layer_norm(path):
+    x = helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [64, 256])
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [64, 256])
+    params = [helper.make_tensor(name, TensorProto.BFLOAT16, [256], [0] * 256) for name in ("scale", "bias")]
+    node = helper.make_node("LayerNormalization", ["x", "scale", "bias"], ["out"], name="LayerNorm", axis=1)
+    graph = helper.make_graph([node], "graph", [x], [out], params)
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), path)
+    return str(path)
+
+
+def test_a_layer_normalization_reads_its_scale_and_shift(tmp_path):
+    path = _layer_norm(tmp_path / "layernorm.onnx")
+    estimate = evaluate_mapping(_TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+    read = {t.name for node in estimate.context.get("cost_lut").lut for t in node.inputs}
+    assert {"scale", "bias"} <= read and estimate.cycles > 0
+
+
+def test_a_whole_layer_normalization_on_a_vector_core_is_priced_by_its_cost_model(tmp_path):
+    """Its scale and shift are read with the output, so the core's two input operands suffice."""
+    entry = _fixed_costs(_layer_norm(tmp_path / "layernorm.onnx"), {"LayerNorm": [2]}, tmp_path)["LayerNormalization"]
+    assert entry.metadata.get("backend") != IDEAL_CYCLE_BACKEND
