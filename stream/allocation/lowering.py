@@ -475,10 +475,13 @@ class _Lowering:
             and largest is not None
             and (frozenset() in splits or len(splits) > 1 or self._each_column_reads_whole(largest, node))
         )
+        own = self._own_mem_tiles(largest, node) if largest is not None else None
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
             if nb_cores == 1 or replicated:
                 dst_tiling = tuple()
+            elif own and dst_allocs == own[0]:
+                dst_tiling = own[1]
             elif all(isinstance(dst, ComputationNode) for dst in dsts):
                 # For fan-out: use the destination with the largest resource allocation
                 # as the tiling reference (consistent with determine_possible_memory_allocations strategy)
@@ -491,7 +494,7 @@ class _Lowering:
 
     def get_inter_core_tiling_for_transfer(
         self, node: TransferNode, memory_allocs: tuple[Memory, ...]
-    ) -> tuple[InterCoreTiling, ...]:
+    ) -> InterCoreTiling:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
         assert node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM), (
             "This function should only be called for MEM_TO_MEM (input) or COMPUTE_TO_MEM (output) transfers."
@@ -507,29 +510,20 @@ class _Lowering:
             slice_ := self._slice_of(node, len(memory_allocs))
         ):
             return (slice_,)
-        mem_tiling = self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
-        return (mem_tiling,)
+        return self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
 
-    def get_matching_tiling(
-        self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Memory, ...]
-    ) -> tuple[LayerDim, int]:
-        # TODO: Make sure that the selected tiling_loop is relevant for the transfer node
+    def get_matching_tiling(self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Memory, ...]) -> InterCoreTiling:
+        """The split over ``dst_allocs`` where each memory holds what consecutive cores of ``compute_tiling`` hold."""
         nb_allocs = len(dst_allocs)
-        for tiling_loop in compute_tiling:
-            _, size = tiling_loop
-            if size == nb_allocs:
-                return tiling_loop
-        # No size with exact match found, try to find one that is a multiple of the number of dst allocs
-        for tiling_loop in compute_tiling:
-            dim, size = tiling_loop
-            if size % nb_allocs == 0:
-                return (dim, nb_allocs)
+        per_tile, rest = divmod(prod(size for _, size in compute_tiling), nb_allocs)
+        if not rest and (split := _without_innermost(compute_tiling, per_tile)) is not None:
+            return split
         # No clean divisor: split the best loop into the largest even share that fits, instead of raising.
         best = max(compute_tiling, key=lambda loop: largest_divisor_leq(loop[1], nb_allocs), default=None)
         if best is None:
             raise ValueError(f"No tiling loop to reconcile with dst allocs {dst_allocs}")
         dim, size = best
-        return (dim, largest_divisor_leq(size, nb_allocs))
+        return ((dim, largest_divisor_leq(size, nb_allocs)),)
 
     def determine_possible_transfer_plans(
         self,
@@ -639,6 +633,8 @@ class _Lowering:
         mem_tiles = self._mem_tiles()
         if node.transfer_type is TransferType.MEM_TO_MEM and self._each_column_reads_whole(src, node):
             return (tuple(c for c in mem_tiles if c.col_id in self._column_ids_of(src)),)
+        if own := self._own_mem_tiles(src, node):
+            return (own[0],)
         if columns and node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
             # A column's cores share its one memory tile, so both need one tile per occupied column, not per core.
             required_nb_mem_tiles = min(columns, total_relevant_unrolling)
@@ -666,6 +662,41 @@ class _Lowering:
             if len(per_column) > 1 and self._slice_of(node, len(per_column)):
                 return (per_column,)
         return tuple(candidates)
+
+    def _own_mem_tiles(self, src: HasOutputs, node: TransferNode) -> tuple[tuple[Memory, ...], InterCoreTiling] | None:
+        """The memory tiles ``src``'s cores work in, where each holds a block of ``node``'s tensor of its own cores, in
+        block order, and the split of the tensor over them; None where they do not."""
+        allocations = self.mapping.get(src).resource_allocation
+        cores = allocations[0] if allocations else ()
+        loops = tuple(self.ssw.get_unique_dims_inter_core_tiling(src, self.mapping))
+        mem_tiles = set(self._mem_tiles())
+        seen = [[memory for memory in self.accelerator.memories_of(core) if memory in mem_tiles] for core in cores]
+        if any(len(tiles) != 1 for tiles in seen) or len(cores) != prod(f for _, f in loops):
+            return None
+        tile_of = [tile for (tile,) in seen]
+        if len(set(tile_of)) <= 1:
+            return None
+        node_dims = set(self.ssw.get_dims(node))
+        axes = [i for i, (dim, _) in enumerate(loops) if dim in node_dims]
+        held: dict[Memory, set[tuple[int, ...]]] = {}
+        for tile, position in zip(tile_of, np.ndindex(*(f for _, f in loops)), strict=True):
+            held.setdefault(tile, set()).add(tuple(position[i] for i in axes))
+        spans = {tuple(len({p[a] for p in slices}) for a in range(len(axes))) for slices in held.values()}
+        if len(spans) != 1:
+            return None
+        (span,) = spans
+        starts = {tile: tuple(min(p[a] for p in slices) for a in range(len(axes))) for tile, slices in held.items()}
+        blocks = all(
+            len(slices) == prod(span)
+            and all(start % width == 0 for start, width in zip(starts[tile], span, strict=True))
+            and all(p[a] - starts[tile][a] < span[a] for p in slices for a in range(len(axes)))
+            for tile, slices in held.items()
+        )
+        split = tuple((loops[i][0], loops[i][1] // width) for i, width in zip(axes, span, strict=True))
+        if not blocks or len(set(starts.values())) != len(held) or prod(f for _, f in split) != len(held):
+            return None
+        order = sorted(held, key=lambda tile: tuple(start // w for start, w in zip(starts[tile], span, strict=True)))
+        return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a
@@ -708,3 +739,18 @@ class _Lowering:
         caller falls back to the rows-per-column estimate.
         """
         return len(self._column_ids_of(src))
+
+
+def _without_innermost(tiling: InterCoreTiling, factor: int) -> InterCoreTiling | None:
+    """``tiling`` with ``factor`` taken off its innermost loops, None where they do not factor it."""
+    split = list(tiling)
+    while factor > 1 and split:
+        dim, size = split.pop()
+        if factor % size == 0:
+            factor //= size
+        elif size % factor == 0:
+            split.append((dim, size // factor))
+            factor = 1
+        else:
+            return None
+    return tuple(split) if factor == 1 else None
