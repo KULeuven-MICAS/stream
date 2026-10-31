@@ -1,4 +1,4 @@
-from xdsl.ir.affine import AffineMap
+from xdsl.ir.affine import AffineExpr, AffineMap
 
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.node import NormalizationNode
@@ -26,12 +26,16 @@ class NormalizationParser(OnnxOperatorParser):
         assert len(outputs) == 1, f"{self.node.op_type} must have exactly 1 output."
         rank = len(outputs[0].shape)
         identity = AffineMap.identity(rank)
+        axes = self._reduction_axes(rank)
+        # A layer normalization's scale and shift run along the normalized axes.
+        params = tuple(name_to_tensor_dict[name] for name in self.node.input[1:] if name)
+        over_axes = AffineMap(rank, 0, tuple(AffineExpr.dimension(a) for a in axes))
 
         return NormalizationNode(
             type=self.node.op_type,
             name=self.node.name,
-            inputs=(data,),
+            inputs=(data, *params),
             outputs=outputs,
-            operand_mapping=(identity, identity),
-            reduction_axes=self._reduction_axes(rank),
+            operand_mapping=(identity, *(over_axes for _ in params), identity),
+            reduction_axes=axes,
         )

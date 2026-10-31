@@ -48,6 +48,7 @@ class CapacityTiler:
         self.accelerator = accelerator
         self.fill_fraction = fill_fraction
         self._shapes: dict[tuple, tuple[int, ...]] = {}
+        self._unrolling: dict[tuple[str, str], dict[LayerDim, int]] = {}
 
     def plan(  # noqa: PLR0913
         self,
@@ -110,21 +111,41 @@ class CapacityTiler:
             for dims in [self.sub_workload.get_dims(cn)]
         }
         reductions = set().union(*reduced_by.values())
-        fitted: list[tuple[float, dict[LayerDim, int]]] = []
-        if overflow() <= 0 and fill() >= self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll):
-            fitted.append((fill(), dict(seed)))
-        for start in dict.fromkeys((tuple(seed.items()), tuple(per_core.items()))) if not fitted else ():
-            for candidates in ([d for d in per_core if d not in reductions], list(per_core)):
-                resident.update(start)
-                while overflow() > 0 and (
-                    step := self._shrink(candidates, resident, per_core, divisors, overflow, fill, aligned)
-                ):
-                    resident[step[0]] = step[1]
-                if overflow() <= 0:
-                    fitted.append((fill(), dict(resident)))
-        if not fitted:
+        # A tiling that keeps the extent each array unrolls a dim over (or the whole slice where it is smaller) wins
+        # where it cuts no contraction the best other tiling keeps whole.
+        floors = {
+            d: min(f, per_core[d]) for d, f in self._unrolled_extents(cns, cores_per_node).items() if d in per_core
+        }
+        floored = {d: [t for t in ts if t >= floors.get(d, 1)] for d, ts in divisors.items()}
+        best_fill = self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll)
+        found = [
+            self._fits(
+                seed,
+                per_core,
+                allowed,
+                reductions,
+                resident=resident,
+                overflow=overflow,
+                fill=fill,
+                aligned=aligned,
+                best_fill=best_fill,
+                seeded=seeded,
+            )
+            for allowed, seeded in (
+                (floored, all(seed[d] >= floors.get(d, 1) for d in per_core)),
+                (divisors, True),
+            )
+        ]
+        if not found[1]:
             return None
-        resident.update(max(fitted, key=lambda found: found[0])[1])
+
+        def contractions_cut(tiles: dict[LayerDim, int]) -> set[LayerDim]:
+            return {d for d in reductions & per_core.keys() if tiles[d] < per_core[d]}
+
+        other = contractions_cut(max(found[1], key=lambda fit: fit[0])[1])
+        kept = [fit for fit in found[0] if contractions_cut(fit[1]) <= other]
+        fitted, allowed = (kept, floored) if kept else (found[1], divisors)
+        resident.update(max(fitted, key=lambda fit: fit[0])[1])
         indexed = {
             dim: sum(
                 math.prod(t.shape) * t.operand_type.bitwidth
@@ -134,7 +155,7 @@ class CapacityTiler:
             )
             for dim in per_core
         }
-        self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned)
+        self._pipeline(resident, per_core, allowed, indexed, reductions, overflow, fill, aligned)
         if resident == seed:
             return []
         # A tiled reduction around tiled output dims keeps the outputs of every tile inside it resident while they
@@ -150,6 +171,25 @@ class CapacityTiler:
         )
         accumulating = any(bits > budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
         return self._emit(cns, resident, per_core, indexed, reductions if accumulating else set())
+
+    def _fits(  # noqa: PLR0913
+        self, seed, per_core, allowed, reductions, *, resident, overflow, fill, aligned, best_fill, seeded
+    ) -> list[tuple[float, dict[LayerDim, int]]]:
+        """The fitting tilings within ``allowed`` with their fill: the seed where it may and does fit, else shrunk."""
+        resident.update(seed)
+        if seeded and overflow() <= 0 and fill() >= best_fill:
+            return [(fill(), dict(seed))]
+        fitted = []
+        for start in dict.fromkeys((tuple(seed.items()), tuple(per_core.items()))):
+            for candidates in ([d for d in per_core if d not in reductions], list(per_core)):
+                resident.update(start)
+                while overflow() > 0 and (
+                    step := self._shrink(candidates, resident, per_core, allowed, overflow, fill, aligned)
+                ):
+                    resident[step[0]] = step[1]
+                if overflow() <= 0:
+                    fitted.append((fill(), dict(resident)))
+        return fitted
 
     def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned) -> None:  # noqa: PLR0913
         """Cut ``resident`` into at least :attr:`PIPELINE_TILES` steady-state tiles, each cut the least that keeps the
@@ -239,6 +279,32 @@ class CapacityTiler:
             tiles = sorted((sizes[d] for d in self._node_dims(cn)), reverse=True) + [1] * len(widths)
             total += sum(math.log(min(tile, width) / width) for tile, width in zip(tiles, widths, strict=False))
         return total
+
+    def _unrolled_extents(
+        self, cns: tuple[ComputationNode, ...], cores_per_node: dict[ComputationNode, list[Core]]
+    ) -> dict[LayerDim, int]:
+        """Per unique dim, the least tile that keeps each node's array as full as its whole layer does."""
+        from stream.stages.estimation.core_cost_backends import ZigZagBackend, select_backend  # noqa: PLC0415
+        from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator  # noqa: PLC0415 -- import cycle
+
+        extents: dict[LayerDim, int] = {}
+        for cn in cns:
+            core = next((c for c in cores_per_node.get(cn, []) if getattr(c, "operational_array", None)), None)
+            if core is None or select_backend(core).name != ZigZagBackend.name:
+                continue
+            if (key := (cn.name, core.name)) not in self._unrolling:
+                dims = self.sub_workload.get_dims(cn)
+                try:
+                    spread = ZigZagCostEstimator(self.sub_workload, self.accelerator, None).array_floors(cn, core)  # type: ignore[arg-type]
+                except Exception as exc:  # noqa: BLE001 -- ZigZag rejects the layer, which its estimate then prices
+                    logger.warning(
+                        "No spatial mapping of %s on core %s (%s); its tiles keep no floor.", cn.name, core.id, exc
+                    )
+                    spread = {}
+                self._unrolling[key] = {self.sub_workload.leading_dim(dims[p])[0]: f for p, f in spread.items()}
+            for dim, factor in self._unrolling[key].items():
+                extents[dim] = max(extents.get(dim, 1), factor)
+        return extents
 
     def _node_sizes(
         self,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from math import prod
 
 import networkx as nx
 import numpy as np
@@ -27,7 +28,10 @@ __all__ = [
 ]
 
 # Sub-operator types that carry the normalization's intra-op reduction (they drop the reduced axes).
-REDUCTION_SUBOPS = ("ReduceMax", "ReduceSum", "ReduceSumSquare")
+REDUCTION_SUBOPS = ("ReduceMax", "ReduceSum", "ReduceMean", "ReduceSumSquare")
+
+# Flash attention's online softmax over one block of keys, the block's own width reduced.
+_PART_OF = {"PartialSoftmax": "Softmax"}
 
 # Separator in a ``fused_kernel`` tag: ``"<OpType>:<name>"`` (e.g. ``"Softmax:softmax"``).
 FUSED_KERNEL_SEP = ":"
@@ -54,12 +58,20 @@ def _drop(rank: int, axes: tuple[int, ...]) -> AffineMap:
     return AffineMap(rank, 0, tuple(AffineExpr.dimension(i) for i in kept))
 
 
+def _keep(rank: int, axes: tuple[int, ...]) -> AffineMap:
+    """Access map of a parameter over the normalized ``axes`` alone, such as a layer normalization's scale."""
+    return AffineMap(rank, 0, tuple(AffineExpr.dimension(i) for i in axes))
+
+
 def _reduced_shape(shape: tuple[int, ...], axes: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(s for i, s in enumerate(shape) if i not in axes)
 
 
-def _softmax_subgraph(x: Tensor, axes: tuple[int, ...], dt: FixedBitwidthType, base: str) -> tuple[list, Tensor]:
+def _softmax_subgraph(
+    inputs: tuple[Tensor, ...], axes: tuple[int, ...], dt: FixedBitwidthType, base: str
+) -> tuple[list, Tensor]:
     """Safe softmax: max → exp(·−max) → sum → div. Two reductions over ``axes``, two broadcasts."""
+    (x,) = inputs
     rank = len(x.shape)
     idn, drp = _identity(rank), _drop(rank, axes)
     red = _reduced_shape(x.shape, axes)
@@ -76,8 +88,11 @@ def _softmax_subgraph(x: Tensor, axes: tuple[int, ...], dt: FixedBitwidthType, b
     return nodes, y
 
 
-def _lpnorm_subgraph(x: Tensor, axes: tuple[int, ...], dt: FixedBitwidthType, base: str) -> tuple[list, Tensor]:
+def _lpnorm_subgraph(
+    inputs: tuple[Tensor, ...], axes: tuple[int, ...], dt: FixedBitwidthType, base: str
+) -> tuple[list, Tensor]:
     """L2 normalization: sum(x²) over ``axes`` → sqrt → div. One reduction, one broadcast."""
+    (x,) = inputs
     rank = len(x.shape)
     idn, drp = _identity(rank), _drop(rank, axes)
     red = _reduced_shape(x.shape, axes)
@@ -103,9 +118,58 @@ def _lpnorm_subgraph(x: Tensor, axes: tuple[int, ...], dt: FixedBitwidthType, ba
     return nodes, y
 
 
+def _layernorm_subgraph(
+    inputs: tuple[Tensor, ...], axes: tuple[int, ...], dt: FixedBitwidthType, base: str
+) -> tuple[list, Tensor]:
+    """Layer normalization: mean → centre → sum of squares → sqrt → div → scale (→ shift)."""
+    x, scale, *shift = inputs
+    rank = len(x.shape)
+    idn, drp, own = _identity(rank), _drop(rank, axes), _keep(rank, axes)
+    red = _reduced_shape(x.shape, axes)
+    red_idn = _identity(len(red))
+    mean = Tensor.create(f"{base}_mean", dt, red)
+    centred = Tensor.create(f"{base}_centred", dt, x.shape)
+    sumsq = Tensor.create(f"{base}_sumsq", dt, red)
+    std = Tensor.create(f"{base}_std", dt, red)
+    norm = Tensor.create(f"{base}_norm", dt, x.shape)
+    scaled = Tensor.create(f"{base}_scaled" if shift else f"{base}_out", dt, x.shape)
+    nodes = [
+        ComputationNode(
+            type="ReduceMean", name=f"{base}_mean", inputs=(x,), outputs=(mean,), operand_mapping=(idn, drp)
+        ),
+        ComputationNode(
+            type="Sub", name=f"{base}_centred", inputs=(x, mean), outputs=(centred,), operand_mapping=(idn, drp, idn)
+        ),
+        ComputationNode(
+            type="ReduceSumSquare",
+            name=f"{base}_sumsq",
+            inputs=(centred,),
+            outputs=(sumsq,),
+            operand_mapping=(idn, drp),
+        ),
+        ComputationNode(
+            type="Sqrt", name=f"{base}_std", inputs=(sumsq,), outputs=(std,), operand_mapping=(red_idn, red_idn)
+        ),
+        ComputationNode(
+            type="Div", name=f"{base}_norm", inputs=(centred, std), outputs=(norm,), operand_mapping=(idn, drp, idn)
+        ),
+        ComputationNode(
+            type="Mul", name=f"{base}_scale", inputs=(norm, scale), outputs=(scaled,), operand_mapping=(idn, own, idn)
+        ),
+    ]
+    if not shift:
+        return nodes, scaled
+    y = Tensor.create(f"{base}_out", dt, x.shape)
+    shifted = ComputationNode(
+        type="Add", name=f"{base}_shift", inputs=(scaled, shift[0]), outputs=(y,), operand_mapping=(idn, own, idn)
+    )
+    return [*nodes, shifted], y
+
+
 _SUBGRAPHS = {
     "Softmax": _softmax_subgraph,
     "LpNormalization": _lpnorm_subgraph,
+    "LayerNormalization": _layernorm_subgraph,
 }
 
 NORMALIZATION_OPS = tuple(_SUBGRAPHS)
@@ -117,14 +181,45 @@ def decompose_normalization(node: NormalizationNode) -> Workload:
     builder = _SUBGRAPHS.get(node.type)
     if builder is None:
         raise NotImplementedError(f"no affine decomposition registered for normalization {node.type!r}")
-    x = node.inputs[0]
-    subnodes, y = builder(x, node.reduction_axes, x.operand_type, node.name)
-    return Workload([InEdge(name=x.name, outputs=(x,)), *subnodes, OutEdge(name=f"{node.name}_out", inputs=(y,))])
+    subnodes, y = builder(node.inputs, node.reduction_axes, node.inputs[0].operand_type, node.name)
+    edges = [InEdge(name=t.name, outputs=(t,)) for t in node.inputs]
+    return Workload([*edges, *subnodes, OutEdge(name=f"{node.name}_out", inputs=(y,))])
 
 
 def fused_kernel_tag(node: NormalizationNode) -> str:
     """The ``fused_kernel`` label carried by every sub-op of ``node`` once expanded (``"<type>:<name>"``)."""
     return f"{node.type}{FUSED_KERNEL_SEP}{node.name}"
+
+
+def operator_types_of(node: ComputationNode) -> set[str]:
+    """The operator types a core lists to run ``node``: its own, or the operator it is expanded from or part of."""
+    whole = node.fused_kernel.partition(FUSED_KERNEL_SEP)[0] if node.fused_kernel else _PART_OF.get(node.type)
+    return {node.type, whole} if whole else {node.type}
+
+
+def _points(workload: Workload, node: ComputationNode) -> int:
+    return prod(workload.get_dimension_size(dim) for dim in workload.get_dims(node))
+
+
+def expanded_work(node: ComputationNode) -> list[tuple[str, float]]:
+    """The operators ``node`` (or the operator it is part of) expands into, each with its operations per point."""
+    from stream.workload.decompose import decompose  # noqa: PLC0415 -- the registry imports this module lazily
+
+    whole = _PART_OF.get(node.type)
+    if whole is not None:
+        node = NormalizationNode(
+            type=whole,
+            name=node.name,
+            inputs=node.inputs,
+            outputs=node.outputs,
+            operand_mapping=node.operand_mapping,
+            reduction_axes=(node.num_dims - 1,),
+        )
+    parts = decompose(node)
+    if parts is None:
+        return []
+    own = _points(Workload([*(InEdge(name=t.name, outputs=(t,)) for t in node.inputs), node]), node)
+    return [(part.type, _points(parts, part) / own) for part in parts.get_computation_nodes()]
 
 
 def source_operator(node: Node) -> str:
@@ -181,7 +276,11 @@ def collapse_fused_kernels(workload: Workload) -> Workload:
         norm_type, _, norm_name = tag.partition(FUSED_KERNEL_SEP)
         produced = {t.name for s in subs for t in s.outputs}
         consumed = {t.name for s in subs for t in s.inputs}
-        x = next(t for s in subs for t in s.inputs if t.name not in produced)
+        read: dict[Tensor, AffineMap] = {}
+        for s in subs:
+            for t in s.inputs:
+                if t.name not in produced:
+                    read.setdefault(t, s.get_mapping(t))
         y = next(t for s in subs for t in s.outputs if t.name not in consumed)
         reduce_op = next(s for s in subs if s.type in REDUCTION_SUBOPS)
         rank = reduce_op.num_dims
@@ -192,9 +291,9 @@ def collapse_fused_kernels(workload: Workload) -> Workload:
             NormalizationNode(
                 type=norm_type,
                 name=norm_name,
-                inputs=(x,),
+                inputs=tuple(read),
                 outputs=(y,),
-                operand_mapping=(idn, idn),
+                operand_mapping=(*read.values(), idn),
                 reduction_axes=reduction_axes,
             )
         )

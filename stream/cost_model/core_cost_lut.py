@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Bumped whenever a ZigZag/cost-model change alters the numbers a cached entry holds; on-disk caches
 # tagged with a different version are ignored (a delta-pin update travels with this bump). See plan 10.
-COST_MODEL_VERSION = 1
+COST_MODEL_VERSION = 2
 
 
 def _to_yaml_scalar(v: Any) -> Any:

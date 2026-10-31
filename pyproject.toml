@@ -105,6 +105,10 @@ generic = "stream.stages.generation.mapping_generators:GENERIC_MAPPING"
 # outranks a built-in of the same name. The value is the distribution's module.
 [project.entry-points."stream.overlays"]
 
+# Top-level accelerator keys: the entry-point name is the key, its object a cerberus `rule` and a
+# `check(accelerator, value)` returning problems. Stream validates them and reads none.
+[project.entry-points."stream.accelerator_keys"]
+
 [project.entry-points."stream.workload_blocks"]
 # Built-in blocks register in-tree (stream.workload.blocks); overlays add their own entries here.
 

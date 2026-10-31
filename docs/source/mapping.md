@@ -17,7 +17,7 @@ If you don't pass a mapping, `evaluate_mapping` asks the mapping generator that 
 
 The generic generator (`stream/stages/generation/generic_mapping_generation.py`):
 
-- **Selects eligible cores per node** from the hardware. A core with an `operator_types` list only accepts those op types (so pooling goes to the pooling core, SiLU/Mul to the SIMD core); a core without the list accepts anything. Memory cores are never chosen for computation.
+- **Selects eligible cores per node** from the hardware. A core with an `operator_types` list only accepts those op types (so pooling goes to the pooling core, SiLU/Mul to the SIMD core); a core without the list accepts anything. A core listing an operator also runs the operators it is expanded into and its parts (a core listing `Softmax` runs `PartialSoftmax`). A node no core runs is refused, naming its operator. Memory cores are never chosen for computation.
 - **Splits work across cores** when several compute cores are eligible, by factoring the node's dimensions into an inter-core tiling.
 - **Writes per-fusion-group `mapping.yaml` files** under the run's output directory, so you can inspect (and later hand-edit) exactly what it chose.
 

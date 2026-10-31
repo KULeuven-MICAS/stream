@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 from dataclasses import dataclass
 from math import ceil
@@ -24,6 +25,7 @@ from stream.datatypes import ELEMENT_BITS, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
+from stream.workload.normalization import expanded_work
 from stream.workload.utils import affine_bounds, is_mac_operator_type, operand_inputs
 from stream.workload.workload import ComputationNode, Workload
 
@@ -276,7 +278,7 @@ class ZigZagCostEstimator:
         try:
             layer_node = self.get_layer_node(node, core)
             cme = self.run_zigzag(layer_node, core)
-            cme = self.increase_cc_per_op(cme, node.type)
+            cme = self.increase_cc_per_op(cme, node)
             return CoreCostEntry(
                 energy_total=getattr(cme, "energy_total", 0),
                 latency_total=self.steady_latency(cme),
@@ -307,7 +309,7 @@ class ZigZagCostEstimator:
             # getattr default guards an aie2 tile, whose Core.__getattr__ raises instead of returning None.
             array = getattr(core, "operational_array", None)
             unit_count = max(1, int(getattr(array, "total_unit_count", 1) or 1))
-            ideal_cycle = ceil(total_ops / unit_count) * self.get_cc_per_op(node.type)
+            ideal_cycle = ceil(ceil(total_ops / unit_count) * self.work_per_op(node)[1])
             return CoreCostEntry(
                 energy_total=0.0,
                 latency_total=float(ideal_cycle),
@@ -352,6 +354,10 @@ class ZigZagCostEstimator:
     @staticmethod
     def _array_fill(node: ComputationNode, core: Core, mix: bool) -> int:
         """The units of the array the best spatial mapping of either kind keeps busy, found without costing it."""
+        return ZigZagCostEstimator._spatial_mapping(node, core, mix).hw_utilization
+
+    @staticmethod
+    def _spatial_mapping(node: ComputationNode, core: Core, mix: bool) -> ZigZagSpatialMapping:
         stage = SpatialMappingGeneratorStage(
             [CostModelStage],
             accelerator=core.to_zigzag_core(),
@@ -359,7 +365,26 @@ class ZigZagCostEstimator:
             enable_mix_spatial_mapping_generation=mix,
             nb_mappings_generated=1,
         )
-        return next(stage.generate_spatial_mappings()).hw_utilization
+        return next(stage.generate_spatial_mappings())
+
+    def array_floors(self, node: ComputationNode, core: Core) -> dict[int, int]:
+        """Per dim of ``node`` (by position), the least extent that, the others whole, fills the array as full."""
+        attributes = self.get_layer_node_attributes(node, core)
+        whole = dict(attributes.layer_dim_sizes.data)
+        mapping = self.get_mapping_attributes(node, core)
+
+        def fill(dim: ZigZagLayerDim, extent: int) -> int:
+            sizes = ZigZagLayerDimSizes(whole | {dim: extent})
+            layer = ZigZagLayerNode(0, node.name, dataclasses.replace(attributes, layer_dim_sizes=sizes), mapping)
+            return max(self._array_fill(layer, core, mix) for mix in (False, True))
+
+        full = fill(next(iter(whole)), whole[next(iter(whole))])
+        floors: dict[int, int] = {}
+        for dim, size in whole.items():
+            least = next(t for t in range(1, size + 1) if size % t == 0 and fill(dim, t) >= full)
+            if least > 1 and str(dim)[1:].isdigit():
+                floors[int(str(dim)[1:])] = least
+        return floors
 
     def instantiate_zigzag_flow(self, node: ComputationNode, core: Core, mix: bool = False) -> _KwargsMainStage:
         """Instantiate a runnable ZigZag mainstage, generating spatial mappings that unroll several loops over one
@@ -394,10 +419,14 @@ class ZigZagCostEstimator:
             case _:
                 return 1
 
-    def increase_cc_per_op(self, cme: CostModelEvaluation, op_type: str):
-        """Given a ZigZag that assumes each operation takes one cycle, generate a new one that takes into account that
-        the operation might take more than one cycle."""
-        cc_per_op = self.get_cc_per_op(op_type)
+    def work_per_op(self, node: ComputationNode) -> tuple[float, float]:
+        """Operations and cycles per point of ``node``: those of the operators it expands into, else one of its own."""
+        parts = expanded_work(node) or [(node.type, 1.0)]
+        return sum(ops for _, ops in parts), sum(self.get_cc_per_op(op_type) * ops for op_type, ops in parts)
+
+    def increase_cc_per_op(self, cme: CostModelEvaluation, node: ComputationNode):
+        """ZigZag's evaluation with the operations and cycles each point of ``node`` costs (:meth:`work_per_op`)."""
+        ops, cc_per_op = self.work_per_op(node)
         new_cme = CostModelEvaluation(
             accelerator=cme.accelerator,
             layer=cme.layer,
@@ -407,8 +436,8 @@ class ZigZagCostEstimator:
             access_same_data_considered_as_no_access=cme.access_same_data_considered_as_no_access,
             cycles_per_op=cc_per_op,
         )
+        new_cme.energy_total += new_cme.mac_energy * (ops - 1)
+        new_cme.mac_energy *= ops
         if cc_per_op > 1:
-            logger.warning(
-                f"ZigZagCostEstimator: Increasing cycles per operation for op type {op_type} to {cc_per_op} cycles."
-            )
+            logger.debug("%s costs %g cycles and %g operations per point.", node.type, cc_per_op, ops)
         return new_cme
