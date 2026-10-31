@@ -86,6 +86,7 @@ class ONNXModelParser:
         "Sub": ElementwiseParser,
         "Mul": ElementwiseParser,
         "Div": ElementwiseParser,
+        "Exp": ElementwiseParser,
         "Pow": ElementwiseParser,
         "Relu": ElementwiseParser,
         "Silu": ElementwiseParser,
