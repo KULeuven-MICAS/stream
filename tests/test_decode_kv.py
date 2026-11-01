@@ -352,6 +352,17 @@ def test_attention_on_a_cache_split_by_heads_is_split_into_the_fewest_parts_that
     assert estimate.cycles < 1.01 * _hbm_time("ring", context=32768)
 
 
+def test_a_long_cache_pooled_in_one_hbm_is_split_into_parts_its_slices_stream(tmp_path):
+    """Two sequences of 128k in slices of 128 KiB: each core's half of the cache is thousands of slices' worth, which
+    the parts of the sequence and the tiles cut within them stream through, all from the one HBM."""
+    hardware = _hardware("ring", sram_bits=128 * 1024 * 8)
+    estimate = _decode(tmp_path, hardware, _placements(POOLED), batch=2, context=131072)
+    assert _cache_view(estimate)[2] > 1
+    assert not _walks_an_unfinished_reduction(estimate)
+    assert _hbm_shares(estimate) == {"hbm_0": 1.0}
+    assert estimate.cycles >= _hbm_time("ring", batch=2, context=131072, hbms=1)
+
+
 def test_flash_decoding_written_by_hand_keeps_each_part_s_softmax_whole(tmp_path):
     """Its maxima are no softmax's, yet the exponent reads each part's maximum along the part: it is not tiled."""
     placements = _placements(BY_SEQUENCE, q=COPIED)

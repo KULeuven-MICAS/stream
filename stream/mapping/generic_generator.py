@@ -638,7 +638,7 @@ class GenericMappingGenerator:
         """Whether each of ``groups`` holding one of the nodes ``names`` fits on its cores under some tiling."""
         return all(self._fits(sub) for sub in groups if names & {cn.name for cn in sub.get_computation_nodes()})
 
-    def fits_fused(self, names: set[str]) -> bool:
+    def fits_fused(self, names: set[str], scale_tiles: bool = False) -> bool:
         """Whether the nodes ``names``, a run of the workload, fit on their cores fused as a group of their own."""
         order = [node.name for node in self.workload.dataflow_sort() if isinstance(node, ComputationNode)]
         run = [i for i, name in enumerate(order) if name in names]
@@ -648,13 +648,13 @@ class GenericMappingGenerator:
             for sub in self.workload.split_fusion_groups(cut_points=cuts)
             if names & {cn.name for cn in sub.get_computation_nodes()}
         ]
-        return len(held) == 1 and self._fits(held[0])
+        return len(held) == 1 and self._fits(held[0], scale_tiles)
 
-    def _fits(self, sub_workload: Workload) -> bool:
+    def _fits(self, sub_workload: Workload, scale_tiles: bool = False) -> bool:
         """Whether some tiling fits the group's operators fused on their cores."""
         cns = tuple(sub_workload.get_computation_nodes())
         seed = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
-        return self._capacity_refine(sub_workload, cns, seed) is not None
+        return self._capacity_refine(sub_workload, cns, seed, scale_tiles) is not None
 
     def _weight_overflow(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> float:
         """How far ``cns``' weights overflow half their cores under the split that suits them best (0 when they fit)."""
@@ -671,10 +671,18 @@ class GenericMappingGenerator:
             selected = [dict(e) for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in names]
             return selected or self._whole_layer_tiling(sub_workload, cns)
         automatic = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
-        return self._capacity_refine(sub_workload, cns, automatic) or automatic
+        return (
+            self._capacity_refine(sub_workload, cns, automatic)
+            or self._capacity_refine(sub_workload, cns, automatic, scale_tiles=True)
+            or automatic
+        )
 
     def _capacity_refine(
-        self, sub_workload: Workload, cns: tuple[ComputationNode, ...], seed_tiling: list[dict[str, Any]]
+        self,
+        sub_workload: Workload,
+        cns: tuple[ComputationNode, ...],
+        seed_tiling: list[dict[str, Any]],
+        scale_tiles: bool = False,
     ) -> list[dict[str, Any]] | None:
         """Stream extra axes (e.g. a matmul contraction) when ``seed_tiling`` still overflows the operand buffer; None
         when no tiling fits."""
@@ -694,7 +702,7 @@ class GenericMappingGenerator:
             if len(cores) > 1
         }
         refined = CapacityTiler(sub_workload, self.accelerator, split_axes=self._split_axes).plan(
-            cns, cores_per_node, unroll, protected, seed_tiling, node_unroll
+            cns, cores_per_node, unroll, protected, seed_tiling, node_unroll, scale_tiles=scale_tiles
         )
         return refined if refined is None else refined or seed_tiling
 

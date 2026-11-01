@@ -82,22 +82,24 @@ class FlashDecodingStage(Stage):
         counts = _part_counts(attention.length, step)
         rewrite = get_workload_rewrite("flash_decoding")
 
-        def fits(count: int) -> bool:
+        def fits(count: int, scale_tiles: bool) -> bool:
             rewritten = rewrite.apply(workload, attention, count)
-            return self._fits(rewritten, {f"{name}_part" for name in names}, viewed_placements(rewritten, declared))
+            viewed = viewed_placements(rewritten, declared)
+            return self._fits(rewritten, {f"{name}_part" for name in names}, viewed, scale_tiles)
 
         # Fitting is not monotone in the count (the tiler may fit 32 parts and not 256): try them in order.
-        if not counts or not fits(counts[-1]):
-            return step
-        return next(count for count in counts if count == counts[-1] or fits(count))
+        for scale_tiles in (False, True):
+            if counts and fits(counts[-1], scale_tiles):
+                return next(count for count in counts if count == counts[-1] or fits(count, scale_tiles))
+        return step
 
     def _generator(self, workload: Workload, runtime_args: dict[str, Any]) -> GenericMappingGenerator:
         return GenericMappingGenerator(
             self.ctx.get("accelerator"), workload, self.ctx.get("output_path"), runtime_args=runtime_args or None
         )
 
-    def _fits(self, workload: Workload, names: set[str], runtime_args: dict[str, Any]) -> bool:
-        return self._generator(workload, runtime_args).fits_fused(names)
+    def _fits(self, workload: Workload, names: set[str], runtime_args: dict[str, Any], scale_tiles: bool) -> bool:
+        return self._generator(workload, runtime_args).fits_fused(names, scale_tiles)
 
     def _fits_cut(self, workload: Workload, names: set[str], runtime_args: dict[str, Any]) -> bool:
         """Whether the attention ``names`` fits, cut where the mapping generator would cut it."""
