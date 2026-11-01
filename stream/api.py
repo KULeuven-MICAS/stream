@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from zigzag.mapping.temporal_mapping import TemporalMappingType
+from zigzag.utils import open_yaml
 
 from stream.compiler.kernels.library import KernelLibrary
 from stream.frontends import load_workload
@@ -144,7 +145,8 @@ def evaluate_mapping(
     """Solve the allocation of each fused group of ``mapping`` and price it, without generating code.
 
     Each group costs its allocation's estimate, and a dispatch of several groups adds the reconfiguration
-    the accelerator's hardware namespaces charge. Without a mapping, the mapping generator that claims
+    the accelerator's hardware namespaces charge. Without a mapping, or with a placement file, one that only places
+    the workload's inputs and outputs (``runtime_args`` and no ``layers``), the mapping generator that claims
     the accelerator proposes one.
     """
     return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=False)
@@ -189,6 +191,11 @@ def generate_code(
     return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=True)
 
 
+def _maps_layers(mapping: str) -> bool:
+    data = open_yaml(mapping)
+    return not isinstance(data, dict) or "layers" in data
+
+
 def _solve(
     hardware: str | Accelerator,
     workload: Any,
@@ -209,7 +216,8 @@ def _solve(
             families = load_families(
                 options.families if options.families is not None else default_families(accelerator)
             )
-        proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
+        fixed = mapping is not None and _maps_layers(mapping)
+        proposal = [FixedMappingGenerationStage] if fixed else mapping_generator_for(accelerator).stages()
         emission = [codegen_backend_for(accelerator).stage()] if codegen else []
         stages = [AcceleratorParserStage, *proposal, FusionGroupIterationStage, *emission, *_ALLOCATION_STAGES]
         with span("load_workload"):

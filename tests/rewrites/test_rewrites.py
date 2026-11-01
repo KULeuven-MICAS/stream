@@ -153,7 +153,7 @@ def test_flash_attention_rewrite_is_a_key_block_scan():
 
 
 def test_registry_and_dispatch():
-    assert registered_rewrites() == ["chunked_scan", "flash_attention", "gated_deltanet", "ssd"]
+    assert registered_rewrites() == ["chunked_scan", "flash_attention", "flash_decoding", "gated_deltanet", "ssd"]
     scan = _source("Scan", 8, 4)
     assert apply_rewrites(scan, RewriteParams(chunk_size=4)) is not None
     assert apply_rewrites(_source("Conv", 8, 4), RewriteParams(chunk_size=4)) is None

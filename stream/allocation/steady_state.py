@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any
 
 from stream.opt.allocation.constraint_optimization.families.traffic import link_name
 from stream.opt.allocation.constraint_optimization.report import guarded
-from stream.workload.node import Tensor
+from stream.workload.node import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
     from stream.allocation.allocation import Allocation
     from stream.datatypes import LayerDim
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
-    from stream.workload.node import ComputationNode, HasIterationSpace, TransferNode
+    from stream.workload.node import HasIterationSpace
     from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 
 
@@ -120,11 +120,14 @@ class _NodeDetail:
         keep, what each source hands each target, and the bits it moves. A target holds the copies of the nodes it
         runs, each at its position among that copy's targets modulo the positions, as sources pair with targets."""
         space, solution = self.space, self.allocation.solution
-        route, n = solution.transfer_routes[tn], self._positions(tn)
+        route = solution.transfer_routes[tn]
         # Pair each copy with the targets it may land in; a target no copy may land in gets the first copy.
         held = [(copy, m) for copy in tn.outputs for m in route.targets if m in space.candidate_memories(copy)]
         held += [(tn.outputs[0], c) for c in route.targets if all(c != target for _, target in held)]
-        at = [(copy, [other for other, _ in held[:j]].count(copy) % n) for j, (copy, _) in enumerate(held)]
+        at = [
+            (copy, [other for other, _ in held[:j]].count(copy) % self._copy_positions(tn, copy))
+            for j, (copy, _) in enumerate(held)
+        ]
         moved = [
             self.workload.get_tensor_of_transfer_to_single_core(copy, tn, self.mapping, p, space.ssis.get(copy))
             for copy, p in at
@@ -153,6 +156,14 @@ class _NodeDetail:
     def _positions(self, node: HasIterationSpace) -> int:
         tiling = self.mapping.get(node).inter_core_tiling
         return prod(f for _, f in tiling[0]) if tiling else 1
+
+    def _copy_positions(self, tn: TransferNode, copy: Tensor) -> int:
+        """The positions a copy's tile is told apart by: those of the computation reading it, of the transfer where
+        another transfer reads it, one for an output edge."""
+        reader = next(node for node in self.workload.successors(tn) if copy in node.inputs)
+        if isinstance(reader, ComputationNode):
+            return self._positions(reader)
+        return self._positions(tn) if isinstance(reader, TransferNode) else 1
 
     def _sliding(self, node: HasIterationSpace) -> dict[str, Any]:
         """Where a window slides: its work per fused tile along each sliding dim, and how far it runs ahead."""

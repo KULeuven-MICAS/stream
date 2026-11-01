@@ -7,7 +7,7 @@ from typing import Any
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import role_of
+from stream.mapping.mapping import placement_split_bits, role_of
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import ComputationNode
@@ -35,16 +35,25 @@ def _divisors_desc(n: int) -> list[int]:
 class CapacityTiler:
     """Choose per-core intra-core tiles so every compute core's resident footprint fits its operand buffer, within
     ``fill_fraction`` of it: the headroom covers what the allocation adds beyond the tiles (handover buffers). Of the
-    tiles that fit, those that keep the most of each node's array filled are taken, then cut finer, as long as that
-    keeps the arrays as full, into at least ``PIPELINE_TILES``."""
+    tiles that fit, those that walk the fewest bits a placement splits and then keep the most of each node's array
+    filled are taken, then cut finer, as long as that keeps the arrays as full, into at least ``PIPELINE_TILES``."""
 
     MAX_STEADY_STATE_TILES = 1024
+    """Steady-state tiles a group may be cut into, or, with ``scale_tiles``, per budget its whole per-core slices fill:
+    what a group must stream through memories it overflows many times over."""
     PIPELINE_TILES = 8
     """Steady-state tiles a group is cut into where its arrays stay as full, so that each tile's transfers overlap the
     others' compute rather than the whole group's loading, computing and storing following each other."""
 
-    def __init__(self, sub_workload: Workload, accelerator: Accelerator, fill_fraction: float = 0.9) -> None:
+    def __init__(
+        self,
+        sub_workload: Workload,
+        accelerator: Accelerator,
+        fill_fraction: float = 0.9,
+        split_axes: dict[str, int] | None = None,
+    ) -> None:
         self.sub_workload = sub_workload
+        self.split_axes = split_axes or {}
         self.accelerator = accelerator
         self.fill_fraction = fill_fraction
         self._shapes: dict[tuple, tuple[int, ...]] = {}
@@ -58,6 +67,8 @@ class CapacityTiler:
         protected: set[LayerDim],
         seed_tiling: list[dict[str, Any]] | None = None,
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
+        *,
+        scale_tiles: bool = False,
     ) -> list[dict[str, Any]] | None:
         """Intra-core tiling for the group, ``[]`` when it already fits (caller keeps its own tiling), or None when no
         tiling within :attr:`MAX_STEADY_STATE_TILES` fits.
@@ -72,11 +83,9 @@ class CapacityTiler:
         # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
         per_core: dict[LayerDim, int] = {}
         divisors: dict[LayerDim, list[int]] = {}
+        slices = self._slices(unroll)
         for dim in dict.fromkeys(lead(d)[0] for cn in cns for d in self.sub_workload.get_dims(cn)):
-            full = self.sub_workload.get_dimension_size(dim)
-            u = unroll.get(dim, 1)
-            size = full // u if u > 1 and full % u == 0 else full
-            if dim not in protected and size > 1:
+            if dim not in protected and (size := slices[dim]) > 1:
                 per_core[dim] = size
                 divisors[dim] = _divisors_desc(size)
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
@@ -92,6 +101,7 @@ class CapacityTiler:
             return self.array_fill(cns, cores_per_node, unroll, resident, node_unroll)
 
         aligned = self._aligned(cns, cores_per_node, unroll, resident, node_unroll, per_core)
+        placed = self._placed(cns)
 
         if not per_core:
             return []
@@ -118,6 +128,11 @@ class CapacityTiler:
         }
         floored = {d: [t for t in ts if t >= floors.get(d, 1)] for d, ts in divisors.items()}
         best_fill = self._best_fill(cns, cores_per_node, unroll, per_core, node_unroll)
+        max_tiles = (
+            self._tile_limit(self.memory_bits(cns, cores_per_node, unroll, per_core, node_unroll), budgets)
+            if scale_tiles
+            else self.MAX_STEADY_STATE_TILES
+        )
         found = [
             self._fits(
                 seed,
@@ -128,8 +143,10 @@ class CapacityTiler:
                 overflow=overflow,
                 fill=fill,
                 aligned=aligned,
+                placed=placed,
                 best_fill=best_fill,
                 seeded=seeded,
+                max_tiles=max_tiles,
             )
             for allowed, seeded in (
                 (floored, all(seed[d] >= floors.get(d, 1) for d in per_core)),
@@ -142,10 +159,14 @@ class CapacityTiler:
         def contractions_cut(tiles: dict[LayerDim, int]) -> set[LayerDim]:
             return {d for d in reductions & per_core.keys() if tiles[d] < per_core[d]}
 
-        other = contractions_cut(max(found[1], key=lambda fit: fit[0])[1])
+        def rank(fit: tuple[float, dict[LayerDim, int]]) -> tuple[int, float]:
+            fill, tiles = fit
+            return -sum(placed.get(d, 0) for d in per_core if tiles[d] < per_core[d]), fill
+
+        other = contractions_cut(max(found[1], key=rank)[1])
         kept = [fit for fit in found[0] if contractions_cut(fit[1]) <= other]
         fitted, allowed = (kept, floored) if kept else (found[1], divisors)
-        resident.update(max(fitted, key=lambda fit: fit[0])[1])
+        resident.update(max(fitted, key=rank)[1])
         indexed = {
             dim: sum(
                 math.prod(t.shape) * t.operand_type.bitwidth
@@ -155,7 +176,7 @@ class CapacityTiler:
             )
             for dim in per_core
         }
-        self._pipeline(resident, per_core, allowed, indexed, reductions, overflow, fill, aligned)
+        self._pipeline(resident, per_core, allowed, indexed, reductions, overflow, fill, aligned, placed)
         if resident == seed:
             return []
         # A tiled reduction around tiled output dims keeps the outputs of every tile inside it resident while they
@@ -173,28 +194,46 @@ class CapacityTiler:
         return self._emit(cns, resident, per_core, indexed, reductions if accumulating else set())
 
     def _fits(  # noqa: PLR0913
-        self, seed, per_core, allowed, reductions, *, resident, overflow, fill, aligned, best_fill, seeded
+        self,
+        seed,
+        per_core,
+        allowed,
+        reductions,
+        *,
+        resident,
+        overflow,
+        fill,
+        aligned,
+        placed,
+        best_fill,
+        seeded,
+        max_tiles,
     ) -> list[tuple[float, dict[LayerDim, int]]]:
-        """The fitting tilings within ``allowed`` with their fill: the seed where it may and does fit, else shrunk."""
+        """The fitting tilings within ``allowed`` with their fill: the seed where it may and does fit and walks no dim a
+        placement splits, else shrunk from it and from whole slices."""
         resident.update(seed)
-        if seeded and overflow() <= 0 and fill() >= best_fill:
+        walks_placement = any(placed.get(d) for d in per_core if seed[d] < per_core[d])
+        if seeded and overflow() <= 0 and fill() >= best_fill and not walks_placement:
             return [(fill(), dict(seed))]
         fitted = []
         for start in dict.fromkeys((tuple(seed.items()), tuple(per_core.items()))):
             for candidates in ([d for d in per_core if d not in reductions], list(per_core)):
                 resident.update(start)
                 while overflow() > 0 and (
-                    step := self._shrink(candidates, resident, per_core, allowed, overflow, fill, aligned)
+                    step := self._shrink(
+                        candidates, resident, per_core, allowed, overflow, fill, aligned, placed, max_tiles=max_tiles
+                    )
                 ):
                     resident[step[0]] = step[1]
                 if overflow() <= 0:
                     fitted.append((fill(), dict(resident)))
         return fitted
 
-    def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned) -> None:  # noqa: PLR0913
+    def _pipeline(self, resident, per_core, divisors, indexed, reductions, overflow, fill, aligned, placed) -> None:  # noqa: PLR0913
         """Cut ``resident`` into at least :attr:`PIPELINE_TILES` steady-state tiles, each cut the least that keeps the
         arrays as full, every tile whole or a multiple of the array's widest dim, and the memories within budget, along
-        the dim indexing the most data (``indexed``, bits per dim), an output dim before a contraction."""
+        the dim walking the fewest bits a placement splits (``placed``), then indexing the most data (``indexed``, bits
+        per dim), an output dim before a contraction."""
         full = fill()
         while math.prod(per_core[d] // resident[d] for d in per_core) < self.PIPELINE_TILES:
             steps = []
@@ -203,35 +242,53 @@ class CapacityTiler:
                 for smaller in (d for d in divisors[dim] if d < keep):
                     resident[dim] = smaller
                     if fill() >= full and aligned({dim}) and overflow() <= 0:
-                        steps.append((indexed[dim], dim not in reductions, smaller / keep, dim, smaller))
+                        steps.append(
+                            (-placed.get(dim, 0), indexed[dim], dim not in reductions, smaller / keep, dim, smaller)
+                        )
                         break
                 resident[dim] = keep
             if not steps:
                 return
-            *_, dim, smaller = max(steps, key=lambda step: step[:3])
+            *_, dim, smaller = max(steps, key=lambda step: step[:4])
             resident[dim] = smaller
+
+    def _tile_limit(self, whole: dict[str, float], budgets: dict[str, int]) -> int:
+        """The most steady-state tiles a group may be cut into, its memories holding ``whole`` at whole slices."""
+        filled = (math.ceil(bits / budgets[m]) for m, bits in whole.items() if budgets[m] > 0)
+        return self.MAX_STEADY_STATE_TILES * max(1, *filled)
+
+    def _placed(self, cns: tuple[ComputationNode, ...]) -> dict[LayerDim, int]:
+        """Per dim, the bits of the group's operands a placement splits along an axis it indexes."""
+        bits: dict[LayerDim, int] = {}
+        for cn in cns:
+            dims = self.sub_workload.get_dims(cn)
+            for p, b in placement_split_bits(cn, self.split_axes).items():
+                dim = self.sub_workload.leading_dim(dims[p])[0]
+                bits[dim] = bits.get(dim, 0) + b
+        return bits
 
     def _best_fill(self, cns, cores_per_node, unroll, per_core, node_unroll) -> float:
         """The array fill of whole per-core slices, which no tiling exceeds."""
         return self.array_fill(cns, cores_per_node, unroll, dict(per_core), node_unroll)
 
     def _shrink(  # noqa: PLR0913
-        self, candidates, resident, per_core, divisors, overflow, fill, aligned
+        self, candidates, resident, per_core, divisors, overflow, fill, aligned, placed, *, max_tiles
     ) -> tuple[LayerDim, int] | None:
-        """The dim and smaller tile that keep the most of the arrays filled, a tile the array maps whole where one
-        does, and, among those, save the most overflow per doubling of the steady-state tiles, within the tile budget;
-        None when no step saves any. Looking past the next tile skips one that only starts double buffering what it
-        shrinks."""
+        """The dim and smaller tile that walk the fewest bits a placement splits, keep the most of the arrays filled, a
+        tile the array maps whole where one does, and, among those, save the most overflow per doubling of the
+        steady-state tiles, within the tile budget; None when no step saves any. Looking past the next tile skips one
+        that only starts double buffering what it shrinks. Walking a split axis makes each iteration wait on one
+        memory, which costs more than a less filled array."""
         base = overflow()
-        best, best_key = None, (-math.inf, False, 0.0)
+        best, best_key = None, (-math.inf, -math.inf, False, 0.0)
         for dim in candidates:
             keep = resident[dim]
             for smaller in (d for d in divisors[dim] if d < keep):
                 resident[dim] = smaller
-                if math.prod(per_core[d] / resident[d] for d in per_core) > self.MAX_STEADY_STATE_TILES:
+                if math.prod(per_core[d] / resident[d] for d in per_core) > max_tiles:
                     break
                 rate = (base - overflow()) / math.log2(keep / smaller)
-                if rate > 0 and (key := (fill(), aligned({dim}), rate)) > best_key:
+                if rate > 0 and (key := (-placed.get(dim, 0), fill(), aligned({dim}), rate)) > best_key:
                     best, best_key = (dim, smaller), key
             resident[dim] = keep
         return best
@@ -314,12 +371,12 @@ class CapacityTiler:
         resident: dict[LayerDim, int],
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
     ) -> dict[LayerDim, int]:
-        """The extent of every unique dim on one core running ``cn`` when the group's cores hold ``resident``: under
-        its own split (``node_unroll``, else the group's ``unroll`` on a multi-core node)."""
+        """The extent of every unique dim on one core running ``cn`` when the group's cores hold ``resident``, and their
+        whole slice along the dims it does not name: under its own split (``node_unroll``, else the group's ``unroll``
+        on a multi-core node)."""
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
-        unique, _ = self.sub_workload.unique_dimensions()
-        full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
+        full = self._slices({})
         if node_unroll is not None:
             own = {lead(d)[0]: f for d, f in node_unroll.get(cn, {}).items()}
         else:
@@ -328,7 +385,14 @@ class CapacityTiler:
                 if len(cores_per_node.get(cn, [])) > 1
                 else {}
             )
-        return full | {d: min(full[d], r * unroll.get(d, 1) // own.get(d, 1)) for d, r in resident.items()}
+        tiles = self._slices(unroll) | resident
+        return {d: min(full[d], r * unroll.get(d, 1) // own.get(d, 1)) for d, r in tiles.items()}
+
+    def _slices(self, unroll: dict[LayerDim, int]) -> dict[LayerDim, int]:
+        """Each unique dim's extent on one core under the group's split ``unroll``; whole where it does not divide."""
+        unique, _ = self.sub_workload.unique_dimensions()
+        full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
+        return {z: n // u if (u := unroll.get(z, 1)) > 1 and n % u == 0 else n for z, n in full.items()}
 
     def memory_bits(
         self,

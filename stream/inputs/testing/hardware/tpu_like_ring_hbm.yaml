@@ -1,0 +1,102 @@
+# Four TPU-like slices on a ring, each with an HBM stack of its own linked to its SRAM: data a slice reads from
+# another slice's HBM crosses the ring. An HBM stack feeds its slice far slower than the ring links, so a workload
+# streaming its weights, as a decode step does, waits on the HBM.
+name: tpu_like_ring_hbm
+
+cores:
+  0: tpu_like.yaml
+  1: tpu_like.yaml
+  2: tpu_like.yaml
+  3: tpu_like.yaml
+
+memories:
+  sram_0:
+    offchip: false
+    views: [0.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  sram_1:
+    offchip: false
+    views: [1.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  sram_2:
+    offchip: false
+    views: [2.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  sram_3:
+    offchip: false
+    views: [3.sram_2MB]
+    ports:
+      r_port_1: {from: r_port_1, cores: [3]}
+      w_port_1: {from: w_port_1, cores: [3]}
+  hbm_0:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 8, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+  hbm_1:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 8, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+  hbm_2:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 8, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+  hbm_3:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 8, serves: {any: [read, write]}, read_energy: 15.625, write_energy: 15.625}
+
+connections:
+  - type: link
+    ends:
+      sram_0: [r_port_1, w_port_1]
+      sram_1: [r_port_1, w_port_1]
+    bandwidth: 128
+  - type: link
+    ends:
+      sram_1: [r_port_1, w_port_1]
+      sram_2: [r_port_1, w_port_1]
+    bandwidth: 128
+  - type: link
+    ends:
+      sram_2: [r_port_1, w_port_1]
+      sram_3: [r_port_1, w_port_1]
+    bandwidth: 128
+  - type: link
+    ends:
+      sram_3: [r_port_1, w_port_1]
+      sram_0: [r_port_1, w_port_1]
+    bandwidth: 128
+  - type: link
+    ends:
+      sram_0: [r_port_1, w_port_1]
+      hbm_0: [rw_port_1]
+    bandwidth: 8
+  - type: link
+    ends:
+      sram_1: [r_port_1, w_port_1]
+      hbm_1: [rw_port_1]
+    bandwidth: 8
+  - type: link
+    ends:
+      sram_2: [r_port_1, w_port_1]
+      hbm_2: [rw_port_1]
+    bandwidth: 8
+  - type: link
+    ends:
+      sram_3: [r_port_1, w_port_1]
+      hbm_3: [rw_port_1]
+    bandwidth: 8

@@ -4,6 +4,7 @@ matrix by adding its yaml; a new invariant joins by adding a line to ``_assert_s
 
 import math
 import tempfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.testing.workload.make_2_conv import make_2_conv_workload
+from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
@@ -26,6 +28,38 @@ SWIGLU_TILING = [
     {"dim": "Gemm_Left.D2", "tile": 32},  # hidden
     {"dim": "Gemm_Left.D0", "tile": 16},  # seq, shared by the whole group
 ]
+
+
+# Total and per-iteration cycles and energy in pJ of each example with one off-chip memory and no placements, under the
+# default backend: a change to the cost model that moves any of them must update them here.
+REFERENCE = {
+    ("eyeriss_like_dual_core", "two_conv"): (80115, 80115, 73007120.0),
+    ("eyeriss_like_dual_core", "swiglu"): (201851076, 581, 360554019771.73),
+    ("eyeriss_like_quad_core", "two_conv"): (45693, 45693, 69452666.67),
+    ("eyeriss_like_quad_core", "swiglu"): (201588932, 965, 360564068625.07),
+    ("eyeriss_like_single_core", "two_conv"): (114999, 114999, 81211750.67),
+    ("eyeriss_like_single_core", "swiglu"): (305135749, 424, 360548995345.07),
+    ("fusemax", "two_conv"): (3168, 2148, 39247872.0),
+    ("fusemax", "swiglu"): (26215424, 29, 231339773132.8),
+    ("meta_prototype_dual_core_simd_offchip", "two_conv"): (16081, 16081, 13667377.16),
+    ("meta_prototype_dual_core_simd_offchip", "swiglu"): (201850911, 416, 211031409295.36),
+    ("simba", "two_conv"): (12613, 1849, 4367679.24),
+    ("simba", "swiglu"): (201588922, 955, 29766476103.68),
+    ("simba_small", "two_conv"): (13617, 2360, 4039968.36),
+    ("simba_small", "swiglu"): (201588838, 871, 29763363143.68),
+    ("tpu_like_quad_core", "two_conv"): (15316, 15208, 18617649.32),
+    ("tpu_like_quad_core", "swiglu"): (201588878, 787, 212543061098.5),
+    ("tpu_v7_ironwood", "two_conv"): (788, 64, 4927635.57),
+    ("tpu_v7_ironwood", "swiglu"): (393891, 10, 63630107721.73),
+}
+
+# Multi-head attention over 8192 positions on TPU7x: total cycles, energy in pJ and the fused groups the generic
+# pipeline makes, its attention fitting whole so that it is not split along its sequence.
+ATTENTION_REFERENCE = (
+    1838250,
+    519800302403.58,
+    [["proj_K", "proj_Q", "proj_V"], ["scores", "softmax_max", "softmax_exp", "softmax_sum", "softmax_div", "context"]],
+)
 
 
 def _assert_sound_dataflow(ctx, node_count: int) -> None:
@@ -80,6 +114,13 @@ def _record_metrics(record_metric, ctx, hparams: str) -> None:
     record_metric("workload_hparams", hparams)
 
 
+def _assert_reference(ctx, hardware: str, workload: str) -> None:
+    (group,) = ctx.get("group_allocations").values()
+    found = (ctx.get("total_latency"), group["latency"]["per_iteration"], group["performance"]["energy"]["total_pj"])
+    total, per_iteration, energy = REFERENCE[(Path(hardware).stem, workload)]
+    assert found == (total, per_iteration, pytest.approx(energy, abs=0.01))
+
+
 def _run(hardware: str, workload: str, options: SolveOptions | None = None):
     with tempfile.TemporaryDirectory() as tmpdir:
         return evaluate_mapping(hardware, workload, tmpdir, options=options).context
@@ -90,6 +131,7 @@ def test_hardware_two_conv(hardware: str, two_conv, record_metric) -> None:
     """Two 3x3 convs, auto-tiled by the generic mapper."""
     ctx = _run(hardware, make_2_conv_workload(two_conv))
     _assert_sound_dataflow(ctx, node_count=2)
+    _assert_reference(ctx, hardware, "two_conv")
     _record_metrics(record_metric, ctx, f"{_caption(vars(two_conv))}; generic auto-tiling")
 
 
@@ -100,8 +142,20 @@ def test_hardware_swiglu(hardware: str, record_metric) -> None:
     options = SolveOptions(stage_options={"intra_core_tiling": SWIGLU_TILING})
     ctx = _run(hardware, make_small_swiglu_workload(**SWIGLU), options)
     _assert_sound_dataflow(ctx, node_count=5)
+    _assert_reference(ctx, hardware, "swiglu")
     tiles = _caption({t["dim"]: t["tile"] for t in SWIGLU_TILING})
     _record_metrics(record_metric, ctx, f"{_caption(SWIGLU)}, bf16; fused tiles {tiles}")
+
+
+def test_attention_on_one_off_chip_memory_keeps_its_reference_groups(tmp_path) -> None:
+    ctx = _run(
+        "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml", make_multi_head_attention(tmp_path / "mha.onnx", 8192)
+    )
+    groups = [[node.name for node in workload.get_computation_nodes()] for workload in ctx.get("sub_workloads")]
+    energy = sum(group["performance"]["energy"]["total_pj"] for group in ctx.get("group_allocations").values())
+    total, reference_energy, reference_groups = ATTENTION_REFERENCE
+    assert (ctx.get("total_latency"), groups) == (total, reference_groups)
+    assert energy == pytest.approx(reference_energy, abs=0.01)
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)
@@ -110,3 +164,10 @@ def test_hardware_parses(hardware: str) -> None:
     validator = AcceleratorValidator(open_yaml(hardware), hardware)
     assert validator.validate()
     assert AcceleratorFactory(validator.normalized_data).create() is not None
+
+
+def test_every_hardware_file_ships_with_the_package():
+    """A pip-installed package carries each hardware description, the testing ones too."""
+    patterns = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["stream"]
+    shipped = {path for pattern in patterns for path in Path("stream").glob(pattern)}
+    assert set(Path("stream/inputs").glob("**/hardware/**/*.yaml")) <= shipped

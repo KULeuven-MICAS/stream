@@ -1,7 +1,8 @@
 import heapq
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from itertools import combinations
+from itertools import combinations, product
 from math import prod
 from typing import TYPE_CHECKING
 
@@ -57,18 +58,34 @@ class MulticastPathPlan:
 
     def share_at(self, memory: Memory, leaving: bool, links: Iterable["CommunicationLink"]) -> float:
         """The share of the delivered data ``memory`` sends over ``links`` (``leaving``) to the targets it serves, or
-        receives over them for its own targets: all of a broadcast, the part of a split. Data it passes on is not its
-        own."""
+        receives over them for its own targets: all of a broadcast, the part of a split. Of data it passes on, it
+        reads only what it holds as a target itself."""
         links, ends = set(links), self.sources if leaving else self.targets
-        boxes = (
+        held = [
             item.box
-            for (u, v, link), demand in zip(self.hops, self.hop_demand, strict=True)
-            if link in links and (u if leaving else v) is memory
+            for (_, v, _), demand in zip(self.hops, self.hop_demand, strict=True)
+            if leaving and v is memory
             for item in demand
-            if any(ends[i] is memory for i in (item.sources if leaving else (item.target,)))
-        )
+            if self.targets[item.target] is memory
+        ]
+        boxes: list[Box] = []
+        for (u, v, link), demand in zip(self.hops, self.hop_demand, strict=True):
+            if link not in links or (u if leaving else v) is not memory:
+                continue
+            for item in demand:
+                if any(ends[i] is memory for i in (item.sources if leaving else (item.target,))):
+                    boxes.append(item.box)
+                else:
+                    boxes += [part for box in held if (part := meet(box, item.box))]
         delivered = box_bits(self.delivered, 1)
         return box_bits(boxes, 1) / delivered if delivered else 0.0
+
+    def memory_share(self, memory: Memory, leaving: bool) -> float:
+        """The share of the delivered data ``memory`` sends (``leaving``) or receives: all of it where it is the only
+        memory on its side."""
+        if set(self.sources if leaving else self.targets) == {memory}:
+            return 1.0
+        return self.share_at(memory, leaving, self.links_at(memory, leaving))
 
 
 def box_bits(boxes: Iterable[Box], bitwidth: float) -> float:
@@ -147,8 +164,8 @@ class CommunicationManager:
     ) -> tuple[MulticastPathPlan, ...]:
         """The routes a transfer between these memories that moves ``demand`` may take, cached per demand. The first is
         the fastest (:meth:`route` on idle links). Each of the up to ``alternatives - 1`` others is routed as if the
-        earlier ones already carried the transfer, so it prefers other, comparably fast links. Routes whose hops carry
-        the same data are dropped."""
+        earlier ones already carried the transfer, so it prefers other, comparably fast links. From off-chip memory to
+        several targets the striped route is offered too. Routes whose hops carry the same data are dropped."""
         key = (tuple(src_allocs), tuple(dst_allocs), demand, bitwidth, alternatives)
         if key not in self._transfer_plans:
             found: dict[frozenset[tuple[Hop, frozenset[DemandItem]]], MulticastPathPlan] = {}
@@ -158,6 +175,9 @@ class CommunicationManager:
                 found.setdefault(frozenset(zip(plan.hops, map(frozenset, plan.hop_demand), strict=True)), plan)
                 for link, bits in carried.items():
                     taken[link] = taken.get(link, 0.0) + bits
+            if len(set(key[1])) > 1 and any(source.offchip for source in key[0]):
+                plan, _ = self.route(key[0], key[1], demand, bitwidth, shares_memory, striped=True)
+                found.setdefault(frozenset(zip(plan.hops, map(frozenset, plan.hop_demand), strict=True)), plan)
             self._transfer_plans[key] = tuple(found.values())
         return self._transfer_plans[key]
 
@@ -169,14 +189,16 @@ class CommunicationManager:
         bitwidth: float,
         shares_memory: Callable[[Memory, Memory], bool],
         taken: Mapping[CommunicationLink, float] | None = None,
+        striped: bool = False,
     ) -> tuple[MulticastPathPlan, dict[CommunicationLink, float]]:
         """A route of the transfer and the bits it puts on each link, given links already carrying ``taken`` bits
         (none by default).
 
         Each demand is served from the nearest source holding it. Then one Steiner tree per source grows over the
         targets it serves (the shortest-path heuristic of Takahashi and Matsuyama), largest source first, each link
-        weighted by the cycles it would then be busy, so later trees avoid loaded links. A link carries the union of
-        the data its tree sends past it. A target that is its source needs no route. A target that shares memory with
+        weighted by the cycles it would then be busy with the data it adds, so later trees avoid loaded links. A link
+        carries the union of the data its tree sends past it. ``striped``, data from off-chip memory enters in parts
+        (:meth:`_multicast`). A target that is its source needs no route. A target that shares memory with
         its source is reached by a route that moves no data. Partial sums are reduced on the way (:meth:`_reduce`).
         Each link's share is relative to all data the transfer delivers. ``taken`` only weighs the links."""
         served: dict[int, list[DemandItem]] = {}
@@ -211,10 +233,10 @@ class CommunicationManager:
         ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s]))
         for s in ranked:
             delivered += [i.box for i in served[s]]
-            for hop, carried in self._multicast(sources[s], targets, served[s], bitwidth, load).items():
+            for hop, carried in self._multicast(sources[s], targets, served[s], bitwidth, load, striped).items():
                 hops.setdefault(hop, {}).update(dict.fromkeys(carried))
         for s, reached in sorted(in_place.items()):
-            for hop in self._steiner_tree(sources[s], reached, 0.0, load, self._adjacency()):
+            for hop in self._steiner_tree(sources[s], dict.fromkeys(reached, ()), bitwidth, load, self._adjacency()):
                 load.setdefault(hop[2], 0.0)
                 hops.setdefault(hop, {})
         for t, items in sorted(reduced.items()):
@@ -246,19 +268,53 @@ class CommunicationManager:
             cache[target] = cost
         return cache[target]
 
-    def _multicast(
+    def _multicast(  # noqa: PLR0913
         self,
         source: Memory,
         targets: tuple[Memory, ...],
         items: list[DemandItem],
         bitwidth: float,
         load: dict[CommunicationLink, float],
+        striped: bool = False,
     ) -> dict[Hop, list[DemandItem]]:
-        """Add to ``load`` the links of a tree from ``source`` to the targets of ``items``, each carrying the union of
-        the data sent past it. Returns the items each hop of the tree carries."""
-        sent = box_bits((i.box for i in items), bitwidth)
-        ends = {targets[i.target] for i in items}
-        tree = self._steiner_tree(source, ends, sent, load, self._adjacency())
+        """The hops of a tree from ``source`` to the targets of ``items``, with the items each carries, added to
+        ``load``. ``striped`` from off-chip memory, the data every target it links to reads is cut into a part per such
+        target, which enters over that target's link and takes the shortest paths on to the others."""
+        adjacency = self._adjacency()
+        read: dict[Memory, set[Box]] = {}
+        for item in items:
+            read.setdefault(targets[item.target], set()).add(item.box)
+        entries = sorted({v for v, _ in adjacency[source]} & read.keys()) if striped and source.offchip else []
+        common = set.intersection(*(read[entry] for entry in entries)) if len(entries) > 1 else set()
+        rest = [item for item in items if item.box not in common]
+        hops = self._tree(source, targets, rest, bitwidth, load, adjacency) if rest else {}
+        for k, entry in enumerate(entries if common else ()):
+            part = [replace(item, box=_part(item.box, len(entries), k)) for item in items if item.box in common]
+            if not box_bits((item.box for item in part), bitwidth):
+                continue
+            through_entry = adjacency | {source: [(v, link) for v, link in adjacency[source] if v == entry]}
+            for hop, carried in self._tree(source, targets, part, bitwidth, load, through_entry, spread=True).items():
+                hops.setdefault(hop, []).extend(carried)
+        return hops
+
+    def _tree(  # noqa: PLR0913
+        self,
+        source: Memory,
+        targets: tuple[Memory, ...],
+        items: list[DemandItem],
+        bitwidth: float,
+        load: dict[CommunicationLink, float],
+        adjacency: dict[Memory, list[tuple[Memory, CommunicationLink]]],
+        spread: bool = False,
+    ) -> dict[Hop, list[DemandItem]]:
+        """Add to ``load`` the links of a Steiner tree from ``source`` to the targets of ``items``, or of the shortest
+        paths to them where ``spread``, each carrying the union of the data sent past it. Returns the items each hop
+        carries."""
+        needs: dict[Memory, tuple[Box, ...]] = {}
+        for item in items:
+            needs[targets[item.target]] = (*needs.get(targets[item.target], ()), item.box)
+        grow = self._shortest_paths if spread else self._steiner_tree
+        tree = grow(source, needs, bitwidth, load, adjacency)
         below: dict[CommunicationLink, set[Memory]] = {}
         for (_, _, link), reached in tree.items():
             below.setdefault(link, set()).update(reached)
@@ -299,11 +355,10 @@ class CommunicationManager:
             if not bits:
                 continue
 
-            def plan(
-                collector: Memory, last: CommunicationLink | None, bits: float = bits, cut: list[DemandItem] = cut
-            ):
+            def plan(collector: Memory, last: CommunicationLink | None, cut: list[DemandItem] = cut):
                 # The tree grows over the reversed links, so a tree edge (u, v) is a hop of the sums from v to u.
-                below = self._steiner_tree(collector, memories - {collector}, bits, load, reverse)
+                held = {m: tuple(i.box for i, h in zip(cut, holders, strict=True) if m in h) for m in memories}
+                below = self._steiner_tree(collector, held, bitwidth, load, reverse)
                 hops = [
                     ((v, u, link), [item for item, h in zip(cut, holders, strict=True) if h & up])
                     for (u, v, link), up in below.items()
@@ -329,48 +384,137 @@ class CommunicationManager:
                 used.setdefault(hop, []).extend(carried)
         return used
 
-    def _steiner_tree(
+    def _shortest_paths(
         self,
         source: Memory,
-        targets: set[Memory],
-        bits: float,
+        needs: dict[Memory, tuple[Box, ...]],
+        bitwidth: float,
         load: dict[CommunicationLink, float],
         adjacency: dict[Memory, list[tuple[Memory, CommunicationLink]]],
     ) -> dict[Hop, set[Memory]]:
-        """Per edge of a tree from ``source`` over ``adjacency`` spanning ``targets``, keyed by the memory it leaves,
-        the one it leads to and its link, the targets reached through it."""
-        parent: dict[Memory, tuple[Memory, CommunicationLink]] = {}
-        tree = {source}
-        tree_links: set[CommunicationLink] = set()
-        remaining = set(targets) - tree
+        """Per hop of the shortest paths from ``source`` to the memories of ``needs``, the targets it leads to."""
+        bits = box_bits({b for boxes in needs.values() for b in boxes}, bitwidth)
 
         def weight(link: CommunicationLink) -> float:
-            if link in tree_links:
-                return _HOP
             return (load.get(link, 0.0) + bits) / link.bandwidth + _HOP
 
-        while remaining:
-            cost, previous = _dijkstra(tree, adjacency, weight)
-            reachable = [t for t in remaining if t in cost]
-            if not reachable:
-                raise nx.NetworkXNoPath(f"no route from {source} to {sorted(t.name for t in remaining)}")
-            nearest = min(reachable, key=lambda t: (cost[t], t))
-            node = nearest
-            while node not in tree:
-                u, link = previous[node]
-                parent[node] = (u, link)
-                tree.add(node)
-                tree_links.add(link)
-                node = u
-            remaining -= tree
+        cost, previous = _dijkstra({source}, adjacency, weight)
+        if missing := [t for t in needs if t not in cost]:
+            raise nx.NetworkXNoPath(f"no route from {source} to {sorted(t.name for t in missing)}")
         below: dict[Hop, set[Memory]] = {}
-        for target in targets:
+        for target in needs:
             node = target
-            while node != source and node in parent:
-                u, link = parent[node]
+            for u, link in _path(previous, target):
                 below.setdefault((u, node, link), set()).add(target)
                 node = u
         return below
+
+    def _steiner_tree(
+        self,
+        source: Memory,
+        needs: dict[Memory, tuple[Box, ...]],
+        bitwidth: float,
+        load: dict[CommunicationLink, float],
+        adjacency: dict[Memory, list[tuple[Memory, CommunicationLink]]],
+    ) -> dict[Hop, set[Memory]]:
+        """Per hop of a tree from ``source`` over ``adjacency`` to the memories of ``needs``, the targets reached
+        through it. A link is weighted by the cycles it would be busy with the data a target adds to what it already
+        carries, a hop where it carries all of it. Targets reading as much data that no link carries yet, and the same
+        data some link carries, share a search, redone only where a link of its path took more data since."""
+        bits, cells = _cells(needs, bitwidth)
+        held: dict[CommunicationLink, set[tuple]] = {}
+        held_bits: dict[CommunicationLink, float] = {}
+        sent: set[tuple] = set()
+        below: dict[Hop, set[Memory]] = {}
+        remaining = set(needs) - {source}
+        searches: dict[tuple, tuple[dict[Memory, float], dict[Memory, tuple[Memory, CommunicationLink]]]] = {}
+        changed: dict[tuple, set[CommunicationLink]] = {}
+
+        def group(target: Memory) -> tuple[float, frozenset[tuple]]:
+            return sum(bits[c] for c in cells[target] - sent), cells[target] & sent
+
+        def added(link: CommunicationLink, key: tuple[float, frozenset[tuple]]) -> float:
+            fresh, seen = key
+            taken = held.get(link, set())
+            return fresh + sum(bits[c] for c in seen if c not in taken)
+
+        def search(key: tuple[float, frozenset[tuple]]) -> None:
+            def weight(link: CommunicationLink) -> float:
+                if not (extra := added(link, key)):
+                    return _HOP
+                return (load.get(link, 0.0) + held_bits.get(link, 0.0) + extra) / link.bandwidth + _HOP
+
+            searches[key] = _dijkstra({source}, adjacency, weight)
+            changed[key] = set()
+
+        while remaining:
+            while True:
+                for key in {group(t) for t in remaining} - searches.keys():
+                    search(key)
+                reachable = [t for t in remaining if t in searches[group(t)][0]]
+                if not reachable:
+                    raise nx.NetworkXNoPath(f"no route from {source} to {sorted(t.name for t in remaining)}")
+                target = min(reachable, key=lambda t: (searches[group(t)][0][t], t))
+                steps = _path(searches[group(target)][1], target)
+                if not changed[group(target)] & {link for _, link in steps}:
+                    break
+                del searches[group(target)]
+            key, node = group(target), target
+            for u, link in steps:
+                below.setdefault((u, node, link), set()).add(target)
+                held_bits[link] = held_bits.get(link, 0.0) + added(link, key)
+                held.setdefault(link, set()).update(cells[target])
+                for links in changed.values():
+                    links.add(link)
+                node = u
+            sent |= cells[target]
+            remaining.discard(target)
+            for stale in searches.keys() - {group(t) for t in remaining}:
+                del searches[stale], changed[stale]
+        return below
+
+
+def _path(
+    previous: dict[Memory, tuple[Memory, CommunicationLink]], target: Memory
+) -> list[tuple[Memory, CommunicationLink]]:
+    """The edges a search reached ``target`` by, from it back to the search's root."""
+    steps, node = [], target
+    while node in previous:
+        node, link = previous[node]
+        steps.append((node, link))
+    return steps
+
+
+def meet(a: Box, b: Box) -> Box | None:
+    """The part two boxes share, if any."""
+    if _disjoint(a, b):
+        return None
+    return tuple((max(la, lb), min(ha, hb)) for (la, ha), (lb, hb) in zip(a, b, strict=True))
+
+
+def _cells(
+    needs: dict[Memory, tuple[Box, ...]], bitwidth: float
+) -> tuple[dict[tuple, float], dict[Memory, frozenset[tuple]]]:
+    """The data of ``needs`` cut into cells where any memory's boxes begin or end: the bits of each cell, by its first
+    corner, and the cells each memory reads."""
+    boxes = {b for needed in needs.values() for b in needed}
+    axes = len(next(iter(boxes))) if boxes else 0
+    edges = [sorted({b[a][0] for b in boxes} | {b[a][1] + 1 for b in boxes}) for a in range(axes)]
+    bits: dict[tuple, float] = {}
+    cells: dict[Memory, frozenset[tuple]] = {}
+    for memory, needed in needs.items():
+        read: set[tuple] = set()
+        for box in needed:
+            spans = []
+            for a, (lo, hi) in enumerate(box):
+                cuts = edges[a][bisect_left(edges[a], lo) : bisect_right(edges[a], hi + 1)]
+                spans.append([(c, d - c) for c, d in zip(cuts, cuts[1:], strict=False)])
+            for cell in product(*spans):
+                corner = tuple(c for c, _ in cell)
+                bits[corner] = prod(n for _, n in cell) * bitwidth
+                read.add(corner)
+        cells[memory] = frozenset(read)
+    return bits, cells
 
 
 def _part(box: Box, parts: int, k: int) -> Box:

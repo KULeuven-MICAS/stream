@@ -72,8 +72,15 @@ class MappingValidator:
             "type": "dict",
             "schema": {
                 "layout": {"type": "string"},
+                "placement": {
+                    "type": "dict",
+                    "schema": {
+                        "memories": {"type": "list", "schema": {"type": "string"}, "minlength": 1, "required": True},
+                        "split": {"type": "integer", "min": 0},
+                    },
+                },
             },
-            "allow_unknown": {"type": "string"},
+            "allow_unknown": True,
         },
         "required": False,
         "default": {},
@@ -135,13 +142,12 @@ class MappingValidator:
         self._validate_positive_tiling_values()
 
         runtime_args = root.get("runtime_args", {}) or {}
-        self.normalized["runtime_args"] = runtime_args
-        # TODO: Validate runtime args properly
-        # if not self.runtime_args_validator.validate(  # type: ignore[arg-type]
-        #     runtime_args,
-        #     schema=self.SCHEMA_RUNTIME_ARGS,
-        # ):
-        #     self.invalidate(f"The following runtime args restrictions apply: {self.runtime_args_validator.errors}")
+        if not self.runtime_args_validator.validate(runtime_args, schema={"rows": self.SCHEMA_RUNTIME_ARGS}):  # type: ignore[arg-type]
+            self.invalidate(f"The following runtime args restrictions apply: {self.runtime_args_validator.errors}")
+        known = self.SCHEMA_RUNTIME_ARGS["valuesrules"]["schema"]
+        for name, args in runtime_args.items() if isinstance(runtime_args, dict) else ():
+            for key in (k for k, v in (args or {}).items() if isinstance(v, dict) and k not in known):
+                self.invalidate(f"runtime_args.{name}.{key} is no entry of a tensor's runtime args: {sorted(known)}")
         self.normalized["runtime_args"] = runtime_args
         return self.is_valid
 
@@ -151,10 +157,10 @@ class MappingValidator:
         if not isinstance(data, dict):
             self.invalidate("Mapping file must be a mapping with a top-level 'layers' list.")
             return {"layers": [], "fused_groups": []}
-        if "layers" not in data:
-            self.invalidate("Mapping file must contain a 'layers' entry.")
+        if "layers" not in data and "runtime_args" not in data:
+            self.invalidate("Mapping file must contain a 'layers' or a 'runtime_args' entry.")
             return {"layers": [], "fused_groups": []}
-        return data
+        return {"layers": [], **data}
 
     def _normalize_inter_core_tiling(self, layer_data: dict[str, Any]) -> None:
         raw_entries = layer_data.get("inter_core_tiling", []) or []

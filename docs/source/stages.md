@@ -21,8 +21,8 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 
 1. **`AcceleratorParserStage`** - the accelerator model (cores, memories, interconnect), already parsed from the hardware YAML so the plugins below can be chosen for it, drawn as `hardware_graph.svg` in the output folder unless the artifacts are off. The workload comes from the frontend that loads it (see [Workload](workload.md)).
 2. **Mapping** - either:
-   - **`FixedMappingGenerationStage`** (a mapping was given) - split the workload at the mapping's fused groups and build each group's mapping; or
-   - the stages of the **mapping generator** that claims the accelerator (no mapping given) - for any accelerator, `ExpandNormalizationStage` + `GenericMappingGenerationStage` propose one.
+   - **`FixedMappingGenerationStage`** (a mapping of the layers was given) - split the workload at the mapping's fused groups and build each group's mapping; or
+   - the stages of the **mapping generator** that claims the accelerator (no mapping given, or a placement file, a mapping file that only places the inputs and outputs under `runtime_args`, which it carries into each group's mapping) - for any accelerator, `ExpandNormalizationStage` + `GenericMappingGenerationStage` propose one.
 3. **`FusionGroupIterationStage`** - run the stages below once per fused group, on that group's workload and mapping.
 4. The stage of the **code generation backend** that claims the accelerator, for `generate_code` only - for AIE2 arrays, `AIECodeGenerationStage`.
 5. **`PlacementGenerationStage`** - place a group whose kernels are known but whose cores are not, and offer one variant per other compiled block.
@@ -145,11 +145,12 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `AllocationStage` | `allocation_problem`, `output_path`, `backend`, `families`, `time_limit_s`, `solver_log`, `artifacts` | `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
 | `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
+| `FlashDecodingStage` | `accelerator`, `workload`, `output_path` | `mapping_path`, `attention_parts` | `workload`, `runtime_args` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |
 | `FusionAnalysisStage` | `workload` |  | `fusion_edges` |  |  |
 | `FusionGroupIterationStage` | `accelerator`, `output_path`, `sub_workloads`, `sub_mappings` | `memory_accesses` | `workload`, `mapping`, `output_path`, `group_index` | `allocation` | `total_latency`, `group_latencies`, `group_columns`, `group_cycles`, `group_wall_times`, `group_allocations`, `group_memory_accesses`, `roofline` |
 | `FusionProposalStage` | `workload` | `fusion_capacity_elements` | `proposed_fusion_regions` |  |  |
-| `GenericMappingGenerationStage` | `accelerator`, `workload`, `output_path` | `fusion_cut_points`, `intra_core_tiling` | `sub_workloads`, `sub_mappings` |  |  |
+| `GenericMappingGenerationStage` | `accelerator`, `workload`, `output_path` | `fusion_cut_points`, `intra_core_tiling`, `mapping_path`, `runtime_args` | `sub_workloads`, `sub_mappings` |  |  |
 | `KernelStateStage` | `workload`, `mapping` | `placement_alternatives`, `placement_reserves` | `workload`, `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
 | `LeafStage` |  |  |  |  |  |
 | `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |

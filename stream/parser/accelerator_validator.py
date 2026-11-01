@@ -553,9 +553,6 @@ class AcceleratorValidator:
                     f"`memories.{name}`: its views' cores sit in different columns {sorted(columns, key=str)}."
                 )
             self._validate_capacity_and_ports(name, memory, viewers)
-        offchip = [name for name, memory in self.data["memories"].items() if memory["offchip"]]
-        if len(offchip) > 1:
-            self.invalidate(f"memories {offchip} are all off-chip; an accelerator has at most one off-chip memory.")
         for core_id, core_data in self.data["cores"].items():
             viewed = {instance for cid, instance in bound if cid == core_id}
             if not viewed:

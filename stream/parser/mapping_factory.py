@@ -11,9 +11,10 @@ from xdsl.parser import Parser
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
+from stream.mapping.mapping import EdgePlacement, FusedGroup, Mapping, NodeMapping
 from stream.workload.node import OutEdge
 from stream.workload.normalization import operator_types_of
+from stream.workload.tensor import Tensor
 from stream.workload.workload import ComputationNode, InEdge, Workload
 
 if TYPE_CHECKING:
@@ -36,7 +37,11 @@ class MappingFactory:
         self.accelerator = accelerator
 
     def create(self) -> Mapping:
-        mapping = Mapping(fused_groups=self.create_fused_groups(), runtime_args=self.create_runtime_args())
+        mapping = Mapping(
+            fused_groups=self.create_fused_groups(),
+            runtime_args=self.create_runtime_args(),
+            edge_placements=self.create_edge_placements(),
+        )
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
             mapping_data = self.get_mapping_data_for_node(cn)
@@ -222,15 +227,39 @@ class MappingFactory:
             runtime_args[tensor_name] = affine_map
         return runtime_args
 
-    def _get_standard_layout(self, tensor_name: str) -> AffineMap:
-        node = self.workload.get_node_by_name(tensor_name)
+    def create_edge_placements(self) -> dict[str, EdgePlacement]:
+        """The off-chip memories each edge with a ``placement`` in its runtime args lives in, split along ``split``."""
+        placements = {}
+        for name, args in self.runtime_args_data.items():
+            if (declared := args.get("placement")) is None:
+                continue
+            memories = declared["memories"]
+            unknown = [m for m in memories if m not in self.accelerator.memories]
+            if unknown or not all(self.accelerator.memories[m].offchip for m in memories):
+                offchip = [memory.name for memory in self.accelerator.offchip_memories]
+                raise ValueError(f"{name} is placed in {memories}, but the off-chip memories are {offchip}")
+            placement = EdgePlacement(tuple(self.accelerator.memories[m] for m in memories), declared.get("split"))
+            if (
+                isinstance(self.workload.get_node_by_name(name), OutEdge)
+                and placement.split is None
+                and len(placement.memories) > 1
+            ):
+                raise ValueError(f"output {name} cannot be a copy in each of {memories}; split it on an axis")
+            if placement.split is not None and placement.split >= len(self._edge_tensor(name).shape):
+                raise ValueError(f"{name} has no axis {placement.split} to split")
+            placements[name] = placement
+        return placements
+
+    def _edge_tensor(self, name: str) -> Tensor:
+        node = self.workload.get_node_by_name(name)
         if isinstance(node, InEdge):
-            tensor = node.outputs[0]
-        elif isinstance(node, OutEdge):
-            tensor = node.inputs[0]
-        else:
-            raise NotImplementedError(f"Standard layout inference not implemented for tensor {tensor_name}.")
-        num_dims = len(tensor.shape)
+            return node.outputs[0]
+        if isinstance(node, OutEdge):
+            return node.inputs[0]
+        raise ValueError(f"runtime args name {name}, which is no input or output edge")
+
+    def _get_standard_layout(self, tensor_name: str) -> AffineMap:
+        num_dims = len(self._edge_tensor(tensor_name).shape)
         map = AffineMap.identity(num_dims)
         return map
 

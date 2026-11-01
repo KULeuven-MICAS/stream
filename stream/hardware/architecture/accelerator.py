@@ -18,8 +18,8 @@ class MemoryGraph(nx.MultiDiGraph):
 
 class Accelerator:
     """The cores, the memories they use and the network between those memories. Each top-level memory instance of a
-    core is a view of one memory, and several cores may view the same memory. At most one memory is off-chip, and every
-    other memory has a route to it."""
+    core is a view of one memory, and several cores may view the same memory. Every on-chip memory has a route from
+    one of its off-chip memories."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -49,22 +49,60 @@ class Accelerator:
             unbound = sorted(core.top_instances() - bound)
             if unbound:
                 raise ValueError(f"{core}'s top-level memories {unbound} are views of no memory")
-        offchip = [memory for memory in memories if memory.offchip]
-        if len(offchip) > 1:
-            raise ValueError(f"several off-chip memories: {offchip}")
-        self.offchip_memory = next(iter(offchip), None)
+        self.offchip_memories = tuple(memory for memory in memories if memory.offchip)
         self.network = network
-        if self.offchip_memory is not None:
-            reached = nx.descendants(network, self.offchip_memory) if self.offchip_memory in network else set()
-            unreached = sorted(memory.name for memory in memories if memory not in reached | {self.offchip_memory})
+        if self.offchip_memories:
+            reached = set(self.offchip_memories).union(
+                *(nx.descendants(network, memory) for memory in self.offchip_memories if memory in network)
+            )
+            unreached = sorted(memory.name for memory in memories if memory not in reached)
             if unreached:
-                raise ValueError(f"memories {unreached} have no route to off-chip memory {self.offchip_memory.name}")
+                names = " or ".join(memory.name for memory in self.offchip_memories)
+                raise ValueError(f"memories {unreached} have no route to off-chip memory {names}")
         # memory -> the measured bandwidth every transfer into or out of it shares
         self.bandwidth = bandwidth or {}
         # (memory, port name) -> measured model replacing the port's declared width
         self.port_bandwidth = port_bandwidth or {}
         self.reconfiguration = reconfiguration or {}
         self.communication_manager = CommunicationManager(self)
+        self._hop_counts: dict[tuple[Memory, Memory], float] = {}
+
+    @property
+    def offchip_memory(self) -> Memory | None:
+        """The off-chip memory, None if there is none; raises if there are several."""
+        if len(self.offchip_memories) > 1:
+            raise ValueError("several off-chip memories; use offchip_memories")
+        return next(iter(self.offchip_memories), None)
+
+    def hops(self, one: Memory, other: Memory) -> float:
+        """Links from ``one`` to ``other``, infinite without a route."""
+        if (one, other) not in self._hop_counts:
+            reached = nx.has_path(self.network, one, other)
+            self._hop_counts[(one, other)] = (
+                nx.shortest_path_length(self.network, one, other) if reached else float("inf")
+            )
+        return self._hop_counts[(one, other)]
+
+    def nearest_offchip(self, memory: Memory) -> Memory:
+        """The off-chip memory the fewest hops from ``memory``, the first in memory order of those as near."""
+        nearest = min(self.offchip_memories, key=lambda offchip: (self.hops(memory, offchip), offchip))
+        if self.hops(memory, nearest) == float("inf"):
+            raise ValueError(f"{memory.name} has no route to any off-chip memory to write its output to")
+        return nearest
+
+    def offchip_rate(self, memory: Memory, direction: str) -> float:
+        """Bits per cycle off-chip ``memory`` moves in ``direction``: its measured contiguous rate if it has one, else
+        its widest port serving the direction."""
+        if (measured := self.bandwidth.get(memory)) is not None:
+            return measured.contiguous
+        widths = [
+            port.bits_per_cycle
+            for port in self.ports
+            if port.key.memory == memory.name and any(d == direction for _, d in port.serves)
+        ]
+        if not widths:
+            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
+        return max(widths)
 
     def get_core(self, core_id: int) -> Core:
         """
@@ -137,6 +175,7 @@ class Accelerator:
             "memories": {
                 memory.name: {
                     "offchip": memory.offchip,
+                    "capacity_bits": memory.capacity_bits,
                     "views": [f"{core.id}.{instance}" for core, instance in memory.views],
                 }
                 for memory in self.memories.values()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from xdsl.dialects.builtin import FixedBitwidthType
 from xdsl.ir.affine import AffineMap
@@ -32,6 +32,17 @@ class Rewrite(Protocol):
     def matches(self, node: ComputationNode) -> bool: ...
 
     def apply(self, node: ComputationNode, params: RewriteParams) -> Workload: ...
+
+
+@runtime_checkable
+class WorkloadRewrite(Protocol):
+    """A rewrite of patterns of several nodes it finds in a whole workload, each split into a number of parts."""
+
+    name: str
+
+    def find(self, workload: Workload) -> list[Any]: ...
+
+    def apply(self, workload: Workload, match: Any, parts: int) -> Workload: ...
 
 
 def build_chunk_chain(

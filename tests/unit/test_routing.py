@@ -6,11 +6,15 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import onnx
 import pytest
 import yaml
+from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.cost_model import communication_manager
 from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan, box_bits
+from stream.cost_model.communication_manager import _dijkstra as dijkstra
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, input_role
@@ -189,6 +193,162 @@ def test_off_chip_memory_never_relays_data_between_cores(tmp_path):
     )
     plan = route(parse_accelerator(path), (0,), (1,), [DemandItem(0, (0,), WHOLE)])
     assert shares(plan) == {"CL(m0, m1, bw=10)": 1.0}
+
+
+def _offchip_fed(tmp_path: Path, cores: int, links: list[tuple[str, str, int]]) -> Accelerator:
+    """``cores`` cores and off-chip memory ``dram``, ``links`` joining the cores' activation memories ``m<core>`` and
+    ``dram``; each core's weights memory ``w<core>`` has a link to ``dram``."""
+    memories = {f"m{i}": [f"{i}.sram_128K_A"] for i in range(cores)} | {
+        f"w{i}": [f"{i}.sram_128K_W"] for i in range(cores)
+    }
+    links = links + [(f"w{i}", "dram", 64) for i in range(cores)]
+    path = _hardware(
+        tmp_path / "hw.yaml",
+        "hw",
+        dict.fromkeys(range(cores), "testing_core1.yaml"),
+        memories | {"dram": OFFCHIP},
+        yaml.safe_dump([{"type": "link", "memories": [a, b], "bandwidth": w} for a, b, w in links]),
+    )
+    return parse_accelerator(path)
+
+
+FORWARDING = [("dram", "m0", 1000), ("dram", "m1", 1000), ("m0", "m1", 1300)]
+"""A link from off-chip memory to each of two cores, which share a faster link."""
+
+
+def ends(plan: MulticastPathPlan) -> dict[tuple[str, str], float]:
+    return {(link.sender.name, link.receiver.name): round(share, 3) for link, share in plan.link_shares}
+
+
+def reads(plan: MulticastPathPlan, accelerator: Accelerator) -> dict[str, float]:
+    """The share of the delivered data each memory reads to send it on."""
+    shares = {m.name: plan.share_at(m, True, plan.links_at(m, True)) for m in accelerator.memories.values()}
+    return {name: share for name, share in shares.items() if share}
+
+
+def test_a_target_with_its_own_data_is_not_fed_through_another(tmp_path):
+    """Each core's own half comes over its own off-chip link, however fast the link between the cores."""
+    plan = route(
+        _offchip_fed(tmp_path, 2, FORWARDING),
+        ("dram",),
+        (0, 1),
+        [DemandItem(0, (0,), HALF_A), DemandItem(1, (0,), HALF_B)],
+    )
+    assert ends(plan) == {("dram", "m0"): 0.5, ("dram", "m1"): 0.5}
+
+
+def test_a_broadcast_from_off_chip_memory_may_also_enter_striped(tmp_path):
+    """The tree brings a broadcast over one off-chip link; the striped route half over each, each core forwarding it."""
+    accelerator = _offchip_fed(tmp_path, 2, FORWARDING)
+    demand = [DemandItem(0, (0,), WHOLE), DemandItem(1, (0,), WHOLE)]
+    tree, striped = _plans(accelerator, ("dram",), (0, 1), demand, 1)
+    assert ends(tree) == {("dram", "m0"): 1.0, ("m0", "m1"): 1.0}
+    assert ends(striped) == {("dram", "m0"): 0.5, ("m0", "m1"): 0.5, ("dram", "m1"): 0.5, ("m1", "m0"): 0.5}
+    assert reads(striped, accelerator) == {"dram": 1.0, "m0": 0.5, "m1": 0.5}
+    assert len(_plans(accelerator, (0,), (1,), demand[:1], 1)) == 1
+
+
+def test_a_striped_route_carries_only_the_data_every_entry_core_reads(tmp_path):
+    """Neither core needs the other's rows, so no route parks them in its memory to forward them."""
+    uneven = [DemandItem(0, (0,), ((0, 11), (0, 15))), DemandItem(1, (0,), ((12, 15), (0, 15)))]
+    (plan,) = _plans(_offchip_fed(tmp_path, 2, FORWARDING), ("dram",), (0, 1), uneven, 1)
+    assert ends(plan) == {("dram", "m0"): 0.75, ("dram", "m1"): 0.25}
+
+
+def test_split_data_does_not_funnel_through_a_hub_it_already_crosses(tmp_path):
+    """A hub carrying one half would be busy twice as long carrying both, so each half enters over its own hub."""
+    links = [("dram", "m0", 10), ("dram", "m1", 10)] + [(a, b, 1000) for a in ("m0", "m1") for b in ("m2", "m3")]
+    plan = route(
+        _offchip_fed(tmp_path, 4, links), ("dram",), (2, 3), [DemandItem(0, (0,), HALF_A), DemandItem(1, (0,), HALF_B)]
+    )
+    assert sorted(share for (sender, _), share in ends(plan).items() if sender == "dram") == [0.5, 0.5]
+
+
+def test_a_relay_reads_only_the_overlap_of_what_it_holds_and_passes_on(tmp_path):
+    """Down a chain of overlapping windows each core reads again only the rows it holds that the next ones read."""
+    accelerator = _offchip_fed(tmp_path, 3, [("dram", "m0", 100), ("m0", "m1", 1000), ("m1", "m2", 1000)])
+    windows = [((0, 9), (0, 15)), ((5, 14), (0, 15)), ((8, 17), (0, 15))]
+    plan = route(accelerator, ("dram",), (0, 1, 2), [DemandItem(i, (0,), w) for i, w in enumerate(windows)])
+    assert {name: round(share * 18, 3) for name, share in reads(plan, accelerator).items()} == {
+        "dram": 18.0,
+        "m0": 5.0,
+        "m1": 7.0,
+    }
+
+
+@pytest.mark.parametrize("halo", [0, 2])
+def test_a_scatter_round_a_ring_searches_about_once_per_target(tmp_path, monkeypatch, halo):
+    """128 cores on a ring fed through one, each reading its own rows and its neighbours' edges: targets of equal
+    size share a search, redone only when their path took more data."""
+    accelerator = _offchip_fed(
+        tmp_path, 128, [("dram", "m0", 1000)] + [(f"m{i}", f"m{(i + 1) % 128}", 1300) for i in range(128)]
+    )
+    searches = []
+
+    def counted(*args):
+        searches.append(args)
+        return dijkstra(*args)
+
+    monkeypatch.setattr(communication_manager, "_dijkstra", counted)
+    rows = [(max(0, 8 * i - halo), min(1023, 8 * i + 7 + halo)) for i in range(128)]
+    route(accelerator, ("dram",), tuple(range(128)), [DemandItem(i, (0,), (rows[i], (0, 63))) for i in range(128)])
+    assert len(searches) <= 4 * 128
+
+
+def _solve_pair(tmp_path: Path, between: int, link_energy: float = 0):
+    """A matmul split over the output columns of two cores, each with a narrow link from off-chip memory."""
+    sram = {f"m{i}": [f"{i}.sram_2MB"] for i in range(2)}
+    links = [("m0", "dram", 16), ("m1", "dram", 16), ("m0", "m1", between)]
+    path = _hardware(
+        tmp_path / "hw.yaml",
+        "pair",
+        dict.fromkeys(range(2), "tpu_like.yaml"),
+        sram | {"dram": OFFCHIP},
+        yaml.safe_dump([{"type": "link", "memories": [a, b], "bandwidth": w} for a, b, w in links]),
+    )
+    data = yaml.safe_load(path.read_text()) | {"unit_energy_cost": link_energy}
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    (tmp_path / "mapping.yaml").write_text(
+        "layers:\n- {name: projection, core_allocation: [[0, 1]], inter_core_tiling: [[{dim: D1, split: 2}]]}\n"
+        "fused_groups:\n- {name: g, layers: [projection]}\n"
+    )
+
+    def value(name: str, shape: list[int]):
+        return helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape)
+
+    node = helper.make_node("MatMul", ["x", "w"], ["y"], name="projection")
+    graph = helper.make_graph(
+        [node], "projection", [value("x", [64, 256]), value("w", [256, 256])], [value("y", [64, 256])]
+    )
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), tmp_path / "mm.onnx")
+    options = SolveOptions(artifacts=False)
+    return evaluate_mapping(
+        str(path), str(tmp_path / "mm.onnx"), str(tmp_path), str(tmp_path / "mapping.yaml"), options
+    )
+
+
+@pytest.mark.parametrize(("between", "striped"), [(1024, True), (4, False)])
+def test_the_allocator_takes_the_striped_route_only_where_forwarding_on_chip_pays(tmp_path, between, striped):
+    """Both cores read all of x: with a fast link between them half enters over each, with a slow one the tree."""
+    routes = _solve_pair(tmp_path, between).context.get("allocation").solution.transfer_routes
+    (load,) = [plan for tr, plan in routes.items() if tr.name == "Transfer(x)"]
+    from_dram = sorted(share for (sender, _), share in ends(load).items() if sender == "dram")
+    assert from_dram == ([0.5, 0.5] if striped else [1.0, 1.0])
+
+
+def test_each_link_is_billed_the_bits_it_carries(tmp_path):
+    """Every link's energy is the bits it carries at its energy per bit, the halves of a split and of a stripe too."""
+    allocations = _solve_pair(tmp_path, 1024, link_energy=160).context.get("group_allocations")
+    for allocation in allocations.values():
+        performance = allocation["performance"]
+        billed = {
+            c["resource"]: c["pj_per_iteration"] for c in performance["energy"]["components"] if c["kind"] == "link"
+        }
+        rows = [row for row in performance["memory_ports"] if row["kind"] == "link"]
+        assert rows and billed
+        for row in rows:
+            bandwidth = 16 if "dram" in row["resource"] else 1024
+            assert billed[row["resource"]] == pytest.approx(row["bits_per_iteration"] * 160 / bandwidth)
 
 
 def test_cores_in_one_memory_need_no_route(tmp_path):

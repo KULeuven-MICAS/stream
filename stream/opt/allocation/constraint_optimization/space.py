@@ -279,12 +279,14 @@ class DecisionSpace:
         return None
 
     def shared_cycles(self, memory: Memory, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
-        """Cycles one firing holds a shared-bandwidth memory at ``rate``, slowed by its access pattern."""
+        """Cycles one firing holds a shared-bandwidth memory at ``rate`` for its share of the bits, slowed by its
+        access pattern."""
         direction = self.direction(memory, path)
         if direction is None:
             return 0
         span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
-        return ceil(self.moved_bits(tr, path) / (rate * self.shared_bandwidth[memory].efficiency(span, direction)))
+        bits = self.moved_bits(tr, path) * path.memory_share(memory, leaving=direction == READ)
+        return ceil(bits / (rate * self.shared_bandwidth[memory].efficiency(span, direction)))
 
     @cached_property
     def layouts(self) -> CopyLayouts:
@@ -304,9 +306,9 @@ class DecisionSpace:
     ) -> dict[Port, float]:
         """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
         share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`). Empty when the route moves no
-        bits through a port of ``memory``."""
-        role = self.operand_role(tr, read_side=direction == READ)
+        bits through a port of ``memory``. A target passing data on reads it in the role it holds it in."""
         leaving = direction == READ
+        role = self.operand_role(tr, read_side=leaving and memory in choice.sources)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))
         shares = {port: choice.share_at(memory, leaving, port_links) for port, port_links in by_port.items()}
         return {port: share for port, share in shares.items() if share}
@@ -319,16 +321,32 @@ class DecisionSpace:
     def side_bandwidth(
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
     ) -> BandwidthModel | None:
-        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth, else the ports
-        the side passes, else nothing (None). Ports work in parallel, so the side is as slow as the port that needs
-        longest for its share of the bits: that port's rate divided by its share."""
+        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth over the share of
+        the bits it moves, else the ports the side passes, else nothing (None). Ports work in parallel, so the side is
+        as slow as the port that needs longest for its share of the bits: that port's rate divided by its share."""
         if memory in self.shared_bandwidth:
-            return self.shared_bandwidth[memory]
+            share = choice.memory_share(memory, leaving=direction == READ)
+            return self.shared_bandwidth[memory].scaled(1.0 / share) if share else None
         ports = self.side_ports(tr, choice, memory, direction)
         if not ports:
             return None
         port = min(ports, key=lambda port: port.bandwidth.contiguous / ports[port])
         return port.bandwidth.scaled(1.0 / ports[port])
+
+    def walk_shares(self, tr: TransferNode, choice: MulticastPathPlan) -> dict[Memory, float]:
+        """Each memory's share of what ``tr`` moves of an edge whose placement splits it, over all iterations walking
+        the split axis (:meth:`Workload.placement_shares`); empty for any other transfer."""
+        for edge in (*self.workload.predecessors(tr), *self.workload.successors(tr)):
+            if (
+                shares := self.workload.placement_shares(edge, tr.inputs[0], self.mapping, choice.delivered)
+            ) is not None:
+                return shares
+        return {}
+
+    def memory_links(self, memory: Memory, leaving: bool) -> tuple[CommunicationLink, ...]:
+        """The links leaving (or entering) ``memory``."""
+        edges = self.accelerator.network.out_edges if leaving else self.accelerator.network.in_edges
+        return tuple(dict.fromkeys(data["cl"] for *_, data in edges(memory, data=True)))
 
     def operand_role(self, tr: TransferNode, read_side: bool) -> str:
         """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
@@ -344,10 +362,14 @@ class DecisionSpace:
 
     def offchip_bandwidth(self) -> float:
         """Bits per cycle the array can move across the off-chip boundary."""
-        off = self.accelerator.offchip_memory
-        if off is None:
-            return 0.0
-        return float(sum(link.bandwidth for link in self.link_set if link.receiver == off or off in link.members))
+        offchip = self.accelerator.offchip_memories
+        return float(
+            sum(
+                link.bandwidth
+                for link in self.link_set
+                if link.receiver in offchip or any(memory in link.members for memory in offchip)
+            )
+        )
 
     def placement_width(self, tensors: Iterable[Tensor]) -> int:
         """How many positions one side of a transfer occupies."""

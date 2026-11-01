@@ -105,7 +105,7 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
     already times the off-chip links."""
     ctx = SimpleNamespace(
         model=MagicMock(quicksum=MagicMock(return_value=SimpleNamespace(_raw=2048))),
-        space=SimpleNamespace(tensors_to_optimize_reuse_for=[]),
+        space=SimpleNamespace(tensors_to_optimize_reuse_for=[], accelerator=SimpleNamespace(offchip_memories=("l3",))),
         vars=SimpleNamespace(z_stop={}),
         quantities=QuantityRegistry(),
     )
@@ -114,6 +114,24 @@ def test_offchip_traffic_is_charged_in_the_primary_objective():
     ctx.quantities.add("offchip_traffic_weight", 1 / 512)
     traffic, latency = family.objective(ctx)
     assert (traffic.expr, latency.name, latency.priority, latency.expr) == (2048, "latency", LATENCY, 4)
+    ctx.quantities.add(OFFCHIP_TIMED, 1)
+    assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
+
+
+def test_several_off_chip_memories_need_the_overlap_to_time_their_links():
+    """Charging the off-chip traffic at the bandwidth of all off-chip links would pool memories that each have their
+    own, so without the overlap's off-chip contention the selection is refused."""
+    memories = (SimpleNamespace(name="hbm_0"), SimpleNamespace(name="hbm_1"))
+    ctx = SimpleNamespace(
+        model=MagicMock(quicksum=MagicMock(return_value=SimpleNamespace(_raw=2048))),
+        space=SimpleNamespace(tensors_to_optimize_reuse_for=[], accelerator=SimpleNamespace(offchip_memories=memories)),
+        vars=SimpleNamespace(z_stop={}),
+        quantities=QuantityRegistry(),
+    )
+    family = _offchip_traffic()
+    ctx.quantities.add("offchip_traffic_weight", 1 / 512)
+    with pytest.raises(ValueError, match=r"off-chip memories \['hbm_0', 'hbm_1'\]: the overlap family"):
+        family.objective(ctx)
     ctx.quantities.add(OFFCHIP_TIMED, 1)
     assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
 
@@ -129,7 +147,7 @@ def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
         shared_bandwidth=shared_bandwidth,
         iterations=4,
         offchip_bandwidth=lambda: bandwidth,
-        accelerator=SimpleNamespace(offchip_memory="l3"),
+        accelerator=SimpleNamespace(offchip_memories=("l3",)),
     )
     q = QuantityRegistry()
     _offchip_traffic().build(SimpleNamespace(space=space, quantities=q))
@@ -144,7 +162,7 @@ def test_offchip_traffic_without_its_charge_keeps_its_level():
         shared_bandwidth={},
         iterations=4,
         offchip_bandwidth=lambda: 512.0,
-        accelerator=SimpleNamespace(offchip_memory="l3"),
+        accelerator=SimpleNamespace(offchip_memories=("l3",)),
     )
     q = QuantityRegistry()
     _offchip_traffic(charge=False).build(SimpleNamespace(space=space, quantities=q))

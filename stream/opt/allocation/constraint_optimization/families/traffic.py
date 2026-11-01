@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from stream.hardware.ports import READ, WRITE, Port, PortKey
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
-from stream.workload.workload import ComputationNode, TransferNode
+from stream.workload.workload import ComputationNode, InEdge, TransferNode
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
@@ -38,6 +38,7 @@ class DmaStream:
     latency_ub: float
     slot: int
     sides: tuple[PortShare, ...]
+    energy_sides: tuple[PortShare, ...]
 
 
 @dataclass(frozen=True)
@@ -51,16 +52,48 @@ class NodeTraffic:
 
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortShare]:
     """The share of the transfer's bits each port of each memory on route ``choice`` passes, as
-    :meth:`DecisionSpace.side_ports` gives it."""
+    :meth:`DecisionSpace.side_ports` gives it. A target passing data on reads what it holds of it, unless its cores'
+    switch copies the data onto the links unread."""
     space = ctx.space
     sides: list[PortShare] = []
     runs = dict(zip((READ, WRITE), space.layouts.runs(tr, choice), strict=True))
-    for memories, direction in ((choice.sources, READ), (choice.targets, WRITE)):
+    relays = tuple(
+        memory
+        for memory in choice.targets
+        if memory not in choice.sources
+        and choice.links_at(memory, leaving=True)
+        and not space.hardware.circuit_switched(memory.cores)
+    )
+    for memories, direction in ((choice.sources + relays, READ), (choice.targets, WRITE)):
         for memory in dict.fromkeys(memories):
             for port, share in space.side_ports(tr, choice, memory, direction).items():
                 efficiency = port.bandwidth.efficiency(runs[direction], direction)
                 sides.append(PortShare(port, direction, share, efficiency))
     return sides
+
+
+def _walk_sides(
+    ctx: FormulationContext, tr: TransferNode, choice: Any, sides: tuple[PortShare, ...]
+) -> list[PortShare]:
+    """``sides``, but with each memory of an edge's placement whose split axis the iterations walk at its share over the
+    whole walk (:meth:`DecisionSpace.walk_shares`), through the ports it passes, or would pass from its links where
+    the busiest iteration leaves it out: what energy is priced over."""
+    space = ctx.space
+    if not (shares := space.walk_shares(tr, choice)):
+        return list(sides)
+    names = {memory.name for memory in shares}
+    found = [side for side in sides if side.port.key.memory not in names]
+    reading = any(isinstance(node, InEdge) for node in space.workload.predecessors(tr))
+    direction = READ if reading else WRITE
+    for memory, share in shares.items():
+        own = [side for side in sides if side.port.key.memory == memory.name]
+        if not own:
+            role = space.operand_role(tr, read_side=reading)
+            ports = space.accelerator.ports.memory_ports(memory, direction, role, space.memory_links(memory, reading))
+            own = [PortShare(port, direction, 1.0, 1.0) for port in ports]
+        total = sum(side.share for side in own)
+        found += [replace(side, share=share * side.share / total) for side in own if total]
+    return found
 
 
 def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
@@ -75,7 +108,10 @@ def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
         latency = get_active_latency(tr, link_latency, ctx.space.ssis)
         bits = ctx.space.moved_bits(tr, choice) * active_fraction(tr, ctx.space.ssis)
         sides = tuple(_sides(ctx, tr, choice))
-        streams.append(DmaStream(choice, quantity.expr, bits / latency, latency, ctx.space.slot_of[tr], sides))
+        energy_sides = tuple(_walk_sides(ctx, tr, choice, sides))
+        streams.append(
+            DmaStream(choice, quantity.expr, bits / latency, latency, ctx.space.slot_of[tr], sides, energy_sides)
+        )
     return streams
 
 

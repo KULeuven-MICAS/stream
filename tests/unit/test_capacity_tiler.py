@@ -12,6 +12,7 @@ from onnx import TensorProto, helper
 
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
+from stream.inputs.testing.workload.make_decode_attention import make_decode_attention
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.parser.mapping_validator import MappingValidator
@@ -169,10 +170,24 @@ def test_a_node_left_on_one_core_holds_its_tensors_whole():
     ]
 
 
-def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
+def test_a_dim_split_whole_across_cores_counts_one_slice_per_core(tmp_path):
+    """Decode over a 32k context, its 8 KV heads split one per MXU: each VMEM holds the K and V of its two MXUs' heads,
+    32 of its 64 MiB, so the group fits as it is rather than as if every core held all 8 heads."""
+    acc, parsed = _parse(
+        "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml", make_decode_attention(tmp_path / "d.onnx", 1, 32768)
+    )
+    w = expand_normalizations(parsed)
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    (sub,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
+    cns = tuple(sub.get_computation_nodes())
+    seed = gen._auto_fusion_tiling(sub, cns) or gen._whole_layer_tiling(sub, cns)
+    assert gen._build_intra_core_tiling(sub, cns) == seed
+
+
+def test_a_group_no_tiling_fits_is_cut_where_the_operators_before_stop_fitting(tmp_path):
     """A 4096-wide attention fused on four Eyeriss-like cores cannot hold its projections' weights next to the softmax
-    of every head: no tiling fits, so each operator is a group of its own, the softmax with all the sub-ops it expands
-    into."""
+    of every head: it is cut after the longest runs that fit, two projections, the third, then the attention with
+    all the sub-ops its softmax expands into."""
     acc, parsed = _parse(
         "stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml",
         make_multi_head_attention(tmp_path / "mha.onnx", seq=512),
@@ -180,11 +195,11 @@ def test_a_group_no_tiling_fits_is_mapped_one_operator_per_group(tmp_path):
     w = expand_normalizations(parsed)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     (fused,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
-    assert gen._unfit_nodes(fused)
+    assert gen._unfit_nodes(fused) == ["proj_Q", "proj_V"]
     _, groups = gen.generate_all_groups()
     operators = [{source_operator(n) for n in g.get_computation_nodes()} for g in groups]
-    assert sorted(operators, key=min) == [{n.name} for n in sorted(parsed.get_computation_nodes(), key=str)]
-    assert len(groups[operators.index({"softmax"})].get_computation_nodes()) > 1
+    assert operators == [{"proj_K", "proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
+    assert all(gen._fits(group) for group in groups)
 
 
 @pytest.mark.parametrize(

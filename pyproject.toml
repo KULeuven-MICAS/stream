@@ -11,14 +11,17 @@ namespaces = true
 # Ship the static hardware-description YAMLs so a pip-installed package can run
 # codegen without a checkout. (.py-only is the setuptools default; declare the
 # data files explicitly.) cores/ holds the per-tile descriptions and kernels/ the
-# kernel library referenced by the top-level accelerator YAMLs. Test
-# workloads/onnx fixtures are intentionally NOT shipped.
+# kernel library referenced by the top-level accelerator YAMLs. The testing
+# hardware ships too, for the workload generators beside it. Test onnx fixtures
+# are intentionally NOT shipped.
 "stream" = [
     "inputs/aie/hardware/*.yaml",
     "inputs/aie/hardware/cores/*.yaml",
     "inputs/aie/kernels/*.toml",
     "inputs/examples/hardware/*.yaml",
     "inputs/examples/hardware/cores/*.yaml",
+    "inputs/testing/hardware/*.yaml",
+    "inputs/testing/hardware/cores/*.yaml",
 ]
 
 [project]

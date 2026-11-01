@@ -16,6 +16,7 @@ from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.workload import Tensor
 
 if TYPE_CHECKING:
+    from stream.cost_model.communication_manager import MulticastPathPlan
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import TransferNode
@@ -89,31 +90,33 @@ class DmaChannels:
 
 
 def _port_channels(ctx: FormulationContext) -> tuple[dict[tuple[Memory, Port], Any], ...]:
-    """The channels transfers drive into and out of each DMA port of the off-chip memory, keyed by (memory, port).
+    """The channels transfers drive into and out of each DMA port of each off-chip memory, keyed by (memory, port).
     Each link of a route passes one DMA port (:meth:`Memory.dma_port`); a route spreads the transfer's fan over its
-    ports in proportion to the bits each carries, with at least one fifo per port."""
+    ports in proportion to the bits each carries, with at least one fifo per port. Channels are held for the whole
+    run, so a memory of an edge's placement that the iterations walk the split axis through holds its fifos even where
+    the busiest iteration does not read it."""
     space = ctx.space
     usage: tuple[dict[tuple[Memory, Port], Any], ...] = (defaultdict(int), defaultdict(int))
-    memory = space.accelerator.offchip_memory
-    if memory is None:
-        return usage
-    for tr in space.transfer_nodes:
-        for choice in space.path_choices[tr]:
-            link_shares = dict(choice.link_shares)
-            for incoming, side in ((True, choice.targets), (False, choice.sources)):
-                if memory not in side:
-                    continue
-                direction = WRITE if incoming else READ
-                operand = space.operand_role(tr, read_side=not incoming)
-                carried: dict[Port, float] = defaultdict(float)
-                for link in choice.links_at(memory, leaving=not incoming):
-                    dma = memory.dma_port(link.ports[memory], direction, operand)
-                    if dma is not None:
-                        carried[dma] += link_shares.get(link, 0.0)
-                total, fan = sum(carried.values()), _fan(space, tr, incoming)
-                for port, bits in carried.items():
-                    fifos = max(1, ceil(fan * (bits / total if total else 1.0 / len(carried))))
-                    usage[0 if incoming else 1][(memory, port)] += fifos * ctx.vars.y[(tr, choice)]._raw
+    for memory in space.accelerator.offchip_memories:
+        for tr in space.transfer_nodes:
+            for choice in space.path_choices[tr]:
+                link_shares = dict(choice.link_shares)
+                walked = space.walk_shares(tr, choice).get(memory, 0.0) > 0
+                for incoming, side in ((True, choice.targets), (False, choice.sources)):
+                    if memory not in side:
+                        continue
+                    direction = WRITE if incoming else READ
+                    operand = space.operand_role(tr, read_side=not incoming)
+                    carried: dict[Port, float] = defaultdict(float)
+                    links = choice.links_at(memory, leaving=not incoming)
+                    for link in links or (space.memory_links(memory, not incoming) if walked else ()):
+                        dma = memory.dma_port(link.ports[memory], direction, operand)
+                        if dma is not None:
+                            carried[dma] += link_shares.get(link, 0.0)
+                    total, fan = sum(carried.values()), _memory_fan(space, tr, choice, memory, incoming)
+                    for port, bits in carried.items():
+                        fifos = max(1, ceil(fan * (bits / total if total else 1.0 / len(carried))))
+                        usage[0 if incoming else 1][(memory, port)] += fifos * ctx.vars.y[(tr, choice)]._raw
     return usage
 
 
@@ -154,6 +157,19 @@ def _fan(space: DecisionSpace, tr: TransferNode, incoming: bool) -> int:
         )
     n_src = space.distinct_slice_width(unique_tensors(tr.inputs))
     return max(1, space.distinct_slice_width(unique_tensors(tr.outputs)) // n_src)
+
+
+def _memory_fan(
+    space: DecisionSpace, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, incoming: bool
+) -> int:
+    """:func:`_fan`, or, where other memories share ``memory``'s side of ``choice``, at most the positions it exchanges
+    data with."""
+    fan = _fan(space, tr, incoming)
+    if set(choice.targets if incoming else choice.sources) == {memory}:
+        return fan
+    side, own = (choice.targets, 1) if incoming else (choice.sources, 0)
+    partners = {pair[1 - own] for pair in choice.pairs if side[pair[own]] is memory}
+    return min(fan, max(1, len(partners)))
 
 
 def _side_uses_memory_var(ctx: FormulationContext, tr: TransferNode, memory: Memory, incoming: bool) -> SolverVar:
