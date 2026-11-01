@@ -98,14 +98,7 @@ class GenericMappingGenerator:
         """One mapping YAML per fusion group, cut at ``cut_points`` (default: the affine barriers, where a group's
         weights do not stay on its cores, and between runs no tiling fits whole); returns the paths and the
         sub-workloads."""
-        cuts = self._cut_points(cut_points)
-        sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
-        if (
-            cut_points is None
-            and self.intra_core_tiling is None
-            and (unfit := [n for sub in sub_workloads for n in self._unfit_nodes(sub)])
-        ):
-            sub_workloads = self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
+        sub_workloads = self.groups(cut_points)
         self._split_axes = self._split_axes_of(sub_workloads)
         self._placed_bits = {}
         runtime_args = (
@@ -565,6 +558,22 @@ class GenericMappingGenerator:
             if not self._fits(grown):
                 cuts.append(previous)
         return cuts
+
+    def groups(self, cut_points: list[str] | None = None) -> list[Workload]:
+        """The fusion groups :meth:`generate_all_groups` maps."""
+        cuts = self._cut_points(cut_points)
+        sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
+        if (
+            cut_points is None
+            and self.intra_core_tiling is None
+            and (unfit := [n for sub in sub_workloads for n in self._unfit_nodes(sub)])
+        ):
+            return self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
+        return sub_workloads
+
+    def fits_grouped(self, groups: list[Workload], names: set[str]) -> bool:
+        """Whether each of ``groups`` holding one of the nodes ``names`` fits on its cores under some tiling."""
+        return all(self._fits(sub) for sub in groups if names & {cn.name for cn in sub.get_computation_nodes()})
 
     def fits_fused(self, names: set[str]) -> bool:
         """Whether the nodes ``names``, a run of the workload, fit on their cores fused as a group of their own."""

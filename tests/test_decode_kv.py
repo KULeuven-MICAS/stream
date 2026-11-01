@@ -359,6 +359,16 @@ def test_flash_decoding_written_by_hand_keeps_each_part_s_softmax_whole(tmp_path
     assert not _walks_an_unfinished_reduction(estimate)
 
 
+def test_attention_that_fits_as_the_generator_cuts_it_is_not_split(tmp_path):
+    """16 sequences of 32k by heads over the chiplets' HBMs: the scores and the context fit in groups of their own, the
+    softmax's output spilled between them, which costs less than splitting the sequence."""
+    split = _decode(tmp_path / "default", "ironwood", _placements(BY_HEADS), batch=16, context=32768)
+    whole = _decode(tmp_path / "whole", "ironwood", _placements(BY_HEADS), batch=16, context=32768, parts=1)
+    names = {node.name for workload in split.context.get("sub_workloads") for node in workload.nodes}
+    assert "scores" in names and "context_combine" not in names
+    assert split.cycles == whole.cycles
+
+
 def test_a_part_count_the_cache_placement_does_not_split_into_is_refused(tmp_path):
     with pytest.raises(
         ValueError, match="K is split along its axis 2 over 4 memories, which 2 parts of context's sequence"

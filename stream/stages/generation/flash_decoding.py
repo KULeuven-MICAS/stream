@@ -72,7 +72,7 @@ class FlashDecodingStage(Stage):
         yield from sub_stage.run()
 
     def _parts(self, workload: Workload, attention: Attention, runtime_args: dict[str, Any]) -> int:
-        """The fewest parts, a power of two times the memories the sequence is split over, that fit, else those."""
+        """One where no placement splits the sequence and the cut attention fits, else the fewest parts that fit."""
         edges = {edge.outputs[0]: edge.name for edge in workload.get_in_edges()}
         placed = [
             len(placement["memories"])
@@ -81,7 +81,7 @@ class FlashDecodingStage(Stage):
         ]
         step = lcm(*placed) if placed else 1
         names = {node.name for node in attention.nodes}
-        if attention.length % step or (step == 1 and self._fits(workload, names, runtime_args)):
+        if attention.length % step or (step == 1 and self._fits_cut(workload, names, runtime_args)):
             return 1
         counts = _part_counts(attention.length, step)
         rewrite = get_workload_rewrite("flash_decoding")
@@ -95,11 +95,18 @@ class FlashDecodingStage(Stage):
             return step
         return next(count for count in counts if count == counts[-1] or fits(count))
 
-    def _fits(self, workload: Workload, names: set[str], runtime_args: dict[str, Any]) -> bool:
-        generator = GenericMappingGenerator(
+    def _generator(self, workload: Workload, runtime_args: dict[str, Any]) -> GenericMappingGenerator:
+        return GenericMappingGenerator(
             self.ctx.get("accelerator"), workload, self.ctx.get("output_path"), runtime_args=runtime_args or None
         )
-        return generator.fits_fused(names)
+
+    def _fits(self, workload: Workload, names: set[str], runtime_args: dict[str, Any]) -> bool:
+        return self._generator(workload, runtime_args).fits_fused(names)
+
+    def _fits_cut(self, workload: Workload, names: set[str], runtime_args: dict[str, Any]) -> bool:
+        """Whether the attention ``names`` fits, cut where the mapping generator would cut it."""
+        generator = self._generator(workload, runtime_args)
+        return generator.fits_grouped(generator.groups(), names)
 
 
 _: StageCallable = FlashDecodingStage
