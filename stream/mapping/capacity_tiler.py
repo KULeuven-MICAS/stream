@@ -38,6 +38,8 @@ class CapacityTiler:
     and cut finer, while the arrays stay as full, into at least ``PIPELINE_TILES``."""
 
     MAX_STEADY_STATE_TILES = 1024
+    """Steady-state tiles a group may be cut into, or, with ``scale_tiles``, per budget its whole per-core slices fill:
+    what a group must stream through memories it overflows many times over."""
     PIPELINE_TILES = 8
     """Steady-state tiles a group is cut into where its arrays stay as full, so that each tile's transfers overlap the
     others' compute rather than the whole group's loading, computing and storing following each other."""
@@ -63,6 +65,8 @@ class CapacityTiler:
         protected: set[LayerDim],
         seed_tiling: list[dict[str, Any]] | None = None,
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
+        *,
+        scale_tiles: bool = False,
     ) -> list[dict[str, Any]] | None:
         """Intra-core tiling for the group, ``[]`` when it already fits (caller keeps its own tiling), or None when no
         tiling within :attr:`MAX_STEADY_STATE_TILES` fits.
@@ -115,6 +119,11 @@ class CapacityTiler:
             for dims in [self.sub_workload.get_dims(cn)]
         }
         reductions = set().union(*reduced_by.values())
+        max_tiles = (
+            self._tile_limit(self.memory_bits(cns, cores_per_node, unroll, per_core, node_unroll), budgets)
+            if scale_tiles
+            else self.MAX_STEADY_STATE_TILES
+        )
         fitted: list[tuple[float, dict[LayerDim, int]]] = []
         if (
             overflow() <= 0
@@ -126,7 +135,9 @@ class CapacityTiler:
             for candidates in ([d for d in per_core if d not in reductions], list(per_core)):
                 resident.update(start)
                 while overflow() > 0 and (
-                    step := self._shrink(candidates, resident, per_core, divisors, overflow, fill, aligned, placed)
+                    step := self._shrink(
+                        candidates, resident, per_core, divisors, overflow, fill, aligned, placed, max_tiles
+                    )
                 ):
                     resident[step[0]] = step[1]
                 if overflow() <= 0:
@@ -187,6 +198,11 @@ class CapacityTiler:
             *_, dim, smaller = max(steps, key=lambda step: step[:4])
             resident[dim] = smaller
 
+    def _tile_limit(self, whole: dict[str, float], budgets: dict[str, int]) -> int:
+        """The most steady-state tiles a group may be cut into, its memories holding ``whole`` at whole slices."""
+        filled = (math.ceil(bits / budgets[m]) for m, bits in whole.items() if budgets[m] > 0)
+        return self.MAX_STEADY_STATE_TILES * max(1, *filled)
+
     def _placed(self, cns: tuple[ComputationNode, ...]) -> dict[LayerDim, int]:
         """Per dim, the bits of the group's operands a placement splits along an axis it indexes."""
         bits: dict[LayerDim, int] = {}
@@ -202,7 +218,7 @@ class CapacityTiler:
         return self.array_fill(cns, cores_per_node, unroll, dict(per_core), node_unroll)
 
     def _shrink(  # noqa: PLR0913
-        self, candidates, resident, per_core, divisors, overflow, fill, aligned, placed
+        self, candidates, resident, per_core, divisors, overflow, fill, aligned, placed, max_tiles
     ) -> tuple[LayerDim, int] | None:
         """The dim and smaller tile that walk the fewest ``placed`` bits, fill the arrays most, map whole where one can,
         then save the most overflow per doubling of the tiles, within ``max_tiles``; None when none saves any. Walking a
@@ -213,7 +229,7 @@ class CapacityTiler:
             keep = resident[dim]
             for smaller in (d for d in divisors[dim] if d < keep):
                 resident[dim] = smaller
-                if math.prod(per_core[d] / resident[d] for d in per_core) > self.MAX_STEADY_STATE_TILES:
+                if math.prod(per_core[d] / resident[d] for d in per_core) > max_tiles:
                     break
                 rate = (base - overflow()) / math.log2(keep / smaller)
                 if rate > 0 and (key := (-placed.get(dim, 0), fill(), aligned({dim}), rate)) > best_key:
