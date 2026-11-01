@@ -734,7 +734,7 @@ class _Lowering:
         """Whether ``node`` brings in a workload input its placement copies into several memories."""
         src = next(iter(self.ssw.predecessors(node)))
         placement = self.mapping.edge_placements.get(src.name) if isinstance(src, InEdge) else None
-        return placement is not None and placement.axis is None and len(placement.memories) > 1
+        return placement is not None and placement.split is None and len(placement.memories) > 1
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

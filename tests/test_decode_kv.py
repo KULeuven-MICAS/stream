@@ -359,7 +359,7 @@ def test_flash_decoding_written_by_hand_keeps_each_part_s_softmax_whole(tmp_path
     assert not _walks_an_unfinished_reduction(estimate)
 
 
-def test_a_part_count_the_cache_layout_does_not_split_into_is_refused(tmp_path):
+def test_a_part_count_the_cache_placement_does_not_split_into_is_refused(tmp_path):
     with pytest.raises(
         ValueError, match="K is split along its axis 2 over 4 memories, which 2 parts of context's sequence"
     ):
@@ -395,11 +395,11 @@ def test_a_long_batched_cache_split_over_the_hbms_fits_and_its_scores_stay_besid
     assert estimate.cycles >= _hbm_time("ironwood", **LONG)
     (cut,) = (name for name in estimate.context.get("mapping").edge_placements if name.endswith("_cut_in"))
     placement = estimate.context.get("mapping").edge_placements[cut]
-    assert [memory.name for memory in placement.memories] == HBMS and placement.axis == 1
+    assert [memory.name for memory in placement.memories] == HBMS and placement.split == 1
     assert not any(_on_chip(per_link) for per_link in _link_bits(estimate).values())
 
 
-def test_a_fusion_cut_without_a_layout_is_read_back_where_it_landed(tmp_path):
+def test_a_fusion_cut_without_a_placement_is_read_back_where_it_landed(tmp_path):
     """16 sequences of 2M: the scores no longer fit beside the cache, so each group spills them to the HBMs."""
     estimate = _decode(tmp_path, "ironwood", _placements(BY_HEADS), batch=16, context=2**21)
     assert len(estimate.context.get("group_memory_accesses")) == 3
@@ -437,7 +437,7 @@ def test_a_reduction_the_cores_split_crossing_to_a_later_group_is_read_back_from
     assert estimate.cycles < 1.05 * _hbm_time("ironwood", batch=16, context=2**21)
     groups = list(estimate.context.get("group_allocations").values())
     copies = [
-        name for group in groups for name, placement in group["edge_placements"].items() if placement["axis"] is None
+        name for group in groups for name, placement in group["edge_placements"].items() if placement["split"] is None
     ]
     assert copies == ["q", "max_cut_in"]
     assert groups[1]["edge_placements"]["max_cut_in"]["memories"] == HBMS

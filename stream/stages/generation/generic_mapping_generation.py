@@ -1,10 +1,14 @@
 import logging
 
+from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.mapping.mapping import Mapping, check_offchip_capacity
+from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_parser import MappingParser
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.node import HasIterationSpace
+from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,14 @@ def runtime_args_of(ctx: StageContext) -> dict | None:
     if (path := ctx.get("mapping_path", None)) is None:
         return None
     return MappingParser(path, ctx.get("workload"), ctx.get("accelerator")).parse_mapping_data()["runtime_args"]
+
+
+def check_input_capacity(accelerator: Accelerator, workload: Workload, runtime_args: dict) -> None:
+    """Refuse workload inputs whose placements overflow an off-chip memory, before any mapping is generated."""
+    inputs = Workload(list(workload.get_in_edges()))
+    placed = {edge.name: runtime_args[edge.name] for edge in inputs.get_in_edges() if edge.name in runtime_args}
+    placements = MappingFactory({"runtime_args": placed}, inputs, accelerator).create_edge_placements()
+    check_offchip_capacity(accelerator, [inputs], [Mapping(edge_placements=placements)])
 
 
 class GenericMappingGenerationStage(Stage):
@@ -48,13 +60,16 @@ class GenericMappingGenerationStage(Stage):
         else:
             logger.info(f"Using {len(cut_points)} caller-supplied fusion cut points: {cut_points}")
 
+        runtime_args = runtime_args_of(self.ctx)
+        if runtime_args is not None:
+            check_input_capacity(self.accelerator, self.workload, runtime_args)
         generator = GenericMappingGenerator(
             accelerator=self.accelerator,
             workload=self.workload,
             output_dir=self.output_path,
             # Optional layer-fusion intra-core tiling (None -> generic mapper's trivial no-op tiling).
             intra_core_tiling=self.ctx.get("intra_core_tiling", None),
-            runtime_args=runtime_args_of(self.ctx),
+            runtime_args=runtime_args,
         )
         group_mapping_paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
         logger.info(f"Generated {len(group_mapping_paths)} group mapping(s): {group_mapping_paths}")

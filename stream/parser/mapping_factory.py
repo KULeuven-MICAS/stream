@@ -241,12 +241,12 @@ class MappingFactory:
             placement = EdgePlacement(tuple(self.accelerator.memories[m] for m in memories), declared.get("split"))
             if (
                 isinstance(self.workload.get_node_by_name(name), OutEdge)
-                and placement.axis is None
+                and placement.split is None
                 and len(placement.memories) > 1
             ):
                 raise ValueError(f"output {name} cannot be a copy in each of {memories}; split it on an axis")
-            if placement.axis is not None and placement.axis >= len(self._edge_tensor(name).shape):
-                raise ValueError(f"{name} has no axis {placement.axis} to split")
+            if placement.split is not None and placement.split >= len(self._edge_tensor(name).shape):
+                raise ValueError(f"{name} has no axis {placement.split} to split")
             placements[name] = placement
         return placements
 

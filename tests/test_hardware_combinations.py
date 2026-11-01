@@ -12,6 +12,7 @@ from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.testing.workload.make_2_conv import make_2_conv_workload
+from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
@@ -51,6 +52,14 @@ REFERENCE = {
     ("tpu_v7_ironwood", "two_conv"): (788, 64, 4927635.57),
     ("tpu_v7_ironwood", "swiglu"): (393891, 10, 63630107721.73),
 }
+
+# Multi-head attention over 8192 positions on TPU7x: total cycles, energy in pJ and the fused groups the generic
+# pipeline makes, its attention fitting whole so that it is not split along its sequence.
+ATTENTION_REFERENCE = (
+    1838250,
+    519800302403.58,
+    [["proj_K", "proj_Q", "proj_V"], ["scores", "softmax_max", "softmax_exp", "softmax_sum", "softmax_div", "context"]],
+)
 
 
 def _assert_sound_dataflow(ctx, node_count: int) -> None:
@@ -136,6 +145,17 @@ def test_hardware_swiglu(hardware: str, record_metric) -> None:
     _assert_reference(ctx, hardware, "swiglu")
     tiles = _caption({t["dim"]: t["tile"] for t in SWIGLU_TILING})
     _record_metrics(record_metric, ctx, f"{_caption(SWIGLU)}, bf16; fused tiles {tiles}")
+
+
+def test_attention_on_one_off_chip_memory_keeps_its_reference_groups(tmp_path) -> None:
+    ctx = _run(
+        "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml", make_multi_head_attention(tmp_path / "mha.onnx", 8192)
+    )
+    groups = [[node.name for node in workload.get_computation_nodes()] for workload in ctx.get("sub_workloads")]
+    energy = sum(group["performance"]["energy"]["total_pj"] for group in ctx.get("group_allocations").values())
+    total, reference_energy, reference_groups = ATTENTION_REFERENCE
+    assert (ctx.get("total_latency"), groups) == (total, reference_groups)
+    assert energy == pytest.approx(reference_energy, abs=0.01)
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)

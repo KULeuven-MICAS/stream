@@ -94,11 +94,11 @@ class FusedGroupIR(BaseModel):
 
 
 class EdgePlacementIR(BaseModel):
-    """Which off-chip memories hold a workload input or output: a block along ``axis`` in each, or without one all
-    of it in each."""
+    """Which off-chip memories hold a workload input or output: a block along axis ``split`` in each, or without
+    one all of it in each."""
 
     memories: list[str] = Field(description="The off-chip memories holding the tensor, in block order")
-    axis: int | None = Field(description="The tensor axis split into a contiguous block per memory; None for a copy")
+    split: int | None = Field(description="The tensor axis split into a contiguous block per memory; None for a copy")
 
 
 # A tiling pair is [dim, factor]; anything shorter is not a decision we can type.
@@ -261,7 +261,7 @@ class AllocationCompilerView(BaseModel):
     Suitable for compiler engineers performing code generation and transfer routing.
     """
 
-    schema_version: Literal["3.0"] = "3.0"
+    schema_version: Literal["2.1"] = "2.1"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node tiling and core mapping: use inter_core_tiling and resource_allocation fields"
     )
@@ -569,18 +569,18 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping Allocation.get_ir() output.
 
-    schema_version '4.0': minor bumps (4.1) for additive fields, major bumps (5.0) for
+    schema_version '3.0': minor bumps (3.1) for additive fields, major bumps (4.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream/allocation_ir/v4",
+            "$id": "stream/allocation_ir/v3",
         }
     )
 
-    schema_version: Literal["4.0"] = "4.0"
+    schema_version: Literal["3.1"] = "3.1"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(

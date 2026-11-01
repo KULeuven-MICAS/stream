@@ -817,9 +817,9 @@ class Workload(DiGraphWrapper[Node]):
         of ``edge``'s placement holds, moved to the iteration-0 coordinates the read boxes are in; one iteration where
         the axis is not walked, None unless the placement splits the tensor."""
         placement = mapping.edge_placements.get(edge.name) if isinstance(edge, InEdge | OutEdge) else None
-        if placement is None or placement.axis is None:
+        if placement is None or placement.split is None:
             return None
-        shape, axis = tensor.subview.source.type.get_shape(), placement.axis
+        shape, axis = tensor.subview.source.type.get_shape(), placement.split
         extent = shape[axis]
         step = min(tensor.shape[axis], extent)
         blocks = [placement.block(s, extent) for s in range(len(placement.memories))]
@@ -935,7 +935,7 @@ class Workload(DiGraphWrapper[Node]):
         held_walk = self._walked_blocks(src, source, mapping)
         target_walk = self._walked_blocks(out, source, mapping) if out else None
         placements = mapping.edge_placements
-        one_axis = bool(held_walk and target_walk and out and placements[src.name].axis == placements[out.name].axis)
+        one_axis = bool(held_walk and target_walk and out and placements[src.name].split == placements[out.name].split)
         walks = walked_iterations(held_walk, target_walk, one_axis)
         return tuple(_busiest([demand(held, target) for held, target in walks], cost))
 

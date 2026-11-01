@@ -144,6 +144,10 @@ class MappingValidator:
         runtime_args = root.get("runtime_args", {}) or {}
         if not self.runtime_args_validator.validate(runtime_args, schema={"rows": self.SCHEMA_RUNTIME_ARGS}):  # type: ignore[arg-type]
             self.invalidate(f"The following runtime args restrictions apply: {self.runtime_args_validator.errors}")
+        known = self.SCHEMA_RUNTIME_ARGS["valuesrules"]["schema"]
+        for name, args in runtime_args.items() if isinstance(runtime_args, dict) else ():
+            for key in (k for k, v in (args or {}).items() if isinstance(v, dict) and k not in known):
+                self.invalidate(f"runtime_args.{name}.{key} is no entry of a tensor's runtime args: {sorted(known)}")
         self.normalized["runtime_args"] = runtime_args
         return self.is_valid
 

@@ -52,17 +52,17 @@ class FusedGroup:
 
 @dataclass(frozen=True, slots=True)
 class EdgePlacement:
-    """Which off-chip memories hold an edge's tensor: block ``s`` of the whole tensor along ``axis`` in
-    ``memories[s]``, or, without an axis, all of it in each."""
+    """Which off-chip memories hold an edge's tensor: block ``s`` of the whole tensor along axis ``split`` in
+    ``memories[s]``, or, without a split, all of it in each."""
 
     memories: tuple[Memory, ...]
-    axis: int | None = None
+    split: int | None = None
 
     def block(self, position: int, extent: int) -> tuple[int, int]:
         """The inclusive index range along the axis the memory at ``position`` holds, of an axis ``extent`` long."""
         if extent % len(self.memories):
             names = [memory.name for memory in self.memories]
-            raise ValueError(f"axis {self.axis} of extent {extent} does not split evenly over {names}")
+            raise ValueError(f"axis {self.split} of extent {extent} does not split evenly over {names}")
         size = extent // len(self.memories)
         return position * size, (position + 1) * size - 1
 
@@ -264,7 +264,7 @@ class Mapping:
             "fused_groups": fused_groups_ir,
             "runtime_args": dict(self._runtime_args),
             "edge_placements": {
-                name: {"memories": [memory.name for memory in placement.memories], "axis": placement.axis}
+                name: {"memories": [memory.name for memory in placement.memories], "split": placement.split}
                 for name, placement in self._edge_placements.items()
             },
         }
@@ -532,7 +532,7 @@ def offchip_holdings(
                 continue
             counted.add(tensor)
             placement = mapping.edge_placements.get(edge.name) or _landed_copy(accelerator, workload, mapping, edge)
-            if placement is not None and placement.axis is None:
+            if placement is not None and placement.split is None:
                 shares = dict.fromkeys(placement.memories, Fraction(1))
             else:
                 positions = (
@@ -552,7 +552,7 @@ def _landed_copy(accelerator: Accelerator, workload: Workload, mapping: Mapping,
     if not isinstance(src, ComputationNode) or len(accelerator.offchip_memories) <= 1:
         return None
     placement = landed_placement(accelerator, mapping, src)
-    return placement if placement is not None and placement.axis is None else None
+    return placement if placement is not None and placement.split is None else None
 
 
 OFFCHIP_CAPACITY = ResourceKind(
