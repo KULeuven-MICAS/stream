@@ -107,7 +107,9 @@ class Allocation:
         it."""
         return {
             name: {
-                "shape": list(declared_of(edge).shape),
+                "tensor": edge_tensor(edge).name,
+                "shape": list((declared := declared_of(edge)).shape),
+                "axes": list(declared.axes),
                 "element_bits": edge_tensor(edge).operand_type.bitwidth,
                 "direction": "in" if isinstance(edge, InEdge) else "out",
             }

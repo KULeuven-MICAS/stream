@@ -2,6 +2,9 @@
 its own: a split the cores' split follows stays local, a pooled or wrongly split one costs the ring or one HBM."""
 
 import re
+from collections import defaultdict
+from fractions import Fraction
+from math import prod
 from types import SimpleNamespace
 
 import onnx
@@ -15,7 +18,7 @@ from stream.hardware.ports import OUTPUT, READ
 from stream.inputs.testing.workload.make_decode_attention import DHEAD, KV_HEADS, make_decode_attention
 from stream.ir.allocation import AllocationIR
 from stream.ir.infeasibility import InfeasibleAllocationError
-from stream.mapping.mapping import Mapping, placements_of
+from stream.mapping.mapping import Mapping, offchip_holdings, placements_of, with_cut_landings
 from stream.opt.allocation.constraint_optimization.families.dma import _port_channels
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
@@ -350,7 +353,7 @@ def test_the_generic_generator_prefers_the_axis_a_placement_splits(tmp_path):
     assert _hbm_shares(allocation, tr, route) == dict.fromkeys(HBMS, 0.25)
 
 
-def _mlp(tmp_path, runtime_args, hardware=RING):
+def _mlp_estimate(tmp_path, runtime_args, hardware=RING):
     """Two matmuls in two fused groups, the hidden tensor between them crossing the cut."""
     shapes = {"a": [1, 256], "w1": [256, 512], "w2": [512, 512]}
     inputs = [helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape) for name, shape in shapes.items()]
@@ -370,10 +373,11 @@ def _mlp(tmp_path, runtime_args, hardware=RING):
         yaml.safe_dump({"layers": layers, "fused_groups": groups, "runtime_args": runtime_args})
     )
     mapping = str(tmp_path / "mapping.yaml")
-    estimate = evaluate_mapping(
-        hardware, str(tmp_path / "mlp.onnx"), str(tmp_path), mapping, SolveOptions(artifacts=False)
-    )
-    return estimate.context.get("sub_mappings")
+    return evaluate_mapping(hardware, str(tmp_path / "mlp.onnx"), str(tmp_path), mapping, SolveOptions(artifacts=False))
+
+
+def _mlp(tmp_path, runtime_args, hardware=RING):
+    return _mlp_estimate(tmp_path, runtime_args, hardware).context.get("sub_mappings")
 
 
 PLACED = {name: SPLIT_N for name in ("w1", "w2", "out")} | {"a": {"placement": {"memories": HBMS}}}
@@ -446,7 +450,8 @@ def _onnx_edges(path):
     def edge(value, direction):
         tensor = value.type.tensor_type
         bits = 8 * helper.tensor_dtype_to_np_dtype(tensor.elem_type).itemsize
-        return {"shape": [d.dim_value for d in tensor.shape.dim], "element_bits": bits, "direction": direction}
+        shape = [d.dim_value for d in tensor.shape.dim]
+        return {"tensor": value.name, "shape": shape, "element_bits": bits, "direction": direction}
 
     return {v.name: edge(v, "in") for v in graph.input} | {v.name: edge(v, "out") for v in graph.output}
 
@@ -461,13 +466,18 @@ def _split_extents(ir):
 
 
 def _edge_tensors(ir):
-    return {name: tensor.model_dump() for name, tensor in ir.edge_tensors.items()}
+    return {name: tensor.model_dump(exclude={"axes"}) for name, tensor in ir.edge_tensors.items()}
+
+
+def _axes(ir):
+    return {name: tensor.axes for name, tensor in ir.edge_tensors.items()}
 
 
 def test_the_ir_gives_each_edge_s_whole_tensor_as_the_onnx_declares_it(tmp_path):
     """Tiled over k in blocks of 128, the IR still gives the whole 1024 x 512 weight that its placement splits on n."""
     ir = AllocationIR.from_internal(_solve(tmp_path, SPLIT_N, tiles=[K_TILE]))
     assert _edge_tensors(ir) == _onnx_edges(tmp_path / "matmul.onnx")
+    assert _axes(ir) == {"a": [0, 1], "w": [0, 1], "out": [0, 1]}
     assert _split_extents(ir) == {"w": 512, "out": 512}
 
 
@@ -491,6 +501,35 @@ def test_the_ir_gives_a_decode_step_s_cache_and_its_placement_as_the_mapping_fil
     assert any(node.name.endswith("_part") for node in estimate.context.get("workload").nodes) == bool(parts)
     ir = AllocationIR.from_internal(estimate.context.get("allocation"))
     assert _edge_tensors(ir) == _onnx_edges(tmp_path / "decode.onnx")
+    cache_axes = [0, 1, 2, 2, 3] if parts else [0, 1, 2, 3]
+    assert _axes(ir) == {"q": [0, 1, 2, 3], "K": cache_axes, "V": cache_axes, "O": [0, 1, 2, 3]}
     splits = {name: placement.split for name, placement in ir.edge_placements.items()}
     assert splits == {"q": None, "K": cache, "V": cache, "O": 1}
     assert _split_extents(ir) == {"K": extent, "V": extent, "O": KV_HEADS}
+
+
+def test_the_two_ends_of_a_fusion_cut_carry_one_tensor_which_counted_once_holds_what_the_capacity_check_counts(
+    tmp_path,
+):
+    estimate = _mlp_estimate(tmp_path, PLACED | {"Up_cut_out": SPLIT_N})
+    groups = [AllocationIR(**ir) for ir in estimate.context.get("group_allocations").values()]
+    assert groups[0].edge_tensors["Up_cut_out"].tensor == groups[1].edge_tensors["Up_cut_in"].tensor
+    once = {
+        tensor.tensor: (tensor, ir.edge_placements[name]) for ir in groups for name, tensor in ir.edge_tensors.items()
+    }
+    bits: dict[str, Fraction] = defaultdict(Fraction)
+    for tensor, placement in once.values():
+        share = Fraction(1, len(placement.memories)) if placement.split is not None else Fraction(1)
+        for memory in placement.memories:
+            bits[memory] += share * prod(tensor.shape) * tensor.element_bits
+    context = estimate.context
+    accelerator, workloads = context.get("accelerator"), context.get("sub_workloads")
+    held = offchip_holdings(
+        accelerator, workloads, with_cut_landings(accelerator, workloads, context.get("sub_mappings"))
+    )
+    assert bits == {
+        memory.name: sum(
+            share * tensor.size_bits(tensor.subview.source.type.get_shape()) for tensor, share in shares.items()
+        )
+        for memory, shares in held.items()
+    }
