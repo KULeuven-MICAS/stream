@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Any
 from stream.allocation.steady_state import steady_state_detail
 from stream.cost_model.roofline import group_point, hardware_roofline
 from stream.hardware.architecture.core import Core
+from stream.mapping.mapping import edge_tensor
 from stream.opt.allocation.constraint_optimization.report import guarded
-from stream.workload.node import Tensor
+from stream.workload.node import InEdge, OutEdge, Tensor
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
     LoopEffect,
@@ -61,8 +62,8 @@ class Allocation:
 
     def get_ir(self) -> dict:
         """The allocation as a plain dict: latencies, solve configuration, statistics and families, fusion splits,
-        mapping, performance report, the steady-state inspection view and the group's point on the roofline, each of
-        the last two None when it cannot be built."""
+        mapping, the whole tensor of each input and output edge, performance report, the steady-state inspection view
+        and the group's point on the roofline, each of the last two None when it cannot be built."""
         stats = self.solution.solve_stats
         latency = self.solution.latency
         return {
@@ -85,9 +86,23 @@ class Allocation:
             "families": [{"name": name, "options": options} for name, options in self.families],
             "fusion_splits": {str(dim): size for dim, size in self.problem.fusion_splits.items()},
             "mapping": self.mapping.get_ir(),
+            "edge_tensors": self._edge_tensors(),
             "performance": self.solution.performance,
             "steady_state": guarded("steady-state IR view", self._steady_state_ir),
             "roofline": guarded("roofline point", self.roofline_point),
+        }
+
+    def _edge_tensors(self) -> dict[str, dict[str, Any]]:
+        """The whole tensor each input and output edge of the group brings in or takes out, in the axes a placement
+        splits."""
+        return {
+            edge.name: {
+                "shape": list((tensor := edge_tensor(edge)).subview.source.type.get_shape()),
+                "element_bits": tensor.operand_type.bitwidth,
+                "direction": "in" if isinstance(edge, InEdge) else "out",
+            }
+            for edge in self.problem.source_workload.nodes
+            if isinstance(edge, InEdge | OutEdge)
         }
 
     def roofline_point(self) -> dict[str, Any]:
