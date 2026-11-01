@@ -38,6 +38,7 @@ from stream.workload.iterator_type import (
 from stream.workload.node import ComputationNode, OutEdge
 from stream.workload.normalization import operator_types_of, source_operator
 from stream.workload.tensor import Tensor
+from stream.workload.utils import unfinished_reduction_dims
 from stream.workload.workload import Workload, determine_fusion_cut_points
 
 logger = logging.getLogger(__name__)
@@ -626,6 +627,18 @@ class GenericMappingGenerator:
                 cuts.append(previous)
         return cuts
 
+    def fits_fused(self, names: set[str]) -> bool:
+        """Whether the nodes ``names``, a run of the workload, fit on their cores fused as a group of their own."""
+        order = [node.name for node in self.workload.dataflow_sort() if isinstance(node, ComputationNode)]
+        run = [i for i, name in enumerate(order) if name in names]
+        cuts = [*self._cut_points(None), order[run[-1]], *order[run[0] - 1 : run[0]]]
+        held = [
+            sub
+            for sub in self.workload.split_fusion_groups(cut_points=cuts)
+            if names & {cn.name for cn in sub.get_computation_nodes()}
+        ]
+        return len(held) == 1 and self._fits(held[0])
+
     def _fits(self, sub_workload: Workload) -> bool:
         """Whether some tiling fits the group's operators fused on their cores."""
         cns = tuple(sub_workload.get_computation_nodes())
@@ -658,8 +671,8 @@ class GenericMappingGenerator:
         if not any(cores_per_node.values()):
             return seed_tiling
         unroll = self._inter_core_unrolling(sub_workload, cns)
-        # Only nonlinear (softmax/layernorm) reductions are off-limits temporally; the contraction is streamed.
-        protected = self._global_dims_at(sub_workload, cns, nonlinear_reduction_dims)
+        # A reduction read while its dim is walked is off-limits temporally; a contraction alone is streamed.
+        protected = unfinished_reduction_dims(sub_workload)
         split = self._protected_dims(sub_workload, cns)
         node_unroll = {
             cn: {
