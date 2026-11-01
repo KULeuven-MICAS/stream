@@ -612,8 +612,10 @@ class _Lowering:
         return self._reads_in(dst, tensor)
 
     def _offchip_landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
-        """The off-chip memories a copy of ``src``'s output lands in, one per position (:func:`landing_of`)."""
+        """The off-chip memories a copy of ``src``'s output lands in, one per position, beside the cores making it."""
         edge = next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_layouts), None)
+        while edge is None and isinstance(src, TransferNode):
+            src = next(iter(self.ssw.predecessors(src)))
         return landing_of(self.accelerator, self.mapping, edge, src)
 
     def _iteration_cost(

@@ -26,7 +26,8 @@ class MappingGenerator(Protocol):
 
 
 class GenericMappingGenerator:
-    """Any accelerator: normalizations expanded into affine sub-ops, fused at the workload's own cut points."""
+    """Any accelerator: normalizations expanded into affine sub-ops, attention split along its sequence where it must
+    be, fused at the workload's own cut points."""
 
     name = "generic"
     priority = 0
@@ -35,10 +36,11 @@ class GenericMappingGenerator:
         return True
 
     def stages(self) -> list[StageCallable]:
+        from stream.stages.generation.flash_decoding import FlashDecodingStage  # noqa: PLC0415
         from stream.stages.generation.generic_mapping_generation import GenericMappingGenerationStage  # noqa: PLC0415
         from stream.stages.generation.normalization_expansion import ExpandNormalizationStage  # noqa: PLC0415
 
-        return [ExpandNormalizationStage, GenericMappingGenerationStage]
+        return [ExpandNormalizationStage, FlashDecodingStage, GenericMappingGenerationStage]
 
 
 GENERIC_MAPPING = GenericMappingGenerator()

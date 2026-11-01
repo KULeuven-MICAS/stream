@@ -465,8 +465,9 @@ def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None,
 
 def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNode) -> EdgeLayout | None:
     """Where ``src``'s output landed without a layout (:func:`landing_of`), as one: a block along the axis its first
-    split dim indexing the output indexes, in the memory the cores holding that block land it in, or all of it in one;
-    None if no split dim indexes the output or the cores holding one block land it in several."""
+    split dim indexing the output indexes, in the memory the cores holding that block land it in, or all of it in each
+    memory it landed in where no split dim indexes it, as the cores of a split reduction land it; None if the cores
+    holding one block land it in several."""
     positions = landing_of(accelerator, mapping, None, src)
     if len(set(positions)) == 1:
         return EdgeLayout(positions[:1])
@@ -480,7 +481,7 @@ def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNo
         if dim.position in map_dim_positions(AffineMap(access.num_dims, 0, (result,)))
     )
     if (found := next(indexed, None)) is None:
-        return None
+        return EdgeLayout(tuple(dict.fromkeys(positions)))
     loop, axis = found
     factor, inner = tiling[loop][1], prod(f for _, f in tiling[loop + 1 :])
     blocks: dict[int, set[Memory]] = defaultdict(set)
@@ -529,7 +530,7 @@ def offchip_holdings(
             if not isinstance(edge, InEdge | OutEdge) or (tensor := edge_tensor(edge)) in counted:
                 continue
             counted.add(tensor)
-            layout = mapping.edge_layouts.get(edge.name)
+            layout = mapping.edge_layouts.get(edge.name) or _landed_copy(accelerator, workload, mapping, edge)
             if layout is not None and layout.axis is None:
                 shares = dict.fromkeys(layout.memories, Fraction(1))
             else:
@@ -542,6 +543,15 @@ def offchip_holdings(
             for memory, share in shares.items():
                 held[memory][tensor] = share
     return held
+
+
+def _landed_copy(accelerator: Accelerator, workload: Workload, mapping: Mapping, edge: Node) -> EdgeLayout | None:
+    """Where an output without a layout landed whole in several memories, as a split reduction's does."""
+    src = next(iter(workload.predecessors(edge)), None) if isinstance(edge, OutEdge) else None
+    if not isinstance(src, ComputationNode) or len(accelerator.offchip_memories) <= 1:
+        return None
+    layout = landed_layout(accelerator, mapping, src)
+    return layout if layout is not None and layout.axis is None else None
 
 
 OFFCHIP_CAPACITY = ResourceKind(
