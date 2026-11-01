@@ -12,7 +12,7 @@ from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.ports import OUTPUT, READ
-from stream.inputs.testing.workload.make_decode_attention import KV_HEADS, make_decode_attention
+from stream.inputs.testing.workload.make_decode_attention import DHEAD, KV_HEADS, make_decode_attention
 from stream.ir.allocation import AllocationIR
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import Mapping, placements_of
@@ -471,17 +471,26 @@ def test_the_ir_gives_each_edge_s_whole_tensor_as_the_onnx_declares_it(tmp_path)
     assert _split_extents(ir) == {"w": 512, "out": 512}
 
 
-def test_the_ir_gives_a_decode_step_s_cache_whole_as_the_onnx_declares_it(tmp_path):
+@pytest.mark.parametrize(("cache", "parts", "extent"), [(1, None, KV_HEADS), (2, 4, 256), (3, 4, DHEAD)])
+def test_the_ir_gives_a_decode_step_s_cache_and_its_placement_as_the_mapping_file_declares_them(
+    tmp_path, cache, parts, extent
+):
+    """Placed by heads, or by sequence or head dim over an attention cut into four parts of its sequence, the cache's
+    placement and shape are as the mapping file and the ONNX declare them, not in the axes of the cut attention."""
     by_heads = {"placement": {"memories": HBMS, "split": 1}}
-    placements = {"q": {"placement": {"memories": HBMS}}, "K": by_heads, "V": by_heads, "O": by_heads}
+    by_cache = {"placement": {"memories": HBMS, "split": cache}}
+    placements = {"q": {"placement": {"memories": HBMS}}, "K": by_cache, "V": by_cache, "O": by_heads}
     (tmp_path / "placements.yaml").write_text(yaml.safe_dump({"runtime_args": placements}))
     estimate = evaluate_mapping(
         RING,
         make_decode_attention(tmp_path / "decode.onnx", 1, 256),
         str(tmp_path),
         str(tmp_path / "placements.yaml"),
-        SolveOptions(artifacts=False),
+        SolveOptions(artifacts=False, stage_options={"attention_parts": parts} if parts else {}),
     )
+    assert any(node.name.endswith("_part") for node in estimate.context.get("workload").nodes) == bool(parts)
     ir = AllocationIR.from_internal(estimate.context.get("allocation"))
     assert _edge_tensors(ir) == _onnx_edges(tmp_path / "decode.onnx")
-    assert _split_extents(ir) == dict.fromkeys(("K", "V", "O"), KV_HEADS)
+    splits = {name: placement.split for name, placement in ir.edge_placements.items()}
+    assert splits == {"q": None, "K": cache, "V": cache, "O": 1}
+    assert _split_extents(ir) == {"K": extent, "V": extent, "O": KV_HEADS}

@@ -6,6 +6,7 @@ from math import lcm
 from typing import Any
 
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.mapping.mapping import viewed_placements
 from stream.stages.context import StageContext
 from stream.stages.generation.generic_mapping_generation import check_input_capacity, runtime_args_of
 from stream.stages.stage import Stage, StageCallable
@@ -25,23 +26,15 @@ def _part_counts(length: int, step: int) -> list[int]:
     return counts
 
 
-def _viewed_placements(
-    workload: Workload, attention: Attention, parts: int, runtime_args: dict[str, Any]
-) -> dict[str, Any]:
-    """``runtime_args`` with each viewed input's placement split counted in its new axes, the sequence's as the
-    parts'."""
-    viewed = dict(runtime_args)
+def _check_parts(workload: Workload, attention: Attention, parts: int, runtime_args: dict[str, Any]) -> None:
+    """Refuse ``parts`` where they do not split evenly over the memories of a placement splitting the sequence."""
     for edge, axis in attention.views(workload).items():
         placement = runtime_args.get(edge.name, {}).get("placement", {})
-        if (split := placement.get("split")) is None:
-            continue
-        if split == axis and parts % len(placement["memories"]):
+        if placement.get("split") == axis and parts % len(placement["memories"]):
             raise ValueError(
                 f"{edge.name} is split along its axis {axis} over {len(placement['memories'])} memories, which "
                 f"{parts} parts of {attention.context.name}'s sequence do not split evenly"
             )
-        viewed[edge.name] = runtime_args[edge.name] | {"placement": placement | {"split": split + (split > axis)}}
-    return viewed
 
 
 class FlashDecodingStage(Stage):
@@ -57,22 +50,25 @@ class FlashDecodingStage(Stage):
         if parts is not None and (not isinstance(parts, int) or parts < 1):
             raise ValueError(f"attention_parts must be a positive integer, got {parts!r}")
         rewrite = get_workload_rewrite("flash_decoding")
-        runtime_args = runtime_args_of(self.ctx)
-        if runtime_args is not None:
-            check_input_capacity(self.ctx.get("accelerator"), workload, runtime_args)
+        declared = runtime_args_of(self.ctx)
+        if declared is not None:
+            check_input_capacity(self.ctx.get("accelerator"), workload, declared)
         for attention in rewrite.find(workload):
-            count = parts or self._parts(workload, attention, runtime_args or {})
+            count = parts or self._parts(workload, attention, declared or {})
             if count > 1:
-                if runtime_args is not None:
-                    runtime_args = _viewed_placements(workload, attention, count, runtime_args)
+                if declared is not None:
+                    _check_parts(workload, attention, count, viewed_placements(workload, declared))
                 workload = rewrite.apply(workload, attention, count)
                 logger.info("Attention %s split into %d parts of its sequence", attention.context.name, count)
+        runtime_args = viewed_placements(workload, declared) if declared is not None else None
         self.ctx.set(workload=workload, runtime_args=runtime_args)
         sub_stage: Stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
-    def _parts(self, workload: Workload, attention: Attention, runtime_args: dict[str, Any]) -> int:
-        """One where no placement splits the sequence and the cut attention fits, else the fewest parts that fit."""
+    def _parts(self, workload: Workload, attention: Attention, declared: dict[str, Any]) -> int:
+        """One where no placement splits the sequence and the cut attention fits, else the fewest parts that fit, by
+        the runtime args the mapping file ``declared``."""
+        runtime_args = viewed_placements(workload, declared)
         edges = {edge.outputs[0]: edge.name for edge in workload.get_in_edges()}
         placed = [
             len(placement["memories"])
@@ -87,8 +83,8 @@ class FlashDecodingStage(Stage):
         rewrite = get_workload_rewrite("flash_decoding")
 
         def fits(count: int) -> bool:
-            viewed = _viewed_placements(workload, attention, count, runtime_args)
-            return self._fits(rewrite.apply(workload, attention, count), {f"{name}_part" for name in names}, viewed)
+            rewritten = rewrite.apply(workload, attention, count)
+            return self._fits(rewritten, {f"{name}_part" for name in names}, viewed_placements(rewritten, declared))
 
         # Fitting is not monotone in the count (the tiler may fit 32 parts and not 256): try them in order.
         if not counts or not fits(counts[-1]):

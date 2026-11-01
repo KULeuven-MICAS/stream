@@ -7,7 +7,16 @@ from dataclasses import dataclass, replace
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr, AffineMap
 
 from stream.workload.affine_access import map_dim_positions
-from stream.workload.node import ComputationNode, HasInputs, HasOutputs, InEdge, Node, NormalizationNode, OutEdge
+from stream.workload.node import (
+    ComputationNode,
+    HasInputs,
+    HasOutputs,
+    InEdge,
+    Node,
+    NormalizationNode,
+    OutEdge,
+    declared_of,
+)
 from stream.workload.normalization import expand_normalizations
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
@@ -103,7 +112,10 @@ class FlashDecodingRewrite:
         per_part = [_per_part(node, attention.position(node), within, part_tensors, split) for node in attention.nodes]
         combine = _combine(attention, *(part_tensors[t] for t in statistics))
         first = next(i for i, node in enumerate(workload.nodes) if node in attention.replaced)
-        edges = {edge: replace(edge, outputs=(viewed[edge.outputs[0]],)) for edge in views}
+        edges = {
+            edge: replace(edge, outputs=(viewed[edge.outputs[0]],), declared=declared_of(edge).cut(axis))
+            for edge, axis in views.items()
+        }
         kept = [edges.get(node, node) for node in workload.nodes if node not in attention.replaced]
         return Workload([*kept[:first], *per_part, *combine, *kept[first:]])
 
