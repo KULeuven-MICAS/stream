@@ -104,7 +104,11 @@ class EdgePlacementIR(BaseModel):
 class EdgeTensorIR(BaseModel):
     """The whole tensor a workload input or output edge brings in or takes out, in the axes a placement splits."""
 
+    tensor: str = Field(description="The workload tensor the edge carries, the same at both ends of a fusion cut")
     shape: list[int] = Field(description="The whole tensor's extent along each axis")
+    axes: list[int] = Field(
+        description="For each axis of the tensor as the group's nodes see it, the axis of ``shape`` it walks"
+    )
     element_bits: int = Field(description="Bits per element")
     direction: Literal["in", "out"] = Field(description="'in' for a workload input, 'out' for an output")
 
