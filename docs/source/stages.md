@@ -22,7 +22,7 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 1. **`AcceleratorParserStage`** - the accelerator model (cores, memories, interconnect), already parsed from the hardware YAML so the plugins below can be chosen for it, drawn as `hardware_graph.svg` in the output folder unless the artifacts are off. The workload comes from the frontend that loads it (see [Workload](workload.md)).
 2. **Mapping** - either:
    - **`FixedMappingGenerationStage`** (a mapping of the layers was given) - split the workload at the mapping's fused groups and build each group's mapping; or
-   - the stages of the **mapping generator** that claims the accelerator (no mapping given, or one with only `runtime_args`, which it carries into each group's mapping) - for any accelerator, `ExpandNormalizationStage` + `GenericMappingGenerationStage` propose one.
+   - the stages of the **mapping generator** that claims the accelerator (no mapping given, or a placement file, a mapping file that only places the inputs and outputs under `runtime_args`, which it carries into each group's mapping) - for any accelerator, `ExpandNormalizationStage` + `GenericMappingGenerationStage` propose one.
 3. **`FusionGroupIterationStage`** - run the stages below once per fused group, on that group's workload and mapping.
 4. The stage of the **code generation backend** that claims the accelerator, for `generate_code` only - for AIE2 arrays, `AIECodeGenerationStage`.
 5. **`PlacementGenerationStage`** - place a group whose kernels are known but whose cores are not, and offer one variant per other compiled block.

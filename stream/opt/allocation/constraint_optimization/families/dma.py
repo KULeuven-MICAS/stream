@@ -93,7 +93,7 @@ def _port_channels(ctx: FormulationContext) -> tuple[dict[tuple[Memory, Port], A
     """The channels transfers drive into and out of each DMA port of each off-chip memory, keyed by (memory, port).
     Each link of a route passes one DMA port (:meth:`Memory.dma_port`); a route spreads the transfer's fan over its
     ports in proportion to the bits each carries, with at least one fifo per port. Channels are held for the whole
-    run, so a memory of an edge's layout that the iterations walk the split axis through holds its fifos even where
+    run, so a memory of an edge's placement that the iterations walk the split axis through holds its fifos even where
     the busiest iteration does not read it."""
     space = ctx.space
     usage: tuple[dict[tuple[Memory, Port], Any], ...] = (defaultdict(int), defaultdict(int))

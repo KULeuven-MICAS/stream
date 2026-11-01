@@ -11,7 +11,7 @@ from xdsl.parser import Parser
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import EdgeLayout, FusedGroup, Mapping, NodeMapping
+from stream.mapping.mapping import EdgePlacement, FusedGroup, Mapping, NodeMapping
 from stream.workload.node import OutEdge
 from stream.workload.normalization import operator_types_of
 from stream.workload.tensor import Tensor
@@ -40,7 +40,7 @@ class MappingFactory:
         mapping = Mapping(
             fused_groups=self.create_fused_groups(),
             runtime_args=self.create_runtime_args(),
-            edge_layouts=self.create_edge_layouts(),
+            edge_placements=self.create_edge_placements(),
         )
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
@@ -227,27 +227,28 @@ class MappingFactory:
             runtime_args[tensor_name] = affine_map
         return runtime_args
 
-    def create_edge_layouts(self) -> dict[str, EdgeLayout]:
-        """The off-chip memories each edge with ``memories`` in its runtime args lives in, split along ``split``."""
-        layouts = {}
+    def create_edge_placements(self) -> dict[str, EdgePlacement]:
+        """The off-chip memories each edge with a ``placement`` in its runtime args lives in, split along ``split``."""
+        placements = {}
         for name, args in self.runtime_args_data.items():
-            if not args.get("memories"):
+            if (declared := args.get("placement")) is None:
                 continue
-            unknown = [m for m in args["memories"] if m not in self.accelerator.memories]
-            if unknown or not all(self.accelerator.memories[m].offchip for m in args["memories"]):
+            memories = declared["memories"]
+            unknown = [m for m in memories if m not in self.accelerator.memories]
+            if unknown or not all(self.accelerator.memories[m].offchip for m in memories):
                 offchip = [memory.name for memory in self.accelerator.offchip_memories]
-                raise ValueError(f"{name} lives in {args['memories']}, but the off-chip memories are {offchip}")
-            layout = EdgeLayout(tuple(self.accelerator.memories[m] for m in args["memories"]), args.get("split"))
+                raise ValueError(f"{name} is placed in {memories}, but the off-chip memories are {offchip}")
+            placement = EdgePlacement(tuple(self.accelerator.memories[m] for m in memories), declared.get("split"))
             if (
                 isinstance(self.workload.get_node_by_name(name), OutEdge)
-                and layout.axis is None
-                and len(layout.memories) > 1
+                and placement.axis is None
+                and len(placement.memories) > 1
             ):
-                raise ValueError(f"output {name} cannot be a copy in each of {args['memories']}; split it on an axis")
-            if layout.axis is not None and layout.axis >= len(self._edge_tensor(name).shape):
-                raise ValueError(f"{name} has no axis {layout.axis} to split")
-            layouts[name] = layout
-        return layouts
+                raise ValueError(f"output {name} cannot be a copy in each of {memories}; split it on an axis")
+            if placement.axis is not None and placement.axis >= len(self._edge_tensor(name).shape):
+                raise ValueError(f"{name} has no axis {placement.axis} to split")
+            placements[name] = placement
+        return placements
 
     def _edge_tensor(self, name: str) -> Tensor:
         node = self.workload.get_node_by_name(name)

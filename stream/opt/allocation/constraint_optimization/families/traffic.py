@@ -75,7 +75,7 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any) -> list[PortS
 def _walk_sides(
     ctx: FormulationContext, tr: TransferNode, choice: Any, sides: tuple[PortShare, ...]
 ) -> list[PortShare]:
-    """``sides``, but with each memory of an edge's layout whose split axis the iterations walk at its share over the
+    """``sides``, but with each memory of an edge's placement whose split axis the iterations walk at its share over the
     whole walk (:meth:`DecisionSpace.walk_shares`), through the ports it passes, or would pass from its links where
     the busiest iteration leaves it out: what energy is priced over."""
     space = ctx.space

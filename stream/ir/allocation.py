@@ -93,8 +93,9 @@ class FusedGroupIR(BaseModel):
     )
 
 
-class EdgeLayoutIR(BaseModel):
-    """Where a workload input or output lives: a block along ``axis`` in each memory, or without one all of it."""
+class EdgePlacementIR(BaseModel):
+    """Which off-chip memories hold a workload input or output: a block along ``axis`` in each, or without one all
+    of it in each."""
 
     memories: list[str] = Field(description="The off-chip memories holding the tensor, in block order")
     axis: int | None = Field(description="The tensor axis split into a contiguous block per memory; None for a copy")
@@ -260,7 +261,7 @@ class AllocationCompilerView(BaseModel):
     Suitable for compiler engineers performing code generation and transfer routing.
     """
 
-    schema_version: Literal["2.1"] = "2.1"
+    schema_version: Literal["3.0"] = "3.0"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node tiling and core mapping: use inter_core_tiling and resource_allocation fields"
     )
@@ -268,8 +269,9 @@ class AllocationCompilerView(BaseModel):
         description="Groups of layers fused together with their intra-core tiling factors"
     )
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
-    edge_layouts: dict[str, EdgeLayoutIR] = Field(
-        default_factory=dict, description="The memories each input or output edge the mapping lays out lives in"
+    edge_placements: dict[str, EdgePlacementIR] = Field(
+        default_factory=dict,
+        description="The off-chip memories each input or output edge the mapping places is held in",
     )
 
 
@@ -567,18 +569,18 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping Allocation.get_ir() output.
 
-    schema_version '3.0': minor bumps (3.1) for additive fields, major bumps (4.0) for
+    schema_version '4.0': minor bumps (4.1) for additive fields, major bumps (5.0) for
     removed/renamed fields. Construction is always via from_internal().
     """
 
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream/allocation_ir/v3",
+            "$id": "stream/allocation_ir/v4",
         }
     )
 
-    schema_version: Literal["3.1"] = "3.1"
+    schema_version: Literal["4.0"] = "4.0"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
@@ -597,8 +599,9 @@ class AllocationIR(BaseModel):
     )
     fused_groups: list[FusedGroupIR] = Field(description="Groups of fused layers with their intra-core tiling factors")
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
-    edge_layouts: dict[str, EdgeLayoutIR] = Field(
-        default_factory=dict, description="The memories each input or output edge the mapping lays out lives in"
+    edge_placements: dict[str, EdgePlacementIR] = Field(
+        default_factory=dict,
+        description="The off-chip memories each input or output edge the mapping places is held in",
     )
     performance: AllocationPerformanceView | None = Field(
         default=None,
@@ -712,7 +715,9 @@ class AllocationIR(BaseModel):
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
             runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
-            edge_layouts={name: EdgeLayoutIR(**layout) for name, layout in mapping.get("edge_layouts", {}).items()},
+            edge_placements={
+                name: EdgePlacementIR(**placement) for name, placement in mapping.get("edge_placements", {}).items()
+            },
             performance=performance,
             steady_state=steady_state,
             roofline=RooflinePointIR(**raw["roofline"]) if raw.get("roofline") else None,
@@ -742,7 +747,7 @@ class AllocationIR(BaseModel):
             mapping_nodes=self.mapping_nodes,
             fused_groups=self.fused_groups,
             runtime_args=self.runtime_args,
-            edge_layouts=self.edge_layouts,
+            edge_placements=self.edge_placements,
         )
 
     def performance_view(self) -> AllocationPerformanceView | None:

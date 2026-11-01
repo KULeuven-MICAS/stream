@@ -13,14 +13,14 @@ A mapping can be **auto-generated** by the pipeline or **hand-written**. The for
 
 ## Auto-generated mapping (the default)
 
-If you don't pass a mapping, or pass one with only `runtime_args` (see [Where inputs and outputs live](#where-inputs-and-outputs-live)), `evaluate_mapping` asks the mapping generator that claims the hardware for one; for any accelerator that is the generic generator. This is the recommended starting point.
+If you don't pass a mapping, or pass a placement file, one that only places the workload's inputs and outputs under `runtime_args` (see [Placement of inputs and outputs](#placement-of-inputs-and-outputs)), `evaluate_mapping` asks the mapping generator that claims the hardware for one; for any accelerator that is the generic generator. This is the recommended starting point.
 
 The generic generator (`stream/stages/generation/generic_mapping_generation.py`):
 
 - **Selects eligible cores per node** from the hardware. A core with an `operator_types` list only accepts those op types (so pooling goes to the pooling core, SiLU/Mul to the SIMD core); a core without the list accepts anything. A core listing an operator also runs the operators it is expanded into and its parts (a core listing `Softmax` runs `PartialSoftmax`). A node no core runs is refused, naming its operator. Memory cores are never chosen for computation.
 - **Splits work across cores** when several compute cores are eligible, by factoring the node's dimensions into an inter-core tiling.
-- **Follows the layouts** of a mapping file with only `runtime_args`: it splits the cores first along the dimension indexing the axis the layouts split the most bits along, so each core reads the block of the off-chip memory beside it; an operator reading what such a split made, in its group or across a fusion cut, follows that split in turn, so the data stays where it was made. It keeps the tiler from walking that dimension over time, and carries the layouts into each group's mapping. A copy is local to every core whatever the split, so it does not steer it: the generator's own ranking chooses, which for decode attention may split the sequence and combine the softmax across slices. To keep such a cache split by heads, split its layout by heads or write the split into the mapping.
-- **Splits attention along its sequence** where it must (`FlashDecodingStage`, the `flash_decoding` rewrite in `stream/workload/rewrites/`). Attention is found by its structure: a contraction making scores along an axis only its second operand (the keys) indexes, element-wise ops on them, a softmax over that axis, and a contraction reducing it against a third operand (the values). Its sequence becomes a part loop and a loop within the part: each operator is the same operator with one more loop, an input only the attention reads along the sequence is viewed with a part axis in place of the sequence's (a layout splitting the sequence then splits the parts), and a combine over the parts (`<context>_combine_max`, `_weight`, `_weighted_sum`, `_sum`, `_weighted`, `_total`, and `<context>_combine` writing the output) weighs each part's context and sum by `exp(max - maximum)`. Each part's softmax stays whole on its cores: a dim a node reduces over is never tiled while another node of its group reads that reduction along it. The part count is the fewest, powers of two first, that let the parts fit fused on their cores, a multiple of the memories the layouts of its inputs split the sequence over (that multiple if none fits); without such a layout, none where attention already fits; `SolveOptions(stage_options={"attention_parts": n})` sets it, `1` leaving attention as it is. The parts' nodes are named `<node>_part`.
+- **Follows the placements** of a placement file: it splits the cores first along the dimension indexing the axis the placements split the most bits along, so each core reads the block of the off-chip memory beside it; an operator reading what such a split made, in its group or across a fusion cut, follows that split in turn, so the data stays where it was made. It keeps the tiler from walking that dimension over time, and carries the placements into each group's mapping. A copy is local to every core whatever the split, so it does not steer it: the generator's own ranking chooses, which for decode attention may split the sequence and combine the softmax across slices. To keep such a cache split by heads, split its placement by heads or write the split into the mapping.
+- **Splits attention along its sequence** where it must (`FlashDecodingStage`, the `flash_decoding` rewrite in `stream/workload/rewrites/`). Attention is found by its structure: a contraction making scores along an axis only its second operand (the keys) indexes, element-wise ops on them, a softmax over that axis, and a contraction reducing it against a third operand (the values). Its sequence becomes a part loop and a loop within the part: each operator is the same operator with one more loop, an input only the attention reads along the sequence is viewed with a part axis in place of the sequence's (a placement splitting the sequence then splits the parts), and a combine over the parts (`<context>_combine_max`, `_weight`, `_weighted_sum`, `_sum`, `_weighted`, `_total`, and `<context>_combine` writing the output) weighs each part's context and sum by `exp(max - maximum)`. Each part's softmax stays whole on its cores: a dim a node reduces over is never tiled while another node of its group reads that reduction along it. The part count is the fewest, powers of two first, that let the parts fit fused on their cores, a multiple of the memories the placements of its inputs split the sequence over (that multiple if none fits); without such a placement, none where attention already fits; `SolveOptions(stage_options={"attention_parts": n})` sets it, `1` leaving attention as it is. The parts' nodes are named `<node>_part`.
 - **Writes per-fusion-group `mapping.yaml` files** under the run's output directory, so you can inspect (and later hand-edit) exactly what it chose.
 
 This is enough to run any of the example workloads on any of the example architectures - see the matrix in the README.
@@ -93,31 +93,36 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 
 ---
 
-## Where inputs and outputs live
+## Placement of inputs and outputs
 
-An accelerator with several off-chip memories (see [Hardware](hardware.md#memories)) needs to know where each workload input and output lives. The mapping file says so per edge under `runtime_args`, keyed by the tensor's name:
+Two different things are said about a workload input or output under `runtime_args`, and they are kept apart:
+
+- its **placement**: which off-chip memories hold the tensor, and how it is split over them;
+- its **layout**: the order of the tensor's bytes inside a memory, the affine map the code generators read (see [Data layout](data_layout.md)).
+
+An accelerator with several off-chip memories (see [Hardware](hardware.md#memories)) needs the placement of each workload input and output. The mapping file gives it per edge under `runtime_args`, keyed by the tensor's name, beside any `layout`:
 
 ```yaml
 runtime_args:
-  K: {memories: [hbm_0, hbm_1, hbm_2, hbm_3], split: 1}   # block s along axis 1 in hbm_s
-  q: {memories: [hbm_0, hbm_1, hbm_2, hbm_3]}             # a copy in each
-  O: {memories: [hbm_0]}                                  # all of it in one
+  K: {placement: {memories: [hbm_0, hbm_1, hbm_2, hbm_3], split: 1}}   # block s along axis 1 in hbm_s
+  q: {placement: {memories: [hbm_0, hbm_1, hbm_2, hbm_3]}}             # a copy in each
+  O: {placement: {memories: [hbm_0]}, layout: "(d0, d1) -> (d1, d0)"}  # all of it in one, transposed there
 ```
 
-| Layout | Meaning |
-|--------|---------|
+| Placement | Meaning |
+|-----------|---------|
 | `split: <axis>` | The whole tensor cut into one contiguous block per memory along that axis (0-indexed, as the workload declares the tensor), block `s` in `memories[s]`. The axis must split evenly. |
 | several `memories`, no `split` | A copy of the whole tensor in each; every reader takes it from the nearest. Inputs only. |
 | one memory | All of it there, as with a single off-chip memory. |
 
-These entries live beside the code generators' `layout` and are read apart from it.
+A mapping file with only `runtime_args` placing the inputs and outputs is a **placement file**: the generic generator maps the rest (see [Auto-generated mapping](#auto-generated-mapping-the-default)).
 
-- **Without a layout.** With several off-chip memories, an input without one is refused, naming it. An output without one lands a block per producing core in the off-chip memory the fewest hops from where that core holds it. The input end of a fusion cut without one reads it back from there.
-- **Fusion cuts.** The two ends of a cut, `<node>_cut_out` and `<node>_cut_in`, are one tensor: a layout declared for either holds for both, and ends declaring different memories are refused.
+- **Without a placement.** With several off-chip memories, an input without one is refused, naming it. An output without one lands a block per producing core in the off-chip memory the fewest hops from where that core holds it. The input end of a fusion cut without one reads it back from there.
+- **Fusion cuts.** The two ends of a cut, `<node>_cut_out` and `<node>_cut_in`, are one tensor: a placement declared for either holds for both, and ends declaring different placements are refused.
 - **Time and traffic.** Each memory serves what its blocks hold of what each core reads. Where the iterations walk a split axis, one iteration may read from fewer memories than the walk does: the latency takes the busiest iteration, which waits on the memories it reads while the others idle, while traffic and energy take the average over the walk, each memory its share. The busiest iteration is an upper bound: a schedule prefetching more than one tile ahead may beat it.
-- **Capacity.** Before solving, each off-chip memory must hold what lives in it: a block of each tensor split over it, all of each copy, each tensor counted once over the fused groups and both ends of a cut. Otherwise the run is refused, naming the memory and the sum, e.g. `hbm_0 holds K + V + q/4 + O/4 = 32 MiB > 16 MiB`.
+- **Capacity.** Before solving, each off-chip memory must hold what is placed in it: a block of each tensor split over it, all of each copy, each tensor counted once over the fused groups and both ends of a cut. Otherwise the run is refused, naming the memory and the sum, e.g. `hbm_0 holds K + V + q/4 + O/4 = 32 MiB > 16 MiB`.
 
-A layout the cores' split follows keeps each core's data in its own slice. Split along an axis the cores do not split, the data crosses the on-chip links; split along an axis the iterations walk, each iteration waits on one memory. `tests/test_decode_kv.py` shows all three for decode attention (`stream/inputs/testing/workload/make_decode_attention.py`) on `stream/inputs/testing/hardware/tpu_like_ring_hbm.yaml` and `tpu_v7_ironwood_hbm_per_chiplet.yaml`.
+A placement the cores' split follows keeps each core's data in its own slice. Split along an axis the cores do not split, the data crosses the on-chip links; split along an axis the iterations walk, each iteration waits on one memory. `tests/test_decode_kv.py` shows all three for decode attention (`stream/inputs/testing/workload/make_decode_attention.py`) on `stream/inputs/testing/hardware/tpu_like_ring_hbm.yaml` and `tpu_v7_ironwood_hbm_per_chiplet.yaml`.
 
 ---
 

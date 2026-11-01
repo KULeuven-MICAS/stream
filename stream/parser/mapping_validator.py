@@ -72,8 +72,13 @@ class MappingValidator:
             "type": "dict",
             "schema": {
                 "layout": {"type": "string"},
-                "memories": {"type": "list", "schema": {"type": "string"}, "minlength": 1},
-                "split": {"type": "integer", "min": 0, "dependencies": "memories"},
+                "placement": {
+                    "type": "dict",
+                    "schema": {
+                        "memories": {"type": "list", "schema": {"type": "string"}, "minlength": 1, "required": True},
+                        "split": {"type": "integer", "min": 0},
+                    },
+                },
             },
             "allow_unknown": True,
         },

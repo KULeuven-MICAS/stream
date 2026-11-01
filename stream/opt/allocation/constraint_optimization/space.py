@@ -334,10 +334,12 @@ class DecisionSpace:
         return port.bandwidth.scaled(1.0 / ports[port])
 
     def walk_shares(self, tr: TransferNode, choice: MulticastPathPlan) -> dict[Memory, float]:
-        """Each memory's share of what ``tr`` moves of an edge whose layout splits it, over all iterations walking the
-        split axis (:meth:`Workload.layout_shares`); empty for any other transfer."""
+        """Each memory's share of what ``tr`` moves of an edge whose placement splits it, over all iterations walking
+        the split axis (:meth:`Workload.placement_shares`); empty for any other transfer."""
         for edge in (*self.workload.predecessors(tr), *self.workload.successors(tr)):
-            if (shares := self.workload.layout_shares(edge, tr.inputs[0], self.mapping, choice.delivered)) is not None:
+            if (
+                shares := self.workload.placement_shares(edge, tr.inputs[0], self.mapping, choice.delivered)
+            ) is not None:
                 return shares
         return {}
 

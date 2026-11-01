@@ -29,7 +29,7 @@ SWIGLU_TILING = [
 ]
 
 
-# Total and per-iteration cycles and energy in pJ of each example with one off-chip memory and no layouts, under the
+# Total and per-iteration cycles and energy in pJ of each example with one off-chip memory and no placements, under the
 # default backend: a change to the cost model that moves any of them must update them here.
 REFERENCE = {
     ("eyeriss_like_dual_core", "two_conv"): (80115, 80115, 73007120.0),

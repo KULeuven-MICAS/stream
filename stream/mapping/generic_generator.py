@@ -24,7 +24,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
-from stream.mapping.mapping import edge_tensor, layout_split_bits, role_of, runtime_args_per_group
+from stream.mapping.mapping import edge_tensor, placement_split_bits, role_of, runtime_args_per_group
 from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import map_dim_positions
@@ -81,10 +81,10 @@ class GenericMappingGenerator:
         # {"dim": "NodeName.D{n}", "tile": size}; they override the trivial default in
         # _build_intra_core_tiling, filtered per group to the nodes that group actually contains.
         self.intra_core_tiling = intra_core_tiling
-        # The mapping file's runtime args, which lay out the workload's inputs and outputs over the off-chip memories.
+        # The mapping file's runtime args, which place the workload's inputs and outputs over the off-chip memories.
         self.runtime_args = runtime_args
         self._split_axes = self._split_axes_of([workload])
-        self._laid_out_bits: dict[tuple[Workload, ComputationNode], dict[int, int]] = {}
+        self._placed_bits: dict[tuple[Workload, ComputationNode], dict[int, int]] = {}
         self._activations = {t.name for cn in workload.get_computation_nodes() for t in cn.outputs}
         self._accumulates_across_cores = all(
             cls.accumulates_across_cores for cls in namespace_classes(accelerator).values()
@@ -117,7 +117,7 @@ class GenericMappingGenerator:
         ):
             sub_workloads = self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         self._split_axes = self._split_axes_of(sub_workloads)
-        self._laid_out_bits = {}
+        self._placed_bits = {}
         runtime_args = (
             runtime_args_per_group(self.runtime_args, sub_workloads)
             if self.runtime_args is not None
@@ -227,33 +227,35 @@ class GenericMappingGenerator:
         return {"layers": layers, "fused_groups": [fused_group]}
 
     def _split_axes_of(self, workloads: list[Workload]) -> dict[str, int]:
-        """The axis a layout splits each workload input or output along over the off-chip memories, by tensor name."""
+        """The axis a placement splits each workload input or output along over the off-chip memories, by tensor
+        name."""
         if self.runtime_args is None:
             return {}
         return {
-            edge_tensor(workload.get_node_by_name(name)).name: args["split"]
+            edge_tensor(workload.get_node_by_name(name)).name: split
             for workload, group in zip(workloads, runtime_args_per_group(self.runtime_args, workloads), strict=True)
             for name, args in group.items()
-            if args.get("split") is not None
+            if (split := args.get("placement", {}).get("split")) is not None
         }
 
-    def _laid_out(self, sub_workload: Workload, cn: ComputationNode, protected: set[LayerDim]) -> dict[int, int]:
-        """:func:`layout_split_bits` of ``cn`` under the layouts and the splits of its producers that followed one."""
+    def _placed(self, sub_workload: Workload, cn: ComputationNode, protected: set[LayerDim]) -> dict[int, int]:
+        """:func:`placement_split_bits` of ``cn`` under the placements and the splits of its producers that followed
+        one."""
         if not self._split_axes:
             return {}
         key = (sub_workload, cn)
-        if key not in self._laid_out_bits:
+        if key not in self._placed_bits:
             producers = {t.name: node for node in sub_workload.get_computation_nodes() for t in node.outputs}
             axes = dict(self._split_axes)
             for tensor in cn.inputs:
                 if (producer := producers.get(tensor.name)) is not None:
                     axes |= self._made_split_axes(sub_workload, producer, protected)
-            self._laid_out_bits[key] = layout_split_bits(cn, axes)
-        return self._laid_out_bits[key]
+            self._placed_bits[key] = placement_split_bits(cn, axes)
+        return self._placed_bits[key]
 
     def _leaving_split_axes(self, sub_workload: Workload, protected: set[LayerDim]) -> dict[str, int]:
         """The split axes of the group's outputs a later group reads (:meth:`_made_split_axes`), which land a block
-        beside each core and so are laid out for their readers as a layout would."""
+        beside each core and so are placed for their readers as a placement would."""
         if not self._split_axes:
             return {}
         leaving = {edge_tensor(edge).name for edge in sub_workload.nodes if isinstance(edge, OutEdge)}
@@ -266,15 +268,15 @@ class GenericMappingGenerator:
         }
 
     def _made_split_axes(self, sub_workload: Workload, cn: ComputationNode, protected: set[LayerDim]) -> dict[str, int]:
-        """The axis of each output of ``cn`` its cores split it along, where that split followed a layout."""
+        """The axis of each output of ``cn`` its cores split it along, where that split followed a placement."""
         cores = self._select_cores_for_node(cn)
-        laid_out = self._laid_out(sub_workload, cn, protected)
+        placed = self._placed(sub_workload, cn, protected)
         followed = [
             dim
             for dim, _ in (
                 self._factor_split_across_dims(sub_workload, cn, len(cores), protected) if len(cores) > 1 else []
             )
-            if laid_out.get(dim)
+            if placed.get(dim)
         ]
         if not followed:
             return {}
@@ -353,9 +355,9 @@ class GenericMappingGenerator:
         (a "dataflow-style" split). Each factor divides its dimension's size, so the
         resulting tiling is always valid.
 
-        The dimension indexing the axis layouts split the most operand bits along over the off-chip memories goes
+        The dimension indexing the axis placements split the most operand bits along over the off-chip memories goes
         first, so the cores split those tensors as their memories do; an input made in the group by a node whose split
-        followed a layout counts as laid out along the axis that node split it, so it stays where it was made.
+        followed a placement counts as placed along the axis that node split it, so it stays where it was made.
 
         Parallel output dimensions (OY/OX/K) are consumed before reduction ones, so a
         contraction only absorbs what the output axes could not: splitting a reduction
@@ -414,7 +416,7 @@ class GenericMappingGenerator:
         def outer(idx: int) -> int:
             return -next((axis for axis, read in enumerate(output) if idx in read), len(output))
 
-        laid_out = self._laid_out(sub_workload, cn, protected)
+        placed = self._placed(sub_workload, cn, protected)
 
         # A dim a node of the group reduces over is not one all of them split, so their tiles do not line up along
         # it: it is preferred only for the weights it fits.
@@ -429,7 +431,7 @@ class GenericMappingGenerator:
         dim_sizes = sorted(
             ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
             key=lambda pair: (
-                laid_out.get(pair[0], 0),
+                placed.get(pair[0], 0),
                 ranks_as_parallel(pair[0]),
                 tuple(-x for x in group.get(sub_workload.leading_dim(dims[pair[0]])[0], (math.inf, math.inf))),
                 -footprint(*pair),
