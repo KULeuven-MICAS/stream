@@ -101,6 +101,14 @@ class EdgePlacementIR(BaseModel):
     split: int | None = Field(description="The tensor axis split into a contiguous block per memory; None for a copy")
 
 
+class EdgeTensorIR(BaseModel):
+    """The whole tensor a workload input or output edge brings in or takes out, in the axes a placement splits."""
+
+    shape: list[int] = Field(description="The whole tensor's extent along each axis")
+    element_bits: int = Field(description="Bits per element")
+    direction: Literal["in", "out"] = Field(description="'in' for a workload input, 'out' for an output")
+
+
 # A tiling pair is [dim, factor]; anything shorter is not a decision we can type.
 _TILE_PAIR_LEN = 2
 
@@ -261,7 +269,7 @@ class AllocationCompilerView(BaseModel):
     Suitable for compiler engineers performing code generation and transfer routing.
     """
 
-    schema_version: Literal["2.1"] = "2.1"
+    schema_version: Literal["2.2"] = "2.2"
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node tiling and core mapping: use inter_core_tiling and resource_allocation fields"
     )
@@ -272,6 +280,9 @@ class AllocationCompilerView(BaseModel):
     edge_placements: dict[str, EdgePlacementIR] = Field(
         default_factory=dict,
         description="The off-chip memories each input or output edge the mapping places is held in",
+    )
+    edge_tensors: dict[str, EdgeTensorIR] = Field(
+        default_factory=dict, description="The whole tensor of each input and output edge, by edge name"
     )
 
 
@@ -580,7 +591,7 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["3.1"] = "3.1"
+    schema_version: Literal["3.2"] = "3.2"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
@@ -602,6 +613,9 @@ class AllocationIR(BaseModel):
     edge_placements: dict[str, EdgePlacementIR] = Field(
         default_factory=dict,
         description="The off-chip memories each input or output edge the mapping places is held in",
+    )
+    edge_tensors: dict[str, EdgeTensorIR] = Field(
+        default_factory=dict, description="The whole tensor of each input and output edge, by edge name"
     )
     performance: AllocationPerformanceView | None = Field(
         default=None,
@@ -718,6 +732,7 @@ class AllocationIR(BaseModel):
             edge_placements={
                 name: EdgePlacementIR(**placement) for name, placement in mapping.get("edge_placements", {}).items()
             },
+            edge_tensors={name: EdgeTensorIR(**tensor) for name, tensor in raw.get("edge_tensors", {}).items()},
             performance=performance,
             steady_state=steady_state,
             roofline=RooflinePointIR(**raw["roofline"]) if raw.get("roofline") else None,
@@ -748,6 +763,7 @@ class AllocationIR(BaseModel):
             fused_groups=self.fused_groups,
             runtime_args=self.runtime_args,
             edge_placements=self.edge_placements,
+            edge_tensors=self.edge_tensors,
         )
 
     def performance_view(self) -> AllocationPerformanceView | None:

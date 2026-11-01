@@ -12,6 +12,7 @@ from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.ports import OUTPUT, READ
+from stream.inputs.testing.workload.make_decode_attention import KV_HEADS, make_decode_attention
 from stream.ir.allocation import AllocationIR
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import Mapping, placements_of
@@ -436,3 +437,51 @@ def test_the_reports_carry_each_off_chip_memory_s_capacity_and_access_width(tmp_
     assert widths == {(hbm, 8, 8) for hbm in HBMS}
     memories = estimate.context.get("accelerator").get_ir()["memories"]
     assert {hbm: memories[hbm]["capacity_bits"] for hbm in HBMS} == dict.fromkeys(HBMS, 10**10)
+
+
+def _onnx_edges(path):
+    """Each graph input and output of the ONNX at ``path`` as the IR's edge tensors give it."""
+    graph = onnx.load(path).graph
+
+    def edge(value, direction):
+        tensor = value.type.tensor_type
+        bits = 8 * helper.tensor_dtype_to_np_dtype(tensor.elem_type).itemsize
+        return {"shape": [d.dim_value for d in tensor.shape.dim], "element_bits": bits, "direction": direction}
+
+    return {v.name: edge(v, "in") for v in graph.input} | {v.name: edge(v, "out") for v in graph.output}
+
+
+def _split_extents(ir):
+    """The extent of the axis each splitting placement splits, in its edge's whole tensor, by edge name."""
+    return {
+        name: ir.edge_tensors[name].shape[placement.split]
+        for name, placement in ir.edge_placements.items()
+        if placement.split is not None
+    }
+
+
+def _edge_tensors(ir):
+    return {name: tensor.model_dump() for name, tensor in ir.edge_tensors.items()}
+
+
+def test_the_ir_gives_each_edge_s_whole_tensor_as_the_onnx_declares_it(tmp_path):
+    """Tiled over k in blocks of 128, the IR still gives the whole 1024 x 512 weight that its placement splits on n."""
+    ir = AllocationIR.from_internal(_solve(tmp_path, SPLIT_N, tiles=[K_TILE]))
+    assert _edge_tensors(ir) == _onnx_edges(tmp_path / "matmul.onnx")
+    assert _split_extents(ir) == {"w": 512, "out": 512}
+
+
+def test_the_ir_gives_a_decode_step_s_cache_whole_as_the_onnx_declares_it(tmp_path):
+    by_heads = {"placement": {"memories": HBMS, "split": 1}}
+    placements = {"q": {"placement": {"memories": HBMS}}, "K": by_heads, "V": by_heads, "O": by_heads}
+    (tmp_path / "placements.yaml").write_text(yaml.safe_dump({"runtime_args": placements}))
+    estimate = evaluate_mapping(
+        RING,
+        make_decode_attention(tmp_path / "decode.onnx", 1, 256),
+        str(tmp_path),
+        str(tmp_path / "placements.yaml"),
+        SolveOptions(artifacts=False),
+    )
+    ir = AllocationIR.from_internal(estimate.context.get("allocation"))
+    assert _edge_tensors(ir) == _onnx_edges(tmp_path / "decode.onnx")
+    assert _split_extents(ir) == dict.fromkeys(("K", "V", "O"), KV_HEADS)
