@@ -1104,10 +1104,7 @@ class Workload(DiGraphWrapper[Node]):
                 )
             elif isinstance(node, OutEdge):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
-                new_node = OutEdge(
-                    name=node.name,
-                    inputs=new_inputs,
-                )
+                new_node = replace(node, inputs=new_inputs)
             else:
                 raise TypeError(f"Unknown node type: {type(node)}")
 

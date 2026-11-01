@@ -19,7 +19,7 @@ from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, overflow_infeasibility
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import is_state_operand
-from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
+from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode, edge_tensor
 from stream.workload.tensor import Tensor
 from stream.workload.utils import get_equivalent_dimension, operand_inputs
 from stream.workload.workload import Node, Workload, position_of
@@ -417,9 +417,20 @@ def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: 
     raise ValueError(f"{node} holds no operand to place")
 
 
-def edge_tensor(edge: InEdge | OutEdge) -> Tensor:
-    """The workload input ``edge`` brings in or the output it takes out."""
-    return edge.outputs[0] if isinstance(edge, InEdge) else edge.inputs[0]
+def viewed_placements(workload: Workload, runtime_args: dict[str, Any]) -> dict[str, Any]:
+    """``runtime_args`` as the mapping file declares them, each placement's split counted in the axes ``workload``
+    views its edge in."""
+    views = {
+        node.name: declared
+        for node in workload.nodes
+        if isinstance(node, InEdge | OutEdge) and (declared := node.declared) is not None
+    }
+    viewed = dict(runtime_args)
+    for name, args in runtime_args.items():
+        placement = args.get("placement", {})
+        if name in views and (split := placement.get("split")) is not None:
+            viewed[name] = args | {"placement": placement | {"split": views[name].axes.index(split)}}
+    return viewed
 
 
 def runtime_args_per_group(runtime_args: dict[str, Any], workloads: Sequence[Workload]) -> list[dict[str, Any]]:

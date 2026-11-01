@@ -6,8 +6,17 @@ from dataclasses import dataclass, replace
 
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr, AffineMap
 
-from stream.workload.affine_access import map_dim_positions
-from stream.workload.node import ComputationNode, HasInputs, HasOutputs, InEdge, Node, NormalizationNode, OutEdge
+from stream.workload.affine_access import dims_in_expr, map_dim_positions
+from stream.workload.node import (
+    ComputationNode,
+    HasInputs,
+    HasOutputs,
+    InEdge,
+    Node,
+    NormalizationNode,
+    OutEdge,
+    declared_of,
+)
 from stream.workload.normalization import expand_normalizations
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
@@ -36,11 +45,6 @@ class Attention:
         return (self.scores, *self.elementwise, *self.softmax, self.context)
 
     @property
-    def statistics(self) -> tuple[Tensor, Tensor]:
-        """The softmax's maximum and sum."""
-        return self.softmax[0].outputs[0], self.softmax[-1].outputs[0]
-
-    @property
     def along_sequence(self) -> set[Tensor]:
         """The tensors the attention makes along the sequence."""
         return {t for n in (self.scores, *self.elementwise, *self.softmax[1:-1]) for t in n.outputs} | {self.probs}
@@ -62,7 +66,7 @@ class Attention:
             for tensor in node.inputs
             if tensor not in made
             for axis, result in enumerate(node.get_mapping(tensor).results)
-            if self.position(node) in _positions(result, node.num_dims)
+            if self.position(node) in dims_in_expr(result)
         ]
 
     def views(self, workload: Workload) -> dict[InEdge, int]:
@@ -94,20 +98,19 @@ class FlashDecodingRewrite:
         made = attention.along_sequence - {attention.probs}
         part_tensors = {t: _split_axis(t, attention.axis, parts, f"{t.name}_part") for t in made} | viewed
         part_tensors[attention.probs] = part_tensors[attention.softmax[-1].inputs[0]]
-        statistics = (*attention.statistics, attention.context.outputs[0])
+        statistics = (attention.softmax[0].outputs[0], attention.softmax[-1].outputs[0], attention.context.outputs[0])
         part_tensors |= {t: Tensor.create(f"{t.name}_part", t.operand_type, (*t.shape, parts)) for t in statistics}
         split = attention.along_sequence | set(viewed)
         within = attention.length // parts
         per_part = [_per_part(node, attention.position(node), within, part_tensors, split) for node in attention.nodes]
         combine = _combine(attention, *(part_tensors[t] for t in statistics))
         first = next(i for i, node in enumerate(workload.nodes) if node in attention.replaced)
-        edges = {edge: replace(edge, outputs=(viewed[edge.outputs[0]],)) for edge in views}
+        edges = {
+            edge: replace(edge, outputs=(viewed[edge.outputs[0]],), declared=declared_of(edge).cut(axis))
+            for edge, axis in views.items()
+        }
         kept = [edges.get(node, node) for node in workload.nodes if node not in attention.replaced]
         return Workload([*kept[:first], *per_part, *combine, *kept[first:]])
-
-
-def _positions(expr: AffineExpr, num_dims: int) -> frozenset[int]:
-    return map_dim_positions(AffineMap(num_dims, 0, (expr,)))
 
 
 def _dim(expr: AffineExpr) -> int | None:
@@ -184,9 +187,7 @@ def _maps_agree(
         (maximum, (identity, statistic)),
         (total, (identity, statistic)),
         (div, (identity, statistic, identity)),
-    ]
-    expected += [
-        (n, (identity, identity)) if len(n.inputs) == 1 else (n, (identity, statistic, identity)) for n in middle
+        *((n, (identity, identity) if len(n.inputs) == 1 else (identity, statistic, identity)) for n in middle),
     ]
     return (
         middle[0].inputs[0] == scores
