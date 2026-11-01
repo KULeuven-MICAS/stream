@@ -613,7 +613,7 @@ class _Lowering:
 
     def _offchip_landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
         """The off-chip memories a copy of ``src``'s output lands in, one per position, beside the cores making it."""
-        edge = next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_layouts), None)
+        edge = next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_placements), None)
         while edge is None and isinstance(src, TransferNode):
             src = next(iter(self.ssw.predecessors(src)))
         return landing_of(self.accelerator, self.mapping, edge, src)
@@ -731,10 +731,10 @@ class _Lowering:
         return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
 
     def _copied(self, node: TransferNode) -> bool:
-        """Whether ``node`` brings in a workload input its layout copies into several memories."""
+        """Whether ``node`` brings in a workload input its placement copies into several memories."""
         src = next(iter(self.ssw.predecessors(node)))
-        layout = self.mapping.edge_layouts.get(src.name) if isinstance(src, InEdge) else None
-        return layout is not None and layout.axis is None and len(layout.memories) > 1
+        placement = self.mapping.edge_placements.get(src.name) if isinstance(src, InEdge) else None
+        return placement is not None and placement.axis is None and len(placement.memories) > 1
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

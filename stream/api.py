@@ -142,13 +142,9 @@ def evaluate_mapping(
     mapping: str | None = None,
     options: SolveOptions | None = None,
 ) -> MappingEstimate:
-    """Solve the allocation of each fused group of ``mapping`` and price it, without generating code.
-
-    Each group costs its allocation's estimate, and a dispatch of several groups adds the reconfiguration
-    the accelerator's hardware namespaces charge. Without a mapping, or with one that only lays out the
-    workload's inputs and outputs (``runtime_args`` and no ``layers``), the mapping generator that claims
-    the accelerator proposes one.
-    """
+    """Solve and price the allocation of each fused group of ``mapping`` without generating code; several groups add the
+    reconfiguration the hardware namespaces charge. Without a mapping, or with one that only places inputs and outputs
+    (``runtime_args``, no ``layers``), the mapping generator that claims the accelerator proposes one."""
     return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=False)
 
 

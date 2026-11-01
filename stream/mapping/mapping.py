@@ -51,9 +51,9 @@ class FusedGroup:
 
 
 @dataclass(frozen=True, slots=True)
-class EdgeLayout:
-    """Where an edge's tensor lives: block ``s`` of the whole tensor along ``axis`` in ``memories[s]``, or, without an
-    axis, all of it in each."""
+class EdgePlacement:
+    """Which off-chip memories hold an edge's tensor: block ``s`` of the whole tensor along ``axis`` in
+    ``memories[s]``, or, without an axis, all of it in each."""
 
     memories: tuple[Memory, ...]
     axis: int | None = None
@@ -114,7 +114,7 @@ class Mapping:
         initial: dict[Node, NodeMapping] | None = None,
         fused_groups: Iterable[FusedGroup] | None = None,
         runtime_args: dict[str, str] | None = None,
-        edge_layouts: dict[str, EdgeLayout] | None = None,
+        edge_placements: dict[str, EdgePlacement] | None = None,
     ) -> None:
         self._by_node: dict[Node, NodeMapping] = {}
         self._fused_groups: tuple[FusedGroup, ...] = tuple(fused_groups or ())
@@ -125,7 +125,7 @@ class Mapping:
             for node, layer_mapping in initial.items():
                 self.set(node, layer_mapping)
         self._runtime_args = runtime_args or {}
-        self._edge_layouts = edge_layouts or {}
+        self._edge_placements = edge_placements or {}
 
     def set(self, node: Node, layer_mapping: NodeMapping) -> None:
         if node is None:
@@ -263,9 +263,9 @@ class Mapping:
             "nodes": nodes_ir,
             "fused_groups": fused_groups_ir,
             "runtime_args": dict(self._runtime_args),
-            "edge_layouts": {
-                name: {"memories": [memory.name for memory in layout.memories], "axis": layout.axis}
-                for name, layout in self._edge_layouts.items()
+            "edge_placements": {
+                name: {"memories": [memory.name for memory in placement.memories], "axis": placement.axis}
+                for name, placement in self._edge_placements.items()
             },
         }
 
@@ -311,7 +311,7 @@ class Mapping:
             )
             new_fused_groups.append(new_fused_group)
         new_mapping = Mapping(
-            fused_groups=new_fused_groups, runtime_args=self.runtime_args, edge_layouts=self._edge_layouts
+            fused_groups=new_fused_groups, runtime_args=self.runtime_args, edge_placements=self._edge_placements
         )
         for node in self.nodes():
             updated_node = new_workload.get_node_by_name(node.name)
@@ -328,16 +328,16 @@ class Mapping:
             initial=dict(self._by_node),
             fused_groups=fused_groups,
             runtime_args=self._runtime_args,
-            edge_layouts=self._edge_layouts,
+            edge_placements=self._edge_placements,
         )
 
-    def with_edge_layouts(self, edge_layouts: dict[str, EdgeLayout]) -> Mapping:
-        """The same mapping with ``edge_layouts`` added to the layouts it declares."""
+    def with_edge_placements(self, edge_placements: dict[str, EdgePlacement]) -> Mapping:
+        """The same mapping with ``edge_placements`` added to the placements it declares."""
         return Mapping(
             initial=dict(self._by_node),
             fused_groups=self._fused_groups,
             runtime_args=self._runtime_args,
-            edge_layouts=self._edge_layouts | edge_layouts,
+            edge_placements=self._edge_placements | edge_placements,
         )
 
     def copy(self) -> Mapping:
@@ -347,7 +347,7 @@ class Mapping:
             initial=cloned,
             fused_groups=self._fused_groups,
             runtime_args=self._runtime_args,
-            edge_layouts=self._edge_layouts,
+            edge_placements=self._edge_placements,
         )
 
     @property
@@ -355,9 +355,9 @@ class Mapping:
         return self._runtime_args
 
     @property
-    def edge_layouts(self) -> dict[str, EdgeLayout]:
-        """The layout of each edge the mapping declares one for, by edge name."""
-        return self._edge_layouts
+    def edge_placements(self) -> dict[str, EdgePlacement]:
+        """The placement of each edge the mapping declares one for, by edge name."""
+        return self._edge_placements
 
 
 def role_of(node: ComputationNode, tensor: Tensor) -> str:
@@ -394,16 +394,17 @@ def the_one[T](options: tuple[T, ...], node: Node, what: str) -> T:
 
 def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
     """The candidate memories ``node`` holds its ``role`` operand in, one per position: for an input edge the memories
-    of its layout, else the off-chip memory; the memory allocation for a transfer, and for a computation the memory
-    each core keeps that operand in. Cores sharing a memory repeat it. An input needs a layout when there are several
+    of its placement, else the off-chip memory; the memory allocation for a transfer, and for a computation the memory
+    each core keeps that operand in. Cores sharing a memory repeat it. An input needs a placement when there are several
     off-chip memories. Where an output lands is :func:`landing_of`."""
     if isinstance(node, InEdge):
-        if layout := mapping.edge_layouts.get(node.name):
-            return (layout.memories,)
+        if placement := mapping.edge_placements.get(node.name):
+            return (placement.memories,)
         if len(offchip := accelerator.offchip_memories) > 1:
+            names = ", ".join(memory.name for memory in offchip)
             raise ValueError(
-                f"input {node.name} has no layout over the off-chip memories {[memory.name for memory in offchip]}; "
-                "declare one in the mapping's runtime_args"
+                f"input {node.name} has no placement over the off-chip memories [{names}]; give it one in the mapping "
+                f"file: runtime_args: {{{node.name}: {{placement: {{memories: [{names}], split: <axis>}}}}}}"
             )
         return ((offchip_memory(accelerator),),)
     if isinstance(node, TransferNode):
@@ -440,8 +441,8 @@ def runtime_args_per_group(runtime_args: dict[str, Any], workloads: Sequence[Wor
     ]
 
 
-def layout_split_bits(node: ComputationNode, split_axes: dict[str, int]) -> dict[int, int]:
-    """Per position of ``node``'s dims, the bits of its operands whose layout splits an axis that dim indexes, by the
+def placement_split_bits(node: ComputationNode, split_axes: dict[str, int]) -> dict[int, int]:
+    """Per position of ``node``'s dims, the bits of its operands whose placement splits an axis that dim indexes, by the
     axis ``split_axes`` gives each tensor name."""
     bits: dict[int, int] = {}
     for tensor in node.tensors:
@@ -453,24 +454,24 @@ def layout_split_bits(node: ComputationNode, split_axes: dict[str, int]) -> dict
 
 
 def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None, src: Node) -> tuple[Memory, ...]:
-    """The off-chip memories an output from ``src`` lands in, one per position: those of the layout of ``edge``, the
+    """The off-chip memories an output from ``src`` lands in, one per position: those of the placement of ``edge``, the
     output edge reading it, else the off-chip memory, or of several the one nearest each memory ``src`` holds it in."""
-    if edge is not None and (layout := mapping.edge_layouts.get(edge.name)):
-        return layout.memories
+    if edge is not None and (placement := mapping.edge_placements.get(edge.name)):
+        return placement.memories
     if len(accelerator.offchip_memories) <= 1:
         return (offchip_memory(accelerator),)
     held_in = the_one(placements_of(accelerator, mapping, src, OUTPUT), src, "placements")
     return tuple(map(accelerator.nearest_offchip, held_in))
 
 
-def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNode) -> EdgeLayout | None:
-    """Where ``src``'s output landed without a layout (:func:`landing_of`), as one: a block along the axis its first
+def landed_placement(accelerator: Accelerator, mapping: Mapping, src: ComputationNode) -> EdgePlacement | None:
+    """Where ``src``'s output landed without a placement (:func:`landing_of`), as one: a block along the axis its first
     split dim indexing the output indexes, in the memory the cores holding that block land it in, or all of it in each
     memory it landed in where no split dim indexes it, as the cores of a split reduction land it; None if the cores
     holding one block land it in several."""
     positions = landing_of(accelerator, mapping, None, src)
     if len(set(positions)) == 1:
-        return EdgeLayout(positions[:1])
+        return EdgePlacement(positions[:1])
     tilings = mapping.get(src).inter_core_tiling
     tiling = tilings[0] if tilings else ()
     access = src.get_mapping(src.outputs[0])
@@ -481,7 +482,7 @@ def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNo
         if dim.position in map_dim_positions(AffineMap(access.num_dims, 0, (result,)))
     )
     if (found := next(indexed, None)) is None:
-        return EdgeLayout(tuple(dict.fromkeys(positions)))
+        return EdgePlacement(tuple(dict.fromkeys(positions)))
     loop, axis = found
     factor, inner = tiling[loop][1], prod(f for _, f in tiling[loop + 1 :])
     blocks: dict[int, set[Memory]] = defaultdict(set)
@@ -489,29 +490,29 @@ def landed_layout(accelerator: Accelerator, mapping: Mapping, src: ComputationNo
         blocks[position_of(core, len(positions), tiling) // inner % factor].add(memory)
     if any(len(memories) > 1 for memories in blocks.values()):
         return None
-    return EdgeLayout(tuple(next(iter(blocks[b])) for b in range(factor)), axis)
+    return EdgePlacement(tuple(next(iter(blocks[b])) for b in range(factor)), axis)
 
 
 def with_cut_landings(
     accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
 ) -> list[Mapping]:
-    """``mappings`` with the input end of each fusion cut declaring no layout reading where its output end landed
-    (:func:`landed_layout`), when there are several off-chip memories."""
+    """``mappings`` with the input end of each fusion cut declaring no placement reading where its output end landed
+    (:func:`landed_placement`), when there are several off-chip memories."""
     if len(accelerator.offchip_memories) <= 1:
         return list(mappings)
-    landed: dict[Tensor, EdgeLayout] = {}
+    landed: dict[Tensor, EdgePlacement] = {}
     for workload, mapping in zip(workloads, mappings, strict=True):
         for edge in workload.nodes:
             src = next(iter(workload.predecessors(edge)), None) if isinstance(edge, OutEdge) else None
-            if isinstance(src, ComputationNode) and edge.name not in mapping.edge_layouts:
-                if (layout := landed_layout(accelerator, mapping, src)) is not None:
-                    landed[edge_tensor(edge)] = layout
+            if isinstance(src, ComputationNode) and edge.name not in mapping.edge_placements:
+                if (placement := landed_placement(accelerator, mapping, src)) is not None:
+                    landed[edge_tensor(edge)] = placement
     return [
-        mapping.with_edge_layouts(
+        mapping.with_edge_placements(
             {
                 edge.name: landed[edge_tensor(edge)]
                 for edge in workload.nodes
-                if isinstance(edge, InEdge) and edge.name not in mapping.edge_layouts and edge_tensor(edge) in landed
+                if isinstance(edge, InEdge) and edge.name not in mapping.edge_placements and edge_tensor(edge) in landed
             }
         )
         for workload, mapping in zip(workloads, mappings, strict=True)
@@ -530,9 +531,9 @@ def offchip_holdings(
             if not isinstance(edge, InEdge | OutEdge) or (tensor := edge_tensor(edge)) in counted:
                 continue
             counted.add(tensor)
-            layout = mapping.edge_layouts.get(edge.name) or _landed_copy(accelerator, workload, mapping, edge)
-            if layout is not None and layout.axis is None:
-                shares = dict.fromkeys(layout.memories, Fraction(1))
+            placement = mapping.edge_placements.get(edge.name) or _landed_copy(accelerator, workload, mapping, edge)
+            if placement is not None and placement.axis is None:
+                shares = dict.fromkeys(placement.memories, Fraction(1))
             else:
                 positions = (
                     landing_of(accelerator, mapping, edge, next(iter(workload.predecessors(edge))))
@@ -545,13 +546,13 @@ def offchip_holdings(
     return held
 
 
-def _landed_copy(accelerator: Accelerator, workload: Workload, mapping: Mapping, edge: Node) -> EdgeLayout | None:
-    """Where an output without a layout landed whole in several memories, as a split reduction's does."""
+def _landed_copy(accelerator: Accelerator, workload: Workload, mapping: Mapping, edge: Node) -> EdgePlacement | None:
+    """Where an output without a placement landed whole in several memories, as a split reduction's does."""
     src = next(iter(workload.predecessors(edge)), None) if isinstance(edge, OutEdge) else None
     if not isinstance(src, ComputationNode) or len(accelerator.offchip_memories) <= 1:
         return None
-    layout = landed_layout(accelerator, mapping, src)
-    return layout if layout is not None and layout.axis is None else None
+    placement = landed_placement(accelerator, mapping, src)
+    return placement if placement is not None and placement.axis is None else None
 
 
 OFFCHIP_CAPACITY = ResourceKind(
@@ -560,12 +561,12 @@ OFFCHIP_CAPACITY = ResourceKind(
     unit="bytes",
     demand_label="workload inputs and outputs living in",
     bound_label="capacity of",
-    demand_input="workload tensor sizes × mapping runtime_args layouts",
+    demand_input="workload tensor sizes × mapping runtime_args placements",
     bound_input="hardware spec: memory size",
     term_detail="share it holds",
     levers=(
         "Increase {resource} (hardware spec)",
-        "Split the tensors over the off-chip memories rather than copying them (mapping runtime_args)",
+        "Split the tensors over the off-chip memories rather than copying them (mapping runtime_args placement)",
         "Reduce the workload's tensor sizes (smaller batch, shorter sequence)",
     ),
 )
@@ -575,8 +576,8 @@ def check_offchip_capacity(
     accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
 ) -> None:
     """Refuse workload inputs and outputs that overflow an off-chip memory they live in (:func:`offchip_holdings`),
-    when there are several off-chip memories or a layout places them."""
-    if len(accelerator.offchip_memories) <= 1 and not any(mapping.edge_layouts for mapping in mappings):
+    when there are several off-chip memories or the mapping places them."""
+    if len(accelerator.offchip_memories) <= 1 and not any(mapping.edge_placements for mapping in mappings):
         return
     for memory, held in offchip_holdings(accelerator, workloads, mappings).items():
         bits_of = {

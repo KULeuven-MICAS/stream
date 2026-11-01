@@ -13,7 +13,7 @@ PER_LAYER = "per-layer"
 
 
 def runtime_args_of(ctx: StageContext) -> dict | None:
-    """The runtime args laying out the workload's edges: as a rewrite left them, else the mapping file's."""
+    """The runtime args placing the workload's edges: as a rewrite left them, else the mapping file's."""
     if (runtime_args := ctx.get("runtime_args", None)) is not None:
         return runtime_args
     if (path := ctx.get("mapping_path", None)) is None:

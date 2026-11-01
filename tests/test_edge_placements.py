@@ -1,6 +1,7 @@
-"""A workload input or output laid out over the off-chip memories of a 4-slice ring, each slice with an HBM stack of
+"""A workload input or output placed over the off-chip memories of a 4-slice ring, each slice with an HBM stack of
 its own: a split the cores' split follows stays local, a pooled or wrongly split one costs the ring or one HBM."""
 
+import re
 from types import SimpleNamespace
 
 import onnx
@@ -23,7 +24,7 @@ from stream.workload.workload import walked_iterations
 
 RING = "stream/inputs/testing/hardware/tpu_like_ring_hbm.yaml"
 HBMS = ["hbm_0", "hbm_1", "hbm_2", "hbm_3"]
-SPLIT_N = {"memories": HBMS, "split": 1}
+SPLIT_N = {"placement": {"memories": HBMS, "split": 1}}
 K_TILE = ("D2", 128)
 
 
@@ -40,11 +41,13 @@ def _matmul(tmp_path, k=1024, n=512):
 
 def _estimate(tmp_path, w, out=SPLIT_N, tiles=(), k=1024, n=512, hardware=RING):  # noqa: PLR0913
     """A decode step's 1 x k by k x n matmul, its n split over the four cores and tiled over time by ``tiles``, ``w``
-    and ``out`` laid out as given."""
+    and ``out`` placed as given."""
     _matmul(tmp_path, k, n)
     layer = {"name": "MatMul", "core_allocation": [[0, 1, 2, 3]], "inter_core_tiling": [[{"dim": "D1", "split": 4}]]}
     tiling = [{"dim": f"MatMul.{dim}", "tile": tile} for dim, tile in tiles]
-    runtime_args = {name: args for name, args in (("a", {"memories": HBMS}), ("w", w), ("out", out)) if args}
+    runtime_args = {
+        name: args for name, args in (("a", {"placement": {"memories": HBMS}}), ("w", w), ("out", out)) if args
+    }
     mapping = {
         "layers": [layer],
         "fused_groups": [{"name": "g", "layers": ["MatMul"], "intra_core_tiling": tiling}],
@@ -99,7 +102,7 @@ def test_a_weight_split_as_the_cores_split_it_stays_in_each_slice(tmp_path):
 
 def test_a_pooled_weight_crosses_the_ring_and_costs_more(tmp_path):
     local = _solve(tmp_path / "local", SPLIT_N)
-    pooled = _solve(tmp_path / "pooled", {"memories": ["hbm_0"]})
+    pooled = _solve(tmp_path / "pooled", {"placement": {"memories": ["hbm_0"]}})
     tr, route = _route(pooled, "w")
     assert _ring_share(route) >= 0.75
     assert _hbm_shares(pooled, tr, route) == {"hbm_0": 1.0}
@@ -109,7 +112,7 @@ def test_a_pooled_weight_crosses_the_ring_and_costs_more(tmp_path):
 def test_a_weight_split_along_the_axis_walked_over_time_waits_on_one_hbm(tmp_path):
     """Split along k, which each iteration walks a tile of, every core reads its tile from the same HBM stack."""
     local = _solve(tmp_path / "local", SPLIT_N, tiles=[K_TILE])
-    wrong = _solve(tmp_path / "wrong", {"memories": HBMS, "split": 0}, tiles=[K_TILE])
+    wrong = _solve(tmp_path / "wrong", {"placement": {"memories": HBMS, "split": 0}}, tiles=[K_TILE])
     tr, route = _route(wrong, "w")
     assert _hbm_shares(wrong, tr, route) == {"hbm_0": 1.0, "hbm_1": 0.0, "hbm_2": 0.0, "hbm_3": 0.0}
     local_tr, local_route = _route(local, "w")
@@ -150,7 +153,7 @@ def _ring_with_hbms_of(capacity_bits):
 def test_a_weight_copied_in_each_hbm_over_its_capacity_is_refused_by_what_each_holds(tmp_path):
     """The 1 MiB weight whole in each 512 KiB HBM stack, the output a quarter in each, landing beside its core."""
     with pytest.raises(InfeasibleAllocationError, match=r"^hbm_0 holds a \+ w \+ out/4 = 1 MiB > 512 KiB$") as refused:
-        _solve(tmp_path, {"memories": HBMS}, out={}, hardware=_ring_with_hbms_of(4 * 2**20))
+        _solve(tmp_path, {"placement": {"memories": HBMS}}, out={}, hardware=_ring_with_hbms_of(4 * 2**20))
     report = refused.value.report
     assert report.nature == "capacity"
     (resource,) = report.resources
@@ -172,7 +175,7 @@ def _offchip_reads(tmp_path, w, tiles=()):
 def test_each_hbm_is_charged_the_accesses_of_what_it_serves(tmp_path):
     """Each HBM reads a quarter of a split weight, and all of the input every core reads whole from its copy."""
     split = _offchip_reads(tmp_path / "split", SPLIT_N)
-    pooled = _offchip_reads(tmp_path / "pooled", {"memories": ["hbm_0"]})
+    pooled = _offchip_reads(tmp_path / "pooled", {"placement": {"memories": ["hbm_0"]}})
     assert [split[(hbm, "w")] for hbm in HBMS] == [pooled[("hbm_0", "w")] // 4] * 4
     assert not any(tensor == "w" and memory != "hbm_0" for memory, tensor in pooled)
     port_bits, a_bits = 8, 1 * 1024 * 16
@@ -180,7 +183,7 @@ def test_each_hbm_is_charged_the_accesses_of_what_it_serves(tmp_path):
 
 
 def test_a_wrongly_split_weight_is_read_evenly_over_the_walk_though_one_hbm_serves_each_iteration(tmp_path):
-    reads = _offchip_reads(tmp_path / "wrong", {"memories": HBMS, "split": 0}, tiles=[K_TILE])
+    reads = _offchip_reads(tmp_path / "wrong", {"placement": {"memories": HBMS, "split": 0}}, tiles=[K_TILE])
     local = _offchip_reads(tmp_path / "local", SPLIT_N, tiles=[K_TILE])
     assert [reads[(hbm, "w")] for hbm in HBMS] == [local[(hbm, "w")] for hbm in HBMS]
     assert len({reads[(hbm, "w")] for hbm in HBMS}) == 1
@@ -228,7 +231,7 @@ def test_a_walk_holds_dma_channels_on_every_hbm_it_reads(tmp_path):
 
 def test_the_busiest_iteration_is_the_one_at_the_slowest_hbm(tmp_path):
     allocation = _solve(
-        tmp_path, {"memories": HBMS, "split": 0}, tiles=[K_TILE], hardware=_ring(hbm_2={"bandwidth": 4})
+        tmp_path, {"placement": {"memories": HBMS, "split": 0}}, tiles=[K_TILE], hardware=_ring(hbm_2={"bandwidth": 4})
     )
     tr, route = _route(allocation, "w")
     assert {hbm.name: route.memory_share(hbm, leaving=True) for hbm in route.sources}["hbm_2"] == 1.0
@@ -245,7 +248,7 @@ def test_a_walk_is_priced_at_each_hbm_s_energy_for_its_average_share(tmp_path):
 
 
 def test_a_weight_copied_in_each_hbm_is_read_where_its_reader_is(tmp_path):
-    allocation = _solve(tmp_path, {"memories": HBMS})
+    allocation = _solve(tmp_path, {"placement": {"memories": HBMS}})
     tr, route = _route(allocation, "w")
     assert route.pairs == ((0, 0), (1, 1), (2, 2), (3, 3))
     assert _ring_share(route) == 0
@@ -259,35 +262,44 @@ def test_an_output_split_lands_a_block_in_each_slice_s_hbm(tmp_path):
     assert route.pairs == ((0, 0), (1, 1), (2, 2), (3, 3))
     assert _ring_share(route) == 0
     ir = AllocationIR.from_internal(allocation)
-    assert ir.edge_layouts["out"].memories == HBMS and ir.edge_layouts["out"].axis == 1
+    assert ir.edge_placements["out"].memories == HBMS and ir.edge_placements["out"].axis == 1
 
 
-def test_an_output_without_a_layout_lands_in_the_hbm_nearest_each_producing_core(tmp_path):
+def test_an_output_without_a_placement_lands_in_the_hbm_nearest_each_producing_core(tmp_path):
     _, route = _route(_solve(tmp_path, SPLIT_N, out={}), "out")
     assert [memory.name for memory in route.targets] == HBMS
     assert _ring_share(route) == 0
 
 
-def test_an_input_without_a_layout_is_refused_by_name(tmp_path):
-    with pytest.raises(ValueError, match=r"input w has no layout over the off-chip memories \['hbm_0', 'hbm_1'"):
+def test_an_input_without_a_placement_is_refused_by_name(tmp_path):
+    expected = (
+        "input w has no placement over the off-chip memories [hbm_0, hbm_1, hbm_2, hbm_3]; give it one in the mapping "
+        "file: runtime_args: {w: {placement: {memories: [hbm_0, hbm_1, hbm_2, hbm_3], split: <axis>}}}"
+    )
+    with pytest.raises(ValueError, match=re.escape(expected)):
         _solve(tmp_path, {})
 
 
 def test_a_split_that_does_not_divide_its_axis_is_refused(tmp_path):
     with pytest.raises(ValueError, match="axis 0 of extent 1 does not split evenly"):
-        _solve(tmp_path, SPLIT_N, out={"memories": HBMS, "split": 0})
+        _solve(tmp_path, SPLIT_N, out={"placement": {"memories": HBMS, "split": 0}})
 
 
 def test_an_output_copied_in_several_memories_is_refused(tmp_path):
     with pytest.raises(ValueError, match="output out cannot be a copy"):
-        _solve(tmp_path, SPLIT_N, out={"memories": HBMS})
+        _solve(tmp_path, SPLIT_N, out={"placement": {"memories": HBMS}})
 
 
 @pytest.mark.parametrize(
     "args",
-    [{"memories": "hbm_0"}, {"split": 1}, {"memories": [], "split": 0}, {"memories": HBMS, "split": -1}],
+    [
+        {"placement": {"memories": "hbm_0"}},
+        {"placement": {"split": 1}},
+        {"placement": {"memories": [], "split": 0}},
+        {"placement": {"memories": HBMS, "split": -1}},
+    ],
 )
-def test_a_malformed_layout_is_refused(args):
+def test_a_malformed_placement_is_refused(args):
     validator = MappingValidator({"layers": [], "runtime_args": {"w": args}})
     assert not validator.validate()
 
@@ -297,29 +309,29 @@ def test_other_runtime_args_are_left_to_their_readers():
     assert validator.validate()
 
 
-def test_a_layout_names_off_chip_memories(tmp_path):
-    with pytest.raises(ValueError, match=r"w lives in \['sram_0'\], but the off-chip memories are"):
-        _solve(tmp_path, {"memories": ["sram_0"]})
+def test_a_placement_names_off_chip_memories(tmp_path):
+    with pytest.raises(ValueError, match=r"w is placed in \['sram_0'\], but the off-chip memories are"):
+        _solve(tmp_path, {"placement": {"memories": ["sram_0"]}})
 
 
 def _generated(tmp_path, w):
-    """The matmul mapped by the generic generator from a mapping file that only lays out its edges, and the split it
+    """The matmul mapped by the generic generator from a mapping file that only places its edges, and the split it
     chose across the cores."""
     _matmul(tmp_path)
-    runtime_args = {"a": {"memories": HBMS}, "w": w, "out": SPLIT_N}
-    (tmp_path / "layouts.yaml").write_text(yaml.safe_dump({"runtime_args": runtime_args}))
+    runtime_args = {"a": {"placement": {"memories": HBMS}}, "w": w, "out": SPLIT_N}
+    (tmp_path / "placements.yaml").write_text(yaml.safe_dump({"runtime_args": runtime_args}))
     estimate = evaluate_mapping(
         RING,
         str(tmp_path / "matmul.onnx"),
         str(tmp_path),
-        str(tmp_path / "layouts.yaml"),
+        str(tmp_path / "placements.yaml"),
         SolveOptions(artifacts=False),
     )
     (layer,) = open_yaml(tmp_path / "group_0" / "mapping.yaml")["layers"]
     return estimate.context.get("allocation"), layer["inter_core_tiling"]
 
 
-def test_the_generic_generator_splits_the_cores_as_a_layout_splits_the_weight(tmp_path):
+def test_the_generic_generator_splits_the_cores_as_a_placement_splits_the_weight(tmp_path):
     allocation, split = _generated(tmp_path, SPLIT_N)
     assert split == [[{"dim": "D1", "split": 4}]]
     tr, route = _route(allocation, "w")
@@ -327,9 +339,9 @@ def test_the_generic_generator_splits_the_cores_as_a_layout_splits_the_weight(tm
     assert _hbm_shares(allocation, tr, route) == dict.fromkeys(HBMS, 0.25)
 
 
-def test_the_generic_generator_prefers_the_axis_a_layout_splits(tmp_path):
+def test_the_generic_generator_prefers_the_axis_a_placement_splits(tmp_path):
     """Split along k, each core reduces the block of its own slice's HBM, the iterations walking n rather than k."""
-    allocation, split = _generated(tmp_path, {"memories": HBMS, "split": 0})
+    allocation, split = _generated(tmp_path, {"placement": {"memories": HBMS, "split": 0}})
     assert split == [[{"dim": "D2", "split": 4}]]
     tr, route = _route(allocation, "w")
     assert _ring_share(route) == 0
@@ -362,34 +374,34 @@ def _mlp(tmp_path, runtime_args, hardware=RING):
     return estimate.context.get("sub_mappings")
 
 
-LAID_OUT = {name: SPLIT_N for name in ("w1", "w2", "out")} | {"a": {"memories": HBMS}}
+PLACED = {name: SPLIT_N for name in ("w1", "w2", "out")} | {"a": {"placement": {"memories": HBMS}}}
 
 
-def test_a_layout_declared_for_one_end_of_a_fusion_cut_holds_for_the_other(tmp_path):
-    layouts = [mapping.edge_layouts for mapping in _mlp(tmp_path, LAID_OUT | {"Up_cut_out": SPLIT_N})]
-    assert layouts[0]["Up_cut_out"] == layouts[1]["Up_cut_in"]
-    assert [memory.name for memory in layouts[1]["Up_cut_in"].memories] == HBMS
+def test_a_placement_declared_for_one_end_of_a_fusion_cut_holds_for_the_other(tmp_path):
+    placements = [mapping.edge_placements for mapping in _mlp(tmp_path, PLACED | {"Up_cut_out": SPLIT_N})]
+    assert placements[0]["Up_cut_out"] == placements[1]["Up_cut_in"]
+    assert [memory.name for memory in placements[1]["Up_cut_in"].memories] == HBMS
 
 
 def test_a_tensor_crossing_a_fusion_cut_is_held_once(tmp_path):
     with pytest.raises(
         InfeasibleAllocationError, match=r"^hbm_0 holds a \+ w1/4 \+ hidden/4 \+ w2/4 \+ out/4 = 193 KiB > 100 KiB$"
     ):
-        _mlp(tmp_path, LAID_OUT | {"Up_cut_out": SPLIT_N}, hardware=_ring_with_hbms_of(100 * 8 * 2**10))
+        _mlp(tmp_path, PLACED | {"Up_cut_out": SPLIT_N}, hardware=_ring_with_hbms_of(100 * 8 * 2**10))
 
 
 def test_the_two_ends_of_a_fusion_cut_must_agree(tmp_path):
-    runtime_args = LAID_OUT | {"Up_cut_in": SPLIT_N, "Up_cut_out": {"memories": ["hbm_0"]}}
+    runtime_args = PLACED | {"Up_cut_in": SPLIT_N, "Up_cut_out": {"placement": {"memories": ["hbm_0"]}}}
     with pytest.raises(
-        ValueError, match="Up_cut_out and Up_cut_in are the two ends of one fusion cut but declare memories"
+        ValueError, match="Up_cut_out and Up_cut_in are the two ends of one fusion cut but declare placement"
     ):
         _mlp(tmp_path, runtime_args)
 
 
 def test_the_ends_of_a_fusion_cut_merge_what_they_declare(tmp_path):
     transposed = {"layout": "(d0, d1) -> (d1, d0)"}
-    mappings = _mlp(tmp_path, LAID_OUT | {"Up_cut_out": transposed, "Up_cut_in": SPLIT_N})
-    assert mappings[0].edge_layouts["Up_cut_out"] == mappings[1].edge_layouts["Up_cut_in"]
+    mappings = _mlp(tmp_path, PLACED | {"Up_cut_out": transposed, "Up_cut_in": SPLIT_N})
+    assert mappings[0].edge_placements["Up_cut_out"] == mappings[1].edge_placements["Up_cut_in"]
     assert str(mappings[1].runtime_args["Up_cut_in"]) == str(mappings[0].runtime_args["Up_cut_out"])
 
 
@@ -410,7 +422,7 @@ def test_an_input_and_an_output_split_along_different_axes_walk_every_pairing_of
 
 
 def test_where_an_output_lands_is_no_placement_of_its_edge():
-    """An output lands by its layout or beside its producing cores (landing_of), which its edge alone cannot say."""
+    """An output lands by its placement or beside its producing cores (landing_of), which its edge alone cannot say."""
     accelerator = AcceleratorFactory(_ring_data()).create()
     with pytest.raises(ValueError, match="holds no operand"):
         placements_of(accelerator, Mapping(), OutEdge(name="out", inputs=()), OUTPUT)

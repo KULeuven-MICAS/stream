@@ -170,12 +170,12 @@ class MemoryAccessesEstimationStage(Stage):
         self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str
     ) -> list[tuple[Memory, float]]:
         """Each off-chip memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, with the bits of it that memory
-        moves per firing: all of them with one off-chip memory, else, for a split layout, its share of what the
+        moves per firing: all of them with one off-chip memory, else, for a split placement, its share of what the
         transfer's route delivers over the iterations walking the split axis, or its share of the route's data."""
         if len(self.accelerator.offchip_memories) <= 1:
             return [(offchip_memory(self.accelerator), tensor.size_bits())]
         route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
-        if (shares := self.workload.layout_shares(edge, tn.inputs[0], self.mapping, route.delivered)) is not None:
+        if (shares := self.workload.placement_shares(edge, tn.inputs[0], self.mapping, route.delivered)) is not None:
             return [(memory, tensor.size_bits() * share) for memory, share in shares.items()]
         side = route.sources if leaving else route.targets
         return [

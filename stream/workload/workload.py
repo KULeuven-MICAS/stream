@@ -814,26 +814,26 @@ class Workload(DiGraphWrapper[Node]):
     @staticmethod
     def _walked_blocks(edge: Node, tensor: Tensor, mapping: "Mapping") -> list[list[list[tuple[int, int]]]] | None:
         """For each iteration walking ``tensor``'s split axis, the box of the whole tensor the memory at each position
-        of ``edge``'s layout holds, moved to the iteration-0 coordinates the read boxes are in; one iteration where the
-        axis is not walked, None unless the layout splits the tensor."""
-        layout = mapping.edge_layouts.get(edge.name) if isinstance(edge, InEdge | OutEdge) else None
-        if layout is None or layout.axis is None:
+        of ``edge``'s placement holds, moved to the iteration-0 coordinates the read boxes are in; one iteration where
+        the axis is not walked, None unless the placement splits the tensor."""
+        placement = mapping.edge_placements.get(edge.name) if isinstance(edge, InEdge | OutEdge) else None
+        if placement is None or placement.axis is None:
             return None
-        shape, axis = tensor.subview.source.type.get_shape(), layout.axis
+        shape, axis = tensor.subview.source.type.get_shape(), placement.axis
         extent = shape[axis]
         step = min(tensor.shape[axis], extent)
-        blocks = [layout.block(s, extent) for s in range(len(layout.memories))]
+        blocks = [placement.block(s, extent) for s in range(len(placement.memories))]
         whole = [(0, n - 1) for n in shape]
         return [
             [[*whole[:axis], (lo - k * step, hi - k * step), *whole[axis + 1 :]] for lo, hi in blocks]
             for k in range(ceil(extent / step))
         ]
 
-    def layout_shares(
+    def placement_shares(
         self, edge: Node, tensor: Tensor, mapping: "Mapping", boxes: Sequence
     ) -> dict[Memory, float] | None:
-        """The share each memory of ``edge``'s layout serves of ``boxes``, what an iteration moves of ``tensor``, over
-        all iterations walking the split axis; None unless the layout splits the tensor."""
+        """The share each memory of ``edge``'s placement serves of ``boxes``, what an iteration moves of ``tensor``,
+        over all iterations walking the split axis; None unless the placement splits the tensor."""
         from stream.cost_model.communication_manager import box_bits, meet  # noqa: PLC0415
 
         if not (walk := self._walked_blocks(edge, tensor, mapping)):
@@ -845,7 +845,7 @@ class Workload(DiGraphWrapper[Node]):
         if not (total := sum(covered)):
             return None
         shares: dict[Memory, float] = {}
-        for memory, bits in zip(mapping.edge_layouts[edge.name].memories, covered, strict=True):
+        for memory, bits in zip(mapping.edge_placements[edge.name].memories, covered, strict=True):
             shares[memory] = shares.get(memory, 0.0) + bits / total
         return shares
 
@@ -868,12 +868,12 @@ class Workload(DiGraphWrapper[Node]):
         under their own splits. A window overlapping neighbouring tiles is served by the sources whose tiles it
         overlaps. Otherwise each side holds the tiles of its split in core order; a tile copied on several cores is
         served by the nearest, and a partial sum over a split reduction dimension is needed from every source. An
-        input edge whose layout splits its tensor holds block s of the whole tensor at source s, and an output edge
-        receives block t at target t (:class:`EdgeLayout`); where the iterations walk the split axis, the demand is
+        input edge whose placement splits its tensor holds block s of the whole tensor at source s, and an output edge
+        receives block t at target t (:class:`EdgePlacement`); where the iterations walk the split axis, the demand is
         that of the iteration ``cost`` finds busiest, each pairing of the two walks where an input and an output split
         along different axes. Time thus takes the busiest iteration of a walk, an upper bound
         that prefetching more than one tile ahead may beat, while traffic and energy take the average over the walk
-        (:meth:`layout_shares`). ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``,
+        (:meth:`placement_shares`). ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``,
         ``j + m``, ..., as a code generator does."""
         from stream.cost_model.communication_manager import DemandItem  # noqa: PLC0415
 
@@ -934,8 +934,8 @@ class Workload(DiGraphWrapper[Node]):
         out = next((n for n in self.successors(transfer) if isinstance(n, OutEdge)), None)
         held_walk = self._walked_blocks(src, source, mapping)
         target_walk = self._walked_blocks(out, source, mapping) if out else None
-        layouts = mapping.edge_layouts
-        one_axis = bool(held_walk and target_walk and out and layouts[src.name].axis == layouts[out.name].axis)
+        placements = mapping.edge_placements
+        one_axis = bool(held_walk and target_walk and out and placements[src.name].axis == placements[out.name].axis)
         walks = walked_iterations(held_walk, target_walk, one_axis)
         return tuple(_busiest([demand(held, target) for held, target in walks], cost))
 
@@ -1454,7 +1454,7 @@ def position_of(core: int, cores: int, tiling: InterCoreTiling) -> int:
 def walked_iterations[T](
     held: list[T] | None, target: list[T] | None, one_axis: bool
 ) -> list[tuple[T | None, T | None]]:
-    """The blocks an input and an output layout hold in each iteration of their walks: side by side where one axis is
+    """The blocks an input and an output placement hold in each iteration of their walks: side by side where one axis is
     walked for both, else every pairing, as nested loops walk two axes."""
     if one_axis:
         return list(zip(held or [], target or [], strict=True))

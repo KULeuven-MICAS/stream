@@ -454,7 +454,7 @@ class TestAllocationIR:
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "3.1", f"Expected const='3.1', got: {sv}"
+        assert sv.get("const") == "4.0", f"Expected const='4.0', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
@@ -486,7 +486,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "3.1"
+        assert ir.schema_version == "4.0"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_allocation) constructs correctly."""
@@ -500,7 +500,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "3.1"
+        assert ir.schema_version == "4.0"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -580,7 +580,7 @@ class TestAllocationIR:
         view = ir.compiler_view()
 
         assert isinstance(view, AllocationCompilerView)
-        assert view.schema_version == "2.1"
+        assert view.schema_version == "3.0"
         assert "MatMul" in view.mapping_nodes
         matmul_node = view.mapping_nodes["MatMul"]
         assert isinstance(matmul_node, NodeAllocationIR)
@@ -611,7 +611,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "3.1"
+        assert parsed["schema_version"] == "4.0"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
@@ -791,10 +791,10 @@ def _without_descriptions(schema):
         (AcceleratorIR, "2.1", "0f52880a13485ad4"),
         (AcceleratorHardwareView, "2.1", "8c99f01169c52638"),
         (AcceleratorCompilerView, "2.1", "90a2ac03ca7c3355"),
-        (AllocationIR, "3.1", "3e3638bb5a6216c0"),
+        (AllocationIR, "4.0", "8b670edc1116b167"),
         (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
         (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
-        (AllocationCompilerView, "2.1", "9aea62c5ffaf0f7e"),
+        (AllocationCompilerView, "3.0", "334954d133ed1c4b"),
         (AllocationPerformanceView, "2.0", "b4c9df810d67eaaa"),
         (InfeasibilityReportIR, "2.0", "f916a400b3ad105e"),
     ],

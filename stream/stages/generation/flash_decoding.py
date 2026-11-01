@@ -1,4 +1,4 @@
-"""Generation stage: attention split along its sequence where it is laid out so or its scores do not fit on chip."""
+"""Generation stage: attention split along its sequence where it is placed so or its scores do not fit on chip."""
 
 import logging
 from collections.abc import Generator
@@ -22,20 +22,22 @@ def _part_counts(length: int) -> list[int]:
     return sorted(divisors, key=lambda n: (n & (n - 1) != 0, n))
 
 
-def _viewed_layouts(
+def _viewed_placements(
     workload: Workload, attention: Attention, parts: int, runtime_args: dict[str, Any]
 ) -> dict[str, Any]:
-    """``runtime_args`` with each viewed input's split axis counted in its new axes, the sequence's as the parts'."""
+    """``runtime_args`` with each viewed input's placement split counted in its new axes, the sequence's as the
+    parts'."""
     viewed = dict(runtime_args)
     for edge, axis in attention.views(workload).items():
-        if (args := runtime_args.get(edge.name)) is None or (split := args.get("split")) is None:
+        placement = runtime_args.get(edge.name, {}).get("placement", {})
+        if (split := placement.get("split")) is None:
             continue
-        if split == axis and parts % len(args["memories"]):
+        if split == axis and parts % len(placement["memories"]):
             raise ValueError(
-                f"{edge.name} lays its axis {axis} out over {len(args['memories'])} memories, which {parts} parts of "
-                f"{attention.context.name}'s sequence do not split evenly"
+                f"{edge.name} is split along its axis {axis} over {len(placement['memories'])} memories, which "
+                f"{parts} parts of {attention.context.name}'s sequence do not split evenly"
             )
-        viewed[edge.name] = args | {"split": split + (split > axis)}
+        viewed[edge.name] = runtime_args[edge.name] | {"placement": placement | {"split": split + (split > axis)}}
     return viewed
 
 
@@ -57,7 +59,7 @@ class FlashDecodingStage(Stage):
             count = parts or self._parts(workload, attention, runtime_args or {})
             if count > 1:
                 if runtime_args is not None:
-                    runtime_args = _viewed_layouts(workload, attention, count, runtime_args)
+                    runtime_args = _viewed_placements(workload, attention, count, runtime_args)
                 workload = rewrite.apply(workload, attention, count)
                 logger.info("Attention %s split into %d parts of its sequence", attention.context.name, count)
         self.ctx.set(workload=workload, runtime_args=runtime_args)
@@ -65,20 +67,20 @@ class FlashDecodingStage(Stage):
         yield from sub_stage.run()
 
     def _parts(self, workload: Workload, attention: Attention, runtime_args: dict[str, Any]) -> int:
-        """The fewest parts, a multiple of the memories the sequence is laid out over, that fit, else that multiple."""
+        """The fewest parts, a multiple of the memories the sequence is split over, that fit, else that multiple."""
         edges = {edge.outputs[0]: edge.name for edge in workload.get_in_edges()}
-        laid_out = [
-            len(args["memories"])
+        placed = [
+            len(placement["memories"])
             for tensor, axis in attention.sequence_reads()
-            if (args := runtime_args.get(edges.get(tensor, ""), {})).get("split") == axis
+            if (placement := runtime_args.get(edges.get(tensor, ""), {}).get("placement", {})).get("split") == axis
         ]
-        step = lcm(*laid_out) if laid_out else 1
+        step = lcm(*placed) if placed else 1
         names = {node.name for node in attention.nodes}
         if attention.length % step or (step == 1 and self._fits(workload, names, runtime_args)):
             return 1
         rewrite = get_workload_rewrite("flash_decoding")
         for count in (n for n in _part_counts(attention.length) if n % step == 0):
-            viewed = _viewed_layouts(workload, attention, count, runtime_args)
+            viewed = _viewed_placements(workload, attention, count, runtime_args)
             if self._fits(rewrite.apply(workload, attention, count), {f"{name}_part" for name in names}, viewed):
                 return count
         return step
