@@ -12,7 +12,7 @@ from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import EdgePlacement, FusedGroup, Mapping, NodeMapping
-from stream.workload.node import OutEdge
+from stream.workload.node import OutEdge, edge_tensor
 from stream.workload.normalization import operator_types_of
 from stream.workload.tensor import Tensor
 from stream.workload.workload import ComputationNode, InEdge, Workload
@@ -241,22 +241,19 @@ class MappingFactory:
             placement = EdgePlacement(tuple(self.accelerator.memories[m] for m in memories), declared.get("split"))
             if (
                 isinstance(self.workload.get_node_by_name(name), OutEdge)
-                and placement.axis is None
+                and placement.split is None
                 and len(placement.memories) > 1
             ):
                 raise ValueError(f"output {name} cannot be a copy in each of {memories}; split it on an axis")
-            if placement.axis is not None and placement.axis >= len(self._edge_tensor(name).shape):
-                raise ValueError(f"{name} has no axis {placement.axis} to split")
+            if placement.split is not None and placement.split >= len(self._edge_tensor(name).shape):
+                raise ValueError(f"{name} has no axis {placement.split} to split")
             placements[name] = placement
         return placements
 
     def _edge_tensor(self, name: str) -> Tensor:
-        node = self.workload.get_node_by_name(name)
-        if isinstance(node, InEdge):
-            return node.outputs[0]
-        if isinstance(node, OutEdge):
-            return node.inputs[0]
-        raise ValueError(f"runtime args name {name}, which is no input or output edge")
+        if not isinstance(node := self.workload.get_node_by_name(name), InEdge | OutEdge):
+            raise ValueError(f"runtime args name {name}, which is no input or output edge")
+        return edge_tensor(node)
 
     def _get_standard_layout(self, tensor_name: str) -> AffineMap:
         num_dims = len(self._edge_tensor(tensor_name).shape)

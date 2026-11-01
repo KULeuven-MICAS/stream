@@ -262,7 +262,7 @@ def test_an_output_split_lands_a_block_in_each_slice_s_hbm(tmp_path):
     assert route.pairs == ((0, 0), (1, 1), (2, 2), (3, 3))
     assert _ring_share(route) == 0
     ir = AllocationIR.from_internal(allocation)
-    assert ir.edge_placements["out"].memories == HBMS and ir.edge_placements["out"].axis == 1
+    assert ir.edge_placements["out"].memories == HBMS and ir.edge_placements["out"].split == 1
 
 
 def test_an_output_without_a_placement_lands_in_the_hbm_nearest_each_producing_core(tmp_path):
@@ -297,6 +297,7 @@ def test_an_output_copied_in_several_memories_is_refused(tmp_path):
         {"placement": {"split": 1}},
         {"placement": {"memories": [], "split": 0}},
         {"placement": {"memories": HBMS, "split": -1}},
+        {"placment": {"memories": HBMS, "split": 0}},
     ],
 )
 def test_a_malformed_placement_is_refused(args):
