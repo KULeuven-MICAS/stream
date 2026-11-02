@@ -321,9 +321,8 @@ class DecisionSpace:
     def side_bandwidth(
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
     ) -> BandwidthModel | None:
-        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth over the share of
-        the bits it moves, else the ports the side passes, else nothing (None). Ports work in parallel, so the side is
-        as slow as the port that needs longest for its share of the bits: that port's rate divided by its share."""
+        """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth over its share of
+        the bits, else the port needing longest for its share (ports work in parallel), else None."""
         if memory in self.shared_bandwidth:
             share = choice.memory_share(memory, leaving=direction == READ)
             return self.shared_bandwidth[memory].scaled(1.0 / share) if share else None
@@ -334,12 +333,13 @@ class DecisionSpace:
         return port.bandwidth.scaled(1.0 / ports[port])
 
     def walk_shares(self, tr: TransferNode, choice: MulticastPathPlan) -> dict[Memory, float]:
-        """Each memory's share of what ``tr`` moves of an edge whose placement splits it, over all iterations walking
-        the split axis (:meth:`Workload.placement_shares`); empty for any other transfer."""
-        for edge in (*self.workload.predecessors(tr), *self.workload.successors(tr)):
-            if (
-                shares := self.workload.placement_shares(edge, tr.inputs[0], self.mapping, choice.delivered)
-            ) is not None:
+        """Each memory's share of what ``tr`` moves of an edge whose placement splits it, an input as ``choice`` holds
+        it, over all iterations walking the split axis (:meth:`Workload.placement_shares`); empty for any other
+        transfer."""
+        held = [choice.placement or self.mapping.placement_of(edge) for edge in self.workload.predecessors(tr)]
+        landed = [self.mapping.placement_of(edge) for edge in self.workload.successors(tr)]
+        for placement in (*held, *landed):
+            if (shares := self.workload.placement_shares(placement, tr.inputs[0], choice.delivered)) is not None:
                 return shares
         return {}
 

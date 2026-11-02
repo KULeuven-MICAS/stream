@@ -66,6 +66,8 @@ class PathChoice:
 
 
 def _source_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]) -> None:
+    """A chosen route's sources hold the tensors it moves, in the placement it reads an input from where the allocation
+    chooses that."""
     src_tensors = tr.inputs
     assert all(isinstance(t, Tensor) for t in src_tensors), f"Transfer {tr.name} has non-tensor input(s): {src_tensors}"
     for src_tensor in src_tensors:
@@ -76,6 +78,11 @@ def _source_coherence(ctx: FormulationContext, tr: TransferNode, choices: tuple[
                     y <= ctx.tensor_in_memory_expr(src_tensor, source),
                     name=f"path_src_match_{tr.name}_{src_tensor.name}_{resource_key(source)}_choice_{i}",
                     resource=source,
+                )
+            if choice.placement is not None:
+                ctx.add_constr(
+                    y <= ctx.vars.x[(src_tensor, choice.placement.memories)],
+                    name=f"path_src_placement_{tr.name}_{src_tensor.name}_choice_{i}",
                 )
 
 

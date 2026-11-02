@@ -113,6 +113,12 @@ class EdgeTensorIR(BaseModel):
     direction: Literal["in", "out"] = Field(description="'in' for a workload input, 'out' for an output")
 
 
+_EDGE_PLACEMENTS = Field(
+    default_factory=dict, description="The off-chip memories each input or output edge the mapping places is held in"
+)
+_EDGE_TENSORS = Field(default_factory=dict, description="The whole tensor of each input and output edge, by edge name")
+
+
 # A tiling pair is [dim, factor]; anything shorter is not a decision we can type.
 _TILE_PAIR_LEN = 2
 
@@ -281,13 +287,8 @@ class AllocationCompilerView(BaseModel):
         description="Groups of layers fused together with their intra-core tiling factors"
     )
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
-    edge_placements: dict[str, EdgePlacementIR] = Field(
-        default_factory=dict,
-        description="The off-chip memories each input or output edge the mapping places is held in",
-    )
-    edge_tensors: dict[str, EdgeTensorIR] = Field(
-        default_factory=dict, description="The whole tensor of each input and output edge, by edge name"
-    )
+    edge_placements: dict[str, EdgePlacementIR] = _EDGE_PLACEMENTS
+    edge_tensors: dict[str, EdgeTensorIR] = _EDGE_TENSORS
 
 
 class NodePerformanceIR(BaseModel):
@@ -614,12 +615,16 @@ class AllocationIR(BaseModel):
     )
     fused_groups: list[FusedGroupIR] = Field(description="Groups of fused layers with their intra-core tiling factors")
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
-    edge_placements: dict[str, EdgePlacementIR] = Field(
-        default_factory=dict,
-        description="The off-chip memories each input or output edge the mapping places is held in",
-    )
-    edge_tensors: dict[str, EdgeTensorIR] = Field(
-        default_factory=dict, description="The whole tensor of each input and output edge, by edge name"
+    edge_placements: dict[str, EdgePlacementIR] = _EDGE_PLACEMENTS
+    edge_tensors: dict[str, EdgeTensorIR] = _EDGE_TENSORS
+    offchip_holdings: dict[str, dict[str, float]] | None = Field(
+        default=None,
+        description=(
+            "Bits of each workload tensor the group's edges hold in each off-chip memory, by memory and by the tensor "
+            "edge_tensors names: an input by its placement, an output and a fusion cut where they land, a copy in "
+            "each of its memories; groups holding one tensor name it alike, so it counts once over them; None if it "
+            "could not be computed"
+        ),
     )
     performance: AllocationPerformanceView | None = Field(
         default=None,
@@ -737,6 +742,7 @@ class AllocationIR(BaseModel):
                 name: EdgePlacementIR(**placement) for name, placement in mapping.get("edge_placements", {}).items()
             },
             edge_tensors={name: EdgeTensorIR(**tensor) for name, tensor in raw.get("edge_tensors", {}).items()},
+            offchip_holdings=raw.get("offchip_holdings"),
             performance=performance,
             steady_state=steady_state,
             roofline=RooflinePointIR(**raw["roofline"]) if raw.get("roofline") else None,

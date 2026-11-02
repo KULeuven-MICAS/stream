@@ -15,6 +15,7 @@ from stream.hardware.ports import READ
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
+    from stream.mapping.mapping import EdgePlacement
 
 Box = tuple[tuple[int, int], ...]
 """Inclusive index range per axis of the data a demand moves; equal boxes are the same data."""
@@ -43,9 +44,9 @@ Entry = Literal["tree", "striped", "single"]
 
 @dataclass(frozen=True, slots=True)
 class MulticastPathPlan:
-    """A transfer's route: which source serves which target (``pairs``, by position), the links the data crosses and
-    the share of the transfer's bits each carries, one copy of the data per source however many targets it reaches.
-    ``hop_demand`` holds the demand each of ``hops`` carries, ``delivered`` the boxes the transfer delivers."""
+    """A transfer's route: the source serving each target (``pairs``), the ``hops`` it crosses and the share of its bits
+    each link carries, one copy per source; ``hop_demand`` is the demand on each hop, ``delivered`` the boxes it
+    delivers, ``placement`` how its sources hold an input whose placement the allocation chooses."""
 
     sources: tuple[Memory, ...]
     targets: tuple[Memory, ...]
@@ -56,6 +57,7 @@ class MulticastPathPlan:
     hops: tuple[Hop, ...] = field(default=(), compare=False)
     hop_demand: tuple[tuple[DemandItem, ...], ...] = ()
     delivered: tuple[Box, ...] = field(default=(), compare=False)
+    placement: "EdgePlacement | None" = None
 
     def links_at(self, memory: Memory, leaving: bool) -> tuple["CommunicationLink", ...]:
         """The links of the route's hops that leave ``memory`` (``leaving``) or enter it."""
@@ -279,8 +281,8 @@ class CommunicationManager:
         entry: Entry = "tree",
     ) -> dict[Hop, list[DemandItem]]:
         """The hops of a tree from ``source`` to the targets of ``items``, with the items each carries, added to
-        ``load``. ``striped`` from off-chip memory, the data every target it has a link (not a bus) to reads is cut into
-        a part per such target, which enters over that target's link and takes the shortest paths on to the others."""
+        ``load``. ``striped`` from off-chip memory, what all the targets it has a link (not a bus) to read enters a part
+        over each."""
         adjacency = self._adjacency()
         read: dict[Memory, set[Box]] = {}
         for item in items:

@@ -256,6 +256,79 @@ ATTENTION = [
 ]
 
 
+def _chosen(estimate):
+    """The placement each group reports for each workload input and output, by edge name."""
+    groups = estimate.context.get("group_allocations").values()
+    return {
+        name: (tuple(placement["memories"]), placement["split"])
+        for group in groups
+        for name, placement in group["edge_placements"].items()
+    }
+
+
+def test_the_allocation_places_a_cache_no_placement_names_as_well_as_the_best_declared_one(tmp_path):
+    """Split by heads, by sequence, pooled in one HBM or copied in each, against no placement at all: the allocation
+    splits q, K and V by heads as the cores split them, the fastest, rather than copy them, which is exactly as fast
+    but holds four times the bits."""
+    declared = {
+        name: _decode(tmp_path / name, "ring", _placements(cache)).cycles
+        for name, cache in (("heads", BY_HEADS), ("sequence", BY_SEQUENCE), ("pooled", POOLED), ("copied", COPIED))
+    }
+    chosen = _decode(tmp_path / "chosen", "ring", {})
+    assert declared["copied"] == declared["heads"]
+    assert chosen.cycles <= min(declared.values())
+    assert {name: _chosen(chosen)[name] for name in "qKV"} == dict.fromkeys("qKV", (tuple(HBMS), 1))
+    assert _hbm_shares(chosen) == dict.fromkeys(HBMS, 0.25)
+
+
+def test_the_placements_the_allocation_chooses_are_the_same_every_run(tmp_path):
+    first, second = (_decode(tmp_path / run, "ring", {}) for run in ("first", "second"))
+    assert _chosen(first) == _chosen(second)
+    assert first.cycles == second.cycles
+
+
+def test_a_declared_placement_is_the_one_its_input_is_read_from(tmp_path):
+    """K pooled in the third slice's HBM, which the allocation would not choose, while it places q and V."""
+    estimate = _decode(tmp_path, "ring", {"K": {"placement": {"memories": ["hbm_2"]}}})
+    assert _chosen(estimate)["K"] == (("hbm_2",), None)
+    allocation = estimate.context.get("allocation")
+    (tr,) = (tr for tr in allocation.problem.workload.get_transfer_nodes() if tr.inputs[0].name == "K")
+    assert {tuple(memory.name for memory in route.sources) for route in allocation.space.path_choices[tr]} == {
+        ("hbm_2",)
+    }
+    rows = [row for group in estimate.context.get("group_memory_accesses").values() for row in group["offchip"]]
+    assert {row["memory"] for row in rows if row["tensor"] == "K" and row["read"]} == {"hbm_2"}
+
+
+BY_QUERY_HEADS = [
+    {"name": name, "core_allocation": [cores], "inter_core_tiling": [[{"dim": "D2", "split": 4}]]}
+    for name, cores in (("scores", [0, 4, 8, 12]), ("softmax", [2, 6, 10, 14]), ("context", [0, 4, 8, 12]))
+]
+"""An MXU and the VPU of each chiplet split the query heads of each KV head, so every chiplet reads all of K and V."""
+
+
+def _ironwood_of(capacity_bits):
+    data = _validated(IRONWOOD)
+    for hbm in HBMS:
+        data["memories"][hbm]["capacity_bits"] = capacity_bits
+    return AcceleratorFactory(data).create()
+
+
+def test_a_cache_every_chiplet_reads_whole_is_copied_beside_each_unless_a_copy_overflows_its_hbm(tmp_path):
+    """A copy in each HBM keeps the cache off the die-to-die links and ICI. In HBMs of 12 MiB a copy of either 16 MiB
+    half of the cache no longer fits, nor does pooling it: the allocation splits both, and what each HBM holds fits."""
+    capacity = 12 * 2**23
+    walk = {"context": CONTEXT["ironwood"], "layers": BY_QUERY_HEADS}
+    ample = _decode(tmp_path / "ample", "ironwood", {}, **walk)
+    tight = _decode(tmp_path / "tight", _ironwood_of(capacity), {}, **walk)
+    assert _chosen(ample)["K"] == _chosen(ample)["V"] == (tuple(HBMS), None)
+    assert [_chosen(tight)[name][0] for name in "KV"] == [tuple(HBMS)] * 2
+    assert None not in [_chosen(tight)[name][1] for name in "KV"]
+    (group,) = tight.context.get("group_allocations").values()
+    assert max(sum(held.values()) for held in group["offchip_holdings"].values()) <= capacity
+    assert tight.cycles > ample.cycles
+
+
 def test_a_cache_split_on_the_batch_the_iterations_walk_waits_on_one_hbm_at_a_time(tmp_path):
     """Heads split over the cores, one batch row an iteration: each iteration reads its row from the one HBM holding
     it, so each takes four times as long, though over the step every HBM reads its quarter."""

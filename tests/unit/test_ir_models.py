@@ -791,7 +791,7 @@ def _without_descriptions(schema):
         (AcceleratorIR, "2.1", "0f52880a13485ad4"),
         (AcceleratorHardwareView, "2.1", "8c99f01169c52638"),
         (AcceleratorCompilerView, "2.1", "90a2ac03ca7c3355"),
-        (AllocationIR, "3.2", "d50ddc4dfd40b149"),
+        (AllocationIR, "3.2", "21cde927eca42f76"),
         (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
         (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
         (AllocationCompilerView, "2.2", "74d177bdcc875b7c"),

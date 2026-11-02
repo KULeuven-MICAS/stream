@@ -20,7 +20,15 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, READ, WRITE
-from stream.mapping.mapping import Mapping, landing_of, placements_of, role_of, the_one
+from stream.mapping.mapping import (
+    EdgePlacement,
+    Mapping,
+    landing_of,
+    placement_options,
+    placements_of,
+    role_of,
+    the_one,
+)
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand, streamed_operands
@@ -85,11 +93,13 @@ def lower_steady_state(  # noqa: PLR0913
     cost_lut: CoreCostLUT,
     nb_cols_to_use: int,
     route_alternatives: int,
+    offchip_held: dict[Memory, dict[Tensor, float]] | None = None,
 ) -> AllocationProblem:
     """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``, each
-    placement of a transfer offered up to ``route_alternatives`` routes."""
+    placement of a transfer offered up to ``route_alternatives`` routes, beside what the off-chip memories hold
+    already (:attr:`AllocationProblem.offchip_held`)."""
     lowering = _Lowering(workload, accelerator, mapping, nb_cols_to_use, route_alternatives)
-    return lowering.lower(fusion_splits, cost_lut)
+    return replace(lowering.lower(fusion_splits, cost_lut), offchip_held=offchip_held or {})
 
 
 class _Lowering:
@@ -105,6 +115,7 @@ class _Lowering:
     ):
         self.workload = workload
         self.accelerator = accelerator
+        self.source_mapping = mapping
         self.mapping = mapping.copy()
         self.nb_cols_to_use = nb_cols_to_use
         self.route_alternatives = route_alternatives
@@ -123,6 +134,7 @@ class _Lowering:
             timeslots = self.ssw.get_timeslots(self.mapping)
         return AllocationProblem(
             source_workload=self.workload,
+            source_mapping=self.source_mapping,
             workload=self.ssw,
             mapping=self.mapping,
             fusion_splits=self.fusion_splits,
@@ -534,15 +546,16 @@ class _Lowering:
         possible_dst_allocs: tuple[tuple[Memory, ...], ...],
         possible_tilings: tuple[InterCoreTiling, ...],
     ) -> tuple[MulticastPathPlan, ...]:
-        """The route of each placement of ``node``, moving what each target reads from the sources that hold it."""
+        """The route of each placement of ``node``, moving what each target reads from the sources that hold it, of
+        each placement the allocation may choose for the input it moves (:func:`placement_options`)."""
         all_possible_resource_plans = []
-        possible_src_allocs = self._source_placements(src)
         bitwidth = node.inputs[0].operand_type.bitwidth
-        for src_allocs in possible_src_allocs:
+        for placement, src_allocs in self._held_options(src):
+            mapping = self.mapping if placement is None else self.mapping.with_edge_placements({src.name: placement})
             for dst_allocs, tiling in zip(possible_dst_allocs, possible_tilings, strict=True):
                 demand = self.ssw.get_transfer_demand(
                     node,
-                    self.mapping,
+                    mapping,
                     tiling,
                     len(src_allocs),
                     len(dst_allocs),
@@ -554,6 +567,8 @@ class _Lowering:
                 possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
                     src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
                 )
+                if placement is not None:
+                    possible_resource_plans = [replace(plan, placement=placement) for plan in possible_resource_plans]
                 all_possible_resource_plans.extend(possible_resource_plans)
         return tuple(all_possible_resource_plans)
 
@@ -566,6 +581,13 @@ class _Lowering:
     def _source_placements(self, node: HasOutputs) -> tuple[tuple[Memory, ...], ...]:
         """The memories ``node`` may hold its output in, one per position."""
         return placements_of(self.accelerator, self.mapping, node, OUTPUT)
+
+    def _held_options(self, node: HasOutputs) -> tuple[tuple[EdgePlacement | None, tuple[Memory, ...]], ...]:
+        """Each placement the allocation may choose for ``node``, an input the mapping does not place, with the
+        memories it holds it in; else each of :meth:`_source_placements`, with no placement to choose."""
+        if isinstance(node, InEdge) and (options := placement_options(self.accelerator, self.mapping, node)):
+            return tuple((option, option.memories) for option in options)
+        return tuple((None, memories) for memories in self._source_placements(node))
 
     def _target_placement(self, dst: HasInputs, transfer: TransferNode) -> tuple[Memory, ...]:
         """The memories ``dst`` reads ``transfer``'s copy in, one per position."""
@@ -587,9 +609,7 @@ class _Lowering:
         """The type of transfer moving ``tensor`` from ``src`` to ``dsts``, by the kinds of memory it leaves and
         lands in."""
         if src_type is None:
-            src_allocation = self._source_placements(src)
-            assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
-            src_type = self._effective_allocation_type(src_allocation[0])
+            src_type = self._effective_allocation_type([m for held in self._source_placements(src) for m in held])
         if dst_type is None:
             landing = [m for dst in dsts for m in self._destination_memories(dst, tensor, src)]
             dst_type = self._effective_allocation_type(landing)
@@ -725,16 +745,12 @@ class _Lowering:
         sharing = Counter(starts.values())
         if not blocks or prod(f for _, f in split) != len(sharing) or len(set(sharing.values())) != 1:
             return None
-        if len(sharing) != len(held) and not self._copied(node):
-            return None
+        if len(sharing) != len(held):
+            placement = self.mapping.placement_of(next(iter(self.ssw.predecessors(node))))
+            if placement is None or placement.split is not None or len(placement.memories) <= 1:
+                return None
         order = sorted(held, key=lambda tile: (*(s // w for s, w in zip(starts[tile], span, strict=True)), tile))
         return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
-
-    def _copied(self, node: TransferNode) -> bool:
-        """Whether ``node`` brings in a workload input its placement copies into several memories."""
-        src = next(iter(self.ssw.predecessors(node)))
-        placement = self.mapping.edge_placements.get(src.name) if isinstance(src, InEdge) else None
-        return placement is not None and placement.split is None and len(placement.memories) > 1
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

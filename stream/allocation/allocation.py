@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from stream.allocation.steady_state import steady_state_detail
 from stream.cost_model.roofline import group_point, hardware_roofline
 from stream.hardware.architecture.core import Core
+from stream.mapping.mapping import offchip_bits
 from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.workload.node import InEdge, OutEdge, Tensor, declared_of, edge_tensor
 from stream.workload.steady_state.iteration_space import (
@@ -60,9 +61,9 @@ class Allocation:
         return float(self.solution.latency.total)
 
     def get_ir(self) -> dict:
-        """The allocation as a plain dict: latencies, solve configuration, statistics and families, fusion splits,
-        mapping, the whole tensor of each input and output edge, performance report, the steady-state inspection view
-        and the group's point on the roofline, each of the last two None when it cannot be built."""
+        """The allocation as a plain dict: latencies, solve configuration, statistics, families, fusion splits, mapping,
+        each input and output edge's tensor and the bits of it each off-chip memory holds, performance report, and the
+        steady-state view and roofline point, each None when it cannot be built."""
         stats = self.solution.solve_stats
         latency = self.solution.latency
         return {
@@ -86,6 +87,7 @@ class Allocation:
             "fusion_splits": {str(dim): size for dim, size in self.problem.fusion_splits.items()},
             "mapping": self._mapping_ir(),
             "edge_tensors": self._edge_tensors(),
+            "offchip_holdings": guarded("off-chip holdings", self._offchip_holdings),
             "performance": self.solution.performance,
             "steady_state": guarded("steady-state IR view", self._steady_state_ir),
             "roofline": guarded("roofline point", self.roofline_point),
@@ -114,6 +116,16 @@ class Allocation:
                 "direction": "in" if isinstance(edge, InEdge) else "out",
             }
             for name, edge in self._edges().items()
+        }
+
+    def _offchip_holdings(self) -> dict[str, dict[str, float]]:
+        """The bits of each tensor of the group's edges each off-chip memory holds, by the placements the solve chose
+        (:func:`offchip_bits`)."""
+        problem = self.problem
+        mapping = problem.source_mapping.with_edge_placements(self.mapping.edge_placements)
+        held = offchip_bits(problem.accelerator, [problem.source_workload], [mapping])
+        return {
+            memory.name: {tensor.name: bits for tensor, bits in tensors.items()} for memory, tensors in held.items()
         }
 
     def roofline_point(self) -> dict[str, Any]:
@@ -263,8 +275,15 @@ def _propagate_spatial_reuse(ssis: IterationSpaces, spatial_side: Tensor, tempor
 
 
 def solved_mapping(workload: Workload, mapping: Mapping, solution: AllocationSolution) -> Mapping:
-    """A copy of ``mapping`` with each transfer bound to the route and memories the solution chose."""
-    solved = mapping.copy()
+    """A copy of ``mapping`` with each transfer bound to the route and memories the solution chose, and each input
+    whose placement the solution chose placed so."""
+    chosen = {
+        edge.name: route.placement
+        for tr, route in solution.transfer_routes.items()
+        if route.placement is not None
+        for edge in workload.predecessors(tr)
+    }
+    solved = mapping.with_edge_placements(chosen).copy()
     placements = {tr: (placement,) for tr, placement in solution.memory_placements.items()}
     for tr, route in solution.transfer_routes.items():
         solved.set_for_node(

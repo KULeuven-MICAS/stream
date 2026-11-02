@@ -175,7 +175,8 @@ class MemoryAccessesEstimationStage(Stage):
         if len(self.accelerator.offchip_memories) <= 1:
             return [(offchip_memory(self.accelerator), tensor.size_bits())]
         route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
-        if (shares := self.workload.placement_shares(edge, tn.inputs[0], self.mapping, route.delivered)) is not None:
+        placement = self.mapping.placement_of(edge)
+        if (shares := self.workload.placement_shares(placement, tn.inputs[0], route.delivered)) is not None:
             return [(memory, tensor.size_bits() * share) for memory, share in shares.items()]
         side = route.sources if leaving else route.targets
         return [
