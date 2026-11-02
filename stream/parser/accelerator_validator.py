@@ -16,13 +16,13 @@ from stream.plugins import load_group
 
 logger = logging.getLogger(__name__)
 
-INPUT_DIR_LOCATION = "stream/inputs/"
+INPUT_DIR_LOCATION = str(Path(__file__).parent.parent / "inputs")
 
 # Overlay keys: the name is the key, the object a cerberus `rule` and `check(accelerator, value) -> list[str]`.
 ACCELERATOR_KEYS_GROUP = "stream.accelerator_keys"
 
 FILENAME_REGEX = (
-    r"^(?:\.\/)?"  # optional "./"
+    r"^(?:\.\/|(?:\.\.\/)+)?"  # optional "./" or "../"
     r"(?:[A-Za-z0-9_\-]+\/)*"  # zero or more directories
     r"[A-Za-z0-9_\-]+"  # file name
     r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
