@@ -45,6 +45,37 @@ def hardware(path=RING, *, capacity_bits=None, hbm_bandwidth=None, sram_bits=Non
     return AcceleratorFactory(data).create()
 
 
+def tpu_like_slices(n: int) -> dict:
+    """The cores and SRAMs of ``n`` slices laid out as the first of ``RING``."""
+    data = open_yaml(RING)
+    sram = data["memories"]["sram_0"]
+    ports = sram["ports"].items()
+    srams = {
+        f"sram_{s}": sram | {"views": [f"{s}.sram_2MB"], "ports": {name: port | {"cores": [s]} for name, port in ports}}
+        for s in range(n)
+    }
+    return {"cores": dict.fromkeys(range(n), data["cores"][0]), "memories": srams}
+
+
+def ring_of(n: int):
+    """``RING`` with ``n`` slices, each with its own HBM stack."""
+    data = open_yaml(RING)
+    first = ({"sram_0", "sram_1"}, {"sram_0", "hbm_0"})
+    ring_link, hbm_link = (next(c for c in data["connections"] if set(c["ends"]) == ends) for ends in first)
+    rw, hbm_port = ring_link["ends"]["sram_0"], hbm_link["ends"]["hbm_0"]
+    slices = tpu_like_slices(n)
+    data |= {
+        "name": f"ring_of_{n}",
+        "cores": slices["cores"],
+        "memories": slices["memories"] | {f"hbm_{s}": data["memories"]["hbm_0"] for s in range(n)},
+        "connections": [ring_link | {"ends": {f"sram_{s}": rw, f"sram_{(s + 1) % n}": rw}} for s in range(n)]
+        + [hbm_link | {"ends": {f"sram_{s}": rw, f"hbm_{s}": hbm_port}} for s in range(n)],
+    }
+    validator = AcceleratorValidator(data, RING)
+    assert validator.validate()
+    return AcceleratorFactory(validator.normalized_data).create()
+
+
 def solve(hardware, workload, tmp_path, mapping=None, **stage_options):
     """``workload`` on ``hardware`` mapped by ``mapping``, or by the generic generator if None, with the stage options
     given a value."""

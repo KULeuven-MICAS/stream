@@ -24,10 +24,10 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
-from stream.mapping.mapping import edge_tensor, placement_split_bits, role_of, runtime_args_per_group
+from stream.mapping.mapping import Mapping, placement_options, placement_split_bits, role_of, runtime_args_per_group
 from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
-from stream.workload.affine_access import map_dim_positions
+from stream.workload.affine_access import dims_in_expr, indexing_axis, map_dim_positions
 from stream.workload.iterator_type import (
     IteratorType,
     derive_iterator_types,
@@ -35,7 +35,7 @@ from stream.workload.iterator_type import (
     nonlinear_reduction_dims,
     sequential_dims,
 )
-from stream.workload.node import ComputationNode, OutEdge
+from stream.workload.node import ComputationNode, OutEdge, edge_tensor
 from stream.workload.normalization import operator_types_of, source_operator
 from stream.workload.tensor import Tensor
 from stream.workload.utils import unfinished_reduction_dims
@@ -224,6 +224,31 @@ class GenericMappingGenerator:
             self._placed_bits[key] = placement_split_bits(cn, axes)
         return self._placed_bits[key]
 
+    def _followed_split_axes(
+        self, sub_workload: Workload, node_unroll: dict[ComputationNode, dict[LayerDim, int]]
+    ) -> dict[str, int]:
+        """Of each input no placement places over several off-chip memories, the axis the first dim its reader's cores
+        split indexes, where the allocation may split it so (:func:`placement_options`): the allocation can then hold
+        each core's block beside it, as a placement along that axis would, if the tiler does not walk that dim."""
+        placed = runtime_args_per_group(self.runtime_args or {}, [sub_workload])[0]
+        options = {
+            edge_tensor(edge).name: {option.split for option in placement_options(self.accelerator, Mapping(), edge)}
+            for edge in sub_workload.get_in_edges()
+            if "placement" not in placed.get(edge.name, {})
+        }
+        axes: dict[str, int] = {}
+        for cn, split in node_unroll.items():
+            dims = sub_workload.get_dims(cn)
+            for dim in split:
+                for tensor in cn.inputs:
+                    if tensor.name in axes or not (offered := options.get(tensor.name, set()) - {None}):
+                        continue
+                    results = cn.get_mapping(tensor).results
+                    indexing = (axis for axis in sorted(offered) if dims.index(dim) in dims_in_expr(results[axis]))
+                    if (axis := next(indexing, None)) is not None:
+                        axes[tensor.name] = axis
+        return axes
+
     def _leaving_split_axes(self, sub_workload: Workload, protected: set[LayerDim]) -> dict[str, int]:
         """The split axes of the group's outputs a later group reads (:meth:`_made_split_axes`), which land a block
         beside each core and so are placed for their readers as a placement would."""
@@ -251,14 +276,7 @@ class GenericMappingGenerator:
         ]
         if not followed:
             return {}
-        axes: dict[str, int] = {}
-        for tensor in cn.outputs:
-            access = cn.get_mapping(tensor)
-            for axis, result in enumerate(access.results):
-                if followed[0] in map_dim_positions(AffineMap(access.num_dims, 0, (result,))):
-                    axes[tensor.name] = axis
-                    break
-        return axes
+        return {t.name: axis for t in cn.outputs if (axis := indexing_axis(cn.get_mapping(t), followed[0])) is not None}
 
     def _select_cores_for_node(self, node: ComputationNode) -> list[Core]:
         """The cores whose operator_types list the node's type or the operator it is part of, else those that list none.
@@ -571,9 +589,9 @@ class GenericMappingGenerator:
             return self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         return sub_workloads
 
-    def fits_grouped(self, groups: list[Workload], names: set[str]) -> bool:
-        """Whether each of ``groups`` holding one of the nodes ``names`` fits on its cores under some tiling."""
-        return all(self._fits(sub) for sub in groups if names & {cn.name for cn in sub.get_computation_nodes()})
+    def fits_grouped(self, names: set[str]) -> bool:
+        """Whether each of :meth:`groups` holding one of the nodes ``names`` fits on its cores under some tiling."""
+        return all(self._fits(sub) for sub in self.groups() if names & {cn.name for cn in sub.get_computation_nodes()})
 
     def fits_fused(self, names: set[str], scale_tiles: bool = False) -> bool:
         """Whether the nodes ``names``, a run of the workload, fit on their cores fused as a group of their own."""
@@ -638,7 +656,8 @@ class GenericMappingGenerator:
             for cn, cores in cores_per_node.items()
             if len(cores) > 1
         }
-        refined = CapacityTiler(sub_workload, self.accelerator, split_axes=self._split_axes).plan(
+        split_axes = self._followed_split_axes(sub_workload, node_unroll) | self._split_axes
+        refined = CapacityTiler(sub_workload, self.accelerator, split_axes=split_axes).plan(
             cns, cores_per_node, unroll, protected, seed_tiling, node_unroll, scale_tiles=scale_tiles
         )
         return refined if refined is None else refined or seed_tiling
