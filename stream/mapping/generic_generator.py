@@ -49,6 +49,12 @@ def _tensor_bits(shape: tuple[int, ...], tensor: Tensor) -> int:
     return math.prod(shape) * tensor.operand_type.bitwidth
 
 
+def _split_extent(sub_workload: Workload, dim: LayerDim) -> int:
+    """The extent an inter-core split of the node dim ``dim`` cuts: that of the unique dim it steps along fastest, where
+    the split lands (``Workload.get_unique_dims_inter_core_tiling``), 8 for a strided reader's 32-long ``4*z + r``."""
+    return sub_workload.get_dimension_size(sub_workload.leading_dim(dim)[0])
+
+
 class GenericMappingGenerator:
     """Auto-generate a MappingValidator-compliant mapping dict for any Workload + Accelerator pair.
 
@@ -320,16 +326,10 @@ class GenericMappingGenerator:
         return [core for core in cores if units(core) >= floor]
 
     def _split_cores(self, sub_workload: Workload, cn: ComputationNode, n_cores: int, protected: set[LayerDim]) -> int:
-        """The cores of ``n_cores`` an inter-core split of ``cn`` uses: the largest factor of ``n_cores`` its splittable
-        dims divide where the group's nodes on these cores, a block of that many each, fill more than half of them, so
-        they run side by side; else the most a split can use, the largest count up to ``n_cores`` that divides the
-        product of their sizes (8 of 15 over power-of-two dims)."""
+        """The most cores of ``n_cores`` an inter-core split of ``cn`` uses: the largest count that divides the product
+        of its splittable dims' extents (8 of 15 over power-of-two dims)."""
         dims = sub_workload.get_dims(cn)
-        work = math.prod(sub_workload.get_dimension_size(dim) for dim in dims if dim not in protected)
-        pool = self._select_cores_for_node(cn)
-        sharing = sum(self._select_cores_for_node(node) == pool for node in sub_workload.get_computation_nodes())
-        if 2 * (factor := math.gcd(n_cores, work)) * sharing > n_cores:
-            return factor
+        work = math.prod(_split_extent(sub_workload, dim) for dim in dims if dim not in protected)
         return next(n for n in range(n_cores, 0, -1) if work % n == 0)
 
     def _factor_split_across_dims(
@@ -387,7 +387,7 @@ class GenericMappingGenerator:
                 if kind == IteratorType.REDUCTION and lead in group:
                     group[lead] = (group[lead][0], math.inf)
         dim_sizes = sorted(
-            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
+            ((idx, _split_extent(sub_workload, dim)) for idx, dim in enumerate(dims) if dim not in protected),
             key=lambda pair: (
                 placed.get(pair[0], 0),
                 ranks_as_parallel(pair[0]),

@@ -499,3 +499,26 @@ def test_a_nodes_weights_overflow_only_the_cores_its_split_uses(tmp_path):
     """Fifteen cores split the conv at most twelve ways (its extents share no factor 5), so its weights overflow them
     as they do twelve cores, not as if no core shared them."""
     assert _weight_overflow(15, tmp_path) == _weight_overflow(12, tmp_path) > 0
+
+
+def test_a_split_along_a_strided_readers_dim_divides_the_dim_it_lands_on(tmp_path):
+    """An Add read by two stride-2 convs walks its 32-long rows as ``4*z + 2*r + q`` with z eight long: sixteen cores
+    split it where the split lands on a unique dim that many divide, not 16 ways along the rows' z."""
+    x = helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [1, 16, 32, 32])
+    weights = [helper.make_tensor_value_info(w, TensorProto.BFLOAT16, [16, 16, 3, 3]) for w in ("w1", "w2")]
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [1, 16, 8, 8])
+    window = {"kernel_shape": [3, 3], "strides": [2, 2], "pads": [1, 1, 1, 1]}
+    nodes = [
+        helper.make_node("Add", ["x", "x"], ["sum"], name="Add"),
+        helper.make_node("Conv", ["sum", "w1"], ["half"], name="Conv1", **window),
+        helper.make_node("Conv", ["half", "w2"], ["out"], name="Conv2", **window),
+    ]
+    path = _save(nodes, [x, *weights], out, tmp_path / "add.onnx")
+    accelerator, workload = _parse_workload_and_accelerator(path, _tpu_like_cores(16, tmp_path / "hw.yaml"))
+    paths, workloads = GenericMappingGenerator(accelerator, workload, str(tmp_path)).generate_all_groups()
+    for path, sub in zip(paths, workloads, strict=True):
+        for layer in yaml.safe_load(Path(path).read_text())["layers"]:
+            dims = sub.get_dims(sub.get_node_by_name(layer["name"]))
+            for entry in (layer["inter_core_tiling"] or [[]])[0]:
+                lands_on = sub.leading_dim(dims[int(entry["dim"][1:])])[0]
+                assert sub.get_dimension_size(lands_on) % entry["split"] == 0, (layer["name"], entry)
