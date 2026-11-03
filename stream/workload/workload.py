@@ -524,10 +524,12 @@ class Workload(DiGraphWrapper[Node]):
     def get_dimension_size(self, dim: LayerDim) -> int:
         """The extent of ``dim``, a unique dim or a node dim: a unique dim spans its most downstream node's extent along
         it, which is where its column in the solve stands (a windowed reader's window spans more)."""
-        _, expressions = self.unique_dimensions()
-        dim_ranges = self.get_dimension_sizes()
-        idx = len(expressions) - 1 - expressions[::-1].index(dim)
-        return dim_ranges[idx]
+        return self._sizes_by_dim[dim]
+
+    @cached_property
+    def _sizes_by_dim(self) -> dict[AffineExpr, int]:
+        """The extent of each dim expression at its last occurrence, as :meth:`get_dimension_size` reads it."""
+        return dict(zip(self.unique_dimensions()[1], self.get_dimension_sizes(), strict=True))
 
     def unique_dimensions(self) -> tuple[tuple[LayerDim, ...], tuple[AffineExpr, ...]]:
         """The workload's independent dimensions, and each global dimension as an expression of them."""
@@ -586,13 +588,21 @@ class Workload(DiGraphWrapper[Node]):
             converted_tiling.append((unique_dim, factor))
         return tuple(converted_tiling)
 
+    @cached_property
+    def _leading_dims(self) -> dict[AffineExpr, tuple[LayerDim, int]]:
+        """:meth:`leading_dim` of each dim expression."""
+        unique_dims, expressions = self.unique_dimensions()
+        leading: dict[AffineExpr, tuple[LayerDim, int]] = {}
+        for dim in expressions:
+            coefficients = affine_coefficients(dim, len(unique_dims))[1]
+            k = max(range(len(unique_dims)), key=lambda k: abs(coefficients[k]))
+            leading[dim] = unique_dims[k], coefficients[k]
+        return leading
+
     def leading_dim(self, dim: AffineExpr) -> tuple[LayerDim, int]:
         """The unique dim a node dim steps along fastest, and its coefficient: ``z`` and 2 for a strided reader's
         producer dim ``2*z + r``, so splitting or tiling the node dim splits or tiles ``z``."""
-        unique_dims, _ = self.unique_dimensions()
-        coefficients = affine_coefficients(dim, len(unique_dims))[1]
-        leading = max(range(len(unique_dims)), key=lambda k: abs(coefficients[k]))
-        return unique_dims[leading], coefficients[leading]
+        return self._leading_dims[dim]
 
     def get_tensor_shape_with_dimension_sizes(
         self,
