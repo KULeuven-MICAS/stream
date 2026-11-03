@@ -85,7 +85,7 @@ Data lives in memories. A core computes out of its top-level memory instances (p
 
 | Field | Required | Meaning |
 |-------|:---:|---------|
-| `offchip` | yes | Whether it is an off-chip memory, where the workload's inputs and outputs live. Every other memory has a route from one, and no core views it. |
+| `offchip` | yes | Whether it is an off-chip memory, where the workload's inputs and outputs live unless the mapping places them on chip (see [Mapping](mapping.md#placement-of-inputs-and-outputs)). Every other memory has a route from one, and no core views it. |
 | `views` | yes | The core instances that see this memory, as `<core id>.<instance>`, e.g. `[0.l1, 1.tcdm]`. Empty for a memory no core computes out of, such as DRAM. |
 | `capacity_bits` | only without views | Its capacity in bits. A memory with views takes the size its views declare. |
 | `ports` | yes | Its ports by name, see [Memory ports](#memory-ports). |
