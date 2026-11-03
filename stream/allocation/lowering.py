@@ -9,6 +9,7 @@ from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
+import networkx as nx
 import numpy as np
 from xdsl.ir.affine import AffineMap
 
@@ -707,6 +708,10 @@ class _Lowering:
             required_nb_mem_tiles = largest_divisor_leq(total_relevant_unrolling, required_nb_mem_tiles)
         # Unrolling binds allocation position to spatial index, so column order keeps a tile with its own cores.
         candidates = [tuple(combo) for combo in combinations(mem_tiles, required_nb_mem_tiles)]
+        # A memory the columns share (an L2) holds the whole tensor for them all, so it must reach every core on chip.
+        if not candidates:
+            candidates = [(tile,) for tile in mem_tiles]
+        candidates = [c for c in candidates if len(c) > 1 or self._reaches_every_core(c[0], src, node)]
         # A tensor its consumers do not split is held whole, so a single tile can be left
         # feeding every column. One copy per occupied column is the alternative: each tile
         # serves its own column, and the shim broadcasts the tensor to them.
@@ -763,6 +768,18 @@ class _Lowering:
                 return None
         order = sorted(held, key=lambda tile: (*(s // w for s, w in zip(starts[tile], span, strict=True)), tile))
         return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
+
+    def _reaches_every_core(self, tile: Memory, src: HasOutputs, node: TransferNode) -> bool:
+        """Whether ``node``'s copy in ``tile`` has a route over on-chip memories to a memory of each of ``src``'s
+        cores, or from one for an output transfer."""
+        on_chip = nx.subgraph_view(self.accelerator.network, filter_node=lambda memory: not memory.offchip)
+        gathers = node.transfer_type is TransferType.COMPUTE_TO_MEM
+        reached = (nx.ancestors if gathers else nx.descendants)(on_chip, tile) | {tile}
+        allocations = self.mapping.get(src).resource_allocation
+        return all(
+            any(memory in reached for memory in self.accelerator.memories_of(core))
+            for core in (allocations[0] if allocations else ())
+        )
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a
