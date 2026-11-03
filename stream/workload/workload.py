@@ -640,7 +640,8 @@ class Workload(DiGraphWrapper[Node]):
                     placed, shift = True, sum(c * o for c, o in zip(coefficients, offset, strict=True))
                     ranges.append((max(low + shift, 0), min(high + shift, size - 1)))
                 else:
-                    ranges.append((low, min(high, low + size - 1)))
+                    # A window spanning the axis is all of it; a narrower one keeps an interior tile's extent.
+                    ranges.append((0, size - 1) if high - low + 1 >= size else (low, high))
             bounds.append((min(r[0] for r in ranges), max(r[1] for r in ranges), placed))
         return bounds
 

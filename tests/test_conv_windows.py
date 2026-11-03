@@ -24,6 +24,7 @@ from conv_windows import (
 from onnx import helper
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.cost_model.communication_manager import box_bits
 from stream.frontends import load_workload
 from stream.opt.allocation.constraint_optimization.families import overlap
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
@@ -380,3 +381,19 @@ def test_the_producers_of_a_strided_pool_take_the_loop_fused_along_its_rows(tmp_
     for name in ("Conv1", "Relu"):
         node = next(n for n in lowered.get_computation_nodes() if n.name == name)
         assert [v.size for v in ssis[node].get_temporal_variables() if v.relevant] == [8], name
+
+
+def test_a_padded_window_over_an_axis_no_core_splits_hands_the_reader_every_column():
+    """Conv1's output split by rows over four cores and read by a padded 3x3 conv split alike: each core's window
+    spans every column, so the transfer hands conv2 all of conv1's output, the columns of the last one included."""
+    with tempfile.TemporaryDirectory() as out:
+        estimate = evaluate_mapping(
+            HARDWARE.format("tpu_like_quad_core"), conv_chain(), out, options=SolveOptions(artifacts=False)
+        )
+    allocation = estimate.context.get("allocation")
+    transfer = next(n for n in allocation.problem.workload.get_transfer_nodes() if n.name == "Transfer(conv1_out)")
+    delivered = allocation.solution.transfer_routes[transfer].delivered
+    assert all(
+        lo >= 0 and hi < size for b in delivered for (lo, hi), size in zip(b, transfer.inputs[0].shape, strict=True)
+    ), delivered
+    assert box_bits(delivered, 1) == prod(transfer.inputs[0].shape)
