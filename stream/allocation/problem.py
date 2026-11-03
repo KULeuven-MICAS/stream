@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class AllocationProblem:
-    """A fused group lowered to its steady state: ``workload`` and ``mapping`` with the placements and routes of its
-    transfers, ``source_workload`` and ``source_mapping`` before lowering, and ``offchip_held`` the bits each off-chip
-    memory holds of tensors already placed, beside which the inputs the allocation places must fit."""
+    """A fused group lowered to its steady state: ``workload`` and ``mapping`` with its transfers' placements and
+    routes, ``source_*`` before lowering, ``held`` the bits each memory holds of placed tensors, beside which an
+    off-chip memory fits the inputs the allocation places and an on-chip one the group's tensors."""
 
     source_workload: Workload
     source_mapping: Mapping
@@ -32,4 +32,4 @@ class AllocationProblem:
     timeslots: dict[Node, int]
     accelerator: Accelerator
     hardware: HardwareFacts
-    offchip_held: dict[Memory, dict[Tensor, float]] = field(default_factory=dict)
+    held: dict[Memory, dict[Tensor, float]] = field(default_factory=dict)

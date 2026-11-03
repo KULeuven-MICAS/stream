@@ -28,7 +28,7 @@ from stream.hardware.ports import READ
 from stream.inputs.testing.workload.make_decode_attention import DHEAD, KV_HEADS, make_decode_attention
 from stream.ir.allocation import AllocationIR
 from stream.ir.infeasibility import InfeasibleAllocationError
-from stream.mapping.mapping import Mapping, offchip_bits, placement_options
+from stream.mapping.mapping import Mapping, held_bits, placement_options
 from stream.opt.allocation.constraint_optimization.allocation_model import AllocationModel
 from stream.opt.allocation.constraint_optimization.families import load_families
 from stream.opt.allocation.constraint_optimization.families.dma import _port_channels
@@ -249,9 +249,9 @@ def test_other_runtime_args_are_left_to_their_readers():
     assert validator.validate()
 
 
-def test_a_placement_names_off_chip_memories(tmp_path):
-    with pytest.raises(ValueError, match=r"w is placed in \['sram_0'\], but the off-chip memories are"):
-        _solve(tmp_path, {"placement": {"memories": ["sram_0"]}})
+def test_a_placement_names_memories_of_the_accelerator(tmp_path):
+    with pytest.raises(ValueError, match=r"w is placed in \['dram'\], but the memories are"):
+        _solve(tmp_path, {"placement": {"memories": ["dram"]}})
 
 
 @pytest.mark.parametrize(("axis", "dim"), [(1, "D1"), (0, "D2")])
@@ -357,6 +357,15 @@ def test_an_input_a_later_group_places_keeps_room_beside_what_an_earlier_group_c
         for memory, held in ir["offchip_holdings"].items():
             once[memory] |= held
     assert max(sum(held.values()) for held in once.values()) <= capacity
+
+
+def test_a_weight_placed_on_chip_beside_several_hbms_is_read_there_and_held_in_every_group(tmp_path):
+    estimate = _mlp(tmp_path, PLACED | {"w1": {"placement": {"memories": ["sram_0"]}}})
+    assert not {tensor for _, tensor in offchip_reads(estimate)} & {"w1"}
+    first, second = (AllocationIR(**ir) for ir in estimate.context.get("group_allocations").values())
+    assert all("w1" not in held for ir in (first, second) for held in ir.offchip_holdings.values())
+    held = estimate.context.get("allocation").problem.held
+    assert {memory.name for memory, bits in held.items() if "w1" in {t.name for t in bits}} == {"sram_0"}
 
 
 def test_a_tensor_crossing_a_fusion_cut_is_held_once(tmp_path):
@@ -468,7 +477,7 @@ def test_the_groups_hold_off_chip_what_the_capacity_check_counts_each_tensor_cou
     for ir in groups:
         for memory, held in ir.offchip_holdings.items():
             once[memory] |= held
-    whole = held_once(estimate, offchip_bits)
+    whole = held_once(estimate, held_bits)
     assert once == {memory.name: {tensor.name: bits for tensor, bits in held.items()} for memory, held in whole.items()}
     tensors = {
         tensor.tensor: (tensor, ir.edge_placements[name]) for ir in groups for name, tensor in ir.edge_tensors.items()

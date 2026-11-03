@@ -9,8 +9,8 @@ from stream.hardware.architecture.core import Core
 from stream.ir.allocation import AllocationIR
 from stream.ir.roofline import RooflineIR
 from stream.mapping.mapping import (
-    check_offchip_capacity,
-    offchip_bits,
+    check_held_capacity,
+    held_bits,
     placement_options,
     with_cut_landings,
     with_held_placements,
@@ -43,12 +43,12 @@ def _compute_columns(allocation: "Allocation") -> tuple[int, ...]:
 
 class FusionGroupIterationStage(Stage):
     """Iterate over fusion groups, running the inner pipeline once per group on its own workload and mapping, beside
-    what the off-chip memories hold. A group places the inputs the mapping does not where it reads them first, and the
+    what the memories hold. A group places the inputs the mapping does not where it reads them first, and the
     groups after it read them there."""
 
     reads = ("accelerator", "output_path", "sub_workloads", "sub_mappings")
     optional_reads = ("memory_accesses",)
-    writes = ("workload", "mapping", "output_path", "group_index", "offchip_held")
+    writes = ("workload", "mapping", "output_path", "group_index", "held")
     result_reads = ("allocation",)
     result_writes = (
         "total_latency",
@@ -83,7 +83,7 @@ class FusionGroupIterationStage(Stage):
             f"Mismatch: {len(sub_workloads)} sub-workloads vs {len(self.sub_mappings)} sub-mappings"
         )
         self.sub_mappings = with_cut_landings(self.accelerator, sub_workloads, self.sub_mappings)
-        check_offchip_capacity(self.accelerator, sub_workloads, self.sub_mappings)
+        check_held_capacity(self.accelerator, sub_workloads, self.sub_mappings)
 
         for i, sub_workload in enumerate(sub_workloads):
             group_output = os.path.join(self.output_path, f"group_{i}")
@@ -94,7 +94,7 @@ class FusionGroupIterationStage(Stage):
                 mapping=self.sub_mappings[i],
                 output_path=group_output,
                 group_index=i,
-                offchip_held=self._held_beside(sub_workloads, i),
+                held=self._held_beside(sub_workloads, i),
             )
 
             logger.info(f"Running inner pipeline for group {i} ({len(sub_workload.get_computation_nodes())} nodes)")
@@ -148,9 +148,13 @@ class FusionGroupIterationStage(Stage):
         yield final_ctx
 
     def _held_beside(self, sub_workloads: "Sequence[Workload]", i: int) -> "dict[Memory, dict[Tensor, float]]":
-        """What the off-chip memories hold beside the inputs group ``i`` places (:func:`offchip_bits`), the inputs later
-        groups place a block in each; nothing to hold beside with one off-chip memory."""
-        if len(self.accelerator.offchip_memories) <= 1:
+        """What the memories hold beside the inputs group ``i`` places (:func:`held_bits`): the inputs and outputs
+        placed on chip, and with several off-chip memories what those hold, the inputs later groups place a block in
+        each."""
+        several = len(self.accelerator.offchip_memories) > 1
+        if not several and not any(
+            p.on_chip for mapping in self.sub_mappings for p in mapping.edge_placements.values()
+        ):
             return {}
         mapping = self.sub_mappings[i]
         placing = {
@@ -158,8 +162,12 @@ class FusionGroupIterationStage(Stage):
             for edge in sub_workloads[i].get_in_edges()
             if placement_options(self.accelerator, mapping, edge)
         }
-        held = offchip_bits(self.accelerator, sub_workloads, self.sub_mappings)
-        return {memory: {t: b for t, b in tensors.items() if t not in placing} for memory, tensors in held.items()}
+        held = held_bits(self.accelerator, sub_workloads, self.sub_mappings)
+        return {
+            memory: {t: b for t, b in tensors.items() if t not in placing}
+            for memory, tensors in held.items()
+            if several or not memory.offchip
+        }
 
     def _roofline(self, group_allocations: dict[int, dict | None], n_groups: int) -> dict:
         """The run's roofline, from the point of each group that has one."""

@@ -15,6 +15,7 @@ from stream.hardware.architecture.memory import Memory, size_text
 from stream.hardware.ports import OUTPUT, input_role
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, overflow_infeasibility
+from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.workload.affine_access import dims_in_expr, indexing_axis
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode, declared_of, edge_tensor
@@ -50,11 +51,16 @@ class FusedGroup:
 
 @dataclass(frozen=True, slots=True)
 class EdgePlacement:
-    """Which off-chip memories hold an edge's tensor: block ``s`` of the whole tensor along axis ``split`` in
-    ``memories[s]``, or, without a split, all of it in each."""
+    """Which memories hold an edge's tensor: block ``s`` of the whole tensor along axis ``split`` in ``memories[s]``,
+    or, without a split, all of it in each. They are off chip, or on chip (:attr:`on_chip`)."""
 
     memories: tuple[Memory, ...]
     split: int | None = None
+
+    @property
+    def on_chip(self) -> bool:
+        """Whether its memories are on chip, where the tensor lives for the whole run."""
+        return not any(memory.offchip for memory in self.memories)
 
     def shares(self) -> dict[Memory, Fraction]:
         """The share of the whole tensor each of its memories holds: a block per position of a split, all of a copy."""
@@ -465,8 +471,8 @@ def placement_split_bits(node: ComputationNode, split_axes: dict[str, int]) -> d
 
 
 def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None, src: Node) -> tuple[Memory, ...]:
-    """The off-chip memories an output from ``src`` lands in, one per position: those of the placement of ``edge``, the
-    output edge reading it, else the off-chip memory, or of several the one nearest each memory ``src`` holds it in."""
+    """The memories an output from ``src`` lands in, one per position: those of the placement of ``edge``, the output
+    edge reading it, else the off-chip memory, or of several the one nearest each memory ``src`` holds it in."""
     if edge is not None and (placement := mapping.edge_placements.get(edge.name)):
         return placement.memories
     if len(accelerator.offchip_memories) <= 1:
@@ -543,12 +549,12 @@ def with_held_placements(
     ]
 
 
-def offchip_holdings(
+def holdings(
     accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
 ) -> dict[Memory, dict[Tensor, Fraction]]:
-    """The share of each workload input and output each off-chip memory holds, a tensor once over the groups and the
-    two ends of a fusion cut. An input the allocation is yet to place is held a block in each: the least room it takes,
-    which an earlier choice cannot take from it."""
+    """The share of each workload input and output each memory holds, off chip or placed on chip, a tensor once over
+    the groups and the two ends of a fusion cut. An input the allocation is yet to place is held a block in each
+    off-chip memory: the least room it takes, which an earlier choice cannot take from it."""
     held: dict[Memory, dict[Tensor, Fraction]] = defaultdict(dict)
     counted: set[Tensor] = set()
     if not accelerator.offchip_memories:
@@ -573,13 +579,13 @@ def offchip_holdings(
     return held
 
 
-def offchip_bits(
+def held_bits(
     accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
 ) -> dict[Memory, dict[Tensor, float]]:
-    """The bits of each workload input and output each off-chip memory holds (:func:`offchip_holdings`)."""
+    """The bits of each workload input and output each memory holds (:func:`holdings`)."""
     return {
         memory: {tensor: float(share * whole_bits(tensor)) for tensor, share in held.items()}
-        for memory, held in offchip_holdings(accelerator, workloads, mappings).items()
+        for memory, held in holdings(accelerator, workloads, mappings).items()
     }
 
 
@@ -603,24 +609,39 @@ OFFCHIP_CAPACITY = ResourceKind(
         "Reduce the workload's tensor sizes (smaller batch, shorter sequence)",
     ),
 )
+ONCHIP_CAPACITY = ResourceKind(
+    "memory_capacity",
+    "on-chip memory capacity exceeded",
+    unit="bytes",
+    demand_label="workload inputs and outputs placed in",
+    bound_label="capacity of",
+    demand_input="workload tensor sizes × mapping runtime_args placements",
+    bound_input="hardware spec: memory size",
+    term_detail="share it holds",
+    levers=(
+        "Increase {resource} (hardware spec)",
+        "Place fewer tensors in {resource}, or place them off chip (mapping runtime_args placement)",
+    ),
+)
 
 
-def check_offchip_capacity(
-    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
-) -> None:
-    """Refuse workload inputs and outputs that overflow an off-chip memory they live in (:func:`offchip_holdings`),
-    when there are several off-chip memories or the mapping places them."""
+def check_held_capacity(accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]) -> None:
+    """Refuse workload inputs and outputs that overflow a memory they live in (:func:`holdings`), its capacity less
+    what the toolchain claims in it, when there are several off-chip memories or the mapping places them."""
     if len(accelerator.offchip_memories) <= 1 and not any(mapping.edge_placements for mapping in mappings):
         return
-    for memory, held in offchip_holdings(accelerator, workloads, mappings).items():
+    hardware = build_hardware_facts(accelerator, 0)
+    for memory, held in holdings(accelerator, workloads, mappings).items():
         bits = {tensor: float(share * whole_bits(tensor)) for tensor, share in held.items()}
-        if (total := sum(bits.values())) > memory.capacity_bits:
+        room = memory.capacity_bits - hardware.reserved_memory_bits(memory)
+        if (total := sum(bits.values())) > room:
             named = {
                 t: t.name if s == 1 else f"{t.name}/{s.denominator}" if s.numerator == 1 else f"{t.name}*{s}"
                 for t, s in held.items()
             }
             terms = " + ".join(named.values())
-            summary = f"{memory.name} holds {terms} = {size_text(total)} > {size_text(memory.capacity_bits)}"
+            summary = f"{memory.name} holds {terms} = {size_text(total)} > {size_text(room)}"
             shares = {named[t]: b / 8 for t, b in bits.items()}
-            report = overflow_infeasibility(OFFCHIP_CAPACITY, memory, shares, memory.capacity_bits / 8, summary)
+            kind = OFFCHIP_CAPACITY if memory.offchip else ONCHIP_CAPACITY
+            report = overflow_infeasibility(kind, memory, shares, room / 8, summary)
             raise InfeasibleAllocationError(report)

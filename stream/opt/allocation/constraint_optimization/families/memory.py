@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from math import ceil
+from math import ceil, inf
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from xdsl.ir.affine import AffineDimExpr
@@ -82,8 +82,9 @@ def _held_bits(terms: Held) -> Any:
 
 
 def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
-    """Fail before the model is built when a memory cannot fit the tensors pinned to it under any reuse choice; a copy
-    pinned with its source counts only what it holds beyond it, as in :func:`_memory_loads`."""
+    """Fail before the model is built when a memory cannot fit the tensors pinned to it under any reuse choice beside
+    the inputs and outputs placed in it; a copy pinned with its source or a placement counts only what it holds beyond
+    it, as in :func:`_memory_loads`."""
     held: dict[Tensor, tuple[Memory, int]] = {}
     for node in space.workload.get_iteration_space_nodes():
         carried = [x for x in node.inputs if is_state_operand(node, x)]
@@ -92,10 +93,12 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
             if len(candidates) != 1:
                 continue
             (memory,) = candidates
+            if (share := _placed_share(space, t, memory)) == inf:
+                continue
             tile = space.workload.get_tensor_single_core(t, node, space.mapping)
             whole = tile.size_bits() == t.size_bits()
             copies = 1 if whole else min(choice.count(memory) for choice in space.tensor_choices[t])
-            held[t] = (memory, copies * _min_resident_bits(space, t, tile.size_bits()))
+            held[t] = (memory, max(0, ceil(copies * _min_resident_bits(space, t, tile.size_bits()) - share)))
     pinned: dict[Memory, int] = defaultdict(int)
     for memory, bits in held.values():
         pinned[memory] += bits
@@ -106,20 +109,23 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
                 if copy in held and held[copy][0] == source_memory:
                     pinned[source_memory] -= min(held[copy][1], source_bits)
     for memory, bits in pinned.items():
-        cap = space.memory_capacity_bits(memory)
+        placed = _placed(space, memory)
+        cap = space.memory_capacity_bits(memory) - sum(placed.values())
         if bits > cap:
+            beside = f" beside {', '.join(t.name for t in placed)} placed in it" if placed else ""
             raise InfeasibleAllocationError(
                 structural_infeasibility(
                     f"Memory {memory.name}: tensors pinned to it need at least {bits / 8192:.1f} KB "
-                    f"under every reuse choice, but it has {cap / 8192:.1f} KB",
+                    f"under every reuse choice, but it has {cap / 8192:.1f} KB{beside}",
                     model,
                 )
             )
 
 
 class MemoryCapacity:
-    """What each memory holds fits in its capacity, less what the toolchain reserves. The off-chip bits of an input
-    whose placement the allocation chooses rank after latency, so it is copied only where that is faster."""
+    """What each memory holds fits in its capacity, less what the toolchain reserves and the workload's inputs and
+    outputs placed in it hold for the whole run. The off-chip bits of an input whose placement the allocation chooses
+    rank after latency, so it is copied only where that is faster."""
 
     name: ClassVar[str] = "memory_capacity"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -189,8 +195,11 @@ class MemoryCapacity:
 
         for memory, expr in load.items():
             cap = space.memory_capacity_bits(memory)
+            placed = _placed(space, memory)
+            for tensor, bits in placed.items():
+                ledger.terms[(MEMORY_CAPACITY, memory)][tensor.name] = {"value": bits / 8, "dims": (), "dtype": ""}
             ctx.add_constr(
-                expr <= cap,
+                expr <= cap - sum(placed.values()),
                 name=f"mem_cap_{resource_key(memory)}",
                 resource=memory,
                 kind=MEMORY_CAPACITY,
@@ -219,7 +228,7 @@ def _offchip_capacity(ctx: FormulationContext) -> None:
             chosen[memory] += [(float(s.get(memory, 0) * bits), ctx.vars.y[(tr, c)]) for c, s in options.items()]
             ledger.terms[(OFFCHIP_CAPACITY, memory)][tr.inputs[0].name] = bits / blocks / 8
     for memory, terms in chosen.items():
-        settled = space.problem.offchip_held.get(memory, {})
+        settled = space.problem.held.get(memory, {})
         ledger.terms[(OFFCHIP_CAPACITY, memory)] |= {tensor.name: bits / 8 for tensor, bits in settled.items()}
         cap = space.memory_capacity_bits(memory)
         ctx.add_constr(
@@ -233,6 +242,34 @@ def _offchip_capacity(ctx: FormulationContext) -> None:
         largest = max(bits for terms in chosen.values() for bits, _ in terms)
         footprint = ctx.model.quicksum(bits / largest * y._raw for terms in chosen.values() for bits, y in terms)
         ctx.quantities.add("offchip_footprint", footprint._raw)
+
+
+def _placed(space: DecisionSpace, memory: Memory) -> dict[Tensor, float]:
+    """The bits of each workload input and output placed in on-chip ``memory``, held there for the whole run."""
+    return {} if memory.offchip else space.problem.held.get(memory, {})
+
+
+def _placed_share(space: DecisionSpace, t: Tensor, memory: Memory) -> float:
+    """The bits ``memory`` holds, placed, of ``t`` or of the tensor ``t`` copies (by name, which an output's copy shares
+    with the workload's output): 0 for none, ``inf`` where the placement holds it whole."""
+    placed = {tensor.name: (tensor, bits) for tensor, bits in _placed(space, memory).items()}
+    names = (t.name, *(tr.inputs[0].name for tr in space.transfer_nodes if t in tr.outputs))
+    tensor, bits = next((placed[name] for name in names if name in placed), (None, 0.0))
+    return inf if tensor is not None and bits >= whole_bits(tensor) else bits
+
+
+def _beyond(terms: Held, share: float) -> Held:
+    """The residency terms of ``terms`` charging only what each holds beyond ``share`` bits."""
+    beyond: Held = []
+    req = 0
+    for indicator, bits, name in terms:
+        # A negative term trims the single-buffered stop of the term before it.
+        if bits >= 0:
+            req = bits
+            beyond.append((indicator, max(0, ceil(bits - share)), name))
+        else:
+            beyond.append((indicator, max(0, ceil(req + bits - share)) - max(0, ceil(req - share)), name))
+    return beyond
 
 
 def _holdings(ctx: FormulationContext, t: Tensor) -> list[tuple[Memory, int, SolverVar]]:
@@ -255,13 +292,16 @@ def _min_resident_bits(space: DecisionSpace, t: Tensor, tensor_size: int) -> int
 
 def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Memory], Held]) -> dict[Memory, Any]:
     """Bits each memory holds: every tensor's residency, a copy in the memory of its source (in place, even where the
-    transfer also reaches other memories) only what it holds beyond the source."""
+    transfer also reaches other memories) only what it holds beyond the source, and a tensor placed in the memory or a
+    copy of one only what it holds beyond the placement's block there (:func:`_placed_share`)."""
     space, ledger = ctx.space, ctx.ledger
     load: dict[Memory, Any] = defaultdict(int)
     copies = {copy: tr.inputs[0] for tr in space.transfer_nodes for copy in tr.outputs}
-    for (t, memory), terms in held.items():
+    shares = {key: _placed_share(space, *key) for key in held}
+    charged = {key: _beyond(terms, shares[key]) for key, terms in held.items() if shares[key] != inf}
+    for (t, memory), terms in charged.items():
         ledger.memory[memory] += terms
-        source = held.get((copies[t], memory)) if t in copies else None
+        source = charged.get((copies[t], memory)) if t in copies else None
         if not source:
             load[memory] = load[memory] + _held_bits(terms)
             continue

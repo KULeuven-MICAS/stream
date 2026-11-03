@@ -7,7 +7,7 @@ from typing import Any
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.generic_generator import GenericMappingGenerator
-from stream.mapping.mapping import Mapping, check_offchip_capacity, viewed_placements
+from stream.mapping.mapping import Mapping, check_held_capacity, viewed_placements
 from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_parser import MappingParser
 from stream.stages.context import StageContext
@@ -34,7 +34,7 @@ def _check_input_capacity(accelerator: Accelerator, workload: Workload, runtime_
     inputs = Workload(list(workload.get_in_edges()))
     placed = {edge.name: runtime_args[edge.name] for edge in inputs.get_in_edges() if edge.name in runtime_args}
     placements = MappingFactory({"runtime_args": placed}, inputs, accelerator).create_edge_placements()
-    check_offchip_capacity(accelerator, [inputs], [Mapping(edge_placements=placements)])
+    check_held_capacity(accelerator, [inputs], [Mapping(edge_placements=placements)])
 
 
 class FlashDecodingStage(Stage):

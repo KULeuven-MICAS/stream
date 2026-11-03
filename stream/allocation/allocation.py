@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from stream.allocation.steady_state import steady_state_detail
 from stream.cost_model.roofline import group_point, hardware_roofline
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import offchip_bits
+from stream.mapping.mapping import held_bits
 from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.workload.node import InEdge, OutEdge, Tensor, declared_of, edge_tensor
 from stream.workload.steady_state.iteration_space import (
@@ -120,12 +120,14 @@ class Allocation:
 
     def _offchip_holdings(self) -> dict[str, dict[str, float]]:
         """The bits of each tensor of the group's edges each off-chip memory holds, by the placements the solve chose
-        (:func:`offchip_bits`)."""
+        (:func:`held_bits`)."""
         problem = self.problem
         mapping = problem.source_mapping.with_edge_placements(self.mapping.edge_placements)
-        held = offchip_bits(problem.accelerator, [problem.source_workload], [mapping])
+        held = held_bits(problem.accelerator, [problem.source_workload], [mapping])
         return {
-            memory.name: {tensor.name: bits for tensor, bits in tensors.items()} for memory, tensors in held.items()
+            memory.name: {tensor.name: bits for tensor, bits in tensors.items()}
+            for memory, tensors in held.items()
+            if memory.offchip
         }
 
     def roofline_point(self) -> dict[str, Any]:
