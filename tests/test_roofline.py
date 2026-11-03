@@ -112,8 +112,8 @@ def test_bus_traffic_to_off_chip_memory_reaches_the_off_chip_links(roofline: dic
 def test_an_aie_gemm_has_a_roofline_point(tmp_path: Path):
     """The shim's measured bandwidth is the off-chip memory, and kernels without a spatial utilization set no
     ceiling."""
-    workload = make_gemm_workload(128, 128, 128, "bf16", "bf16")
-    mapping = make_gemm_mapping(128, 128, 128, 64, 64, 64, nb_rows_to_use=2, nb_cols_to_use=2)
+    workload = make_gemm_workload(128, 128, 128, "bf16", "bf16", str(tmp_path))
+    mapping = make_gemm_mapping(128, 128, 128, 64, 64, 64, nb_rows_to_use=2, nb_cols_to_use=2, output_dir=str(tmp_path))
     options = SolveOptions(artifacts=False, nb_cols_to_use=2)
     estimate = evaluate_mapping(
         "stream/inputs/aie/hardware/whole_array_strix.yaml", workload, str(tmp_path), mapping, options

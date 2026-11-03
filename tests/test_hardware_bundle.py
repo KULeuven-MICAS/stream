@@ -115,7 +115,7 @@ def test_a_view_naming_no_memory_of_its_core_is_rejected():
 
 
 @pytest.mark.timeout(300)
-def test_asymmetric_bundle_runs_end_to_end():
+def test_asymmetric_bundle_runs_end_to_end(tmp_path):
     """Stream runs a materialized bundle whose cores were authored from one shared file: here core 0
     alone gets a bigger top-level memory, inexpressible without de-aliasing."""
     bundle = HardwareBundle.from_yaml(QUAD_CORE)
@@ -133,7 +133,8 @@ def test_asymmetric_bundle_runs_end_to_end():
             kernel_size=3,
             in_dtype="bf16",
             weight_dtype="bf16",
-        )
+        ),
+        str(tmp_path),
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         accelerator_path = bundle.materialize(tmpdir)

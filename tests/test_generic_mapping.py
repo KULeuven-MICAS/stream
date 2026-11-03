@@ -51,10 +51,8 @@ _WORKLOAD_CONFIG = TwoConvWorkloadConfig(
 )
 
 
-def _parse_workload_and_accelerator(workload_path: str | None = None, accelerator: str = _ACCELERATOR):
+def _parse_workload_and_accelerator(workload_path: str, accelerator: str = _ACCELERATOR):
     """Helper: parse hardware + workload into objects via the pipeline stages."""
-    if workload_path is None:
-        workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
     ctx = StageContext.from_kwargs(
         accelerator=accelerator,
         workload_path=workload_path,
@@ -67,10 +65,10 @@ def _parse_workload_and_accelerator(workload_path: str | None = None, accelerato
     return ctxs[0].get("accelerator"), ctxs[0].get("workload")
 
 
-def test_generator_produces_all_fields():
+def test_generator_produces_all_fields(tmp_path):
     """GenericMappingGenerator produces mapping with core_allocation,
     inter_core_tiling, fused_groups, and intra_core_tiling populated."""
-    accelerator, workload = _parse_workload_and_accelerator()
+    accelerator, workload = _parse_workload_and_accelerator(make_2_conv_workload(_WORKLOAD_CONFIG, str(tmp_path)))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         gen = GenericMappingGenerator(accelerator, workload, tmpdir)
@@ -94,9 +92,9 @@ def test_generator_produces_all_fields():
                 )
 
 
-def test_single_fused_group():
+def test_single_fused_group(tmp_path):
     """Generated mapping contains exactly one FusedGroup with valid intra_core_tiling."""
-    accelerator, workload = _parse_workload_and_accelerator()
+    accelerator, workload = _parse_workload_and_accelerator(make_2_conv_workload(_WORKLOAD_CONFIG, str(tmp_path)))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         gen = GenericMappingGenerator(accelerator, workload, tmpdir)
@@ -113,9 +111,9 @@ def test_single_fused_group():
             )
 
 
-def test_mapping_validates():
+def test_mapping_validates(tmp_path):
     """Generated mapping passes MappingValidator validation."""
-    accelerator, workload = _parse_workload_and_accelerator()
+    accelerator, workload = _parse_workload_and_accelerator(make_2_conv_workload(_WORKLOAD_CONFIG, str(tmp_path)))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         gen = GenericMappingGenerator(accelerator, workload, tmpdir)
@@ -129,13 +127,13 @@ def test_mapping_validates():
             assert is_valid, f"MappingValidator errors: {validator.errors}"
 
 
-def test_pipeline_end_to_end():
+def test_pipeline_end_to_end(tmp_path):
     """A generated mapping of the two-conv workload solves end-to-end on the TPU-like hardware.
 
     Two-conv is used as a fast single-group proxy (< 60s) for quick iteration.
     test_pipeline_multi_group covers multi-group pipeline mechanics.
     """
-    workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
+    workload_path = make_2_conv_workload(_WORKLOAD_CONFIG, str(tmp_path))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir).context
@@ -160,13 +158,13 @@ def test_pipeline_end_to_end():
 
 @pytest.mark.slow  # multi-group MILP run; too slow / near-timeout on CI runners
 @pytest.mark.timeout(120)
-def test_pipeline_multi_group():
+def test_pipeline_multi_group(tmp_path):
     """A generated mapping of a multi-group workload solves end-to-end.
 
     Uses a synthetic Conv->Relu->Flatten->Gemm workload cut after its Relu into 2 fusion groups. Tests the same
     multi-group pipeline mechanics as ResNet18 (cut points, per-group iteration, latency aggregation) in seconds.
     """
-    workload_path = make_conv_relu_flatten_gemm_workload()
+    workload_path = make_conv_relu_flatten_gemm_workload(output_dir=str(tmp_path))
     options = SolveOptions(stage_options={"fusion_cut_points": ["Relu1"]})
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -195,13 +193,13 @@ def test_pipeline_multi_group():
     )
 
 
-def test_pool_ops_saturate_the_vpus_on_tpu_v7():
+def test_pool_ops_saturate_the_vpus_on_tpu_v7(tmp_path):
     """A pooling op has no matmul owner, so on TPU7x it must run on the four VPUs -- the vector unit
     that already owns the reductions -- fully split across all four, not smeared across the 36-core
     MXU+VPU fallback set (an MXU cannot price a pool). Guards the tpu_v7 VPU operator_types routing:
     without the pooling ops in that list, the pool falls back to every compute core and, worse, lands
     partly on the systolic arrays."""
-    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND), str(tmp_path))
     accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_TPU_V7)
 
     vpu_ids = {c.id for c in accelerator.core_list if getattr(c, "name", "") == "tpu_v7_vpu"}
@@ -234,9 +232,9 @@ def test_pool_ops_saturate_the_vpus_on_tpu_v7():
             )
 
 
-def test_fusemax_runs_convs_on_its_array_and_the_rest_on_its_vector_unit():
+def test_fusemax_runs_convs_on_its_array_and_the_rest_on_its_vector_unit(tmp_path):
     """FuseMax's 256x1 vector unit serves the elementwise and pooling ops; the 256x256 array takes the convs."""
-    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND), str(tmp_path))
     accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_FUSEMAX)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -275,9 +273,9 @@ def test_cores_without_an_operational_array_split_a_node_evenly():
     assert GenericMappingGenerator._fastest_even_split(cores) == cores
 
 
-def test_a_mapping_cannot_place_an_operator_on_a_core_that_does_not_execute_it():
+def test_a_mapping_cannot_place_an_operator_on_a_core_that_does_not_execute_it(tmp_path):
     """A conv pinned to FuseMax's vector unit is rejected when the mapping is read, not priced."""
-    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND), str(tmp_path))
     accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_FUSEMAX)
     layers = [{"name": node.type, "core_allocation": [[1]]} for node in workload.get_computation_nodes()]
 

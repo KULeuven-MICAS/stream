@@ -29,19 +29,9 @@ class TwoConvWorkloadConfig:
     weight_dtype: str
 
 
-def make_2_conv_workload(config: TwoConvWorkloadConfig):
-    """
-    Build an ONNX model with two Conv operators.
-
-    Conv1: [batch_size, in_channels, height, width] -> [batch_size, out_channels_1, height, width]
-    Conv2: [batch_size, out_channels_1, height, width] -> [batch_size, out_channels_2, height, width]
-
-    Args:
-        config (TwoConvWorkloadConfig): Configuration for the two-conv workload.
-
-    Returns:
-        str: Path to the saved ONNX model.
-    """
+def make_2_conv_workload(config: TwoConvWorkloadConfig, output_dir=None) -> str:
+    """Two Convs as ONNX, [b, c, h, w] -> [b, k1, h, w] -> [b, k2, h, w], saved in ``output_dir`` (by default this
+    module's directory); returns its path."""
     # Extract values from config
     batch_size = int(config.batch_size)
     height = int(config.height)
@@ -127,8 +117,9 @@ def make_2_conv_workload(config: TwoConvWorkloadConfig):
     inferred = shape_inference.infer_shapes(model)
 
     # Save
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
     onnx_path = os.path.join(
-        os.path.dirname(__file__),
+        dest_dir,
         f"2conv_{batch_size}_{in_channels}_{height}_{width}_{out_channels_1}_{out_channels_2}_{kernel_size}.onnx",
     )
     onnx.save(inferred, onnx_path)

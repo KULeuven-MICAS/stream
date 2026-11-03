@@ -167,7 +167,7 @@ def test_a_graph_input_no_node_reads_is_left_out_and_copies_take_fresh_names(tmp
 def test_a_one_input_op_is_costed_on_the_vector_unit_through_its_registers_and_vmem(tmp_path):
     """The VPU's registers and VMEM hold any operand; a ReLU or a max pool reads one of them, and ZigZag costs it
     streaming through those memories rather than leaving it to an ideal-cycle estimate."""
-    workload = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    workload = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND), str(tmp_path))
     estimate = evaluate_mapping(TPU_V7, workload, str(tmp_path), options=SolveOptions(artifacts=False))
     entries = {
         node.type: entry for node, costs in estimate.context.get("cost_lut").lut.items() for entry in costs.values()
@@ -181,7 +181,7 @@ def test_a_convolution_spreads_its_contraction_over_the_mxu_rows(tmp_path):
     """The MXU maps an im2col convolution's whole contraction (channels by kernel window) over its rows, as the
     silicon does, rather than one loop per array dimension: the ResNet stem's 3 x 7 x 7 window fills far more of the
     array than its 3 channels alone."""
-    workload = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    workload = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND), str(tmp_path))
     estimate = evaluate_mapping(TPU_V7, workload, str(tmp_path), options=SolveOptions(artifacts=False))
     conv = next(
         entry

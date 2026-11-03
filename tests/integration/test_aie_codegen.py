@@ -22,8 +22,9 @@ SEQ_LEN, EMBEDDING_DIM, HIDDEN_DIM = 256, 512, 2048
 @pytest.mark.slow
 @pytest.mark.parametrize("last_gemm_down", [True, False], ids=["with_down", "ending_in_mul"])
 def test_swiglu_generates_an_npu2_design(last_gemm_down: bool, tmp_path):
-    workload = make_swiglu_workload(SEQ_LEN, EMBEDDING_DIM, HIDDEN_DIM, "bf16", "bf16", last_gemm_down=last_gemm_down)
-    mapping = make_swiglu_mapping(SEQ_LEN, EMBEDDING_DIM, HIDDEN_DIM, last_gemm_down, 32, 32, 64)
+    sizes, out = (SEQ_LEN, EMBEDDING_DIM, HIDDEN_DIM), str(tmp_path)
+    workload = make_swiglu_workload(*sizes, "bf16", "bf16", last_gemm_down=last_gemm_down, output_dir=out)
+    mapping = make_swiglu_mapping(*sizes, last_gemm_down, 32, 32, 64, output_dir=out)
     options = SolveOptions(nb_cols_to_use=8, stage_options={"npu": "npu2", "trace_size": 1 << 20})
     module = str(generate_code(ACCELERATOR, workload, str(tmp_path), mapping, options).context.get("module"))
     assert "aie.device(npu2)" in module
@@ -33,8 +34,8 @@ def test_swiglu_generates_an_npu2_design(last_gemm_down: bool, tmp_path):
 @pytest.mark.slow
 def test_a_single_tile_gemm_generates_an_npu2_design(tmp_path):
     """One kernel tile on one core: no split to unroll and no loop to iterate, so it runs once."""
-    workload = make_gemm_workload(64, 64, 64, "bf16", "bf16")
-    mapping = make_gemm_mapping(64, 64, 64, 64, 64, 64, nb_rows_to_use=1, nb_cols_to_use=1)
+    workload = make_gemm_workload(64, 64, 64, "bf16", "bf16", str(tmp_path))
+    mapping = make_gemm_mapping(64, 64, 64, 64, 64, 64, nb_rows_to_use=1, nb_cols_to_use=1, output_dir=str(tmp_path))
     options = SolveOptions(nb_cols_to_use=1, stage_options={"npu": "npu2"})
     module = str(generate_code(ACCELERATOR, workload, str(tmp_path), mapping, options).context.get("module"))
     assert len(re.findall(r'func\.call @"?\w+_matmul_bf16_bf16"?\(', module)) == 1

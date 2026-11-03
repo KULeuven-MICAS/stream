@@ -14,7 +14,8 @@ ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 def test_slot_latency_breakdown_reports_solved_reuse_factor_and_contribution(
     tmp_path: Path, two_conv: TwoConvWorkloadConfig
 ) -> None:
-    evaluate_mapping(ACCELERATOR, make_2_conv_workload(two_conv), str(tmp_path), make_2_conv_mapping(two_conv))
+    workload = make_2_conv_workload(two_conv, str(tmp_path))
+    evaluate_mapping(ACCELERATOR, workload, str(tmp_path), make_2_conv_mapping(two_conv, str(tmp_path)))
     (path,) = tmp_path.rglob("slot_latency_breakdown.yaml")
     slots = yaml.safe_load(path.read_text())["slots"]
     transfers = [tr for slot in slots for tr in slot["transfer_contributors"]]

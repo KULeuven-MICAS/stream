@@ -29,11 +29,12 @@ def solve(
     tmp_path_factory: pytest.TempPathFactory, solved_model: Callable[..., Any], two_conv: TwoConvWorkloadConfig
 ) -> Solve:
     def run(family_specs: list[Any]) -> AllocationModel:
+        out = str(tmp_path_factory.mktemp("two_conv"))
         return solved_model(
             ACCELERATOR,
-            make_2_conv_workload(two_conv),
-            str(tmp_path_factory.mktemp("two_conv")),
-            make_2_conv_mapping(two_conv),
+            make_2_conv_workload(two_conv, out),
+            out,
+            make_2_conv_mapping(two_conv, out),
             SolveOptions(families=[*(f for f in DEFAULT_FAMILIES if f != "memory_ports"), *family_specs]),
         )
 

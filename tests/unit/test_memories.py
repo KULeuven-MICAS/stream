@@ -286,7 +286,8 @@ def test_weights_land_in_the_weights_memory(tmp_path):
             kernel_size=3,
             in_dtype="bf16",
             weight_dtype="bf16",
-        )
+        ),
+        str(tmp_path),
     )
     allocation = evaluate_mapping(str(META_PROTOTYPE), workload, str(tmp_path)).context.get("allocation")
     workload = allocation.problem.workload

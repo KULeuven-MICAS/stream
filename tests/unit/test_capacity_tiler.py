@@ -134,9 +134,9 @@ print(gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes())))
 """
 
 
-def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed():
+def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed(tmp_path):
     """The overflowing SwiGLU streams two dims, in the order its nodes walk them, whatever order a set iterates in."""
-    workload = make_swiglu_workload(512, 1024, 4096, "bf16", "bf16")
+    workload = make_swiglu_workload(512, 1024, 4096, "bf16", "bf16", output_dir=str(tmp_path))
     plans = {
         subprocess.run(
             [sys.executable, "-c", _PLAN, _TPU_QUAD, workload],

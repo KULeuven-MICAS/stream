@@ -3,10 +3,13 @@ import os
 import yaml
 
 
-def make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use: int = 4):  # noqa: N803
+def make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use: int = 4, output_dir=None):  # noqa: N803, PLR0913
+    """The whole-array mapping of an ``M x K @ K x N`` Gemm in ``m x k x n`` tiles, written into ``output_dir`` (by
+    default this module's directory)."""
     NB_COMPUTE_ROWS_OF_ARRAY = 4
     name = f"gemm_{M}_{K}_{N}"
-    output_file = os.path.join(os.path.dirname(__file__), f"{name}_whole_array.yaml")
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
+    output_file = os.path.join(dest_dir, f"{name}_whole_array.yaml")
     k_inter_core = min(N // n, nb_cols_to_use)
     d_inter_core = min(M // m, nb_rows_to_use)
     compute_allocation = [

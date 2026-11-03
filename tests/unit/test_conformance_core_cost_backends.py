@@ -155,9 +155,9 @@ def test_higher_priority_wins_when_two_backends_claim_the_same_core(monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_produced_entries_carry_ideal_cycle_and_a_backend_tag() -> None:
+def test_produced_entries_carry_ideal_cycle_and_a_backend_tag(tmp_path) -> None:
     """Drive the real ZigZag backend end-to-end and check the fields the inspection contract reads."""
-    workload_path = make_2_conv_workload(_2CONV)
+    workload_path = make_2_conv_workload(_2CONV, str(tmp_path))
     registered_names = {b.name for b in discover_backends()} | {"ideal-cycle"}
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ZIGZAG_HARDWARE, workload_path, tmpdir).context

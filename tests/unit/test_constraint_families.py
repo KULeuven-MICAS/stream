@@ -208,7 +208,7 @@ def test_dropping_a_family_drops_those_that_need_it() -> None:
 def test_family_adds_its_constraint_quantity_and_slot_bound(
     solved_model: Callable, two_conv: TwoConvWorkloadConfig, model_size: Callable, tmp_path: Any, with_cap: None
 ) -> None:
-    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+    workload, mapping = make_2_conv_workload(two_conv, str(tmp_path)), make_2_conv_mapping(two_conv, str(tmp_path))
 
     def solve(path: str, options: SolveOptions) -> Any:
         return solved_model(ACCELERATOR, workload, path, mapping, options, hook="_build_model")
