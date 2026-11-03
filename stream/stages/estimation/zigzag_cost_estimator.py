@@ -106,6 +106,7 @@ class ZigZagCostEstimator:
         dimension_relations: list[ZigZagLayerDimRelation] = []
         pr_sizes: dict[ZigZagLayerDim, int] = {}
         per_core_dim_sizes = self._per_core_sizes(node)
+        sizes = self.create_layer_dim_sizes(node)
         tensors = (node.outputs[0],) + operand_inputs(node)
         operand_names = ["O"] + self.input_operand_names[: len(tensors) - 1]
         equation_str = ""
@@ -119,7 +120,9 @@ class ZigZagCostEstimator:
                     operand_dims.append(dim)
                 elif isinstance(expr, AffineBinaryOpExpr):
                     dims_in_expr, coefficients = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
-                    if len(dims_in_expr) == 1 and coefficients[0] == 1:
+                    if separate := self._separate_axes(dims_in_expr, coefficients, sizes):
+                        operand_dims.extend(separate)
+                    elif len(dims_in_expr) == 1 and coefficients[0] == 1:
                         # Single-dimension self-offset (recurrence state read, e.g. h[t-1]). The
                         # cross-iteration carry is handled in scheduling, not costing, so treat it
                         # as a plain access to that dimension (drop the offset). No pr relation.
@@ -155,6 +158,20 @@ class ZigZagCostEstimator:
             elif tensor != tensors[-1]:
                 equation_str += " * "
         return ZigZagLayerEquation(equation_str), dimension_relations, ZigZagLayerDimSizes(pr_sizes)
+
+    def _separate_axes(
+        self, dims: list[ZigZagLayerDim], coefficients: list[int], sizes: ZigZagLayerDimSizes
+    ) -> list[ZigZagLayerDim]:
+        """The dims of an index ``c*outer + inner`` whose inner dim spans at most ``c``, as a grouped conv's channel
+        ``g*K + k`` or a window no wider than its stride: each index is one (outer, inner) pair, so the axis is two
+        axes, one per dim, holding the same elements as the window would; [] for any other index."""
+        terms = list(zip(dims, coefficients, strict=True))
+        if len(terms) != self.supported_pr_length:
+            return []
+        for (outer, step), (inner, unit) in (terms, terms[::-1]):
+            if unit == 1 and sizes[inner] <= step:
+                return [outer, inner]
+        return []
 
     def _per_core_sizes(self, node: ComputationNode) -> dict[LayerDim, int]:
         """Each unique dim's extent on one core of the node's inter-core split, a split that does not divide its dim
@@ -308,9 +325,12 @@ class ZigZagCostEstimator:
             # getattr default guards an aie2 tile, whose Core.__getattr__ raises instead of returning None.
             array = getattr(core, "operational_array", None)
             unit_count = max(1, int(getattr(array, "total_unit_count", 1) or 1))
-            ideal_cycle = ceil(ceil(total_ops / unit_count) * self.work_per_op(node)[1])
+            ops_per_point, cycles_per_point = self.work_per_op(node)
+            ideal_cycle = ceil(ceil(total_ops / unit_count) * cycles_per_point)
+            # The array's own operation energy: a floor, without the memory traffic ZigZag would have priced.
+            unit_energy = getattr(getattr(array, "unit", None), "energy_cost", 0.0) or 0.0
             return CoreCostEntry(
-                energy_total=0.0,
+                energy_total=total_ops * ops_per_point * unit_energy,
                 latency_total=float(ideal_cycle),
                 ideal_cycle=float(ideal_cycle),
                 ideal_temporal_cycle=float(ideal_cycle),
