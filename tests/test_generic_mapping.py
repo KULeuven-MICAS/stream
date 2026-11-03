@@ -4,6 +4,7 @@ The two-conv workload is used as a fast single-group proxy (< 60s).
 The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics.
 """
 
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -13,6 +14,7 @@ import onnx
 import pytest
 import yaml
 from onnx import TensorProto, helper
+from placements import tpu_like_slices
 
 from stream.allocation.allocation import Allocation
 from stream.api import SolveOptions, evaluate_mapping
@@ -422,3 +424,78 @@ def test_a_whole_layer_normalization_on_a_vector_core_is_priced_by_its_cost_mode
     """Its scale and shift are read with the output, so the core's two input operands suffice."""
     entry = _fixed_costs(_layer_norm(tmp_path / "layernorm.onnx"), {"LayerNorm": [2]}, tmp_path)["LayerNormalization"]
     assert entry.metadata.get("backend") != IDEAL_CYCLE_BACKEND
+
+
+def _tpu_like_cores(n, path):
+    """``n`` cores of the testing hardware's TPU-like kind, each with its SRAM, on one bus to an off-chip memory."""
+    slices = tpu_like_slices(n)
+    rw = list(slices["memories"]["sram_0"]["ports"])
+    port = {"bandwidth": 64, "serves": {"any": ["read", "write"]}, "read_energy": 15.625, "write_energy": 15.625}
+    offchip = {"offchip": True, "views": [], "capacity_bits": 10**10, "ports": {"rw_port_1": port}}
+    bus = {"type": "bus", "bandwidth": 512, "ends": {**dict.fromkeys(slices["memories"], rw), "offchip": ["rw_port_1"]}}
+    data = {
+        "name": f"tpu_like_{n}_core",
+        "cores": slices["cores"],
+        "memories": slices["memories"] | {"offchip": offchip},
+        "connections": [bus],
+    }
+    path.write_text(yaml.safe_dump(data))
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    ("n_cores", "m", "k", "n", "split"),
+    [(6, 256, 512, 128, 4), (6, 5, 7, 25, 5), (15, 256, 512, 128, 8), (6, 1, 1, 1, 1)],
+)
+def test_a_node_splits_over_the_most_cores_its_dims_divide_among(tmp_path, n_cores, m, k, n, split):
+    """Six cores split a matmul of power-of-two dims four ways and one of dims 5, 7 and 25 five ways, fifteen split
+    the first eight ways, each on as many cores, and a 1x1x1 matmul runs on one: no core computes a node whole twice."""
+    x = helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [m, k])
+    w = helper.make_tensor_value_info("w", TensorProto.BFLOAT16, [k, n])
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [m, n])
+    path = _save([helper.make_node("MatMul", ["x", "w"], ["out"], name="MatMul")], [x, w], out, tmp_path / "mm.onnx")
+    accelerator, workload = _parse_workload_and_accelerator(path, _tpu_like_cores(n_cores, tmp_path / "hw.yaml"))
+    paths, _ = GenericMappingGenerator(accelerator, workload, str(tmp_path)).generate_all_groups()
+    (layer,) = yaml.safe_load(Path(paths[0]).read_text())["layers"]
+    (cores,) = layer["core_allocation"]
+    assert len(cores) == math.prod(entry["split"] for tiling in layer["inter_core_tiling"] for entry in tiling) == split
+
+
+def _matmul_utilization(path, cores, tmp_path):
+    """The MAC utilization the run reports of a matmul each of ``cores`` computes whole."""
+    layer = {"name": "MatMul", "core_allocation": [cores], "inter_core_tiling": []}
+    mapping = {"layers": [layer], "fused_groups": [{"name": "g", "layers": ["MatMul"], "intra_core_tiling": []}]}
+    tmp_path.mkdir()
+    (tmp_path / "mapping.yaml").write_text(yaml.safe_dump(mapping))
+    options = SolveOptions(artifacts=False)
+    estimate = evaluate_mapping(_ACCELERATOR, path, str(tmp_path), str(tmp_path / "mapping.yaml"), options)
+    (group,) = estimate.context.get("group_allocations").values()
+    return group["performance"]["nodes"]["MatMul"]["mac_spatial_utilization"]
+
+
+def test_cores_that_compute_the_same_node_whole_report_the_utilization_of_one(tmp_path):
+    x = helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [64, 256])
+    w = helper.make_tensor_value_info("w", TensorProto.BFLOAT16, [256, 128])
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [64, 128])
+    path = _save([helper.make_node("MatMul", ["x", "w"], ["out"], name="MatMul")], [x, w], out, tmp_path / "mm.onnx")
+    one = _matmul_utilization(path, [0], tmp_path / "one")
+    assert _matmul_utilization(path, [0, 1], tmp_path / "two") == pytest.approx(one / 2)
+
+
+def _weight_overflow(n_cores, tmp_path):
+    """How far a 3x3 conv's 4.5 MiB of weights overflow half the SRAM of each of ``n_cores`` TPU-like cores."""
+    x = helper.make_tensor_value_info("x", TensorProto.BFLOAT16, [1, 512, 8, 8])
+    w = helper.make_tensor_value_info("w", TensorProto.BFLOAT16, [512, 512, 3, 3])
+    out = helper.make_tensor_value_info("out", TensorProto.BFLOAT16, [1, 512, 8, 8])
+    conv = helper.make_node("Conv", ["x", "w"], ["out"], name="Conv", kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+    path = _save([conv], [x, w], out, tmp_path / f"conv_{n_cores}.onnx")
+    hardware = _tpu_like_cores(n_cores, tmp_path / f"hw_{n_cores}.yaml")
+    accelerator, workload = _parse_workload_and_accelerator(path, hardware)
+    generator = GenericMappingGenerator(accelerator, workload, str(tmp_path))
+    return generator._weight_overflow(workload, tuple(workload.get_computation_nodes()))
+
+
+def test_a_nodes_weights_overflow_only_the_cores_its_split_uses(tmp_path):
+    """Fifteen cores split the conv at most twelve ways (its extents share no factor 5), so its weights overflow them
+    as they do twelve cores, not as if no core shared them."""
+    assert _weight_overflow(15, tmp_path) == _weight_overflow(12, tmp_path) > 0

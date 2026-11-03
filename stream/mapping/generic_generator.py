@@ -160,21 +160,17 @@ class GenericMappingGenerator:
 
             if n_cores > 1:
                 split_factors = self._factor_split_across_dims(sub_workload, cn, n_cores, protected)
-                if split_factors:
-                    inter_core_tiling: list[list[dict[str, Any]]] = [
-                        [{"dim": f"D{dim_idx}", "split": factor} for dim_idx, factor in split_factors]
-                    ]
-                    cores_used = math.prod(factor for _, factor in split_factors)
-                    if cores_used < n_cores:
-                        # The workload's dimensions can't be tiled across every core; use the largest
-                        # achievable subset, preferring cores not yet taken by earlier layers so the
-                        # layers run on disjoint sets (fall back to the first cores_used when the pool
-                        # of free cores is exhausted).
-                        free = [c for c in cores if c.id not in allocated_ids]
-                        block = free[:cores_used] if len(free) >= cores_used else cores[:cores_used]
-                        core_allocation = [[c.id for c in block]]
-                else:
-                    inter_core_tiling = []
+                inter_core_tiling: list[list[dict[str, Any]]] = (
+                    [[{"dim": f"D{dim_idx}", "split": factor} for dim_idx, factor in split_factors]]
+                    if split_factors
+                    else []
+                )
+                cores_used = math.prod(factor for _, factor in split_factors)
+                if cores_used < n_cores:
+                    # Free cores first, so the layers that cannot use every core run on disjoint ones.
+                    free = [c for c in cores if c.id not in allocated_ids]
+                    block = free[:cores_used] if len(free) >= cores_used else cores[:cores_used]
+                    core_allocation = [[c.id for c in block]]
             else:
                 inter_core_tiling = []
 
@@ -323,15 +319,29 @@ class GenericMappingGenerator:
         _, floor = max((n * u, u) for n, u in enumerate(sorted(map(units, cores), reverse=True), start=1))
         return [core for core in cores if units(core) >= floor]
 
+    def _split_cores(self, sub_workload: Workload, cn: ComputationNode, n_cores: int, protected: set[LayerDim]) -> int:
+        """The cores of ``n_cores`` an inter-core split of ``cn`` uses: the largest factor of ``n_cores`` its splittable
+        dims divide where the group's nodes on these cores, a block of that many each, fill more than half of them, so
+        they run side by side; else the most a split can use, the largest count up to ``n_cores`` that divides the
+        product of their sizes (8 of 15 over power-of-two dims)."""
+        dims = sub_workload.get_dims(cn)
+        work = math.prod(sub_workload.get_dimension_size(dim) for dim in dims if dim not in protected)
+        pool = self._select_cores_for_node(cn)
+        sharing = sum(self._select_cores_for_node(node) == pool for node in sub_workload.get_computation_nodes())
+        if 2 * (factor := math.gcd(n_cores, work)) * sharing > n_cores:
+            return factor
+        return next(n for n in range(n_cores, 0, -1) if work % n == 0)
+
     def _factor_split_across_dims(
         self, sub_workload: Workload, cn: ComputationNode, n_cores: int, protected: set[LayerDim]
     ) -> list[tuple[int, int]]:
         """``(dim_index, factor)`` pairs factoring ``n_cores`` over the node's dims, none ``protected``: the dim
         placements split most first, then outputs before contractions, then the smallest footprint. Each factor divides
-        its dim, so the product falls short when ``n_cores`` does not factor."""
+        its dim; where ``n_cores`` does not factor, the split covers the most cores it can (:meth:`_split_cores`)."""
         dims = sub_workload.get_dims(cn)
         if not dims:
             return []
+        n_cores = self._split_cores(sub_workload, cn, n_cores, protected)
 
         # (index, size) per splittable dimension, parallel axes before reductions and each
         # group largest first (protected dims excluded).
@@ -613,7 +623,10 @@ class GenericMappingGenerator:
 
     def _weight_overflow(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> float:
         """How far ``cns``' weights overflow half their cores under the split that suits them best (0 when they fit)."""
-        n_cores = max(len(self._select_cores_for_node(cn)) for cn in cns)
+        protected = self._protected_dims(sub_workload, cns)
+        n_cores = max(
+            self._split_cores(sub_workload, cn, len(self._select_cores_for_node(cn)), protected) for cn in cns
+        )
         held = self._group_footprints(sub_workload, n_cores, cns)
         return min((overflow for overflow, _ in held.values()), default=0.0)
 
