@@ -9,7 +9,6 @@ from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
-import networkx as nx
 import numpy as np
 from xdsl.ir.affine import AffineMap
 
@@ -774,14 +773,9 @@ class _Lowering:
     def _reaches_every_core(self, tile: Memory, src: HasOutputs, node: TransferNode) -> bool:
         """Whether ``node``'s copy in ``tile`` has a route over on-chip memories to a memory of each of ``src``'s
         cores, or from one for an output transfer."""
-        on_chip = nx.subgraph_view(self.accelerator.network, filter_node=lambda memory: not memory.offchip)
-        gathers = node.transfer_type is TransferType.COMPUTE_TO_MEM
-        reached = (nx.ancestors if gathers else nx.descendants)(on_chip, tile) | {tile}
         allocations = self.mapping.get(src).resource_allocation
-        return all(
-            any(memory in reached for memory in self.accelerator.memories_of(core))
-            for core in (allocations[0] if allocations else ())
-        )
+        gathers = node.transfer_type is TransferType.COMPUTE_TO_MEM
+        return self.accelerator.reaches(tile, allocations[0] if allocations else (), gathers=gathers)
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

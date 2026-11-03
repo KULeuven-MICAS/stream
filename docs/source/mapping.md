@@ -21,6 +21,7 @@ The generic generator (`stream/stages/generation/generic_mapping_generation.py`)
 - **Splits work across cores** when several compute cores are eligible, by factoring the node's dimensions into an inter-core tiling.
 - **Follows the placements** of a placement file: it splits the cores first along the dimension indexing the axis the placements split the most bits along, so each core reads the block of the off-chip memory beside it; an operator reading what such a split made, in its group or across a fusion cut, follows that split in turn, so the data stays where it was made. It keeps the tiler from walking that dimension over time, and carries the placements into each group's mapping. A copy is local to every core, so it does not steer the split; for decode attention the generator may then split the sequence and combine the softmax across slices. To keep a copied cache split by heads, split its placement by heads or write the split into the mapping.
 - **Splits attention along its sequence** where it must (`FlashDecodingStage`). Attention is found by its structure: a contraction making scores along an axis only the keys index, element-wise ops on them, a softmax over that axis, and a contraction reducing it against the values. The sequence is split into parts, each part's softmax kept whole on its cores, and the parts are combined; an input only the attention reads along the sequence gets a part axis in place of the sequence's, so a placement splitting the sequence splits the parts. Attention that fits as the generator cuts it is left whole unless a placement splits its sequence. Otherwise the part count is the fewest that fit, a power of two times the memories a placement splits the sequence over, or that many memories where none fit. `SolveOptions(stage_options={"attention_parts": n})` sets it; `1` leaves attention as it is.
+- **Orders each group's tile loops** (the `intra_core_tiling` list, innermost first) by the data they move off chip, taking another order than the default (from the dim indexing the least data to the most) only where it moves less off chip and no more into any on-chip memory; a reduction whose output the group reads on stays inside the other loops. An `intra_core_tiling` that is given (the stage option or a mapping file) keeps its order, and groups tiling more than four dims keep the default.
 - **Writes per-fusion-group `mapping.yaml` files** under the run's output directory, so you can inspect (and later hand-edit) exactly what it chose.
 
 This is enough to run any of the example workloads on any of the example architectures - see the matrix in the README.
@@ -89,7 +90,7 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 |-------|:---:|---------|
 | `name` | yes | Group label. |
 | `layers` | yes | Names of the layers in this group. |
-| `intra_core_tiling` | no | Per-dimension temporal tiling, each `{dim: <Node>.D<n>, tile: size}` - note the **fully-qualified** dimension name (e.g. `Conv.D0`). |
+| `intra_core_tiling` | no | Per-dimension temporal tiling, each `{dim: <Node>.D<n>, tile: size}` - note the **fully-qualified** dimension name (e.g. `Conv.D0`). The list order is the loop order, innermost first, kept as given. |
 
 ---
 

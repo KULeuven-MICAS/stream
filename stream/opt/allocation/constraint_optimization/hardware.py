@@ -199,13 +199,8 @@ def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[Ha
 def build_hardware_facts(accelerator: Accelerator, nb_cols_to_use: int) -> HardwareFacts:
     """The facts of ``accelerator`` for a solve on its first ``nb_cols_to_use`` columns. Tensors may be staged in
     the staging memories (:attr:`Memory.staging`) within those columns."""
-    mem_memories = [
-        memory
-        for memory in accelerator.memories.values()
-        if memory.staging and memory.col_id is not None and memory.col_id < nb_cols_to_use
-    ]
     return HardwareFacts(
         accelerator=accelerator,
-        mem_memories=mem_memories,
+        mem_memories=accelerator.staging_memories(nb_cols_to_use),
         namespaces=tuple(namespaces_for(accelerator, NamespaceConfig(accelerator))),
     )

@@ -79,6 +79,7 @@ class GenericMappingGenerator:
         output_dir: str,
         intra_core_tiling: list[dict[str, Any]] | None = None,
         runtime_args: dict[str, Any] | None = None,
+        nb_cols_to_use: int | None = None,
     ) -> None:
         self.accelerator = accelerator
         self.workload = workload
@@ -89,6 +90,8 @@ class GenericMappingGenerator:
         self.intra_core_tiling = intra_core_tiling
         # The mapping file's runtime args, which place the workload's inputs and outputs over the off-chip memories.
         self.runtime_args = runtime_args
+        # The columns the allocation uses, whose memory cores may stage the tensors the tiler holds; all if None.
+        self.nb_cols_to_use = nb_cols_to_use
         self._split_axes = self._split_axes_of([workload])
         self._placed_bits: dict[tuple[Workload, ComputationNode], dict[int, int]] = {}
         self._activations = {t.name for cn in workload.get_computation_nodes() for t in cn.outputs}
@@ -670,9 +673,9 @@ class GenericMappingGenerator:
             if len(cores) > 1
         }
         split_axes = self._followed_split_axes(sub_workload, node_unroll) | self._split_axes
-        refined = CapacityTiler(sub_workload, self.accelerator, split_axes=split_axes).plan(
-            cns, cores_per_node, unroll, protected, seed_tiling, node_unroll, scale_tiles=scale_tiles
-        )
+        refined = CapacityTiler(
+            sub_workload, self.accelerator, split_axes=split_axes, nb_cols=self.nb_cols_to_use
+        ).plan(cns, cores_per_node, unroll, protected, seed_tiling, node_unroll, scale_tiles=scale_tiles)
         return refined if refined is None else refined or seed_tiling
 
     def _whole_layer_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:

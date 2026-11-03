@@ -16,7 +16,7 @@ class GenericMappingGenerationStage(Stage):
     """Generate each fusion group's mapping from workload+accelerator, written as YAML beside the run."""
 
     reads = ("accelerator", "workload", "output_path")
-    optional_reads = ("fusion_cut_points", "intra_core_tiling", "runtime_args")
+    optional_reads = ("fusion_cut_points", "intra_core_tiling", "runtime_args", "nb_cols_to_use")
     writes = ("sub_workloads", "sub_mappings")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
@@ -46,6 +46,7 @@ class GenericMappingGenerationStage(Stage):
             # Optional layer-fusion intra-core tiling (None -> generic mapper's trivial no-op tiling).
             intra_core_tiling=self.ctx.get("intra_core_tiling", None),
             runtime_args=self.ctx.get("runtime_args", None),
+            nb_cols_to_use=self.ctx.get("nb_cols_to_use", None),
         )
         group_mapping_paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
         logger.info(f"Generated {len(group_mapping_paths)} group mapping(s): {group_mapping_paths}")
