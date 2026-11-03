@@ -78,6 +78,18 @@ def test_a_tensor_read_in_its_group_and_after_it_moves_once_to_each(tmp_path, ha
         _assert_one_transfer_per_tensor(steady)
 
 
+def test_a_node_named_after_the_graph_output_it_writes_keeps_apart_from_the_output_edge(tmp_path):
+    """Exporters may name a node after its output tensor, which is also the name of the graph's output edge."""
+    layers = (("mm", "x", "w1", "h"), ("b", "h", "w2", "b"))
+    nodes = [helper.make_node("MatMul", [x, w], [y], name=name) for name, x, w, y in layers]
+    graph = helper.make_graph(nodes, "g", [_value(t) for t in ("x", "w1", "w2")], [_value("b")])
+    path = str(tmp_path / "named.onnx")
+    onnx.save(onnx.shape_inference.infer_shapes(helper.make_model(graph)), path)
+    (steady,) = _graphs(evaluate_mapping(TPU, path, str(tmp_path), options=SolveOptions(artifacts=False)))
+    assert {n["name"] for n in steady["nodes"] if n["kind"] == "compute"} == {"mm", "b"}
+    _assert_one_transfer_per_tensor(steady)
+
+
 @pytest.mark.parametrize("split", [False, True], ids=["fused", "split"])
 @pytest.mark.parametrize("right_core", [0, 1], ids=["same_core", "two_cores"])
 @pytest.mark.parametrize("tiled", [False, True], ids=["untiled", "tiled"])
