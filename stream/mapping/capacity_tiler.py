@@ -204,11 +204,9 @@ class CapacityTiler:
     def _order(  # noqa: PLR0913
         self, cns, cores_per_node, unroll, resident, node_unroll, budgets, orders
     ) -> list[LayerDim]:
-        """The first of ``orders`` (the default) unless another moves fewer bits off chip and no more into any memory
-        (:meth:`_moved`) holding only what fits the budgets beside the group's tiles, double buffered, than the first
-        holding what fits the capacities beside them, single buffered. The tiles of a staging memory the allocation may
-        use (in its columns, reaching every core on chip) are those of the group's inputs and outputs passing through
-        it. The first where those tiles alone overflow a budget."""
+        """The first of ``orders``, unless another moves fewer bits off chip in less time and no more bits into a memory
+        with no link from off chip. Time is the largest bits per cycle of incoming links over all memories. The first
+        is kept when the staging tiles alone overflow a budget."""
         if len(orders) == 1:
             return orders[0]
         held = self.memory_bits(cns, cores_per_node, unroll, resident, node_unroll)
@@ -230,13 +228,30 @@ class CapacityTiler:
             return orders[0]
         loose = {m: c - tiles[m] / 2 for m, c in capacities.items()}
         args = (cns, cores_per_node, unroll, resident, node_unroll)
+        sources = {*self.accelerator.offchip_memories, *staging}
+        rates: dict[str | None, float] = {
+            m: sum(
+                link.bandwidth
+                for link in dict.fromkeys(
+                    d["cl"] for u, _, d in self.accelerator.network.in_edges(memory, data=True) if u in sources
+                )
+            )
+            for m in capacities
+            for memory in [self.accelerator.memories[m]]
+        }
+        rates[None] = sum(self.accelerator.offchip_rate(m, "read") for m in self.accelerator.offchip_memories)
+
+        def time(moved: dict[str | None, float]) -> float:
+            return max((bits / rates[m] for m, bits in moved.items() if rates.get(m)), default=0)
+
         first = self._moved(*args, orders[0], loose, buffers=1, spills=True)
         better = [
-            (moved[None], o)
+            (time(moved), o)
             for o in orders[1:]
             if (moved := self._moved(*args, o, room)) is not None
             and moved[None] < first[None]
-            and all(bits <= first.get(m, 0) for m, bits in moved.items())
+            and all(bits <= first.get(m, 0) for m, bits in moved.items() if not rates.get(m))
+            and time(moved) < time(first)
         ]
         return min(better, key=lambda pair: pair[0])[1] if better else orders[0]
 

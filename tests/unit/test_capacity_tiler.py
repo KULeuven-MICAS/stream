@@ -308,12 +308,14 @@ connections:
 """
 
 
-def _gemm(tmp_path, m: int, k: int, n: int, l1_kib: int, sram_kib: int = 0) -> tuple[str, str]:
+def _gemm(tmp_path, m: int, k: int, n: int, l1_kib: int, sram_kib: int = 0, link: int = 256) -> tuple[str, str]:
     """The chip and an int8 ``m x k`` by ``k x n`` Gemm on it: one packed core with an L1 of ``l1_kib``, reaching the
-    off-chip memory through the SRAM of ``sram_kib`` of a memory core, or directly where there is none."""
+    off-chip memory through the SRAM of ``sram_kib`` of a memory core, over a link of ``link`` bits a cycle, or directly
+    where there is none."""
     (tmp_path / "packed.yaml").write_text(_PACKED_CORE.replace("L1_BITS", str(l1_kib * 8192)))
     (tmp_path / "sram.yaml").write_text(_SRAM_CORE.replace("SRAM_BITS", str(sram_kib * 8192)))
-    (tmp_path / "chip.yaml").write_text(_STAGED_CHIP if sram_kib else _PACKED_CHIP)
+    staged = _STAGED_CHIP.replace("bandwidth: 256, ends: {l1", f"bandwidth: {link}, ends: {{l1")
+    (tmp_path / "chip.yaml").write_text(staged if sram_kib else _PACKED_CHIP)
     graph = helper.make_graph(
         [helper.make_node("Gemm", ["a", "w"], ["out"], name="Gemm")],
         "g",
@@ -327,8 +329,8 @@ def _gemm(tmp_path, m: int, k: int, n: int, l1_kib: int, sram_kib: int = 0) -> t
     return str(tmp_path / "chip.yaml"), str(tmp_path / "gemm.onnx")
 
 
-def _order(tmp_path, m, k, n, l1_kib, sram_kib, nb_cols_to_use=None) -> list[str]:
-    acc, w = _parse(*_gemm(tmp_path, m, k, n, l1_kib=l1_kib, sram_kib=sram_kib))
+def _order(tmp_path, m, k, n, l1_kib, sram_kib, nb_cols_to_use=None, link=256) -> list[str]:
+    acc, w = _parse(*_gemm(tmp_path, m, k, n, l1_kib=l1_kib, sram_kib=sram_kib, link=link))
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), nb_cols_to_use=nb_cols_to_use)
     (sub,) = gen.groups()
     return [entry["dim"] for entry in gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))]
@@ -345,14 +347,45 @@ def _order(tmp_path, m, k, n, l1_kib, sram_kib, nb_cols_to_use=None) -> list[str
         ((256, 1024, 4096, 32, 96), 1, ["Gemm.D1", "Gemm.D0", "Gemm.D2"]),
         # The tiles passing through the 32 KiB SRAM fill it, so it holds no block of rows: the default order stays.
         ((128, 512, 8192, 64, 32), None, ["Gemm.D0", "Gemm.D1", "Gemm.D2"]),
-        # Rows outermost would read a from off chip once, held in the SRAM, but the L1 would take it from there once per
-        # column tile instead of once: the default order stays (as before the loop order was chosen).
+        # Held in the SRAM, a would reach the L1 once per column tile over a link no faster than off chip.
         ((64, 512, 1024, 16, 32), 2, ["Gemm.D0", "Gemm.D1", "Gemm.D2"]),
     ],
     ids=["rows-outermost", "rows-innermost", "one-column", "staging-full", "l1-takes-more"],
 )
 def test_a_tile_loop_order_is_the_one_moving_the_least_data(tmp_path, shape, nb_cols_to_use, order):
     assert _order(tmp_path, *shape, nb_cols_to_use) == order
+
+
+def test_a_wide_link_from_the_staging_memory_takes_the_rows_outermost(tmp_path):
+    """The last case above with the SRAM's link to the L1 16 times as wide: the L1 takes a again per column tile in
+    less time than a is read from off chip again, so the rows go outermost."""
+    assert _order(tmp_path, 64, 512, 1024, 16, 32, nb_cols_to_use=2, link=4096) == ["Gemm.D1", "Gemm.D2", "Gemm.D0"]
+
+
+def test_a_memory_behind_an_on_chip_buffer_takes_no_more_than_before(tmp_path):
+    """The last case above with a buffer no core uses between the SRAM and the L1, over a link of 64 bits a cycle: the
+    L1 has no link from off chip or a staging memory to time it by, so it may take no more than in the default order,
+    which stays."""
+    chip, gemm = _gemm(tmp_path, 64, 512, 1024, l1_kib=16, sram_kib=32)
+    port = "{bandwidth: 4096, serves: {any: [read, write]}, read_energy: 1, write_energy: 1}"
+    buffer = f"  buf:\n    offchip: false\n    views: []\n    capacity_bits: 8\n    ports: {{rw_port_1: {port}}}\n"
+    text = (
+        open(chip)
+        .read()
+        .replace("  dram:\n", buffer + "  dram:\n", 1)
+        .replace(
+            "  - {type: link, bandwidth: 256, ends: {l1: [r_port_1, w_port_1], sram: [r_port_1, w_port_1]}}\n",
+            "  - {type: link, bandwidth: 64, ends: {l1: [r_port_1, w_port_1], buf: [rw_port_1]}}\n"
+            "  - {type: link, bandwidth: 4096, ends: {buf: [rw_port_1], sram: [r_port_1, w_port_1]}}\n",
+        )
+    )
+    with open(chip, "w") as f:
+        f.write(text)
+    acc, w = _parse(chip, gemm)
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), nb_cols_to_use=2)
+    (sub,) = gen.groups()
+    order = [entry["dim"] for entry in gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))]
+    assert order == ["Gemm.D0", "Gemm.D1", "Gemm.D2"]
 
 
 def test_more_tiled_dims_than_are_ordered_keep_the_default_order(tmp_path, monkeypatch):
