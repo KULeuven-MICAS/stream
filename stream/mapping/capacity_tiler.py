@@ -8,6 +8,7 @@ from typing import Any
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import placement_split_bits, role_of, whole_bits
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
@@ -35,9 +36,9 @@ def _divisors_desc(n: int) -> list[int]:
 
 
 class CapacityTiler:
-    """Per-core tiles whose resident footprint fits each core's operand buffer within ``fill_fraction``, the headroom
-    for handover buffers. The tiles walking the fewest bits a placement splits, then filling the arrays most, are taken
-    and cut finer, while the arrays stay as full, into at least ``PIPELINE_TILES``."""
+    """Choose per-core tiles that fit each core's operand buffer within ``fill_fraction``, less what ``on_chip`` keeps
+    there. Prefer tiles that walk the fewest placed bits and fill the arrays most, then cut them into at least
+    ``PIPELINE_TILES`` without emptying the arrays."""
 
     MAX_STEADY_STATE_TILES = 1024
     """Steady-state tiles a group may be cut into, or, with ``scale_tiles``, per budget its whole per-core slices fill:
@@ -56,9 +57,11 @@ class CapacityTiler:
         fill_fraction: float = 0.9,
         split_axes: dict[str, int] | None = None,
         nb_cols: int | None = None,
+        on_chip: dict[str, dict[str, float]] | None = None,
     ) -> None:
         self.sub_workload = sub_workload
         self.nb_cols = nb_cols
+        self.on_chip = on_chip or {}
         self.split_axes = split_axes or {}
         self.accelerator = accelerator
         self.fill_fraction = fill_fraction
@@ -218,8 +221,9 @@ class CapacityTiler:
         staged = sum(
             2 * self._bits(cn, t, self._node_sizes(cn, cores_per_node, unroll, resident, {}))
             for cn, t in self._crossing(cns)
+            if not self._is_on_chip(t)
         )
-        capacities = self._capacities(cns, cores_per_node) | {m.name: m.capacity_bits for m in staging}
+        capacities = self._capacities(cns, cores_per_node) | {m.name: self._room(m) for m in staging}
         tiles = {m: held.get(m, 0) for m in capacities} | {m.name: staged for m in staging}
         room = {m: budgets.get(m, int(c * self.fill_fraction)) - tiles[m] for m, c in capacities.items()}
         if any(free < 0 for free in room.values()):
@@ -261,16 +265,9 @@ class CapacityTiler:
         buffers: int = 2,
         spills: bool = False,
     ) -> dict[str | None, float] | None:
-        """Bits moved into each memory (None: off chip) with the group's tiled dims looped in ``order``, innermost
-        first, by the tensors it reads and writes outside it (:meth:`_crossing`). Each is moved whole, again every
-        iteration of a loop that does not index it around one that does, unless what holding it across that loop takes
-        fits what is left of ``room`` (free bits per memory) beside the tensors held already, those taking the least
-        first. Holding it takes, for every node reading it, its tiles spanning the whole per-core slice of the loops
-        inside in place of the ``buffers`` it holds: in each reader's memory on every core (a tensor several cores read
-        is copied in each core's), or, for an input, in a staging memory, from which the cores still read it again.
-        Off chip, a tensor several nodes read is read once, and an output's partial sums are written and read back.
-        None where partial sums, or a tensor the group makes and reads on, do not stay on the cores, unless they
-        ``spills``."""
+        """Bits moved into each memory (None is off chip) with the tiled dims looped in ``order``, innermost first. A
+        tensor moves again on each iteration of an outer loop that does not index it, unless holding it fits ``room``.
+        None if partial sums would leave the cores and ``spills`` is false."""
         operands = self._crossing(cns)
         read = {t for cn in cns for t in cn.inputs}
         made = [(cn, t) for cn in cns for t in cn.outputs if t in read]
@@ -288,10 +285,15 @@ class CapacityTiler:
             for operand in readers:
                 for core in cores_per_node.get(operand[0], []):
                     memory = self.accelerator.memory_of(core, role_of(*operand)).name
-                    extra = bits(operand, spanned, node_unroll) - buffers * bits(operand, resident, node_unroll)
+                    if (share := self._placed_share(memory, operand[1])) == math.inf:
+                        continue
+                    extra = max(0, bits(operand, spanned, node_unroll) - share) - max(
+                        0, buffers * bits(operand, resident, node_unroll) - share
+                    )
                     copies[memory] = copies.get(memory, 0) + extra
             staged = sum(bits(o, spanned, {}) - buffers * bits(o, resident, {}) for o in readers)
-            staged_in = [{m: staged} for m in staging if readers[0][1] not in readers[0][0].outputs]
+            t = readers[0][1]
+            staged_in = [{m: staged} for m in staging if t not in readers[0][0].outputs and not self._is_on_chip(t)]
             return [copies, *staged_in] if copies else staged_in
 
         left = dict(room)
@@ -312,13 +314,11 @@ class CapacityTiler:
                 option = next((o for o in options if all(b <= left[m] for m, b in o.items())), None)
                 if option is None and not spills and t in readers[0][0].outputs:
                     return None
-                if option is None or any(m in staging for m in option):
-                    for operand in readers:
-                        reads[operand][0] *= whole[dim] // resident[dim]
-                if option is None:
-                    option = kept.get(t, {})
-                    for operand in readers:
-                        reads[operand][1] *= whole[dim] // resident[dim]
+                count = whole[dim] // resident[dim]
+                for operand in readers:
+                    reads[operand][0] *= count if option is None or any(m in staging for m in option) else 1
+                    reads[operand][1] *= count if option is None else 1
+                option = kept.get(t, {}) if option is None else option
                 for memory, b in option.items():
                     left[memory] -= b
                 kept[t] = option
@@ -328,12 +328,15 @@ class CapacityTiler:
             cn, t = operand
             on_cores, off = reads[operand]
             output = t in cn.outputs
-            offchip[t] = max(offchip.get(t, 0), whole_bits(t) * (2 * off - 1 if output else off))
-            for memory in staging:
-                moved[memory] = moved.get(memory, 0) + whole_bits(t) * (on_cores if output else off)
+            if not self._is_on_chip(t):
+                offchip[t] = max(offchip.get(t, 0), whole_bits(t) * (2 * off - 1 if output else off))
+                for memory in staging:
+                    moved[memory] = moved.get(memory, 0) + whole_bits(t) * (on_cores if output else off)
             for core in cores_per_node.get(cn, []):
                 memory = self.accelerator.memory_of(core, role_of(cn, t)).name
-                moved[memory] = moved.get(memory, 0) + bits(operand, whole, node_unroll) * (
+                if (share := self._placed_share(memory, t)) == math.inf:
+                    continue
+                moved[memory] = moved.get(memory, 0) + max(0, bits(operand, whole, node_unroll) - share) * (
                     on_cores - 1 if output else on_cores
                 )
         moved[None] = sum(offchip.values())
@@ -484,18 +487,15 @@ class CapacityTiler:
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
         accumulated_over: frozenset[LayerDim] = frozenset(),
     ) -> dict[str, float]:
-        """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: per node a core
-        runs, the tile of each operand the node touches under its own split (``node_unroll``, else the group's
-        ``unroll`` on a multi-core node), windows included, a tensor the group produces once and one it reads from
-        outside once per node reading it (the allocation gives each reader its own copy, but holds a copy in the memory
-        of its source in place), twice where a temporal loop steps it (double buffered); cores sharing a memory fill it
-        together. With ``accumulated_over``, only the outputs, held once, each spanning its whole per-core slice along
-        those dims: what a reduction around them keeps resident while they accumulate."""
+        """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: each node's operand
+        tiles under its split, windows included, an outside input once per reader, twice where a loop steps it; cores
+        sharing a memory fill it together. With ``accumulated_over``, only the outputs, whole along those dims."""
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         unique, _ = self.sub_workload.unique_dimensions()
         full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
         held: dict[str, dict[tuple, float]] = {}
+        tensors: dict[str, Tensor] = {}
         produced = {t for cn in cns for t in cn.outputs}
         for cn in cns:
             cores = cores_per_node.get(cn, [])
@@ -508,10 +508,26 @@ class CapacityTiler:
                 stepping = bool(self._indexing(cn, t) & stepped)
                 buffers = 2 if stepping and not whole else 1  # an accumulating output stays put
                 tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
+                tensors[t.name] = t
                 for core in cores:
                     memory = self.accelerator.memory_of(core, role_of(cn, t)).name
                     held.setdefault(memory, {})[(core.id, tile)] = buffers * math.prod(shape) * t.operand_type.bitwidth
-        return {memory: sum(tiles.values()) for memory, tiles in held.items()}
+        return {memory: self._beyond_placed(memory, tiles, tensors) for memory, tiles in held.items()}
+
+    def _beyond_placed(self, memory: str, tiles: dict[tuple, float], tensors: dict[str, Tensor]) -> float:
+        """The bits ``tiles`` take in ``memory``, each tensor only beyond the block of it placed there."""
+        per_tensor: dict[str, float] = {}
+        for (_, (name, *_)), bits in tiles.items():
+            per_tensor[name] = per_tensor.get(name, 0) + bits
+        return sum(
+            0 if (share := self._placed_share(memory, tensors[name])) == math.inf else max(0, bits - share)
+            for name, bits in per_tensor.items()
+        )
+
+    def _placed_share(self, memory: str, t: Tensor) -> float:
+        """The bits of ``t`` placed in ``memory`` for the whole run: 0 for none, ``inf`` where it is placed whole."""
+        share = self.on_chip.get(memory, {}).get(t.name, 0.0)
+        return math.inf if share >= whole_bits(t) else share
 
     def _indexing(self, cn: ComputationNode, t: Tensor) -> set[LayerDim]:
         """The unique dims ``cn`` indexes ``t`` along."""
@@ -533,13 +549,21 @@ class CapacityTiler:
     def _capacities(
         self, cns: tuple[ComputationNode, ...], cores_per_node: dict[ComputationNode, list[Core]]
     ) -> dict[str, int]:
-        """Each memory the group's cores use, with its capacity."""
+        """Each memory the group's cores use, with the room it has (:meth:`_room`)."""
         return {
-            memory.name: memory.capacity_bits
+            memory.name: self._room(memory)
             for cn in cns
             for core in cores_per_node.get(cn, [])
             for memory in self.accelerator.memories_of(core)
         }
+
+    def _room(self, memory: Memory) -> float:
+        """The capacity of ``memory`` less the workload inputs and outputs placed in it for the whole run."""
+        return memory.capacity_bits - sum(self.on_chip.get(memory.name, {}).values())
+
+    def _is_on_chip(self, t: Tensor) -> bool:
+        """Whether ``t`` is placed in an on-chip memory for the whole run, so it moves no data off chip."""
+        return any(t.name in tensors for tensors in self.on_chip.values())
 
     def _node_dims(self, cn: ComputationNode) -> set[LayerDim]:
         """The unique dims a node steps along."""

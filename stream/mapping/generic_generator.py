@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from collections.abc import Callable, Iterable
+from functools import cached_property
 from itertools import pairwise
 from typing import Any
 
@@ -24,7 +25,15 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.capacity_tiler import CapacityTiler
-from stream.mapping.mapping import Mapping, placement_options, placement_split_bits, role_of, runtime_args_per_group
+from stream.mapping.mapping import (
+    EdgePlacement,
+    Mapping,
+    placement_options,
+    placement_split_bits,
+    role_of,
+    runtime_args_per_group,
+    whole_bits,
+)
 from stream.opt.allocation.constraint_optimization.hardware import namespace_classes
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import dims_in_expr, indexing_axis, map_dim_positions
@@ -35,7 +44,7 @@ from stream.workload.iterator_type import (
     nonlinear_reduction_dims,
     sequential_dims,
 )
-from stream.workload.node import ComputationNode, OutEdge, edge_tensor
+from stream.workload.node import ComputationNode, InEdge, OutEdge, edge_tensor
 from stream.workload.normalization import operator_types_of, source_operator
 from stream.workload.tensor import Tensor
 from stream.workload.utils import unfinished_reduction_dims
@@ -201,6 +210,25 @@ class GenericMappingGenerator:
         }
 
         return {"layers": layers, "fused_groups": [fused_group]}
+
+    @cached_property
+    def _on_chip(self) -> dict[str, dict[str, float]]:
+        """Per on-chip memory, the bits of each workload input, output and fusion cut the runtime args place in it, by
+        tensor name: held there for the whole run."""
+        tensors = {edge.name: edge_tensor(edge) for edge in self.workload.nodes if isinstance(edge, InEdge | OutEdge)}
+        for cn in self.workload.get_computation_nodes():
+            # Only a node of one output is cut after; another output crossing a cut is carried by a bridge.
+            cut = {f"{cn.name}_cut_{end}": cn.outputs[0] for end in ("in", "out")} if len(cn.outputs) == 1 else {}
+            tensors |= cut | {f"{t.name}_bridge_{end}": t for t in cn.outputs for end in ("in", "out")}
+        held: dict[str, dict[str, float]] = {}
+        for name, args in (self.runtime_args or {}).items():
+            if (declared := args.get("placement")) is None or (tensor := tensors.get(name)) is None:
+                continue
+            memories = tuple(self.accelerator.memories[m] for m in declared["memories"])
+            placement = EdgePlacement(memories, declared.get("split"))
+            for memory, share in placement.shares().items() if placement.on_chip else ():
+                held.setdefault(memory.name, {})[tensor.name] = float(share * whole_bits(tensor))
+        return held
 
     def _split_axes_of(self, workloads: list[Workload]) -> dict[str, int]:
         """The axis a placement splits each workload input or output along over the off-chip memories, by tensor
@@ -673,9 +701,10 @@ class GenericMappingGenerator:
             if len(cores) > 1
         }
         split_axes = self._followed_split_axes(sub_workload, node_unroll) | self._split_axes
-        refined = CapacityTiler(
-            sub_workload, self.accelerator, split_axes=split_axes, nb_cols=self.nb_cols_to_use
-        ).plan(cns, cores_per_node, unroll, protected, seed_tiling, node_unroll, scale_tiles=scale_tiles)
+        tiler = CapacityTiler(
+            sub_workload, self.accelerator, split_axes=split_axes, nb_cols=self.nb_cols_to_use, on_chip=self._on_chip
+        )
+        refined = tiler.plan(cns, cores_per_node, unroll, protected, seed_tiling, node_unroll, scale_tiles=scale_tiles)
         return refined if refined is None else refined or seed_tiling
 
     def _whole_layer_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import onnx
 import pytest
@@ -17,6 +18,7 @@ from stream.inputs.testing.workload.make_attention_head import make_multi_head_a
 from stream.inputs.testing.workload.make_decode_attention import make_decode_attention
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.mapping.mapping import whole_bits
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
@@ -406,3 +408,53 @@ def test_a_given_intra_core_tiling_keeps_its_loop_order(tmp_path, given_by):
     (reuse, *_) = ctx.get("allocation").solution.performance["tensor_reuse"]
     temporal = [int(loop.split(",")[1]) for loop in reuse["loop_nest_out_to_in"] if loop.startswith("T(")]
     assert temporal[::-1] == [16, 8, 32]
+
+
+def test_a_weight_placed_on_chip_takes_its_room_from_the_tiles(tmp_path):
+    """A 256 KiB weight placed in the 288 KiB L1 for the whole run leaves 32 KiB: the tiles are cut to fit beside it,
+    where sized for the whole L1 they overflowed what is left."""
+    chip, gemm = _gemm(tmp_path, 16, 4096, 64, l1_kib=288)
+    placement = tmp_path / "placement.yaml"
+    placement.write_text(yaml.safe_dump({"runtime_args": {"w": {"placement": {"memories": ["l1"]}}}}))
+    options = SolveOptions(nb_cols_to_use=1, artifacts=False)
+    estimate = evaluate_mapping(chip, gemm, str(tmp_path / "out"), str(placement), options)
+    assert estimate.cycles > 0
+
+
+def test_a_weight_placed_in_the_l1_is_read_there_in_place(tmp_path):
+    """With the 1 MiB weight placed in the 1056 KiB L1 for the whole run, holding it moves nothing: the rows go
+    outermost so a is read once, not once per block of columns."""
+    acc, w = _parse(*_gemm(tmp_path, 512, 512, 2048, l1_kib=1056))
+    runtime_args = {"w": {"placement": {"memories": ["l1"]}}}
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), runtime_args=runtime_args, nb_cols_to_use=1)
+    (sub,) = gen.groups()
+    order = [entry["dim"] for entry in gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))]
+    assert order == ["Gemm.D2", "Gemm.D0"]
+
+
+def test_a_weight_placed_in_part_in_the_l1_takes_and_moves_the_rest_there(tmp_path):
+    """Half of the 64 KiB weight placed in the L1 saves its tile there half of what all of it placed saves, held or
+    moved."""
+    acc, w = _parse(*_gemm(tmp_path, 64, 256, 256, l1_kib=1056))
+    (cn,) = w.get_computation_nodes()
+    cores = {cn: [acc.get_core(0)]}
+    resident = {w.leading_dim(d)[0]: w.get_dimension_size(d) for d in w.get_dims(cn)}
+
+    def saved(share: float) -> tuple[float, float]:
+        tilers = (CapacityTiler(w, acc), CapacityTiler(w, acc, on_chip={"l1": {"w": share * 256 * 256 * 8}}))
+        held = [tiler.memory_bits((cn,), cores, {}, resident)["l1"] for tiler in tilers]
+        moved = [tiler._moved((cn,), cores, {}, resident, None, [], {"l1": 2**30})["l1"] for tiler in tilers]
+        return held[0] - held[1], moved[0] - moved[1]
+
+    assert saved(0.5) == (saved(1)[0] / 2, saved(1)[1] / 2)
+
+
+def test_each_output_of_a_node_with_several_is_placed_by_the_bridge_carrying_it(tmp_path, monkeypatch):
+    """A node writing out and a: each reaches the next group over a bridge named after it, placed apart."""
+    acc, w = _parse(*_gemm(tmp_path, 64, 256, 256, l1_kib=1056))
+    (cn,) = w.get_computation_nodes()
+    a, _, out = cn.tensors
+    monkeypatch.setattr(w, "get_computation_nodes", lambda: [SimpleNamespace(name="Gemm", outputs=(out, a))])
+    runtime_args = {f"{t.name}_bridge_out": {"placement": {"memories": ["l1"]}} for t in (out, a)}
+    gen = GenericMappingGenerator(acc, w, str(tmp_path / "gen"), runtime_args=runtime_args)
+    assert gen._on_chip == {"l1": {"out": whole_bits(out), "a": whole_bits(a)}}
