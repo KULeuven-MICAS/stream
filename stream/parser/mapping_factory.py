@@ -13,6 +13,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
 from stream.workload.node import OutEdge
+from stream.workload.normalization import operator_types_of
 from stream.workload.workload import ComputationNode, InEdge, Workload
 
 if TYPE_CHECKING:
@@ -69,7 +70,7 @@ class MappingFactory:
                 if core is None:
                     raise ValueError(f"Core with id {core_id} not found in accelerator.")
                 served = getattr(core, "operator_types", None)
-                if served is not None and node.type not in served:
+                if served is not None and operator_types_of(node).isdisjoint(served):
                     raise ValueError(
                         f"{node.name} is a {node.type}, but core {core_id} only executes {', '.join(served)}."
                     )

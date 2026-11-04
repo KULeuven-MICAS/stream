@@ -1,8 +1,37 @@
 from onnx import TensorProto, ValueInfoProto
-from xdsl.dialects.builtin import FixedBitwidthType, IntegerType, Signedness, bf16, f16, f32, i8, i16, i32
+from xdsl.dialects.builtin import (
+    FixedBitwidthType,
+    IntAttr,
+    IntegerType,
+    Signedness,
+    _FloatType,
+    bf16,
+    f16,
+    f32,
+    i8,
+    i16,
+    i32,
+)
+from xdsl.ir import ParametrizedAttribute
+from xdsl.irdl import ParameterDef, irdl_attr_definition
 from zigzag.parser.onnx.utils import OnnxTensorType
 
 from stream.workload.workload import Tensor
+
+
+# Built on xdsl's private float base: xdsl 0.29 has no 4- or 8-bit float types, and only the width is read.
+@irdl_attr_definition
+class _NarrowFloatType(ParametrizedAttribute, _FloatType):
+    name = "stream.narrow_float"
+    width: ParameterDef[IntAttr]
+
+    @property
+    def bitwidth(self) -> int:
+        return self.width.data
+
+    @property
+    def format(self) -> str:
+        raise NotImplementedError(f"{self.name} values have no struct format to be packed in.")
 
 
 def onnx_tensor_to_tensor(tensor: ValueInfoProto | OnnxTensorType | TensorProto, name: str | None = None) -> Tensor:
@@ -11,6 +40,13 @@ def onnx_tensor_to_tensor(tensor: ValueInfoProto | OnnxTensorType | TensorProto,
         TensorProto.FLOAT: f32,
         TensorProto.FLOAT16: f16,
         TensorProto.BFLOAT16: bf16,
+        TensorProto.FLOAT8E4M3FN: _NarrowFloatType([IntAttr(8)]),
+        TensorProto.FLOAT8E4M3FNUZ: _NarrowFloatType([IntAttr(8)]),
+        TensorProto.FLOAT8E5M2: _NarrowFloatType([IntAttr(8)]),
+        TensorProto.FLOAT8E5M2FNUZ: _NarrowFloatType([IntAttr(8)]),
+        TensorProto.FLOAT4E2M1: _NarrowFloatType([IntAttr(4)]),
+        TensorProto.INT4: IntegerType(4),
+        TensorProto.UINT4: IntegerType(4, Signedness.UNSIGNED),
         TensorProto.INT8: i8,
         TensorProto.UINT8: IntegerType(8, Signedness.UNSIGNED),
         TensorProto.INT16: i16,

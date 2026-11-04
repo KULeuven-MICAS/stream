@@ -35,6 +35,8 @@ classifiers = [
 keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", "zigzag", "dse", "design-space-exploration", "machine-learning", "deep-learning", "mapping"]
 dependencies = [
     "zigzag-dse==3.9.1",
+    # zigzag's mapping validator imports six without declaring it
+    "six",
     "cerberus",
     "ortools>=9.15",
     "pydantic>=2.0,<2.12",
@@ -104,6 +106,9 @@ generic = "stream.stages.generation.mapping_generators:GENERIC_MAPPING"
 # ordered by an OVERLAY_PRIORITY int on its module -- public entry points are priority 0, so a plugin
 # outranks a built-in of the same name. The value is the distribution's module.
 [project.entry-points."stream.overlays"]
+
+# Overlay accelerator keys: the name is the key, the object a cerberus `rule` and `check(accelerator, value)`.
+[project.entry-points."stream.accelerator_keys"]
 
 [project.entry-points."stream.workload_blocks"]
 # Built-in blocks register in-tree (stream.workload.blocks); overlays add their own entries here.

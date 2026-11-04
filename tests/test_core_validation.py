@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from zigzag.utils import open_yaml
@@ -39,3 +40,14 @@ def test_aie_whole_array_parses():
 def test_aie_whole_array_strix_parses():
     normalized = _validate_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
     _assert_core_namespace(normalized, "aie2")
+
+
+def test_core_references_resolve_from_the_hardware_file_wherever_stream_runs(tmp_path, monkeypatch):
+    examples = REPO_ROOT / "stream/inputs/examples/hardware"
+    data = open_yaml(examples / "tpu_like_quad_core.yaml")
+    path = tmp_path / "hardware" / "quad_core.yaml"
+    data["cores"] = {i: Path(core).name for i, core in data["cores"].items()}
+    data["cores"][0] = os.path.relpath(examples / "cores/tpu_like.yaml", path.parent)
+    monkeypatch.chdir(tmp_path)
+    validator = AcceleratorValidator(data, accelerator_path=path)
+    assert validator.validate(), "; ".join(validator.errors)

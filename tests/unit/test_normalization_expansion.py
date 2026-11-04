@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from xdsl.dialects.builtin import bf16
+from xdsl.ir.affine import AffineMap
 
 from stream.stages.context import StageContext
 from stream.stages.generation.normalization_expansion import ExpandNormalizationStage
@@ -14,13 +16,15 @@ from stream.workload.models import (
     build_attention_block,
     build_gqa_block,
 )
-from stream.workload.node import NormalizationNode
+from stream.workload.node import InEdge, NormalizationNode, OutEdge
 from stream.workload.normalization import (
     REDUCTION_SUBOPS,
     collapse_fused_kernels,
     expand_normalizations,
+    over_axes,
 )
-from stream.workload.workload import determine_fusion_cut_points
+from stream.workload.tensor import Tensor
+from stream.workload.workload import Workload, determine_fusion_cut_points
 
 
 def _softmax(workload):
@@ -94,6 +98,29 @@ def test_expand_collapse_round_trip(workload):
     assert restored.inputs[0].name == original.inputs[0].name
     assert restored.outputs[0].name == original.outputs[0].name
     assert restored.num_dims == original.num_dims
+
+
+def test_a_layer_normalization_collapses_back_reading_its_scale_and_shift():
+    data, scale, shift = (
+        Tensor.create("x", bf16, (4, 16)),
+        Tensor.create("s", bf16, (16,)),
+        Tensor.create("b", bf16, (16,)),
+    )
+    row = over_axes(2, (1,))
+    norm = NormalizationNode(
+        type="LayerNormalization",
+        name="ln",
+        inputs=(data, scale, shift),
+        outputs=(Tensor.create("y", bf16, (4, 16)),),
+        operand_mapping=(AffineMap.identity(2), row, row, AffineMap.identity(2)),
+        reduction_axes=(1,),
+    )
+    edges = [InEdge(name=t.name, outputs=(t,)) for t in norm.inputs]
+    workload = Workload([*edges, norm, OutEdge(name="y", inputs=norm.outputs)])
+    collapsed = collapse_fused_kernels(expand_normalizations(workload))
+    (restored,) = [n for n in collapsed.get_computation_nodes() if isinstance(n, NormalizationNode)]
+    assert [t.name for t in restored.inputs] == ["x", "s", "b"]
+    assert [restored.get_mapping(t) for t in restored.inputs] == [AffineMap.identity(2), row, row]
 
 
 def test_stage_expands_the_softmax():
