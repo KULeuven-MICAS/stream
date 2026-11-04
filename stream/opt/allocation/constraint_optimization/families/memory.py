@@ -10,12 +10,13 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.hardware.architecture.memory import Memory
 from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.mapping.mapping import OFFCHIP_CAPACITY, whole_bits
 from stream.opt.allocation.constraint_optimization.diagnosis import (
     ConstraintTag,
     ResourceKind,
     structural_infeasibility,
 )
-from stream.opt.allocation.constraint_optimization.families import BUFFERING
+from stream.opt.allocation.constraint_optimization.families import BUFFERING, OFFCHIP_FOOTPRINT
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import ObjectiveLevel, SolverModel, SolverVar, SolverVarType
 from stream.workload.iterator_type import is_state_operand
@@ -117,11 +118,12 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
 
 
 class MemoryCapacity:
-    """What each memory holds fits in its capacity, less what the toolchain reserves."""
+    """What each memory holds fits in its capacity, less what the toolchain reserves. The off-chip bits of an input
+    whose placement the allocation chooses rank after latency, so it is copied only where that is faster."""
 
     name: ClassVar[str] = "memory_capacity"
     requires: ClassVar[tuple[str, ...]] = ()
-    provides: ClassVar[tuple[str, ...]] = ()
+    provides: ClassVar[tuple[str, ...]] = ("offchip_footprint",)
 
     def build(self, ctx: FormulationContext) -> None:
         """What each memory holds against its capacity: a whole tensor once however many of its positions sit there,
@@ -194,6 +196,43 @@ class MemoryCapacity:
                 kind=MEMORY_CAPACITY,
                 bound=cap / 8,
             )
+        _offchip_capacity(ctx)
+
+    def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
+        if "offchip_footprint" not in ctx.quantities:
+            return []
+        footprint = ctx.quantities.get("offchip_footprint").expr
+        return [ObjectiveLevel(expr=footprint, priority=OFFCHIP_FOOTPRINT, name="offchip_footprint")]
+
+
+def _offchip_capacity(ctx: FormulationContext) -> None:
+    """Each off-chip memory fits the settled workload tensors and what the chosen route's placement holds of each input
+    the allocation places, diagnosed at a block; those bits, relative to the largest such input, are the
+    ``offchip_footprint``."""
+    space, ledger = ctx.space, ctx.ledger
+    blocks = len(space.accelerator.offchip_memories)
+    chosen: dict[Memory, list[tuple[float, SolverVar]]] = defaultdict(list)
+    for tr in space.transfer_nodes:
+        bits = whole_bits(tr.inputs[0])
+        options = {choice: choice.placement.shares() for choice in space.path_choices[tr] if choice.placement}
+        for memory in dict.fromkeys(memory for shares in options.values() for memory in shares):
+            chosen[memory] += [(float(s.get(memory, 0) * bits), ctx.vars.y[(tr, c)]) for c, s in options.items()]
+            ledger.terms[(OFFCHIP_CAPACITY, memory)][tr.inputs[0].name] = bits / blocks / 8
+    for memory, terms in chosen.items():
+        settled = space.problem.offchip_held.get(memory, {})
+        ledger.terms[(OFFCHIP_CAPACITY, memory)] |= {tensor.name: bits / 8 for tensor, bits in settled.items()}
+        cap = space.memory_capacity_bits(memory)
+        ctx.add_constr(
+            ctx.model.quicksum(bits * y._raw for bits, y in terms) <= cap - sum(settled.values()),
+            name=f"offchip_cap_{resource_key(memory)}",
+            resource=memory,
+            kind=OFFCHIP_CAPACITY,
+            bound=cap / 8,
+        )
+    if chosen:
+        largest = max(bits for terms in chosen.values() for bits, _ in terms)
+        footprint = ctx.model.quicksum(bits / largest * y._raw for terms in chosen.values() for bits, y in terms)
+        ctx.quantities.add("offchip_footprint", footprint._raw)
 
 
 def _holdings(ctx: FormulationContext, t: Tensor) -> list[tuple[Memory, int, SolverVar]]:

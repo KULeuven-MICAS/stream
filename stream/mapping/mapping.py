@@ -1,20 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
+from math import prod
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.memory import Memory, size_text
 from stream.hardware.ports import OUTPUT, input_role
+from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind, overflow_infeasibility
+from stream.workload.affine_access import dims_in_expr, indexing_axis
 from stream.workload.iterator_type import is_state_operand
-from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode
+from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode, declared_of, edge_tensor
 from stream.workload.tensor import Tensor
 from stream.workload.utils import get_equivalent_dimension, operand_inputs
-from stream.workload.workload import Node, Workload
+from stream.workload.workload import Node, Workload, position_of
 
 if TYPE_CHECKING:
     # AIEKernel lives in stream.compiler (AIE codegen), an optional install. Only used as an
@@ -40,6 +46,29 @@ class FusedGroup:
                 raise TypeError("intra_core_tiling dim must be a non-empty string")
             if not isinstance(tile, int) or tile <= 0:
                 raise ValueError(f"Tile for '{dim}' must be a positive int, got {tile!r}.")
+
+
+@dataclass(frozen=True, slots=True)
+class EdgePlacement:
+    """Which off-chip memories hold an edge's tensor: block ``s`` of the whole tensor along axis ``split`` in
+    ``memories[s]``, or, without a split, all of it in each."""
+
+    memories: tuple[Memory, ...]
+    split: int | None = None
+
+    def shares(self) -> dict[Memory, Fraction]:
+        """The share of the whole tensor each of its memories holds: a block per position of a split, all of a copy."""
+        if self.split is None:
+            return dict.fromkeys(self.memories, Fraction(1))
+        return {memory: Fraction(n, len(self.memories)) for memory, n in Counter(self.memories).items()}
+
+    def block(self, position: int, extent: int) -> tuple[int, int]:
+        """The inclusive index range along the axis the memory at ``position`` holds, of an axis ``extent`` long."""
+        if extent % len(self.memories):
+            names = [memory.name for memory in self.memories]
+            raise ValueError(f"axis {self.split} of extent {extent} does not split evenly over {names}")
+        size = extent // len(self.memories)
+        return position * size, (position + 1) * size - 1
 
 
 @dataclass(slots=True)
@@ -89,6 +118,7 @@ class Mapping:
         initial: dict[Node, NodeMapping] | None = None,
         fused_groups: Iterable[FusedGroup] | None = None,
         runtime_args: dict[str, str] | None = None,
+        edge_placements: dict[str, EdgePlacement] | None = None,
     ) -> None:
         self._by_node: dict[Node, NodeMapping] = {}
         self._fused_groups: tuple[FusedGroup, ...] = tuple(fused_groups or ())
@@ -99,6 +129,7 @@ class Mapping:
             for node, layer_mapping in initial.items():
                 self.set(node, layer_mapping)
         self._runtime_args = runtime_args or {}
+        self._edge_placements = edge_placements or {}
 
     def set(self, node: Node, layer_mapping: NodeMapping) -> None:
         if node is None:
@@ -236,6 +267,10 @@ class Mapping:
             "nodes": nodes_ir,
             "fused_groups": fused_groups_ir,
             "runtime_args": dict(self._runtime_args),
+            "edge_placements": {
+                name: {"memories": [memory.name for memory in placement.memories], "split": placement.split}
+                for name, placement in self._edge_placements.items()
+            },
         }
 
     def to_dict(self) -> dict[str, dict[str, Any]]:
@@ -279,11 +314,8 @@ class Mapping:
                 intra_core_tiling=tuple(new_tilings),
             )
             new_fused_groups.append(new_fused_group)
-        new_mapping = Mapping(fused_groups=new_fused_groups, runtime_args=self.runtime_args)
-        for node in self.nodes():
-            updated_node = new_workload.get_node_by_name(node.name)
-            new_mapping.set(updated_node, self.get(node))
-        return new_mapping
+        initial = {new_workload.get_node_by_name(node.name): nm for node, nm in self.items()}
+        return self._with(initial=initial, fused_groups=new_fused_groups)
 
     @property
     def fused_groups(self) -> tuple[FusedGroup, ...]:
@@ -291,16 +323,37 @@ class Mapping:
 
     def with_fused_groups(self, fused_groups: Iterable[FusedGroup]) -> Mapping:
         """The same per-node mapping under different fused groups (e.g. another intra-core tiling)."""
-        return Mapping(initial=dict(self._by_node), fused_groups=fused_groups, runtime_args=self._runtime_args)
+        return self._with(fused_groups=fused_groups)
+
+    def with_edge_placements(self, edge_placements: dict[str, EdgePlacement]) -> Mapping:
+        """The same mapping with ``edge_placements`` added to the placements it declares."""
+        return self._with(edge_placements=self._edge_placements | edge_placements)
 
     def copy(self) -> Mapping:
         """A detached mapping a consumer may rewrite in place."""
-        cloned = {node: replace(nm) for node, nm in self._by_node.items()}
-        return Mapping(initial=cloned, fused_groups=self._fused_groups, runtime_args=self._runtime_args)
+        return self._with(initial={node: replace(nm) for node, nm in self._by_node.items()})
+
+    def _with(self, **changes: Any) -> Mapping:
+        kept = {
+            "initial": dict(self._by_node),
+            "fused_groups": self._fused_groups,
+            "runtime_args": self._runtime_args,
+            "edge_placements": self._edge_placements,
+        }
+        return Mapping(**(kept | changes))
 
     @property
     def runtime_args(self) -> dict[str, str]:
         return self._runtime_args
+
+    @property
+    def edge_placements(self) -> dict[str, EdgePlacement]:
+        """The placement of each edge the mapping declares one for, by edge name."""
+        return self._edge_placements
+
+    def placement_of(self, node: Node) -> EdgePlacement | None:
+        """The placement of ``node`` if it is an input or output edge the mapping places, else None."""
+        return self._edge_placements.get(node.name) if isinstance(node, InEdge | OutEdge) else None
 
 
 def role_of(node: ComputationNode, tensor: Tensor) -> str:
@@ -335,11 +388,29 @@ def the_one[T](options: tuple[T, ...], node: Node, what: str) -> T:
     return options[0]
 
 
+def placement_options(accelerator: Accelerator, mapping: Mapping, edge: InEdge) -> tuple[EdgePlacement, ...]:
+    """The placements the allocation chooses between for an input the mapping does not place over several off-chip
+    memories: all in one, a block in each along each declared axis they split evenly, or a copy in each."""
+    memories = accelerator.offchip_memories
+    if edge.name in mapping.edge_placements or len(memories) <= 1:
+        return ()
+    declared, shape = declared_of(edge), edge_tensor(edge).subview.source.type.get_shape()
+    axes = [declared.axes.index(axis) for axis in dict.fromkeys(declared.axes)]
+    return (
+        *(EdgePlacement((memory,)) for memory in memories),
+        *(EdgePlacement(memories, axis) for axis in axes if shape[axis] % len(memories) == 0),
+        EdgePlacement(memories),
+    )
+
+
 def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: str) -> tuple[tuple[Memory, ...], ...]:
-    """The candidate memories ``node`` holds its ``role`` operand in, one per position: off-chip for an edge, the
-    memory allocation for a transfer, and for a computation the memory each core keeps that operand in. Cores sharing
-    a memory repeat it."""
-    if isinstance(node, InEdge | OutEdge):
+    """The candidate memories ``node`` holds its ``role`` operand in, one per position: an input edge's placement or
+    options (:func:`placement_options`), else off chip; a transfer's allocated memory; each core's for a computation."""
+    if isinstance(node, InEdge):
+        if placement := mapping.edge_placements.get(node.name):
+            return (placement.memories,)
+        if options := placement_options(accelerator, mapping, node):
+            return tuple(dict.fromkeys(option.memories for option in options))
         return ((offchip_memory(accelerator),),)
     if isinstance(node, TransferNode):
         return mapping.get(node).memory_allocation
@@ -349,3 +420,207 @@ def placements_of(accelerator: Accelerator, mapping: Mapping, node: Node, role: 
             for cores in mapping.get(node).resource_allocation
         )
     raise ValueError(f"{node} holds no operand to place")
+
+
+def viewed_placements(workload: Workload, runtime_args: dict[str, Any]) -> dict[str, Any]:
+    """``runtime_args`` as the mapping file declares them, each placement's split counted in the axes ``workload``
+    views its edge in."""
+    viewed = dict(runtime_args)
+    for edge in workload.nodes:
+        args = runtime_args.get(edge.name, {})
+        placement = args.get("placement", {})
+        if isinstance(edge, InEdge | OutEdge) and edge.declared and (split := placement.get("split")) is not None:
+            viewed[edge.name] = args | {"placement": placement | {"split": edge.declared.axes.index(split)}}
+    return viewed
+
+
+def runtime_args_per_group(runtime_args: dict[str, Any], workloads: Sequence[Workload]) -> list[dict[str, Any]]:
+    """The runtime args of each group's input and output edges: those declared for its tensor, which the two ends of
+    a fusion cut share and must not declare differently, else an empty entry for the standard layout."""
+    declared: dict[Tensor, dict[str, tuple[str, Any]]] = {}
+    edges = [[node for node in workload.nodes if isinstance(node, InEdge | OutEdge)] for workload in workloads]
+    for edge in (edge for group in edges for edge in group if edge.name in runtime_args):
+        merged = declared.setdefault(edge_tensor(edge), {})
+        for key, value in runtime_args[edge.name].items():
+            name, first = merged.setdefault(key, (edge.name, value))
+            if first != value:
+                raise ValueError(
+                    f"{name} and {edge.name} are the two ends of one fusion cut but declare {key} {first} and {value}"
+                )
+    return [
+        {edge.name: {key: value for key, (_, value) in declared.get(edge_tensor(edge), {}).items()} for edge in group}
+        for group in edges
+    ]
+
+
+def placement_split_bits(node: ComputationNode, split_axes: dict[str, int]) -> dict[int, int]:
+    """Per position of ``node``'s dims, the bits of its operands whose placement splits an axis that dim indexes, by the
+    axis ``split_axes`` gives each tensor name."""
+    bits: dict[int, int] = {}
+    for tensor in node.tensors:
+        if (axis := split_axes.get(tensor.name)) is not None:
+            for p in dims_in_expr(node.get_mapping(tensor).results[axis]):
+                bits[p] = bits.get(p, 0) + tensor.size_bits()
+    return bits
+
+
+def landing_of(accelerator: Accelerator, mapping: Mapping, edge: OutEdge | None, src: Node) -> tuple[Memory, ...]:
+    """The off-chip memories an output from ``src`` lands in, one per position: those of the placement of ``edge``, the
+    output edge reading it, else the off-chip memory, or of several the one nearest each memory ``src`` holds it in."""
+    if edge is not None and (placement := mapping.edge_placements.get(edge.name)):
+        return placement.memories
+    if len(accelerator.offchip_memories) <= 1:
+        return (offchip_memory(accelerator),)
+    held_in = the_one(placements_of(accelerator, mapping, src, OUTPUT), src, "placements")
+    return tuple(map(accelerator.nearest_offchip, held_in))
+
+
+def landed_placement(accelerator: Accelerator, mapping: Mapping, src: ComputationNode) -> EdgePlacement | None:
+    """Where ``src``'s output landed without a placement (:func:`landing_of`): split along the axis its first split dim
+    indexes, a copy where none does (a split reduction); None if the cores holding one block land it in several."""
+    positions = landing_of(accelerator, mapping, None, src)
+    if len(set(positions)) == 1:
+        return EdgePlacement(positions[:1])
+    tilings = mapping.get(src).inter_core_tiling
+    tiling = tilings[0] if tilings else ()
+    access = src.get_mapping(src.outputs[0])
+    indexed = (
+        (loop, axis)
+        for loop, (dim, _) in enumerate(tiling)
+        if (axis := indexing_axis(access, dim.position)) is not None
+    )
+    if (found := next(indexed, None)) is None:
+        return EdgePlacement(tuple(dict.fromkeys(positions)))
+    loop, axis = found
+    factor, inner = tiling[loop][1], prod(f for _, f in tiling[loop + 1 :])
+    blocks: dict[int, set[Memory]] = defaultdict(set)
+    for core, memory in enumerate(positions):
+        blocks[position_of(core, len(positions), tiling) // inner % factor].add(memory)
+    if any(len(memories) > 1 for memories in blocks.values()):
+        return None
+    return EdgePlacement(tuple(next(iter(blocks[b])) for b in range(factor)), axis)
+
+
+def with_cut_landings(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> list[Mapping]:
+    """``mappings`` with each unplaced input end of a fusion cut reading where its output end landed
+    (:func:`landed_placement`); refused where no placement can say so."""
+    if len(accelerator.offchip_memories) <= 1:
+        return list(mappings)
+    landed: dict[Tensor, tuple[OutEdge, ComputationNode, EdgePlacement | None]] = {}
+    for workload, mapping in zip(workloads, mappings, strict=True):
+        for edge in workload.get_out_edges():
+            src = next(iter(workload.predecessors(edge)), None)
+            if isinstance(src, ComputationNode) and edge.name not in mapping.edge_placements:
+                landed[edge_tensor(edge)] = (edge, src, landed_placement(accelerator, mapping, src))
+    unsaid = {tensor: (out, src) for tensor, (out, src, placement) in landed.items() if placement is None}
+    for workload, mapping in zip(workloads, mappings, strict=True):
+        for edge in workload.get_in_edges():
+            if edge_tensor(edge) in unsaid and edge.name not in mapping.edge_placements:
+                out, src = unsaid[edge_tensor(edge)]
+                raise ValueError(
+                    f"the cores of {src.name} land a block of {edge_tensor(edge).name} in several off-chip memories, "
+                    f"so no placement says where {edge.name} reads it; place {out.name} in the mapping file"
+                )
+    held = {tensor: placement for tensor, (_, _, placement) in landed.items() if placement is not None}
+    return with_held_placements(workloads, mappings, held)
+
+
+def with_held_placements(
+    workloads: Sequence[Workload], mappings: Sequence[Mapping], held: dict[Tensor, EdgePlacement]
+) -> list[Mapping]:
+    """``mappings`` with each input edge declaring no placement reading its tensor where ``held`` places it."""
+    return [
+        mapping.with_edge_placements(
+            {
+                edge.name: held[edge_tensor(edge)]
+                for edge in workload.get_in_edges()
+                if edge.name not in mapping.edge_placements and edge_tensor(edge) in held
+            }
+        )
+        for workload, mapping in zip(workloads, mappings, strict=True)
+    ]
+
+
+def offchip_holdings(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> dict[Memory, dict[Tensor, Fraction]]:
+    """The share of each workload input and output each off-chip memory holds, a tensor once over the groups and the
+    two ends of a fusion cut. An input the allocation is yet to place is held a block in each: the least room it takes,
+    which an earlier choice cannot take from it."""
+    held: dict[Memory, dict[Tensor, Fraction]] = defaultdict(dict)
+    counted: set[Tensor] = set()
+    if not accelerator.offchip_memories:
+        return held
+    for workload, mapping in zip(workloads, mappings, strict=True):
+        for edge in workload.nodes:
+            if not isinstance(edge, InEdge | OutEdge) or (tensor := edge_tensor(edge)) in counted:
+                continue
+            counted.add(tensor)
+            if (placement := mapping.placement_of(edge)) is None:
+                if isinstance(edge, InEdge):
+                    placement = EdgePlacement(accelerator.offchip_memories, 0)
+                else:
+                    src = next(iter(workload.predecessors(edge)))
+                    placement = (
+                        landed_placement(accelerator, mapping, src) if isinstance(src, ComputationNode) else None
+                    )
+                    if placement is None or placement.split is not None:
+                        placement = EdgePlacement(landing_of(accelerator, mapping, edge, src), 0)
+            for memory, share in placement.shares().items():
+                held[memory][tensor] = share
+    return held
+
+
+def offchip_bits(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> dict[Memory, dict[Tensor, float]]:
+    """The bits of each workload input and output each off-chip memory holds (:func:`offchip_holdings`)."""
+    return {
+        memory: {tensor: float(share * whole_bits(tensor)) for tensor, share in held.items()}
+        for memory, held in offchip_holdings(accelerator, workloads, mappings).items()
+    }
+
+
+def whole_bits(tensor: Tensor) -> int:
+    """The bits of the whole tensor ``tensor`` views."""
+    return tensor.size_bits(tuple(tensor.subview.source.type.get_shape()))
+
+
+OFFCHIP_CAPACITY = ResourceKind(
+    "offchip_capacity",
+    "off-chip memory capacity exceeded",
+    unit="bytes",
+    demand_label="workload inputs and outputs living in",
+    bound_label="capacity of",
+    demand_input="workload tensor sizes × mapping runtime_args placements",
+    bound_input="hardware spec: memory size",
+    term_detail="share it holds",
+    levers=(
+        "Increase {resource} (hardware spec)",
+        "Split the tensors over the off-chip memories rather than copying them (mapping runtime_args placement)",
+        "Reduce the workload's tensor sizes (smaller batch, shorter sequence)",
+    ),
+)
+
+
+def check_offchip_capacity(
+    accelerator: Accelerator, workloads: Sequence[Workload], mappings: Sequence[Mapping]
+) -> None:
+    """Refuse workload inputs and outputs that overflow an off-chip memory they live in (:func:`offchip_holdings`),
+    when there are several off-chip memories or the mapping places them."""
+    if len(accelerator.offchip_memories) <= 1 and not any(mapping.edge_placements for mapping in mappings):
+        return
+    for memory, held in offchip_holdings(accelerator, workloads, mappings).items():
+        bits = {tensor: float(share * whole_bits(tensor)) for tensor, share in held.items()}
+        if (total := sum(bits.values())) > memory.capacity_bits:
+            named = {
+                t: t.name if s == 1 else f"{t.name}/{s.denominator}" if s.numerator == 1 else f"{t.name}*{s}"
+                for t, s in held.items()
+            }
+            terms = " + ".join(named.values())
+            summary = f"{memory.name} holds {terms} = {size_text(total)} > {size_text(memory.capacity_bits)}"
+            shares = {named[t]: b / 8 for t, b in bits.items()}
+            report = overflow_infeasibility(OFFCHIP_CAPACITY, memory, shares, memory.capacity_bits / 8, summary)
+            raise InfeasibleAllocationError(report)

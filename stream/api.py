@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from zigzag.mapping.temporal_mapping import TemporalMappingType
+from zigzag.utils import open_yaml
 
 from stream.compiler.kernels.library import KernelLibrary
 from stream.frontends import load_workload
@@ -77,8 +78,8 @@ class SolveOptions:
     allocation solve; a sweep turns them off. ``solver_log`` prints the solver's log, and ``time_limit_s`` bounds each
     allocation solve, after which its best incumbent is taken. ``families`` are the constraint families the allocation
     model is built from, by name or ``{name: options}``; None builds :func:`default_families`. ``route_alternatives`` is
-    how many routes each placement of a transfer is offered: the fastest and others over comparably fast links. The
-    solve picks one.
+    how many routes each placement of a transfer is offered: the fastest and others over comparably fast links, plus
+    the striped and single-link routes from off-chip memory. The solve picks one.
     """
 
     backend: str = "ortools_gscip"
@@ -141,12 +142,9 @@ def evaluate_mapping(
     mapping: str | None = None,
     options: SolveOptions | None = None,
 ) -> MappingEstimate:
-    """Solve the allocation of each fused group of ``mapping`` and price it, without generating code.
-
-    Each group costs its allocation's estimate, and a dispatch of several groups adds the reconfiguration
-    the accelerator's hardware namespaces charge. Without a mapping, the mapping generator that claims
-    the accelerator proposes one.
-    """
+    """Solve and price the allocation of each fused group of ``mapping`` without generating code; several groups add the
+    reconfiguration the hardware namespaces charge. Without a mapping, or with one that only places inputs and outputs
+    (``runtime_args``, no ``layers``), the mapping generator that claims the accelerator proposes one."""
     return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=False)
 
 
@@ -189,6 +187,11 @@ def generate_code(
     return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=True)
 
 
+def _maps_layers(mapping: str) -> bool:
+    data = open_yaml(mapping)
+    return not isinstance(data, dict) or "layers" in data
+
+
 def _solve(
     hardware: str | Accelerator,
     workload: Any,
@@ -209,7 +212,8 @@ def _solve(
             families = load_families(
                 options.families if options.families is not None else default_families(accelerator)
             )
-        proposal = [FixedMappingGenerationStage] if mapping is not None else mapping_generator_for(accelerator).stages()
+        fixed = mapping is not None and _maps_layers(mapping)
+        proposal = [FixedMappingGenerationStage] if fixed else mapping_generator_for(accelerator).stages()
         emission = [codegen_backend_for(accelerator).stage()] if codegen else []
         stages = [AcceleratorParserStage, *proposal, FusionGroupIterationStage, *emission, *_ALLOCATION_STAGES]
         with span("load_workload"):

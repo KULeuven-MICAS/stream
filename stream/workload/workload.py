@@ -1,9 +1,9 @@
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import cached_property
-from itertools import combinations, pairwise
-from math import prod
-from typing import TYPE_CHECKING, cast
+from itertools import combinations, pairwise, product
+from math import ceil, prod
+from typing import TYPE_CHECKING, Any, cast
 
 import networkx as nx
 import numpy as np
@@ -36,7 +36,7 @@ from stream.workload.utils import affine_bounds, affine_coefficients, sympy_to_x
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan
     from stream.hardware.architecture.core import Core
-    from stream.mapping.mapping import Mapping
+    from stream.mapping.mapping import EdgePlacement, Mapping
 
 
 _SharedAxis = tuple[Node, int]
@@ -800,6 +800,42 @@ class Workload(DiGraphWrapper[Node]):
                     boxes.setdefault((i, j), []).append(box)
         return boxes
 
+    @staticmethod
+    def _walked_blocks(placement: "EdgePlacement | None", tensor: Tensor) -> list[list[list[tuple[int, int]]]] | None:
+        """Per iteration walking the split axis, the box each position of ``placement`` holds in iteration-0
+        coordinates; None unless it splits ``tensor``."""
+        if placement is None or placement.split is None:
+            return None
+        shape, axis = tensor.subview.source.type.get_shape(), placement.split
+        extent = shape[axis]
+        step = min(tensor.shape[axis], extent)
+        blocks = [placement.block(s, extent) for s in range(len(placement.memories))]
+        whole = [(0, n - 1) for n in shape]
+        return [
+            [[*whole[:axis], (lo - k * step, hi - k * step), *whole[axis + 1 :]] for lo, hi in blocks]
+            for k in range(ceil(extent / step))
+        ]
+
+    def placement_shares(
+        self, placement: "EdgePlacement | None", tensor: Tensor, boxes: Sequence
+    ) -> dict[Memory, float] | None:
+        """The share of ``boxes`` each memory of ``placement`` serves over the walk of its split axis; None unless it
+        splits ``tensor``."""
+        from stream.cost_model.communication_manager import box_bits, meet  # noqa: PLC0415
+
+        if placement is None or not (walk := self._walked_blocks(placement, tensor)):
+            return None
+        covered = [
+            sum(box_bits([part for box in boxes if (part := meet(box, blocks[s]))], 1) for blocks in walk)
+            for s in range(len(walk[0]))
+        ]
+        if not (total := sum(covered)):
+            return None
+        shares: dict[Memory, float] = {}
+        for memory, bits in zip(placement.memories, covered, strict=True):
+            shares[memory] = shares.get(memory, 0.0) + bits / total
+        return shares
+
     def get_transfer_demand(  # noqa: PLR0913
         self,
         transfer: TransferNode,
@@ -810,16 +846,11 @@ class Workload(DiGraphWrapper[Node]):
         by_spatial_index: bool,
         targets: Sequence[Memory],
         reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]],
+        cost: Callable[[Sequence["DemandItem"]], tuple[float, ...]],
     ) -> tuple["DemandItem", ...]:
-        """What each of the ``n_targets`` targets of ``transfer`` reads, and which of the ``n_sources`` sources hold it.
-
-        By default the targets are split by ``tiling``. When the readers of the copies all read in memories among
-        ``targets`` (``reads_in`` gives a reader's memory per core), each target reads what those readers read there,
-        under their own splits. A window overlapping neighbouring tiles is served by the sources whose tiles it
-        overlaps. Otherwise each side holds the tiles of its split in core order; a tile copied on several cores is
-        served by the nearest, and a partial sum over a split reduction dimension is needed from every source.
-        ``by_spatial_index`` instead pairs the target at ``j`` with the sources at ``j``, ``j + m``, ..., as a code
-        generator does."""
+        """What each of the ``n_targets`` targets of ``transfer`` reads from which ``n_sources``: by ``tiling``, or as
+        readers in ``targets`` read (``reads_in``), a walked split placement at its busiest (``cost``).
+        ``by_spatial_index`` pairs target ``j`` with sources ``j``, ``j + m``, ..., as code generation does."""
         from stream.cost_model.communication_manager import DemandItem  # noqa: PLC0415
 
         source, src = transfer.inputs[0], next(self.predecessors(transfer))
@@ -846,29 +877,44 @@ class Workload(DiGraphWrapper[Node]):
         read, reader = found or (source, src)
         held = (source, src) if isinstance(src, ComputationNode) else (read, reader)
         partial = isinstance(src, ComputationNode) and self.splits_reduction(src, src_tiling)
-        items: list[DemandItem] = []
-        for t in range(n_targets):
-            wants = [
+        wants = [
+            [
                 box(r_read, r_node, r_split, p, len(r_memories))
                 for r_read, r_node, r_split, r_memories in readers
                 for p, memory in enumerate(r_memories)
                 if memory == targets[t]
             ]
-            for want in wants or [box(read, reader, tiling, t, n_targets)]:
-                if by_spatial_index:
-                    narrow = min(n_sources, n_targets)
-                    feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
-                    parts = zip(feeding, _split(want, len(feeding)), strict=True)
-                    items += [DemandItem(t, (s,), part) for s, part in parts if all(lo <= hi for lo, hi in part)]
-                    continue
-                holders: dict[tuple[tuple[int, int], ...], list[int]] = {}
-                for s in range(n_sources):
-                    have = box(held[0], held[1], src_tiling, s, n_sources)
-                    part = tuple((max(h[0], w[0]), min(h[1], w[1])) for h, w in zip(have, want, strict=True))
-                    if all(lo <= hi for lo, hi in part):
-                        holders.setdefault(part, []).append(s)
-                items += [DemandItem(t, tuple(sources), part, partial) for part, sources in holders.items()]
-        return tuple(items)
+            or [box(read, reader, tiling, t, n_targets)]
+            for t in range(n_targets)
+        ]
+        haves = [box(held[0], held[1], src_tiling, s, n_sources) for s in range(n_sources)]
+
+        def demand(held_blocks: list | None, target_blocks: list | None) -> list[DemandItem]:
+            items: list[DemandItem] = []
+            for t in range(n_targets):
+                for want in [target_blocks[t]] if target_blocks else wants[t]:
+                    if by_spatial_index:
+                        narrow = min(n_sources, n_targets)
+                        feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
+                        parts = zip(feeding, _split(want, len(feeding)), strict=True)
+                        items += [DemandItem(t, (s,), part) for s, part in parts if all(lo <= hi for lo, hi in part)]
+                        continue
+                    holders: dict[tuple[tuple[int, int], ...], list[int]] = {}
+                    for s, have in enumerate(held_blocks or haves):
+                        part = tuple((max(h[0], w[0]), min(h[1], w[1])) for h, w in zip(have, want, strict=True))
+                        if all(lo <= hi for lo, hi in part):
+                            holders.setdefault(part, []).append(s)
+                    items += [DemandItem(t, tuple(sources), part, partial) for part, sources in holders.items()]
+            return items
+
+        out = next((n for n in self.successors(transfer) if isinstance(n, OutEdge)), None)
+        held, target = mapping.placement_of(src), mapping.placement_of(out) if out else None
+        held_walk, target_walk = self._walked_blocks(held, source), self._walked_blocks(target, source)
+        if held_walk and target_walk and held and target and held.split == target.split:
+            walks = zip(held_walk, target_walk, strict=True)
+        else:
+            walks = product(held_walk or [None], target_walk or [None])
+        return tuple(_busiest([demand(held, target) for held, target in walks], cost))
 
     def _readers_on(
         self,
@@ -1035,10 +1081,7 @@ class Workload(DiGraphWrapper[Node]):
                 )
             elif isinstance(node, OutEdge):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
-                new_node = OutEdge(
-                    name=node.name,
-                    inputs=new_inputs,
-                )
+                new_node = replace(node, inputs=new_inputs)
             else:
                 raise TypeError(f"Unknown node type: {type(node)}")
 
@@ -1388,6 +1431,11 @@ def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int]
     lo, hi = box[axis]
     edges = [lo + (hi - lo + 1) * k // parts for k in range(parts + 1)]
     return [tuple(box[:axis] + [(edges[k], edges[k + 1] - 1)] + box[axis + 1 :]) for k in range(parts)]
+
+
+def _busiest[T](options: list[T], cost: Callable[[T], Any]) -> T:
+    """The option that costs most, the first of those as costly."""
+    return max(options, key=cost) if len(options) > 1 else options[0]
 
 
 def _union(boxes: list[list[tuple[int, int]]]) -> int:

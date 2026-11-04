@@ -20,6 +20,8 @@ from stream.workload.tensor import Tensor
 
 __all__ = [
     "Interval",
+    "dims_in_expr",
+    "indexing_axis",
     "map_dim_positions",
     "relevancy",
     "operand_relevancy",
@@ -41,20 +43,25 @@ def _const(expr: AffineExpr) -> int | None:
     return expr.value if isinstance(expr, AffineConstantExpr) else None
 
 
-def _dims_in_expr(expr: AffineExpr) -> frozenset[int]:
+def dims_in_expr(expr: AffineExpr) -> frozenset[int]:
     """Positions of every dimension that appears with a non-zero coefficient in ``expr``."""
     if isinstance(expr, AffineDimExpr):
         return frozenset({expr.position})
     if isinstance(expr, AffineBinaryOpExpr):
-        return _dims_in_expr(expr.lhs) | _dims_in_expr(expr.rhs)
+        return dims_in_expr(expr.lhs) | dims_in_expr(expr.rhs)
     return frozenset()
+
+
+def indexing_axis(access: AffineMap, position: int) -> int | None:
+    """The first result axis of ``access`` the dim at ``position`` indexes, None if it indexes none."""
+    return next((axis for axis, result in enumerate(access.results) if position in dims_in_expr(result)), None)
 
 
 def map_dim_positions(affine_map: AffineMap) -> frozenset[int]:
     """Positions of all iteration dimensions that index any result of ``affine_map``."""
     positions: frozenset[int] = frozenset()
     for result in affine_map.results:
-        positions |= _dims_in_expr(result)
+        positions |= dims_in_expr(result)
     return positions
 
 

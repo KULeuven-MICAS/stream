@@ -2,8 +2,10 @@
 must describe a sound dataflow. The hardware is discovered from the examples directory, so a new architecture joins the
 matrix by adding its yaml; a new invariant joins by adding a line to ``_assert_sound_dataflow``."""
 
+import json
 import math
 import tempfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,9 @@ SWIGLU_TILING = [
     {"dim": "Gemm_Left.D2", "tile": 32},  # hidden
     {"dim": "Gemm_Left.D0", "tile": 16},  # seq, shared by the whole group
 ]
+
+
+GOLDEN = json.loads(Path("tests/golden_metrics.json").read_text())
 
 
 def _assert_sound_dataflow(ctx, node_count: int) -> None:
@@ -78,6 +83,19 @@ def _record_metrics(record_metric, ctx, hparams: str) -> None:
     record_metric("end_to_end_mac_utilization", aggregate["end_to_end_mac_utilization"])
     record_metric("degenerate", aggregate["degenerate"])
     record_metric("workload_hparams", hparams)
+    (group,) = ctx.get("group_allocations").values()
+    record_metric("iteration_latency", group["latency"]["per_iteration"])
+    record_metric("energy_pj", group["performance"]["energy"]["total_pj"])
+
+
+def _assert_golden(ctx, node_id: str) -> None:
+    """The run gives the cycles and energy ``tests/golden_metrics.json`` records; after a change that moves them,
+    rerun this file and ``python scripts/analysis/render_metrics_comment.py --update-baseline``."""
+    (group,) = ctx.get("group_allocations").values()
+    golden = GOLDEN[node_id]
+    assert ctx.get("total_latency") == golden["total_latency"]
+    assert group["latency"]["per_iteration"] == golden["iteration_latency"]
+    assert group["performance"]["energy"]["total_pj"] == pytest.approx(golden["energy_pj"], abs=0.01)
 
 
 def _run(hardware: str, workload: str, options: SolveOptions | None = None):
@@ -86,15 +104,16 @@ def _run(hardware: str, workload: str, options: SolveOptions | None = None):
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)
-def test_hardware_two_conv(hardware: str, two_conv, record_metric) -> None:
+def test_hardware_two_conv(hardware: str, two_conv, record_metric, request) -> None:
     """Two 3x3 convs, auto-tiled by the generic mapper."""
     ctx = _run(hardware, make_2_conv_workload(two_conv))
     _assert_sound_dataflow(ctx, node_count=2)
     _record_metrics(record_metric, ctx, f"{_caption(vars(two_conv))}; generic auto-tiling")
+    _assert_golden(ctx, request.node.nodeid)
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)
-def test_hardware_swiglu(hardware: str, record_metric) -> None:
+def test_hardware_swiglu(hardware: str, record_metric, request) -> None:
     """The five-node SwiGLU block, layer-fused under ``SWIGLU_TILING``; Silu and Mul land on a simd core where there
     is one."""
     options = SolveOptions(stage_options={"intra_core_tiling": SWIGLU_TILING})
@@ -102,6 +121,7 @@ def test_hardware_swiglu(hardware: str, record_metric) -> None:
     _assert_sound_dataflow(ctx, node_count=5)
     tiles = _caption({t["dim"]: t["tile"] for t in SWIGLU_TILING})
     _record_metrics(record_metric, ctx, f"{_caption(SWIGLU)}, bf16; fused tiles {tiles}")
+    _assert_golden(ctx, request.node.nodeid)
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)
@@ -110,3 +130,10 @@ def test_hardware_parses(hardware: str) -> None:
     validator = AcceleratorValidator(open_yaml(hardware), hardware)
     assert validator.validate()
     assert AcceleratorFactory(validator.normalized_data).create() is not None
+
+
+def test_every_hardware_file_ships_with_the_package():
+    """A pip-installed package carries each hardware description, the testing ones too."""
+    patterns = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["stream"]
+    shipped = {path for pattern in patterns for path in Path("stream").glob(pattern)}
+    assert set(Path("stream/inputs").glob("**/hardware/**/*.yaml")) <= shipped

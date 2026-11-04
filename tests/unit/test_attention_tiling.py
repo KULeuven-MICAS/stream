@@ -16,6 +16,7 @@ from stream.workload.iterator_type import (
 )
 from stream.workload.models import AttentionConfig, build_attention_block
 from stream.workload.normalization import expand_normalizations
+from stream.workload.utils import unfinished_reduction_dims
 from stream.workload.workload import determine_fusion_cut_points
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -116,8 +117,6 @@ def test_tensor_tiles_do_not_depend_on_node_insertion_order():
 
 def test_fusion_split_protects_the_softmax_reduction_axis():
     """Tiling after fusion refuses to block-tile the softmax's reduced axis (that would be flash)."""
-    from stream.workload.utils import _nonlinear_reduction_group_dims
-
     workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
     group = next(
         sub
@@ -126,7 +125,7 @@ def test_fusion_split_protects_the_softmax_reduction_axis():
     )
     sm = _softmax(group)
     reduced = {group.get_dims(sm)[p] for p in sm.reduction_axes}
-    assert reduced <= _nonlinear_reduction_group_dims(group)
+    assert reduced <= unfinished_reduction_dims(group)
 
 
 def test_linear_contraction_axis_stays_splittable():
@@ -143,6 +142,7 @@ def test_linear_contraction_axis_stays_splittable():
     linear_reduction_dims = {sub.get_dims(scores)[p] for p, t in types.items() if t == IteratorType.REDUCTION}
     assert linear_reduction_dims, "scores must have a linear contraction dim"
     assert linear_reduction_dims.isdisjoint(protected), "a linear contraction must remain splittable"
+    assert linear_reduction_dims.isdisjoint(unfinished_reduction_dims(sub)), "and tileable"
 
 
 def test_auto_fusion_tiles_the_query_axis_when_intermediates_overflow():

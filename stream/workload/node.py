@@ -31,16 +31,43 @@ class HasInputs(Node, ABC):
     inputs: tuple[Tensor, ...]
 
 
+@dataclass(frozen=True)
+class Declared:
+    """An edge's tensor as the workload declared it, which a rewrite views in other axes: its shape, and the declared
+    axis each axis of the viewed tensor walks."""
+
+    shape: tuple[int, ...]
+    axes: tuple[int, ...]
+
+    def cut(self, axis: int) -> "Declared":
+        """This view with its ``axis`` cut in two, an outer and an inner axis."""
+        return Declared(self.shape, (*self.axes[: axis + 1], *self.axes[axis:]))
+
+
 @dataclass(frozen=True, repr=False)
 class InEdge(HasOutputs):
     """A tensor the workload takes in. A ``parameter`` (a weight) is the model's own, laid out in memory however its
-    readers need, as a compiler packs weights ahead of time; any other comes from the host, row-major."""
+    readers need, as a compiler packs weights ahead of time; any other comes from the host, row-major. ``declared``
+    is how the workload declared it, where a rewrite views it otherwise."""
 
     parameter: bool = False
+    declared: Declared | None = None
 
 
 @dataclass(frozen=True, repr=False)
-class OutEdge(HasInputs): ...
+class OutEdge(HasInputs):
+    declared: Declared | None = None
+
+
+def edge_tensor(edge: InEdge | OutEdge) -> Tensor:
+    """The workload input ``edge`` brings in or the output it takes out."""
+    return edge.outputs[0] if isinstance(edge, InEdge) else edge.inputs[0]
+
+
+def declared_of(edge: InEdge | OutEdge) -> Declared:
+    """How the workload declared ``edge``'s tensor: as a rewrite recorded it, else the whole tensor as it is."""
+    shape = tuple(edge_tensor(edge).subview.source.type.get_shape())
+    return edge.declared or Declared(shape, tuple(range(len(shape))))
 
 
 @dataclass(frozen=True, repr=False)

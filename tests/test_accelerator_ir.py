@@ -261,5 +261,7 @@ def test_accelerator_ir_round_trips_through_yaml(hardware_path, expected):
 
     assert data["name"] == expected["name"]
     assert data["num_cores"] == expected["expected_num_cores"]
-    assert data["memories"][expected["offchip_memory"]] == {"offchip": True, "views": []}
+    offchip = data["memories"][expected["offchip_memory"]]
+    assert offchip == {"offchip": True, "capacity_bits": offchip["capacity_bits"], "views": []}
+    assert offchip["capacity_bits"] > 0
     assert len(data["cores"]) == expected["expected_num_cores"]

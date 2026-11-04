@@ -35,8 +35,11 @@ from stream.opt.allocation.constraint_optimization.hardware import build_hardwar
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 from stream.opt.solver import SolverBackend, SolverParams, SolverVarType, create_solver
+from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
+from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import parse_accelerator
+from stream.stages.stage import LeafStage
 from stream.visualization.steady_state_trace import _resource_sort_key
 from stream.workload.blocks import build_block
 from stream.workload.node import ComputationNode, TransferNode
@@ -225,9 +228,9 @@ def test_a_link_joins_exactly_two_memories():
 def test_the_ir_lists_each_memory_with_its_views(tmp_path):
     memories = _accelerator(tmp_path).get_ir()["memories"]
     assert memories == {
-        "l1_a": {"offchip": False, "views": ["0.sram_64KB", "1.sram_64KB"]},
-        "l1_b": {"offchip": False, "views": ["2.sram_64KB", "3.sram_64KB"]},
-        "l3": {"offchip": True, "views": []},
+        "l1_a": {"offchip": False, "capacity_bits": 64 * 1024 * 8, "views": ["0.sram_64KB", "1.sram_64KB"]},
+        "l1_b": {"offchip": False, "capacity_bits": 64 * 1024 * 8, "views": ["2.sram_64KB", "3.sram_64KB"]},
+        "l3": {"offchip": True, "capacity_bits": 10**10, "views": []},
     }
 
 
@@ -299,13 +302,30 @@ def test_weights_land_in_the_weights_memory(tmp_path):
         assert placed and all(memory.name.endswith("_weights") for memory in placed), (copy.name, placed)
 
 
-def test_the_off_chip_memory_is_the_one_declared_so(tmp_path):
-    """The off-chip memory is the one marked ``offchip``, and there is at most one."""
+def _two_offchip() -> dict:
+    """:data:`TWO_L1S` with a second off-chip memory, ``dram``, declared after ``l3`` and linked to ``l1_b``."""
+    data = _two_l1s()
+    data["memories"]["dram"] = yaml.safe_load(L3)["l3"]
+    data["connections"].append(
+        {"type": "link", "ends": {"l1_b": ["r_port_1", "w_port_1"], "dram": ["rw_port_1"]}, "bandwidth": 64}
+    )
+    return data
+
+
+def test_the_off_chip_memories_are_those_declared_so_in_declared_order(tmp_path):
     accelerator = _accelerator(tmp_path)
-    assert [memory.name for memory in accelerator.memories.values() if memory.offchip] == ["l3"]
-    memories = _two_l1s()["memories"]
-    memories["l1_a"]["offchip"] = True
-    assert any("at most one off-chip memory" in error for error in _errors(memories=memories))
+    assert accelerator.offchip_memories == (accelerator.memories["l3"],)
+    accelerator = _accelerator(tmp_path, _two_offchip())
+    assert [memory.name for memory in accelerator.offchip_memories] == ["l3", "dram"]
+    with pytest.raises(ValueError, match="several off-chip memories; use offchip_memories"):
+        _ = accelerator.offchip_memory
+
+
+def test_every_off_chip_link_bounds_the_off_chip_bandwidth(tmp_path):
+    accelerator = _accelerator(tmp_path, _two_offchip())
+    links = {data["cl"] for _, _, data in accelerator.network.edges(data=True)}
+    space = SimpleNamespace(accelerator=accelerator, link_set=links)
+    assert DecisionSpace.offchip_bandwidth(space) == 3 * 64
 
 
 def test_a_memory_declares_its_capacity_only_where_no_core_views_it():
@@ -331,7 +351,11 @@ def test_a_memory_no_core_views_on_chip_is_a_memory_of_kind_memory(tmp_path):
     accelerator = _accelerator(tmp_path, memories=memories, connections=connections)
     scratch = accelerator.memories["scratch"]
     assert scratch.kind == "memory" and scratch.cores == () and scratch.namespace is None
-    assert accelerator.get_ir()["memories"]["scratch"] == {"offchip": False, "views": []}
+    assert accelerator.get_ir()["memories"]["scratch"] == {
+        "offchip": False,
+        "capacity_bits": 8 * 1024 * 1024,
+        "views": [],
+    }
 
 
 def test_a_dma_comes_with_the_ports_that_are_its_channels():
@@ -403,6 +427,39 @@ def test_a_memory_with_no_route_to_the_off_chip_memory_is_rejected(tmp_path):
     )
     with pytest.raises(ValueError, match=r"memories \['island', 'l1_b'\] have no route to off-chip memory l3"):
         _accelerator(tmp_path, data)
+
+
+def test_a_memory_with_a_route_from_one_off_chip_memory_is_reached(tmp_path):
+    data = _two_offchip()
+    data["connections"] = [c for c in data["connections"] if set(c["ends"]) in ({"l1_a", "l3"}, {"l1_b", "dram"})]
+    assert _accelerator(tmp_path, data).offchip_memories
+    data["memories"]["island"] = yaml.safe_load(L3)["l3"] | {"offchip": False, "capacity_bits": 1024}
+    for connection in data["connections"]:
+        if "dram" in connection["ends"]:
+            connection["ends"] = {"l1_a": ["r_port_1", "w_port_1"], "dram": ["rw_port_1"]}
+    data["connections"].append(
+        {"type": "link", "ends": {"l1_b": ["r_port_1", "w_port_1"], "island": ["rw_port_1"]}, "bandwidth": 64}
+    )
+    with pytest.raises(ValueError, match=r"memories \['island', 'l1_b'\] have no route to off-chip memory l3 or dram"):
+        _accelerator(tmp_path, data)
+
+
+def test_aie_code_generation_refuses_several_off_chip_memories():
+    aie_code_generation = pytest.importorskip(
+        "stream.stages.codegen.aie_code_generation",
+        reason="the AIE dialects are a separate install, via stream-setup-aie",
+    )
+    path = Path("stream/inputs/aie/hardware/single_core.yaml")
+    data = yaml.safe_load(path.read_text())
+    data["memories"]["dram_1"] = data["memories"]["dram"]
+    data["connections"].append(
+        {"type": "link", "ends": {"dram_1": ["mm2s", "s2mm"], "tile_0_1": ["mm2s", "s2mm"]}, "bandwidth": 64}
+    )
+    validator = AcceleratorValidator(data, path)
+    assert validator.validate(), validator.errors
+    accelerator = AcceleratorFactory(validator.normalized_data).create()
+    with pytest.raises(ValueError, match=r"off-chip memories \['dram', 'dram_1'\]; the AIE runtime sequence"):
+        aie_code_generation.AIECodeGenerationStage([LeafStage], StageContext.from_kwargs(accelerator=accelerator))
 
 
 def test_an_aie2_tile_memory_is_a_view_of_exactly_one_tile():

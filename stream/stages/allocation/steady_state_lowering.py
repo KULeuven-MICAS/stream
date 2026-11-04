@@ -6,6 +6,7 @@ class SteadyStateLoweringStage(Stage):
     """Lower the fused group to the allocation problem of its steady state."""
 
     reads = ("workload", "accelerator", "mapping", "cost_lut", "fusion_splits", "nb_cols_to_use", "route_alternatives")
+    optional_reads = ("offchip_held",)
     writes = ("allocation_problem",)
 
     def run(self):
@@ -17,6 +18,7 @@ class SteadyStateLoweringStage(Stage):
             self.ctx.get("cost_lut"),
             self.ctx.get("nb_cols_to_use"),
             self.ctx.get("route_alternatives"),
+            self.ctx.get("offchip_held"),
         )
         self.ctx.set(allocation_problem=problem)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)

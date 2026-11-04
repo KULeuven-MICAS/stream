@@ -8,12 +8,23 @@ from functools import cached_property
 from stream.hardware.architecture.core import Core
 from stream.hardware.ports import MemoryDma, Port, candidate_ports
 
+KIBI = 1024
+
+
+def size_text(bits: float) -> str:
+    """``bits`` in B, KiB, MiB, GiB or TiB, three significant digits."""
+    size, unit = bits / 8, "B"
+    for bigger in ("KiB", "MiB", "GiB", "TiB"):
+        if size < KIBI:
+            break
+        size, unit = size / KIBI, bigger
+    return f"{size:.3g} {unit}"
+
 
 class Memory:
     """A physical memory. ``views`` pairs each core that uses it with the name of that core's top-level memory
     instance for it. ``ports`` are its ports by name. The capacity comes from the views, or from ``capacity_bits`` if
-    no core views it. ``offchip`` marks the off-chip memory; an accelerator has at most one. ``dma`` is its DMA engine,
-    if it has one."""
+    no core views it. ``offchip`` marks an off-chip memory. ``dma`` is its DMA engine, if it has one."""
 
     def __init__(  # noqa: PLR0913
         self,

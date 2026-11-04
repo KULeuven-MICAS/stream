@@ -3,11 +3,12 @@ from typing import Any
 
 from zigzag.utils import open_yaml
 
+from stream.mapping.mapping import runtime_args_per_group
 from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.workload import InEdge, OutEdge, determine_fusion_cut_points
+from stream.workload.workload import determine_fusion_cut_points
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,13 @@ class FixedMappingGenerationStage(Stage):
             f"but workload splits into {len(sub_workloads)} groups"
         )
 
-        full_runtime_args = mapping_data.get("runtime_args", {})
+        runtime_args = runtime_args_per_group(mapping_data.get("runtime_args", {}), sub_workloads)
         sub_mappings = []
         for i, sub_workload in enumerate(sub_workloads):
             per_group_data: dict[str, Any] = {
                 "layers": mapping_data["layers"],
                 "fused_groups": [fused_groups_data[i]],
-                "runtime_args": self._runtime_args_for_group(full_runtime_args, sub_workload),
+                "runtime_args": runtime_args[i],
             }
             factory = MappingFactory(per_group_data, sub_workload, self.accelerator)
             sub_mappings.append(factory.create())
@@ -65,22 +66,6 @@ class FixedMappingGenerationStage(Stage):
         self.ctx.set(sub_workloads=sub_workloads, sub_mappings=sub_mappings)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
-
-    @staticmethod
-    def _runtime_args_for_group(full_runtime_args: dict[str, Any], sub_workload) -> dict[str, Any]:
-        """Select the runtime args (boundary tensors) belonging to one fusion group.
-
-        A sub-workload's runtime args are its InEdge/OutEdge boundary nodes: model
-        inputs/initializers it consumes, the output(s) it produces, and any
-        inter-group fusion-boundary edge introduced by the split. Explicit layouts
-        from the full mapping are preserved; boundary edges default to the standard
-        (identity) layout via an empty entry.
-        """
-        return {
-            node.name: full_runtime_args.get(node.name, {})
-            for node in sub_workload.nodes
-            if isinstance(node, (InEdge, OutEdge))
-        }
 
     @staticmethod
     def _cut_points_from_fused_groups(fused_groups_data: list[dict[str, Any]]) -> list[str]:

@@ -3,14 +3,17 @@ from collections.abc import Sequence
 from math import ceil
 from typing import TYPE_CHECKING
 
+import networkx as nx
 import sympy as sp
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.iterator_type import (
+    IteratorType,
     NonlinearReductionUnrollError,
     check_spatial_unroll_accumulation_free,
     check_spatial_unroll_legal,
+    derive_iterator_types,
     nonlinear_reduction_dims,
     sequential_dims,
 )
@@ -55,7 +58,7 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     fused_group = mapping.fused_groups[0]
     _, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
     unique_unrollings_dict = dict(unique_spatial_unrollings)
-    protected = _nonlinear_reduction_group_dims(workload)
+    protected = unfinished_reduction_dims(workload)
     result = {}
     for dim, tile_size in fused_group.intra_core_tiling:
         # assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
@@ -74,14 +77,20 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     return result
 
 
-def _nonlinear_reduction_group_dims(workload: "Workload") -> set[LayerDim]:
-    """Global dimensions any node in ``workload`` reduces nonlinearly (softmax/layernorm key axes)."""
+def unfinished_reduction_dims(workload: "Workload") -> set[LayerDim]:
+    """Global dims a node reduces over that a node computed from its output walks, or a normalization reduces."""
     protected: set[LayerDim] = set()
     for node in workload.get_iteration_space_nodes():
         node_dims = workload.get_dims(node)
-        for pos in nonlinear_reduction_dims(node):
-            if pos < len(node_dims):
-                protected.add(node_dims[pos])
+        reduced = {p for p, kind in derive_iterator_types(node).items() if kind is IteratorType.REDUCTION}
+        walked = {
+            d
+            for later in nx.descendants(workload, node)
+            if isinstance(later, ComputationNode)
+            for d in workload.get_dims(later)
+        }
+        protected |= {node_dims[p] for p in reduced if p < len(node_dims) and node_dims[p] in walked}
+        protected |= {node_dims[p] for p in nonlinear_reduction_dims(node) if p < len(node_dims)}
     return protected
 
 

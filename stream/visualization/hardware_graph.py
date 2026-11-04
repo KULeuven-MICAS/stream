@@ -13,7 +13,7 @@ import networkx as nx
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.memory import Memory, size_text
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.hardware.ports import (
     OUTPUT,
@@ -36,7 +36,6 @@ PALETTE = {
     "bus": ("#ffe6d1", "#eb6834"),
 }
 ROLES = (input_role(1), input_role(2), OUTPUT)
-KIBI = 1024
 DIRECTIONS = {READ: "read", WRITE: "write", READ_BY_DATAPATH: "datapath read", WRITE_BY_DATAPATH: "datapath write"}
 
 
@@ -127,7 +126,7 @@ def _memory_lines(accelerator: Accelerator, memory: Memory) -> list[str]:
     """The text of a memory's box: name, kind, capacity, views, banks, DMA, measured bandwidth and ports."""
     lines = [
         f"Memory {memory.name}" + (" · off-chip" if memory.offchip else ""),
-        f"kind {memory.kind}, {_bits(memory.capacity_bits)}",
+        f"kind {memory.kind}, {size_text(memory.capacity_bits)}",
     ]
     lines.append("views " + (", ".join(f"{core.id}.{instance}" for core, instance in memory.views) or "none"))
     if memory.banks is not None:
@@ -191,15 +190,6 @@ def _role(role: str) -> str:
 
 def _listed(items: list[str], most: int) -> str:
     return ", ".join(items[:most]) + (f" and {len(items) - most} more" if len(items) > most else "")
-
-
-def _bits(bits: int) -> str:
-    size, unit = bits / 8, "B"
-    for bigger in ("KiB", "MiB", "GiB", "TiB"):
-        if size < KIBI:
-            break
-        size, unit = size / KIBI, bigger
-    return f"{size:.3g} {unit}"
 
 
 def main() -> None:

@@ -1,8 +1,10 @@
 """Lowering of a fused group to its steady state: the transfers made explicit, each with the placements and
 routes it may take, the iteration spaces, and the timeslots. Pure: nothing it is given is changed."""
 
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import replace
+from functools import partial
 from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
@@ -11,14 +13,22 @@ import numpy as np
 from xdsl.ir.affine import AffineMap
 
 from stream.allocation.problem import AllocationProblem
-from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.cost_model.communication_manager import Box, DemandItem, MulticastPathPlan, box_bits
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.ports import OUTPUT
-from stream.mapping.mapping import Mapping, offchip_memory, placements_of, role_of, the_one
+from stream.hardware.ports import OUTPUT, READ, WRITE
+from stream.mapping.mapping import (
+    EdgePlacement,
+    Mapping,
+    landing_of,
+    placement_options,
+    placements_of,
+    role_of,
+    the_one,
+)
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.profiling import span
 from stream.workload.iterator_type import is_state_operand, streamed_operands
@@ -83,11 +93,13 @@ def lower_steady_state(  # noqa: PLR0913
     cost_lut: CoreCostLUT,
     nb_cols_to_use: int,
     route_alternatives: int,
+    offchip_held: dict[Memory, dict[Tensor, float]] | None = None,
 ) -> AllocationProblem:
     """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``, each
-    placement of a transfer offered up to ``route_alternatives`` routes."""
+    placement of a transfer offered up to ``route_alternatives`` routes, beside what the off-chip memories hold
+    already (:attr:`AllocationProblem.offchip_held`)."""
     lowering = _Lowering(workload, accelerator, mapping, nb_cols_to_use, route_alternatives)
-    return lowering.lower(fusion_splits, cost_lut)
+    return replace(lowering.lower(fusion_splits, cost_lut), offchip_held=offchip_held or {})
 
 
 class _Lowering:
@@ -103,6 +115,7 @@ class _Lowering:
     ):
         self.workload = workload
         self.accelerator = accelerator
+        self.source_mapping = mapping
         self.mapping = mapping.copy()
         self.nb_cols_to_use = nb_cols_to_use
         self.route_alternatives = route_alternatives
@@ -121,6 +134,7 @@ class _Lowering:
             timeslots = self.ssw.get_timeslots(self.mapping)
         return AllocationProblem(
             source_workload=self.workload,
+            source_mapping=self.source_mapping,
             workload=self.ssw,
             mapping=self.mapping,
             fusion_splits=self.fusion_splits,
@@ -437,7 +451,7 @@ class _Lowering:
         if node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
             staged = self._mem_tile_placements(src, node)
             # No on-chip memory tiles: the copy lands off-chip.
-            return staged or ((offchip_memory(self.accelerator),),)
+            return staged or (self._offchip_landing(dsts, src),)
         readers = []
         for dst in dsts:
             # An output edge is read off chip, by no core.
@@ -475,10 +489,13 @@ class _Lowering:
             and largest is not None
             and (frozenset() in splits or len(splits) > 1 or self._each_column_reads_whole(largest, node))
         )
+        own = self._own_mem_tiles(largest, node) if largest is not None else None
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
             if nb_cores == 1 or replicated:
                 dst_tiling = tuple()
+            elif own and dst_allocs == own[0]:
+                dst_tiling = own[1]
             elif all(isinstance(dst, ComputationNode) for dst in dsts):
                 # For fan-out: use the destination with the largest resource allocation
                 # as the tiling reference (consistent with determine_possible_memory_allocations strategy)
@@ -491,7 +508,7 @@ class _Lowering:
 
     def get_inter_core_tiling_for_transfer(
         self, node: TransferNode, memory_allocs: tuple[Memory, ...]
-    ) -> tuple[InterCoreTiling, ...]:
+    ) -> InterCoreTiling:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
         assert node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM), (
             "This function should only be called for MEM_TO_MEM (input) or COMPUTE_TO_MEM (output) transfers."
@@ -507,29 +524,20 @@ class _Lowering:
             slice_ := self._slice_of(node, len(memory_allocs))
         ):
             return (slice_,)
-        mem_tiling = self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
-        return (mem_tiling,)
+        return self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
 
-    def get_matching_tiling(
-        self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Memory, ...]
-    ) -> tuple[LayerDim, int]:
-        # TODO: Make sure that the selected tiling_loop is relevant for the transfer node
+    def get_matching_tiling(self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Memory, ...]) -> InterCoreTiling:
+        """The split over ``dst_allocs`` where each memory holds what consecutive cores of ``compute_tiling`` hold."""
         nb_allocs = len(dst_allocs)
-        for tiling_loop in compute_tiling:
-            _, size = tiling_loop
-            if size == nb_allocs:
-                return tiling_loop
-        # No size with exact match found, try to find one that is a multiple of the number of dst allocs
-        for tiling_loop in compute_tiling:
-            dim, size = tiling_loop
-            if size % nb_allocs == 0:
-                return (dim, nb_allocs)
+        per_tile, rest = divmod(prod(size for _, size in compute_tiling), nb_allocs)
+        if not rest and (split := _without_innermost(compute_tiling, per_tile)) is not None:
+            return split
         # No clean divisor: split the best loop into the largest even share that fits, instead of raising.
         best = max(compute_tiling, key=lambda loop: largest_divisor_leq(loop[1], nb_allocs), default=None)
         if best is None:
             raise ValueError(f"No tiling loop to reconcile with dst allocs {dst_allocs}")
         dim, size = best
-        return (dim, largest_divisor_leq(size, nb_allocs))
+        return ((dim, largest_divisor_leq(size, nb_allocs)),)
 
     def determine_possible_transfer_plans(
         self,
@@ -538,25 +546,29 @@ class _Lowering:
         possible_dst_allocs: tuple[tuple[Memory, ...], ...],
         possible_tilings: tuple[InterCoreTiling, ...],
     ) -> tuple[MulticastPathPlan, ...]:
-        """The route of each placement of ``node``, moving what each target reads from the sources that hold it."""
+        """The route of each placement of ``node``, moving what each target reads from the sources that hold it, of
+        each placement the allocation may choose for the input it moves (:func:`placement_options`)."""
         all_possible_resource_plans = []
-        possible_src_allocs = self._source_placements(src)
         bitwidth = node.inputs[0].operand_type.bitwidth
-        for src_allocs in possible_src_allocs:
+        for placement, src_allocs in self._held_options(src):
+            mapping = self.mapping if placement is None else self.mapping.with_edge_placements({src.name: placement})
             for dst_allocs, tiling in zip(possible_dst_allocs, possible_tilings, strict=True):
                 demand = self.ssw.get_transfer_demand(
                     node,
-                    self.mapping,
+                    mapping,
                     tiling,
                     len(src_allocs),
                     len(dst_allocs),
                     self.hardware.pairs_by_spatial_index((*src_allocs, *dst_allocs)),
                     dst_allocs,
                     self._reads_in,
+                    partial(self._iteration_cost, src_allocs, dst_allocs, bitwidth),
                 )
                 possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
                     src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
                 )
+                if placement is not None:
+                    possible_resource_plans = [replace(plan, placement=placement) for plan in possible_resource_plans]
                 all_possible_resource_plans.extend(possible_resource_plans)
         return tuple(all_possible_resource_plans)
 
@@ -570,9 +582,17 @@ class _Lowering:
         """The memories ``node`` may hold its output in, one per position."""
         return placements_of(self.accelerator, self.mapping, node, OUTPUT)
 
+    def _held_options(self, node: HasOutputs) -> tuple[tuple[EdgePlacement | None, tuple[Memory, ...]], ...]:
+        """Each placement the allocation may choose for ``node``, an input the mapping does not place, with the
+        memories it holds it in; else each of :meth:`_source_placements`, with no placement to choose."""
+        if isinstance(node, InEdge) and (options := placement_options(self.accelerator, self.mapping, node)):
+            return tuple((option, option.memories) for option in options)
+        return tuple((None, memories) for memories in self._source_placements(node))
+
     def _target_placement(self, dst: HasInputs, transfer: TransferNode) -> tuple[Memory, ...]:
         """The memories ``dst`` reads ``transfer``'s copy in, one per position."""
-        return self._destination_memories(dst, next(t for t in transfer.outputs if t in dst.inputs))
+        tensor = next(t for t in transfer.outputs if t in dst.inputs)
+        return self._destination_memories(dst, tensor, next(iter(self.ssw.predecessors(transfer))))
 
     def _reads_in(self, node: ComputationNode, tensor: Tensor) -> tuple[Memory, ...]:
         """The memory each of ``node``'s cores reads its input ``tensor`` in."""
@@ -589,11 +609,9 @@ class _Lowering:
         """The type of transfer moving ``tensor`` from ``src`` to ``dsts``, by the kinds of memory it leaves and
         lands in."""
         if src_type is None:
-            src_allocation = self._source_placements(src)
-            assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
-            src_type = self._effective_allocation_type(src_allocation[0])
+            src_type = self._effective_allocation_type([m for held in self._source_placements(src) for m in held])
         if dst_type is None:
-            landing = [m for dst in dsts for m in self._destination_memories(dst, tensor)]
+            landing = [m for dst in dsts for m in self._destination_memories(dst, tensor, src)]
             dst_type = self._effective_allocation_type(landing)
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
@@ -605,13 +623,37 @@ class _Lowering:
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
-    def _destination_memories(self, dst: HasInputs, tensor: Tensor) -> tuple[Memory, ...]:
-        """The memories ``dst`` reads ``tensor`` in: off-chip for an output edge, else the memory each of the
-        computation's cores reads it in."""
+    def _destination_memories(self, dst: HasInputs, tensor: Tensor, src: HasOutputs) -> tuple[Memory, ...]:
+        """The memories ``dst`` reads ``tensor`` from ``src`` in: off-chip for an output edge (see
+        :meth:`_offchip_landing`), else the memory each of the computation's cores reads it in."""
         if isinstance(dst, OutEdge):
-            return (offchip_memory(self.accelerator),)
+            return self._offchip_landing((dst,), src)
         assert isinstance(dst, ComputationNode), f"Unexpected destination node type: {type(dst)}"
         return self._reads_in(dst, tensor)
+
+    def _offchip_landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
+        """The off-chip memories a copy of ``src``'s output lands in, one per position, beside the cores making it."""
+        edge = next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_placements), None)
+        while edge is None and isinstance(src, TransferNode):
+            src = next(iter(self.ssw.predecessors(src)))
+        return landing_of(self.accelerator, self.mapping, edge, src)
+
+    def _iteration_cost(
+        self, sources: Sequence[Memory], targets: Sequence[Memory], bitwidth: float, items: Sequence[DemandItem]
+    ) -> tuple[float, float]:
+        """What one iteration's demand costs: the cycles the busiest off-chip memory takes at its rate, then the bits
+        times the links they cross from the nearest source holding them."""
+        held: dict[tuple[Memory, str], list[Box]] = defaultdict(list)
+        carried = 0.0
+        for item in items:
+            target = targets[item.target]
+            source = min((sources[s] for s in item.sources), key=lambda memory: self.accelerator.hops(memory, target))
+            for memory, direction in ((source, READ), (target, WRITE)):
+                if memory.offchip:
+                    held[(memory, direction)].append(item.box)
+            carried += box_bits([item.box], bitwidth) * self.accelerator.hops(source, target)
+        cycles = (box_bits(boxes, bitwidth) / self.accelerator.offchip_rate(*side) for side, boxes in held.items())
+        return max(cycles, default=0.0), carried
 
     def _effective_allocation_type(self, allocs: Sequence[Memory]) -> str:
         """The memory kind a set of (possibly mixed) memories serves as: ``compute`` if any is a compute memory (that is
@@ -639,6 +681,8 @@ class _Lowering:
         mem_tiles = self._mem_tiles()
         if node.transfer_type is TransferType.MEM_TO_MEM and self._each_column_reads_whole(src, node):
             return (tuple(c for c in mem_tiles if c.col_id in self._column_ids_of(src)),)
+        if own := self._own_mem_tiles(src, node):
+            return (own[0],)
         if columns and node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
             # A column's cores share its one memory tile, so both need one tile per occupied column, not per core.
             required_nb_mem_tiles = min(columns, total_relevant_unrolling)
@@ -666,6 +710,47 @@ class _Lowering:
             if len(per_column) > 1 and self._slice_of(node, len(per_column)):
                 return (per_column,)
         return tuple(candidates)
+
+    def _own_mem_tiles(self, src: HasOutputs, node: TransferNode) -> tuple[tuple[Memory, ...], InterCoreTiling] | None:
+        """The memory tiles ``src``'s cores work in, where each holds a block of ``node``'s tensor of its own cores, in
+        block order, and the split of the tensor over them; None where they do not. Tiles may share a block only when
+        ``node`` brings in an input copied in several memories, each tile then served from its nearest copy."""
+        allocations = self.mapping.get(src).resource_allocation
+        cores = allocations[0] if allocations else ()
+        loops = tuple(self.ssw.get_unique_dims_inter_core_tiling(src, self.mapping))
+        mem_tiles = set(self._mem_tiles())
+        seen = [[memory for memory in self.accelerator.memories_of(core) if memory in mem_tiles] for core in cores]
+        if any(len(tiles) != 1 for tiles in seen) or len(cores) != prod(f for _, f in loops):
+            return None
+        tile_of = [tile for (tile,) in seen]
+        if len(set(tile_of)) <= 1:
+            return None
+        node_dims = set(self.ssw.get_dims(node))
+        axes = [i for i, (dim, _) in enumerate(loops) if dim in node_dims]
+        held: dict[Memory, set[tuple[int, ...]]] = {}
+        for tile, position in zip(tile_of, np.ndindex(*(f for _, f in loops)), strict=True):
+            held.setdefault(tile, set()).add(tuple(position[i] for i in axes))
+        spans = {tuple(len({p[a] for p in slices}) for a in range(len(axes))) for slices in held.values()}
+        if len(spans) != 1:
+            return None
+        (span,) = spans
+        starts = {tile: tuple(min(p[a] for p in slices) for a in range(len(axes))) for tile, slices in held.items()}
+        blocks = all(
+            len(slices) == prod(span)
+            and all(start % width == 0 for start, width in zip(starts[tile], span, strict=True))
+            and all(p[a] - starts[tile][a] < span[a] for p in slices for a in range(len(axes)))
+            for tile, slices in held.items()
+        )
+        split = tuple((loops[i][0], loops[i][1] // width) for i, width in zip(axes, span, strict=True))
+        sharing = Counter(starts.values())
+        if not blocks or prod(f for _, f in split) != len(sharing) or len(set(sharing.values())) != 1:
+            return None
+        if len(sharing) != len(held):
+            placement = self.mapping.placement_of(next(iter(self.ssw.predecessors(node))))
+            if placement is None or placement.split is not None or len(placement.memories) <= 1:
+                return None
+        order = sorted(held, key=lambda tile: (*(s // w for s, w in zip(starts[tile], span, strict=True)), tile))
+        return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a
@@ -708,3 +793,18 @@ class _Lowering:
         caller falls back to the rows-per-column estimate.
         """
         return len(self._column_ids_of(src))
+
+
+def _without_innermost(tiling: InterCoreTiling, factor: int) -> InterCoreTiling | None:
+    """``tiling`` with ``factor`` taken off its innermost loops, None where they do not factor it."""
+    split = list(tiling)
+    while factor > 1 and split:
+        dim, size = split.pop()
+        if factor % size == 0:
+            factor //= size
+        elif size % factor == 0:
+            split.append((dim, size // factor))
+            factor = 1
+        else:
+            return None
+    return tuple(split) if factor == 1 else None

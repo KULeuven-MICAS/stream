@@ -6,7 +6,7 @@ from collections import defaultdict
 from math import ceil
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from stream.hardware.ports import PortKey
+from stream.hardware.ports import READ, PortKey
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE
 from stream.opt.allocation.constraint_optimization.families.traffic import (
     DmaStream,
@@ -169,7 +169,11 @@ def _shared_rows(
     q, space = ctx.quantities, ctx.space
     rows = []
     for memory, model in space.shared_bandwidth.items():
-        bits = sum(b for s, b in streams if space.direction(memory, s.choice) is not None)
+        bits = sum(
+            b * s.choice.memory_share(memory, leaving=direction == READ)
+            for s, b in streams
+            if (direction := space.direction(memory, s.choice)) is not None
+        )
         cores = tuple(c.id for c in memory.cores)
         row = _activity_row(ctx, "shared_bandwidth", memory.name, cores, model.ceiling, bits, interval)
         if ("shared_busy" in q) and memory in q.indexed("shared_busy"):

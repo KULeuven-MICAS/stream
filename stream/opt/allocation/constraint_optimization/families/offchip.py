@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 class OffchipTraffic:
     """The bits crossing the off-chip boundary, the objective level after the latency; with ``charge`` the latency
-    also pays the time the off-chip links take to move them, unless a shared-bandwidth model of the off-chip memory
-    or the overlap's off-chip contention already times them."""
+    also pays the time the off-chip links take to move them, unless a shared-bandwidth model of each off-chip memory
+    or the overlap's off-chip contention already times them; several off-chip memories need the latter."""
 
     name: ClassVar[str] = "offchip_traffic"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -25,7 +25,7 @@ class OffchipTraffic:
 
     def build(self, ctx: FormulationContext) -> None:
         space = ctx.space
-        timed = space.accelerator.offchip_memory in space.shared_bandwidth
+        timed = all(memory in space.shared_bandwidth for memory in space.accelerator.offchip_memories)
         bandwidth = space.offchip_bandwidth()
         if self.charge and not timed and bandwidth:
             ctx.quantities.add("offchip_traffic_weight", space.iterations / bandwidth)
@@ -39,6 +39,11 @@ class OffchipTraffic:
         )._raw
         levels = [ObjectiveLevel(expr=traffic, priority=OFFCHIP_TRAFFIC, name="offchip_traffic")]
         if "offchip_traffic_weight" in q and OFFCHIP_TIMED not in q:
+            if len(offchip := space.accelerator.offchip_memories) > 1:
+                raise ValueError(
+                    f"off-chip memories {[memory.name for memory in offchip]}: the overlap family with "
+                    "offchip_contention times the links of each, and this selection leaves it off"
+                )
             levels.append(
                 ObjectiveLevel(expr=q.get("offchip_traffic_weight").expr * traffic, priority=LATENCY, name="latency")
             )

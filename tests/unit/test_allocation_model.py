@@ -66,7 +66,7 @@ def test_the_objective_levels_come_in_priority_order(models: dict[str, Allocatio
     objective = models[case].objective
     levels = ["latency", "offchip_traffic", *(["dma_peaks"] if case == "default" else []), "buffering", "route_hops"]
     assert list(objective) == levels
-    assert [level.priority for level in objective.values()] == ([5, 4, 3, 2, 1] if case == "default" else [5, 4, 2, 1])
+    assert [level.priority for level in objective.values()] == ([6, 4, 3, 2, 1] if case == "default" else [6, 4, 2, 1])
 
 
 def test_the_latency_level_is_the_latency_the_solve_models(models: dict[str, AllocationModel]):
@@ -100,20 +100,36 @@ def _offchip_traffic(**options: Any) -> Any:
     return available_families()["offchip_traffic"](**options)
 
 
-def test_offchip_traffic_is_charged_in_the_primary_objective():
-    """With the family's weight registered, the bytes join the latency in the primary objective, unless a family
-    already times the off-chip links."""
-    ctx = SimpleNamespace(
+def _ctx(memories: tuple) -> SimpleNamespace:
+    return SimpleNamespace(
         model=MagicMock(quicksum=MagicMock(return_value=SimpleNamespace(_raw=2048))),
-        space=SimpleNamespace(tensors_to_optimize_reuse_for=[]),
+        space=SimpleNamespace(tensors_to_optimize_reuse_for=[], accelerator=SimpleNamespace(offchip_memories=memories)),
         vars=SimpleNamespace(z_stop={}),
         quantities=QuantityRegistry(),
     )
+
+
+def test_offchip_traffic_is_charged_in_the_primary_objective():
+    """With the family's weight registered, the bytes join the latency in the primary objective, unless a family
+    already times the off-chip links."""
+    ctx = _ctx(("l3",))
     family = _offchip_traffic()
     assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
     ctx.quantities.add("offchip_traffic_weight", 1 / 512)
     traffic, latency = family.objective(ctx)
     assert (traffic.expr, latency.name, latency.priority, latency.expr) == (2048, "latency", LATENCY, 4)
+    ctx.quantities.add(OFFCHIP_TIMED, 1)
+    assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
+
+
+def test_several_off_chip_memories_need_the_overlap_to_time_their_links():
+    """Charging the off-chip traffic at the bandwidth of all off-chip links would pool memories that each have their
+    own, so without the overlap's off-chip contention the selection is refused."""
+    ctx = _ctx((SimpleNamespace(name="hbm_0"), SimpleNamespace(name="hbm_1")))
+    family = _offchip_traffic()
+    ctx.quantities.add("offchip_traffic_weight", 1 / 512)
+    with pytest.raises(ValueError, match=r"off-chip memories \['hbm_0', 'hbm_1'\]: the overlap family"):
+        family.objective(ctx)
     ctx.quantities.add(OFFCHIP_TIMED, 1)
     assert [level.name for level in family.objective(ctx)] == ["offchip_traffic"]
 
@@ -129,7 +145,7 @@ def test_offchip_traffic_weight(shared_bandwidth, bandwidth, charged):
         shared_bandwidth=shared_bandwidth,
         iterations=4,
         offchip_bandwidth=lambda: bandwidth,
-        accelerator=SimpleNamespace(offchip_memory="l3"),
+        accelerator=SimpleNamespace(offchip_memories=("l3",)),
     )
     q = QuantityRegistry()
     _offchip_traffic().build(SimpleNamespace(space=space, quantities=q))
@@ -144,7 +160,7 @@ def test_offchip_traffic_without_its_charge_keeps_its_level():
         shared_bandwidth={},
         iterations=4,
         offchip_bandwidth=lambda: 512.0,
-        accelerator=SimpleNamespace(offchip_memory="l3"),
+        accelerator=SimpleNamespace(offchip_memories=("l3",)),
     )
     q = QuantityRegistry()
     _offchip_traffic(charge=False).build(SimpleNamespace(space=space, quantities=q))
@@ -169,7 +185,7 @@ class _Rogue:
 
 def test_levels_of_one_name_must_share_a_priority(solve: Solve):
     families = {**available_families(), "rogue": _Rogue}
-    with pytest.raises(ValueError, match="'latency' has priority 6 in 'rogue'"):
+    with pytest.raises(ValueError, match="'latency' has priority 7 in 'rogue'"):
         solve([*DEFAULT_FAMILIES, "rogue"], families_available=families, hook="_build_model")
 
 

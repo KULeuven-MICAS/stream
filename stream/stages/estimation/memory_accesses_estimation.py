@@ -6,11 +6,12 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import READ, WRITE
-from stream.mapping.mapping import Mapping, offchip_memory
+from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.node import InEdge, OutEdge, TransferNode, TransferType
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class MemoryAccessesEstimationStage(Stage):
         self.mapping: Mapping = self.ctx.get("mapping")
         self.ssis = self.ctx.get("allocation").ssis
 
-        self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses()
+        self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses(self.accelerator)
 
     def run(self):
         logger.info("Start MemoryAccessesEstimationStage.")
@@ -101,8 +102,9 @@ class MemoryAccessesEstimationStage(Stage):
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
-                bandwidth = self._offchip_bandwidth(READ)
-                self.core_memory_accesses.add_offchip_read(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                for memory, bits in self._offchip_bits(tn, src, t_core, READ):
+                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, READ)) * nb_fires
+                    self.core_memory_accesses.add_offchip_read(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(src).resource_allocation)
             for core in cores:
@@ -152,8 +154,9 @@ class MemoryAccessesEstimationStage(Stage):
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
-                bandwidth = self._offchip_bandwidth(WRITE)
-                self.core_memory_accesses.add_offchip_write(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                for memory, bits in self._offchip_bits(tn, dst, t_core, WRITE):
+                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, WRITE)) * nb_fires
+                    self.core_memory_accesses.add_offchip_write(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
             for core in cores:
@@ -163,18 +166,21 @@ class MemoryAccessesEstimationStage(Stage):
                 total_accesses = accesses_per_fire * nb_fires
                 self.core_memory_accesses.add_write(core, t_core, total_accesses)
 
-    def _offchip_bandwidth(self, direction: str) -> float:
-        """Bits one access of the off-chip memory moves in ``direction``: its measured contiguous rate if it has one,
-        else its widest port serving the direction."""
-        memory = offchip_memory(self.accelerator)
-        measured = self.accelerator.bandwidth.get(memory)
-        if measured is not None:
-            return measured.contiguous
-        ports = [port for port in self.accelerator.ports if port.key.memory == memory.name]
-        widths = [port.bits_per_cycle for port in ports if any(d == direction for _, d in port.serves)]
-        if not widths:
-            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
-        return max(widths)
+    def _offchip_bits(
+        self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str
+    ) -> list[tuple[Memory, float]]:
+        """Each off-chip memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, with the bits it moves per firing:
+        a split placement's share of what the route delivers over the walk, else its share of the route's data
+        (:meth:`MulticastPathPlan.memory_share`)."""
+        route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
+        placement = self.mapping.placement_of(edge)
+        if (shares := self.workload.placement_shares(placement, tn.inputs[0], route.delivered)) is not None:
+            return [(memory, tensor.size_bits() * share) for memory, share in shares.items()]
+        side = route.sources if leaving else route.targets
+        return [
+            (memory, tensor.size_bits() * route.memory_share(memory, leaving))
+            for memory in dict.fromkeys(memory for memory in side if memory.offchip)
+        ]
 
     def is_leaf(self):
         return True
