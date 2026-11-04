@@ -6,16 +6,15 @@ import yaml
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig
 
 
-def make_2_conv_mapping(config: TwoConvWorkloadConfig):  # noqa: N803
-    """
-    This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
-    Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
-    It also assumes that line_size columns are computed in a pipelined fashion."""
+def make_2_conv_mapping(config: TwoConvWorkloadConfig, output_dir=None):  # noqa: N803
+    """A mapping of m rows per Gemm, pipelined, each layer split over four rows of compute tiles along m, line_size
+    columns pipelined. Written into ``output_dir``, by default this module's directory."""
     name = (
         f"2conv_{config.batch_size}_{config.height}_{config.width}"
         f"_{config.in_channels}_{config.out_channels_1}_{config.out_channels_2}_{config.kernel_size}"
     )
-    output_file = os.path.join(os.path.dirname(__file__), f"{name}.yaml")
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
+    output_file = os.path.join(dest_dir, f"{name}.yaml")
 
     TILE_DIM = "Conv1.D0"  # Tiling dimension (batch dimension)
     TILE_SIZE = 1  # Tiling size per steady state iteration

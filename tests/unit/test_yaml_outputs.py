@@ -61,10 +61,10 @@ def solved(tmp_path_factory: pytest.TempPathFactory, two_conv: TwoConvWorkloadCo
     except (ImportError, ValueError):
         backend = "ortools_gscip"
     root = tmp_path_factory.mktemp("yaml_outputs")
-    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+    workload, mapping = make_2_conv_workload(two_conv, str(root)), make_2_conv_mapping(two_conv, str(root))
     evaluate_mapping(TPU, workload, str(root / "tpu"), mapping, SolveOptions(backend=backend))
-    workload = make_gemm_workload(128, 128, 128, "bf16", "bf16")
-    mapping = make_gemm_mapping(128, 128, 128, 64, 64, 64, nb_rows_to_use=2, nb_cols_to_use=2)
+    workload = make_gemm_workload(128, 128, 128, "bf16", "bf16", str(root))
+    mapping = make_gemm_mapping(128, 128, 128, 64, 64, 64, nb_rows_to_use=2, nb_cols_to_use=2, output_dir=str(root))
     evaluate_mapping(AIE, workload, str(root / "aie"), mapping, SolveOptions(backend=backend, nb_cols_to_use=2))
     return root, backend
 

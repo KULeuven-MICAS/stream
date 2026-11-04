@@ -379,20 +379,9 @@ def _build_dual_residual(
     )
 
 
-def make_resnet_subgraph(config: ResNetSubgraphConfig | None = None) -> str:
-    """Build an ONNX model for a ResNet18 sub-graph pattern.
-
-    All patterns return just onnx_path (str). The dual-residual pattern embeds
-    an identity Reshape node as a FusionEdge trigger -- the split point is
-    controlled by the builder, not auto-detected. Mapping is auto-generated
-    by GenericMappingGenerator for all patterns.
-
-    Args:
-        config: Sub-graph configuration. Uses BASIC_RESIDUAL defaults if None.
-
-    Returns:
-        Path to the saved ONNX model.
-    """
+def make_resnet_subgraph(config: ResNetSubgraphConfig | None = None, output_dir=None) -> str:
+    """A ResNet18 sub-graph as ONNX, by ``config`` (BASIC_RESIDUAL if None), saved in ``output_dir`` (by default this
+    module's directory); returns its path. The dual-residual pattern cuts its blocks at an identity Reshape."""
     if config is None:
         config = ResNetSubgraphConfig(pattern=ResNetPattern.BASIC_RESIDUAL)
 
@@ -443,8 +432,9 @@ def make_resnet_subgraph(config: ResNetSubgraphConfig | None = None) -> str:
 
     # Save
     pattern_name = config.pattern.name.lower()
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
     onnx_path = os.path.join(
-        os.path.dirname(__file__),
+        dest_dir,
         f"resnet_{pattern_name}_{dims_label}.onnx",
     )
     onnx.save(inferred, onnx_path)

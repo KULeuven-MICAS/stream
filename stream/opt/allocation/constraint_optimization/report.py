@@ -233,17 +233,21 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
     return rows
 
 
-def node_utilization(entry: Any, n_cores: int, runtime: int, active: float) -> dict[str, Any]:
+def node_utilization(entry: Any, n_cores: int, runtime: int, active: float, tiles: int) -> dict[str, Any]:
     """A compute node's report row: ``active`` cycles per iteration, efficiency per call over its ``runtime``, and
-    whether a matmul or conv fell back to an ideal-cycle estimate."""
+    whether a matmul or conv fell back to an ideal-cycle estimate. Its MAC utilization counts only the cores that do
+    distinct work, one per of the ``tiles`` its inter-core split cuts it into: the rest repeat a tile."""
     ideal = getattr(entry, "ideal_cycle", None)
     node_type = getattr(getattr(entry, "layer", None), "type", "")
+    utilization = getattr(entry, "mac_spatial_utilization", None)
     return {
         "kind": "compute",
         "n_cores": n_cores,
         "latency_cycles": active,
         "ideal_compute_cycles": _json_scalar(ideal),
-        "mac_spatial_utilization": _json_scalar(getattr(entry, "mac_spatial_utilization", None)),
+        "mac_spatial_utilization": _json_scalar(
+            utilization * min(tiles, n_cores) / n_cores if utilization is not None else None
+        ),
         "compute_efficiency": _json_scalar(float(ideal) / runtime if ideal and runtime else None),
         "fallback": (getattr(entry, "metadata", None) or {}).get("backend") == IDEAL_CYCLE_BACKEND
         and is_mac_operator_type(node_type),
@@ -264,7 +268,10 @@ def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_laten
         compute_by_slot[s] = max(compute_by_slot.get(s, 0.0), float(active))
         if not cores:
             continue
-        per_node[n.name] = node_utilization(lut.get_cost(n, cores[0]), len(cores), space.runtime(n), active)
+        # Every slot of a node's tiling is the same (Workload._tiling), so the first counts its tiles.
+        split = space.mapping.get(n).inter_core_tiling
+        tiles = math.prod(factor for _, factor in split[0]) if split else 1
+        per_node[n.name] = node_utilization(lut.get_cost(n, cores[0]), len(cores), space.runtime(n), active, tiles)
 
     compute_cycles = transfer_cycles = 0.0
     for s, latency in ctx.vars.slot_latency.items():

@@ -301,7 +301,11 @@ class NodePerformanceIR(BaseModel):
         default=None, description="Cycles at perfect MAC spatial utilization (the compute-ideal floor)"
     )
     mac_spatial_utilization: float | None = Field(
-        default=None, description="Fraction of the core's MAC array used spatially (1.0 = full PE array)"
+        default=None,
+        description=(
+            "Fraction of the node's cores' MAC arrays used spatially (1.0 = full PE arrays); a core repeating a tile "
+            "another computes counts as unused"
+        ),
     )
     compute_efficiency: float | None = Field(
         default=None,

@@ -34,7 +34,8 @@ def solved(tmp_path_factory: pytest.TempPathFactory, two_conv: TwoConvWorkloadCo
     """A solve whose broken_report family and memory occupancy both fail to report, and what it logged."""
     known = {**families.available_families(), _BrokenReport.name: _BrokenReport}
     options = SolveOptions(families=[*DEFAULT_FAMILIES, _BrokenReport.name], artifacts=False)
-    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+    inputs = str(tmp_path_factory.mktemp("inputs"))
+    workload, mapping = make_2_conv_workload(two_conv, inputs), make_2_conv_mapping(two_conv, inputs)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(families, "available_families", lambda: known)
         patch.setattr(report, "memory_occupancy", _no_occupancy)

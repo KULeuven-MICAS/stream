@@ -292,7 +292,7 @@ def test_a_layout_reports_each_side_the_dma_walks_and_the_banks_it_lands_in(tmp_
     strides and the loops the DMA walks the tile in, which visit every element of the tile once."""
     from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload  # noqa: PLC0415
 
-    workload = make_2_conv_workload(TwoConvWorkloadConfig(1, 8, 32, 32, 16, 32, 3, "bf16", "bf16"))
+    workload = make_2_conv_workload(TwoConvWorkloadConfig(1, 8, 32, 32, 16, 32, 3, "bf16", "bf16"), str(tmp_path))
     estimate = evaluate_mapping("stream/inputs/examples/hardware/simba_small.yaml", workload, str(tmp_path))
     layouts = [t for g in estimate.context.get("group_allocations").values() for t in g["performance"]["layouts"]]
     assert any(t["write"]["banks"] == {"count": 4, "width": 32, "stripe": 1} for t in layouts)

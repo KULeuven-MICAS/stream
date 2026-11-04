@@ -12,7 +12,8 @@ def _clear_tensor_data(tensor: TensorProto) -> None:
         tensor.ClearField(field)
 
 
-def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
+def make_gemm_workload(M, K, N, in_dtype, out_dtype, output_dir=None):  # noqa: N803
+    """An ``M x K @ K x N`` Gemm ONNX, written into ``output_dir`` (by default this module's directory)."""
     if "16" in in_dtype:
         ACT_SIZE = 16
         WEIGHT_SIZE = 16
@@ -80,7 +81,8 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     inferred_model = onnx.shape_inference.infer_shapes(model)
 
     # Save the model to file
-    onnx_path = os.path.join(os.path.dirname(__file__), f"{name}.onnx")
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
+    onnx_path = os.path.join(dest_dir, f"{name}.onnx")
     onnx.save(inferred_model, onnx_path)
     print(f"{name} exported to {onnx_path}.")
 

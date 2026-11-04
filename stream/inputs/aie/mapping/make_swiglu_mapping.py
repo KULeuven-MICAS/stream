@@ -4,7 +4,7 @@ import os
 import yaml
 
 
-def make_swiglu_mapping(  # noqa: PLR0915
+def make_swiglu_mapping(  # noqa: PLR0913, PLR0915
     seq_len,
     embedding_dim,
     hidden_dim,
@@ -13,20 +13,14 @@ def make_swiglu_mapping(  # noqa: PLR0915
     embedding_tile_size,
     hidden_tile_size,
     split_groups=False,
+    output_dir=None,
 ):  # noqa: N803
-    """
-    This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
-    Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
-    It also assumes that line_size columns are computed in a pipelined fashion.
-
-    When ``split_groups`` is set (requires ``last_gemm_down``), the down-projection
-    Gemm is placed in its own fused group, so the design splits into two fusion
-    groups -- the gate/up/SiLU/mul front end (producing the hidden state) and the
-    down-projection back end -- instead of one fully-fused group. The split is
-    carried purely by the mapping's ``fused_groups``; ``FixedMappingGenerationStage``
-    derives the matching workload cut from it."""
+    """A mapping of m rows per Gemm, pipelined, each layer split over four rows of compute tiles along m, line_size
+    columns pipelined. ``split_groups`` (needs ``last_gemm_down``) puts the down projection in a fused group of its own.
+    Written into ``output_dir``, by default this module's directory."""
     name = f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}"
-    output_file = os.path.join(os.path.dirname(__file__), f"{name}_v2.yaml")
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
+    output_file = os.path.join(dest_dir, f"{name}_v2.yaml")
 
     SEQ_LEN_TILE_SIZE = seq_len_tile_size
     INPUT_CHANNEL_TILE_SIZE = embedding_tile_size

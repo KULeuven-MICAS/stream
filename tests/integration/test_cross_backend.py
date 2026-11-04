@@ -21,16 +21,16 @@ REL_TOL = 0.01
 _GUROBI = pytest.mark.skipif(importlib.util.find_spec("gurobipy") is None, reason="gurobipy is not installed")
 
 
-def _gemm() -> tuple[str, str]:
+def _gemm(output: str) -> tuple[str, str]:
     M, K, N = 256, 8192, 2048  # noqa: N806
-    workload = make_gemm_workload(M, K, N, "bf16", "bf16")
-    return workload, make_gemm_mapping(M, K, N, 32, 32, 32, nb_rows_to_use=4, nb_cols_to_use=COLUMNS)
+    workload = make_gemm_workload(M, K, N, "bf16", "bf16", output)
+    return workload, make_gemm_mapping(M, K, N, 32, 32, 32, nb_rows_to_use=4, nb_cols_to_use=COLUMNS, output_dir=output)
 
 
-def _swiglu() -> tuple[str, str]:
+def _swiglu(output: str) -> tuple[str, str]:
     seq_len, embedding, hidden = 256, 512, 2048
-    workload = make_swiglu_workload(seq_len, embedding, hidden, "bf16", "bf16")
-    return workload, make_swiglu_mapping(seq_len, embedding, hidden, True, 32, 32, 64)
+    workload = make_swiglu_workload(seq_len, embedding, hidden, "bf16", "bf16", output_dir=output)
+    return workload, make_swiglu_mapping(seq_len, embedding, hidden, True, 32, 32, 64, output_dir=output)
 
 
 INSTANCES = {"gemm": _gemm, "swiglu": _swiglu}
@@ -39,8 +39,8 @@ INSTANCES = {"gemm": _gemm, "swiglu": _swiglu}
 @cache
 def _objective(instance: str, backend: str) -> float:
     """The latency the allocation of ``instance`` minimizes, solved by ``backend``."""
-    workload, mapping = INSTANCES[instance]()
     with tempfile.TemporaryDirectory() as output:
+        workload, mapping = INSTANCES[instance](output)
         options = SolveOptions(backend=backend, nb_cols_to_use=COLUMNS, artifacts=False)
         context = evaluate_mapping(ACCELERATOR, workload, output, mapping, options).context
     return float(context.get("allocation").solution.latency.total)

@@ -101,8 +101,15 @@ def cost(node_type: str, backend: str, ideal: float = 98.0) -> CoreCostEntry:
 class TestNodeUtilization:
     def test_efficiency_compares_one_call_with_its_ideal(self) -> None:
         """A node idle on 15 of 16 iterations runs 6 cycles per iteration, yet each call meets its ideal."""
-        row = node_utilization(cost("Relu", "zigzag"), n_cores=1, runtime=98, active=6)
+        row = node_utilization(cost("Relu", "zigzag"), n_cores=1, runtime=98, active=6, tiles=1)
         assert (row["latency_cycles"], row["compute_efficiency"]) == (6, 1.0)
+
+    def test_cores_repeating_a_tile_count_as_unused(self) -> None:
+        """Four cores computing a node split in two do the work of two, so half their arrays do useful work."""
+        entry = cost("Conv", "zigzag")
+        entry.cme = SimpleNamespace(mac_spatial_utilization=0.8)
+        row = node_utilization(entry, n_cores=4, runtime=98, active=98, tiles=2)
+        assert row["mac_spatial_utilization"] == pytest.approx(0.4)
 
     @pytest.mark.parametrize(
         ("node_type", "backend", "fallback"),
@@ -112,4 +119,5 @@ class TestNodeUtilization:
         self, node_type: str, backend: str, fallback: bool
     ) -> None:
         """A kernel library prices AIE cores without a ZigZag evaluation; that is a cost, not a fallback."""
-        assert node_utilization(cost(node_type, backend), n_cores=1, runtime=98, active=98)["fallback"] is fallback
+        row = node_utilization(cost(node_type, backend), n_cores=1, runtime=98, active=98, tiles=1)
+        assert row["fallback"] is fallback

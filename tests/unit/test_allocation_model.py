@@ -35,7 +35,8 @@ Solve = Callable[..., AllocationModel]
 @pytest.fixture(scope="module")
 def solve(tmp_path_factory: pytest.TempPathFactory, solved_model: Solve, two_conv: TwoConvWorkloadConfig) -> Solve:
     """A solve of the two-convolution workload on the TPU-like array with ``families``."""
-    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+    inputs = str(tmp_path_factory.mktemp("inputs"))
+    workload, mapping = make_2_conv_workload(two_conv, inputs), make_2_conv_mapping(two_conv, inputs)
 
     def run(families: Any, **kwargs: Any) -> AllocationModel:
         out = str(tmp_path_factory.mktemp("objective"))

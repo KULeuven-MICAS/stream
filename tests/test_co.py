@@ -68,8 +68,8 @@ def test_co_tpu_two_conv(output_dir: Path):
     - exactly two computation nodes
     - each computation node has a resource allocation
     """
-    workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
-    mapping_path = make_2_conv_mapping(_WORKLOAD_CONFIG)
+    workload_path = make_2_conv_workload(_WORKLOAD_CONFIG, str(output_dir))
+    mapping_path = make_2_conv_mapping(_WORKLOAD_CONFIG, str(output_dir))
 
     print(f"Workload path: {workload_path}")
     print(f"Mapping path: {mapping_path}")

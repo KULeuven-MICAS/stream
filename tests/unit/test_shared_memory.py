@@ -34,9 +34,9 @@ def fusemax(sram_kb: int = 2048) -> Accelerator:
 
 
 def solve_swiglu(accelerator: Accelerator):
-    workload = make_small_swiglu_workload(seq_len=256, embedding_dim=2048, hidden_dim=8192)
     options = SolveOptions(stage_options={"intra_core_tiling": TILING})
     with tempfile.TemporaryDirectory() as tmpdir:
+        workload = make_small_swiglu_workload(seq_len=256, embedding_dim=2048, hidden_dim=8192, output_dir=tmpdir)
         return evaluate_mapping(accelerator, workload, tmpdir, options=options).context
 
 

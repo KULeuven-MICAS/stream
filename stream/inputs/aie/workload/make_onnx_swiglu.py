@@ -11,24 +11,13 @@ def _clear_tensor_data(tensor: TensorProto) -> None:
         tensor.ClearField(field)
 
 
-def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down: bool = True):
-    """
-    Build an ONNX model for SwiGLU using a custom function-op SiLU in a private domain:
-    left  = Gemm(input, w_left)           # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
-        right = Gemm(input, w_right)      # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
-        left_swished = SiLU(left)         # single node; body = left * Sigmoid(left)
-        intermediate = left_swished*right # elementwise Mul -> [seq_len,hidden_dim]
-        output = Gemm(intermediate,w_down)# [seq_len,hidden_dim] @ [hidden_dim,embedding_dim] -> [seq_len,embedding_dim]
-
-    Args:
-        seq_len (int): Sequence length dimension.
-        embedding_dim (int): Embedding dimension.
-        hidden_dim (int): Hidden dimension for intermediate layers.
-        in_dtype (str): Input data type.
-        out_dtype (str): Output data type.
-    Returns:
-        onnx.ModelProto: Shape-inferred model.
-    """
+def make_swiglu_workload(
+    seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down: bool = True, output_dir=None
+):
+    """SwiGLU as ONNX, its SiLU a function op in a private domain: SiLU(Gemm(input, w_left)) * Gemm(input, w_right),
+    then a Gemm by w_down with ``last_gemm_down``. Written into ``output_dir``, by default this module's directory;
+    returns the model."""
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
     # Validate and convert shapes
     seq_len = int(seq_len)
     embedding_dim = int(embedding_dim)
@@ -137,9 +126,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
             initializer=[w_left, w_right],
         )
         doc_string = "SwigLU: left Gemm -> SiLU, right Gemm, then elementwise Mul."
-        onnx_path = os.path.join(
-            os.path.dirname(__file__), f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}_no_gemm_down.onnx"
-        )
+        onnx_path = os.path.join(dest_dir, f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}_no_gemm_down.onnx")
     else:
         w_down = helper.make_tensor(
             "weights_3",
@@ -182,7 +169,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
             initializer=[w_left, w_right, w_down],
         )
         doc_string = "SwigLU: left Gemm -> SiLU, right Gemm, then elementwise Mul and down proj Gemm."
-        onnx_path = os.path.join(os.path.dirname(__file__), f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}.onnx")
+        onnx_path = os.path.join(dest_dir, f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}.onnx")
 
     # Build model and register both standard and custom domains
     model = helper.make_model(

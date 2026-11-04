@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,13 +13,14 @@ from xdsl.dialects.builtin import bf16
 from xdsl.ir.affine import AffineMap
 
 from stream.allocation.lowering import reader_positions
-from stream.api import evaluate_mapping
+from stream.api import SolveOptions, evaluate_mapping
 from stream.cost_model.bandwidth import BandwidthModel
-from stream.cost_model.communication_manager import DemandItem
+from stream.cost_model.communication_manager import DemandItem, box_bits
 from stream.hardware.architecture.accelerator import Accelerator, MemoryGraph
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import OUTPUT, READ, WRITE, Port, PortKey, input_role
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import role_of
 from stream.opt.allocation.constraint_optimization.families import available_families
 from stream.opt.allocation.constraint_optimization.families.memory import (
@@ -42,7 +44,7 @@ from stream.stages.parsing.accelerator_parser import parse_accelerator
 from stream.stages.stage import LeafStage
 from stream.visualization.steady_state_trace import _resource_sort_key
 from stream.workload.blocks import build_block
-from stream.workload.node import ComputationNode, TransferNode
+from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode, TransferType
 from stream.workload.tensor import Tensor
 
 L3 = """
@@ -100,6 +102,7 @@ def _memories(**views: list[str]) -> dict:
 WHOLE = ((0, 15), (0, 15))
 SHARED_CORE1 = Path("stream/inputs/testing/hardware/cores/shared_testing_core1.yaml")
 SHARED_CORE2 = Path("stream/inputs/testing/hardware/cores/shared_testing_core2.yaml")
+VMEM_CORE = Path("tests/fixtures/hardware/cores/tpu_v7_vmem.yaml")
 
 
 def _two_l1s() -> dict:
@@ -286,7 +289,8 @@ def test_weights_land_in_the_weights_memory(tmp_path):
             kernel_size=3,
             in_dtype="bf16",
             weight_dtype="bf16",
-        )
+        ),
+        str(tmp_path),
     )
     allocation = evaluate_mapping(str(META_PROTOTYPE), workload, str(tmp_path)).context.get("allocation")
     workload = allocation.problem.workload
@@ -300,6 +304,85 @@ def test_weights_land_in_the_weights_memory(tmp_path):
     for copy in weights:
         placed = allocation.solution.tensor_placements[copy]
         assert placed and all(memory.name.endswith("_weights") for memory in placed), (copy.name, placed)
+
+
+def _shared_sram(columns: int, via: str = "sram") -> dict:
+    """One compute core per column, each with its own L1, and a memory core in a column of its own whose SRAM every
+    L1 links to, as a GPU's L2 or a shared last-level SRAM: the off-chip memory links to the SRAM only. ``via="l3"``
+    links the L1s to the off-chip memory instead, the SRAM's only route to them, and to each other over a bus."""
+    l1s = {f"l1_{i}": [f"{i}.sram_64KB"] for i in range(columns)}
+    ports = dict.fromkeys([*l1s, "sram"], ["r_port_1", "w_port_1"]) | {"l3": ["rw_port_1"]}
+    links = [{"type": "link", "ends": {l1: ports[l1], via: ports[via]}, "bandwidth": 128} for l1 in l1s]
+    if via == "l3":
+        links.append({"type": "bus", "ends": {l1: ports[l1] for l1 in l1s}, "bandwidth": 128})
+    return {
+        "name": "shared-sram",
+        "cores": {i: "shared_testing_core1.yaml" for i in range(columns)} | {columns: str(VMEM_CORE)},
+        "core_coordinates": {i: [i, 0] for i in range(columns + 1)},
+        "unit_energy_cost": 0,
+        "memories": _memories(**l1s, sram=[f"{columns}.vmem"]),
+        "connections": [
+            *links,
+            {"type": "link", "ends": {"sram": ports["sram"], "l3": ports["l3"]}, "bandwidth": 64},
+        ],
+    }
+
+
+def _solve_on_shared_sram(tmp_path: Path, two_conv: TwoConvWorkloadConfig, via: str = "sram"):
+    """The allocation of a convolution pair on :func:`_shared_sram`'s four columns."""
+    workload = make_2_conv_workload(replace(two_conv, height=16, width=16), str(tmp_path))
+    path = tmp_path / "hw.yaml"
+    path.write_text(yaml.safe_dump(_shared_sram(columns=4, via=via), sort_keys=False))
+    options = SolveOptions(nb_cols_to_use=5, artifacts=False)
+    return evaluate_mapping(str(path), workload, str(tmp_path), options=options).context.get("allocation")
+
+
+@pytest.fixture(scope="module")
+def shared_sram_allocation(tmp_path_factory, two_conv):
+    return _solve_on_shared_sram(tmp_path_factory.mktemp("shared_sram"), two_conv)
+
+
+def test_a_memory_core_the_columns_share_stages_the_inputs_their_cores_split(shared_sram_allocation):
+    """Each input reaches the cores through the one SRAM the columns share, which holds every core's block of it."""
+    allocation = shared_sram_allocation
+    workload, sram = allocation.problem.workload, allocation.problem.accelerator.memories["sram"]
+    staged = [
+        copy
+        for node in workload.nodes
+        if isinstance(node, TransferNode) and any(isinstance(p, InEdge) for p in workload.predecessors(node))
+        for copy in node.outputs
+    ]
+    assert staged and all(allocation.solution.tensor_placements[copy] == (sram,) for copy in staged), staged
+    split = allocation.problem.mapping.get(next(iter(workload.get_computation_nodes()))).resource_allocation[0]
+    assert len({core.col_id for core in split}) > 1
+
+
+def test_a_memory_core_the_columns_share_gathers_the_output_their_cores_split_on_its_way_off_chip(
+    shared_sram_allocation,
+):
+    """Each core's block of the output goes from its L1 to the shared SRAM, which sends on to the off-chip memory every
+    bit it gathers: the whole output, each element once."""
+    allocation = shared_sram_allocation
+    problem, routes = allocation.problem, allocation.solution.transfer_routes
+    memories = problem.accelerator.memories
+    sram, l3, l1s = memories["sram"], memories["l3"], {memories[f"l1_{i}"] for i in range(4)}
+    gather = next(n for n in problem.workload.get_transfer_nodes() if n.transfer_type is TransferType.COMPUTE_TO_MEM)
+    (export,) = problem.workload.successors(gather)
+    assert isinstance(next(iter(problem.workload.successors(export))), OutEdge)
+    assert allocation.solution.tensor_placements[gather.outputs[0]] == (sram,)
+    assert {(link.sender, link.receiver) for link in routes[gather].links_used} == {(l1, sram) for l1 in l1s}
+    assert {(link.sender, link.receiver) for link in routes[export].links_used} == {(sram, l3)}
+    blocks = routes[gather].delivered
+    gathered = box_bits(blocks, 1)
+    assert len(blocks) == len(l1s) and sum(box_bits([block], 1) for block in blocks) == gathered
+    assert box_bits(routes[export].delivered, 1) == gathered
+    assert gathered == gather.inputs[0].size_elements()
+
+
+def test_a_memory_core_reaching_the_cores_only_through_the_off_chip_memory_stages_nothing_for_them(tmp_path, two_conv):
+    """A route through the off-chip memory does not make the SRAM theirs: it is not offered, and nothing else is."""
+    with pytest.raises(InfeasibleAllocationError, match="has no memory it can hold input_1 in"):
+        _solve_on_shared_sram(tmp_path, two_conv, via="l3")
 
 
 def _two_offchip() -> dict:

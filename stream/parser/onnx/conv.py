@@ -8,20 +8,26 @@ from stream.workload.workload import ComputationNode, Tensor
 def conv_maps(
     activation: Tensor, weight: Tensor, biased: bool, window: tuple[list[int], ...], groups: int
 ) -> tuple[AffineMap, ...]:
-    """The access maps of a 2D convolution over (b, ox, oy, fx, fy, c, k), and the group g when grouped, given its
-    ``window`` strides, dilations and leading padding: its input, its weight, its bias where ``biased``, its output."""
-    num_dims = 7 if groups == 1 else 8
+    """The access maps of a 2D conv over (b, ox, oy, fx, fy, c, k), and g where a group has several output channels,
+    from the ``window`` strides, dilations and leading padding: input, weight, bias where ``biased``, output. A
+    depthwise conv reads the channel it writes."""
+    per_group = weight.shape[0] // groups
+    num_dims = 8 if groups > 1 and per_group > 1 else 7
     b, ox, oy, fx, fy, c, k, *g = (AffineDimExpr(i) for i in range(num_dims))
-    in_channel = g[0] * weight.shape[1] + c if g else c
-    out_channel = g[0] * (weight.shape[0] // groups) + k if g else k
+    if groups == 1:
+        in_channel, out_channel = c, k
+    else:
+        group = g[0] if g else k
+        in_channel = group * weight.shape[1] + c if weight.shape[1] > 1 else group
+        out_channel = group * per_group + k if g else k
     results = [(b, in_channel, *window_index((oy, ox), (fy, fx), *window)), (out_channel, c, fy, fx)]
     results += [(out_channel,)] * biased + [(b, out_channel, oy, ox)]
     return tuple(AffineMap(num_dims, 0, tuple(r)) for r in results)
 
 
 class ConvParser(OnnxOperatorParser):
-    """Parses an ONNX Conv into a ComputationNode over (b, ox, oy, fx, fy, c, k), and the group g when grouped;
-    the optional bias is a third input, read per output channel."""
+    """Parses an ONNX Conv into a ComputationNode over (b, ox, oy, fx, fy, c, k), and the group g when grouped with
+    several output channels per group; the optional bias is a third input, read per output channel."""
 
     EXPECTED_NB_OF_INPUTS = 2  # activation and weight are required, bias is optional
 

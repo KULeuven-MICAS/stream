@@ -9,6 +9,7 @@ from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
+import networkx as nx
 import numpy as np
 from xdsl.ir.affine import AffineMap
 
@@ -74,6 +75,11 @@ def reader_positions(
                     f"{first.name}: a copy lands in one memory per core"
                 )
     return tuple(memory for _, memory in found.values())
+
+
+def _key(node: Node) -> tuple[type[Node], str]:
+    """A node's key among the nodes being lowered: an edge takes its tensor's name, which a node may share."""
+    return type(node), node.name
 
 
 def largest_divisor_leq(n: int, cap: int) -> int:
@@ -156,8 +162,8 @@ class _Lowering:
             for t in n.inputs
             if is_state_operand(n, t)
         }
-        new_nodes: dict[str, Node] = {
-            node.name: node
+        new_nodes: dict[tuple[type[Node], str], Node] = {
+            _key(node): node
             for node in self.workload.nodes
             if not (isinstance(node, InEdge) and all(t in state for t in node.outputs))
         }
@@ -166,14 +172,16 @@ class _Lowering:
                 continue
             srcs = [n for n in self.workload.nodes if isinstance(n, HasOutputs) and tensor in n.outputs]
             assert len(srcs) == 1, f"Expected exactly one source for tensor {tensor}, found {len(srcs)}"
-            src = new_nodes[srcs[0].name]
+            src = new_nodes[_key(srcs[0])]
             readers = [n for n in self.workload.nodes if isinstance(n, HasInputs) and tensor in n.inputs]
-            dsts = [new_nodes[n.name] for n in readers]
+            dsts = [new_nodes[_key(n)] for n in readers]
             self.add_transfer_nodes(tensor, src, dsts, new_nodes)
         new_workload = Workload(new_nodes.values())
         return new_workload
 
-    def add_transfer_nodes(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[str, Node]):
+    def add_transfer_nodes(
+        self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[tuple[type[Node], str], Node]
+    ):
         """
         Move ``tensor`` from its source to its readers in one transfer, either directly or staged on a memory tile.
 
@@ -199,7 +207,7 @@ class _Lowering:
             if staged:
                 hop_type = self.determine_transfer_type(src, group, tensor, dst_type="memory")
                 hop, (copy,) = self.generate_transfer_node([src], copy, hop_type, next(names), name)
-                new_nodes[hop.name] = hop
+                new_nodes[_key(hop)] = hop
                 name = None
             transfer_type = self.determine_transfer_type(src, group, tensor, src_type="memory" if staged else None)
             out_name = tensor.name if group is exports else next(names)
@@ -207,7 +215,7 @@ class _Lowering:
             transfer_node, updated_tensors = self.generate_transfer_node(
                 group, copy, transfer_type, out_name, name, placements
             )
-            new_nodes[transfer_node.name] = transfer_node
+            new_nodes[_key(transfer_node)] = transfer_node
             for dst, updated_tensor in zip(group, updated_tensors, strict=True):
                 self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
 
@@ -272,7 +280,7 @@ class _Lowering:
 
     def update_destination_node_inputs(self, tensor, src, new_nodes, dst, updated_tensor):
         # Find corresponding node in new_nodes as it might have already been updated
-        dst_new = new_nodes[dst.name]
+        dst_new = new_nodes[_key(dst)]
         # Update the dst input to the second transfer node
         assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below."
         input_idx = dst_new.inputs.index(tensor)
@@ -286,7 +294,7 @@ class _Lowering:
             )
         else:
             raise ValueError(f"Unexpected dst node type: {type(dst_new)}")
-        new_nodes[dst_new.name] = new_dst
+        new_nodes[_key(new_dst)] = new_dst
         if isinstance(new_dst, OutEdge):
             return  # an output edge has no mapping entry
         # Update the mapping entry for this new_dst node to be the same as the original dst node
@@ -298,7 +306,7 @@ class _Lowering:
         output_idx = src.outputs.index(tensor)
         new_outputs = src.outputs[:output_idx] + (new_tensor,) + src.outputs[output_idx + 1 :]
         new_src = replace(src, outputs=new_outputs)
-        new_nodes[new_src.name] = new_src
+        new_nodes[_key(new_src)] = new_src
         # Update the mapping entry for this new_src node to be the same as the original src node
         self.mapping.set(new_src, self.mapping.get(src))
         # Remove the original src node from the mapping as it has been updated with new outputs
@@ -700,6 +708,10 @@ class _Lowering:
             required_nb_mem_tiles = largest_divisor_leq(total_relevant_unrolling, required_nb_mem_tiles)
         # Unrolling binds allocation position to spatial index, so column order keeps a tile with its own cores.
         candidates = [tuple(combo) for combo in combinations(mem_tiles, required_nb_mem_tiles)]
+        # A memory the columns share (an L2) holds the whole tensor for them all, so it must reach every core on chip.
+        if not candidates:
+            candidates = [(tile,) for tile in mem_tiles]
+        candidates = [c for c in candidates if len(c) > 1 or self._reaches_every_core(c[0], src, node)]
         # A tensor its consumers do not split is held whole, so a single tile can be left
         # feeding every column. One copy per occupied column is the alternative: each tile
         # serves its own column, and the shim broadcasts the tensor to them.
@@ -756,6 +768,18 @@ class _Lowering:
                 return None
         order = sorted(held, key=lambda tile: (*(s // w for s, w in zip(starts[tile], span, strict=True)), tile))
         return tuple(order), tuple((dim, f) for dim, f in split if f > 1)
+
+    def _reaches_every_core(self, tile: Memory, src: HasOutputs, node: TransferNode) -> bool:
+        """Whether ``node``'s copy in ``tile`` has a route over on-chip memories to a memory of each of ``src``'s
+        cores, or from one for an output transfer."""
+        on_chip = nx.subgraph_view(self.accelerator.network, filter_node=lambda memory: not memory.offchip)
+        gathers = node.transfer_type is TransferType.COMPUTE_TO_MEM
+        reached = (nx.ancestors if gathers else nx.descendants)(on_chip, tile) | {tile}
+        allocations = self.mapping.get(src).resource_allocation
+        return all(
+            any(memory in reached for memory in self.accelerator.memories_of(core))
+            for core in (allocations[0] if allocations else ())
+        )
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

@@ -22,15 +22,9 @@ class ConvReluFlattenGemmConfig:
     weight_dtype: str = "bf16"
 
 
-def make_conv_relu_flatten_gemm_workload(config: ConvReluFlattenGemmConfig | None = None) -> str:
-    """Build an ONNX model: Conv -> Relu -> Flatten -> Gemm.
-
-    Args:
-        config: Workload dimensions. Uses defaults if None.
-
-    Returns:
-        Path to the saved ONNX model.
-    """
+def make_conv_relu_flatten_gemm_workload(config: ConvReluFlattenGemmConfig | None = None, output_dir=None) -> str:
+    """Conv -> Relu -> Flatten -> Gemm as ONNX, sized by ``config`` (the defaults if None), saved in ``output_dir`` (by
+    default this module's directory); returns its path."""
     if config is None:
         config = ConvReluFlattenGemmConfig()
 
@@ -135,8 +129,9 @@ def make_conv_relu_flatten_gemm_workload(config: ConvReluFlattenGemmConfig | Non
     inferred = shape_inference.infer_shapes(model)
 
     # Save
+    dest_dir = output_dir if output_dir is not None else os.path.dirname(__file__)
     onnx_path = os.path.join(
-        os.path.dirname(__file__),
+        dest_dir,
         f"conv_relu_flatten_gemm_{batch_size}_{in_channels}_{height}_{width}_{out_channels}_{gemm_out_features}.onnx",
     )
     onnx.save(inferred, onnx_path)

@@ -23,7 +23,7 @@ ARTIFACTS = {
 
 
 def _solve(path: Path, two_conv: TwoConvWorkloadConfig, options: SolveOptions) -> set[str]:
-    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+    workload, mapping = make_2_conv_workload(two_conv, str(path)), make_2_conv_mapping(two_conv, str(path))
     evaluate_mapping(ACCELERATOR, workload, str(path), mapping, options)
     return {str(file.relative_to(path / "group_0" / "allocation")) for file in path.glob("group_0/allocation/*/*")}
 

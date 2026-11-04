@@ -57,8 +57,10 @@ def _run_gemm(output_path: str, families: tuple[FamilySpec, ...] | None = None):
     in_dtype, out_dtype = "bf16", "bf16"
     nb_rows, nb_cols = 4, 8
 
-    workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
-    mapping_path = make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
+    workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype, output_path)
+    mapping_path = make_gemm_mapping(
+        M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols, output_dir=output_path
+    )
 
     return evaluate_mapping(
         ACCELERATOR,

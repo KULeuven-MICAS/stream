@@ -32,11 +32,11 @@ pytestmark = pytest.mark.slow
 
 
 @pytest.mark.timeout(120)
-def test_basic_residual():
+def test_basic_residual(tmp_path):
     """Basic residual block (Conv->Relu->Conv->Add with skip fan-out)
     completes CO allocation with positive latency and 1 group."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.BASIC_RESIDUAL)
-    onnx_path = make_resnet_subgraph(config)
+    onnx_path = make_resnet_subgraph(config, str(tmp_path))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
@@ -52,11 +52,11 @@ def test_basic_residual():
 
 
 @pytest.mark.timeout(120)
-def test_stride2_downsample():
+def test_stride2_downsample(tmp_path):
     """Stride-2 residual with 1x1 downsample runs through full CO
     pipeline with positive latency and 1 group."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.STRIDE2_DOWNSAMPLE)
-    onnx_path = make_resnet_subgraph(config)
+    onnx_path = make_resnet_subgraph(config, str(tmp_path))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
@@ -72,11 +72,11 @@ def test_stride2_downsample():
 
 
 @pytest.mark.timeout(120)
-def test_frontend_path():
+def test_frontend_path(tmp_path):
     """Front-end path (Conv(7x7,s=2)->Relu->MaxPool(s=2)) completes CO
     with MaxPool allocated to pooling core (core 4)."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND)
-    onnx_path = make_resnet_subgraph(config)
+    onnx_path = make_resnet_subgraph(config, str(tmp_path))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
@@ -99,11 +99,11 @@ def test_frontend_path():
 
 
 @pytest.mark.timeout(120)
-def test_dual_residual():
+def test_dual_residual(tmp_path):
     """Two residual blocks joined by an identity Reshape fuse into one group: the Reshape only re-indexes, so it
     folds into the nodes reading its output instead of cutting the graph."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.DUAL_RESIDUAL)
-    onnx_path = make_resnet_subgraph(config)
+    onnx_path = make_resnet_subgraph(config, str(tmp_path))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context

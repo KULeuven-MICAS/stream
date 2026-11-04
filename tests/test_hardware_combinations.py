@@ -104,20 +104,20 @@ def _run(hardware: str, workload: str, options: SolveOptions | None = None):
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)
-def test_hardware_two_conv(hardware: str, two_conv, record_metric, request) -> None:
+def test_hardware_two_conv(hardware: str, two_conv, record_metric, tmp_path, request) -> None:
     """Two 3x3 convs, auto-tiled by the generic mapper."""
-    ctx = _run(hardware, make_2_conv_workload(two_conv))
+    ctx = _run(hardware, make_2_conv_workload(two_conv, str(tmp_path)))
     _assert_sound_dataflow(ctx, node_count=2)
     _record_metrics(record_metric, ctx, f"{_caption(vars(two_conv))}; generic auto-tiling")
     _assert_golden(ctx, request.node.nodeid)
 
 
 @pytest.mark.parametrize("hardware", HARDWARE)
-def test_hardware_swiglu(hardware: str, record_metric, request) -> None:
+def test_hardware_swiglu(hardware: str, record_metric, tmp_path, request) -> None:
     """The five-node SwiGLU block, layer-fused under ``SWIGLU_TILING``; Silu and Mul land on a simd core where there
     is one."""
     options = SolveOptions(stage_options={"intra_core_tiling": SWIGLU_TILING})
-    ctx = _run(hardware, make_small_swiglu_workload(**SWIGLU), options)
+    ctx = _run(hardware, make_small_swiglu_workload(**SWIGLU, output_dir=str(tmp_path)), options)
     _assert_sound_dataflow(ctx, node_count=5)
     tiles = _caption({t["dim"]: t["tile"] for t in SWIGLU_TILING})
     _record_metrics(record_metric, ctx, f"{_caption(SWIGLU)}, bf16; fused tiles {tiles}")

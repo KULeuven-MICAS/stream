@@ -8,6 +8,7 @@ import sympy as sp
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
+from stream.workload.affine_access import dims_in_expr
 from stream.workload.iterator_type import (
     IteratorType,
     NonlinearReductionUnrollError,
@@ -433,7 +434,10 @@ def window_index(
 def affine_coefficients(expr: AffineExpr, n: int) -> tuple[int, list[int]]:
     """The constant of an affine-linear ``expr`` over ``n`` dims and the coefficient of each dim."""
     c = int(expr.eval([0] * n, []))
-    return c, [int(expr.eval([int(i == d) for i in range(n)], [])) - c for d in range(n)]
+    coefficients = [0] * n
+    for d in dims_in_expr(expr):
+        coefficients[d] = int(expr.eval([int(i == d) for i in range(n)], [])) - c
+    return c, coefficients
 
 
 def affine_bounds(expr: AffineExpr, dim_sizes: list[int]) -> tuple[int, int]:

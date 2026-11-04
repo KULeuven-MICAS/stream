@@ -9,8 +9,11 @@ from numpy.lib.stride_tricks import sliding_window_view
 from onnx import TensorProto, helper
 from xdsl.ir.affine import AffineBinaryOpExpr
 
+from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
+from stream.mapping.mapping import Mapping
 from stream.parser.onnx.model import ONNXModelParser
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
+from stream.stages.parsing.accelerator_parser import parse_accelerator
 from stream.workload.affine_transform import AffineTransform
 
 
@@ -142,6 +145,82 @@ def test_zigzag_prices_a_biased_conv_as_its_product():
     equation = estimator.create_equation_and_dimension_relations_and_pr_sizes(conv)[0]
     assert len(conv.inputs) == 3
     assert [str(op) for op in equation.get_contained_operands()] == ["O", "A", "B"]
+
+
+@pytest.mark.parametrize("name", ["grouped", "depthwise"])
+def test_zigzag_reads_a_grouped_channel_as_its_group_and_the_channel_within_it(name):
+    """A channel ``g*K + k`` is one group and one channel of it, not a window sliding over the groups: only the two
+    spatial windows relate dims."""
+    x_shape, w_shape, attrs, _ = CONVS[name]
+    parser = _parse_conv({"X": x_shape, "W": w_shape}, attrs)
+    (conv,) = parser.workload.get_computation_nodes()
+    estimator = ZigZagCostEstimator(workload=parser.workload, accelerator=None, mapping=None)  # type: ignore[arg-type]
+    relations = estimator.create_equation_and_dimension_relations_and_pr_sizes(conv)[1]
+    assert len(relations) == 2
+
+
+@pytest.mark.parametrize(("kernel", "relations"), [(2, 0), (3, 2)])
+def test_zigzag_reads_a_window_no_wider_than_its_stride_as_two_axes(kernel, relations):
+    """A 2x2 window of stride 2 reads each input once, the pair of an output and a kernel index, so it is two axes;
+    a 3x3 one overlaps the next and stays a window."""
+    shapes = {"X": (1, 4, 8, 8), "W": (6, 4, kernel, kernel)}
+    parser = _parse_conv(shapes, {"strides": [2, 2], "pads": [kernel // 2] * 4 if kernel % 2 else [0] * 4})
+    (conv,) = parser.workload.get_computation_nodes()
+    estimator = ZigZagCostEstimator(workload=parser.workload, accelerator=None, mapping=None)  # type: ignore[arg-type]
+    assert len(estimator.create_equation_and_dimension_relations_and_pr_sizes(conv)[1]) == relations
+
+
+def test_a_depthwise_conv_reads_the_channel_its_producer_writes():
+    """A group of one channel is the channel the producer wrote, one dim of the workload, so a tile of the channels
+    holds the input channels it reads."""
+    weights = [
+        helper.make_tensor("W0", TensorProto.FLOAT, [8, 4, 3, 3], [0.0] * 8 * 4 * 9),
+        helper.make_tensor("W1", TensorProto.FLOAT, [8, 1, 3, 3], [0.0] * 8 * 9),
+    ]
+    window = {"kernel_shape": [3, 3], "pads": [1, 1, 1, 1]}
+    nodes = [
+        helper.make_node("Conv", ["X", "W0"], ["Y"], name="Conv", **window),
+        helper.make_node("Conv", ["Y", "W1"], ["Z"], name="Depthwise", group=8, **window),
+    ]
+    output = helper.make_tensor_value_info("Z", TensorProto.FLOAT, None)
+    graph = helper.make_graph(nodes, "g", [_vi("X", (1, 4, 8, 8))], [output], weights)
+    model = onnx.shape_inference.infer_shapes(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]))
+    with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
+        onnx.save(model, f.name)
+        parser = ONNXModelParser(f.name)
+        parser.run()
+    workload = parser.workload
+    conv, depthwise = workload.get_computation_nodes()
+    assert workload.get_dims(conv)[6] in workload.get_dims(depthwise)
+
+
+def _grouped_conv_on_eyeriss(channels: int, multiplier: int):
+    """A 3x3 conv of ``channels`` groups of one input channel and ``multiplier`` outputs each, on an Eyeriss core."""
+    shapes = {"X": (1, channels, 12, 12), "W": (channels * multiplier, 1, 3, 3)}
+    parser = _parse_conv(shapes, {"group": channels, "pads": [1, 1, 1, 1]})
+    (conv,) = parser.workload.get_computation_nodes()
+    accelerator = parse_accelerator("stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml")
+    return ZigZagCostEstimator(parser.workload, accelerator, Mapping()), conv, accelerator.get_core(0)
+
+
+def test_zigzag_costs_a_depthwise_conv():
+    estimator, conv, core = _grouped_conv_on_eyeriss(16, 2)
+    entry = estimator.estimate(conv, core)
+    assert entry.metadata["backend"] == "zigzag"
+    assert entry.energy_total > 0
+
+
+def test_a_conv_zigzag_cannot_cost_is_charged_its_operations(monkeypatch):
+    """The ideal-cycle estimate charges the array's energy per operation, a floor, not nothing."""
+    estimator, conv, core = _grouped_conv_on_eyeriss(16, 1)
+
+    def unmapped(*_):
+        raise RuntimeError("no valid loop ordering")
+
+    monkeypatch.setattr(estimator, "run_zigzag", unmapped)
+    entry = estimator.estimate(conv, core)
+    assert entry.metadata["backend"] == IDEAL_CYCLE_BACKEND
+    assert entry.energy_total == 16 * 12 * 12 * 3 * 3 * core.operational_array.unit.energy_cost
 
 
 POOLS = {

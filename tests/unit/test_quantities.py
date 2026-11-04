@@ -19,7 +19,7 @@ def alloc(
     tmp_path_factory: pytest.TempPathFactory, solved_model: Callable[..., Any], two_conv: TwoConvWorkloadConfig
 ) -> AllocationModel:
     out = str(tmp_path_factory.mktemp("two_conv"))
-    return solved_model(ACCELERATOR, make_2_conv_workload(two_conv), out, make_2_conv_mapping(two_conv))
+    return solved_model(ACCELERATOR, make_2_conv_workload(two_conv, out), out, make_2_conv_mapping(two_conv, out))
 
 
 def test_registry_returns_scalar_and_indexed_quantities() -> None:
