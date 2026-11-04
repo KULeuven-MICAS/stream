@@ -527,10 +527,15 @@ class _Lowering:
         return self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
 
     def get_matching_tiling(self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Memory, ...]) -> InterCoreTiling:
-        """The split over ``dst_allocs`` where each memory holds what consecutive cores of ``compute_tiling`` hold."""
+        """The split over ``dst_allocs`` where each memory holds what consecutive cores of ``compute_tiling`` hold, or
+        one loop of it where the code generator pairs by spatial index, gathering along one loop, not in core order."""
         nb_allocs = len(dst_allocs)
         per_tile, rest = divmod(prod(size for _, size in compute_tiling), nb_allocs)
-        if not rest and (split := _without_innermost(compute_tiling, per_tile)) is not None:
+        if self.hardware.pairs_by_spatial_index(dst_allocs):
+            loops = sorted(compute_tiling, key=lambda loop: loop[1] != nb_allocs)
+            if (dim := next((dim for dim, size in loops if size % nb_allocs == 0), None)) is not None:
+                return ((dim, nb_allocs),)
+        elif not rest and (split := _without_innermost(compute_tiling, per_tile)) is not None:
             return split
         # No clean divisor: split the best loop into the largest even share that fits, instead of raising.
         best = max(compute_tiling, key=lambda loop: largest_divisor_leq(loop[1], nb_allocs), default=None)
