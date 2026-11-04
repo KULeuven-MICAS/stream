@@ -330,10 +330,17 @@ class AIECodeGenerationStage(Stage):
                     if isinstance(other_node, HasOutputs) and inp in other_node.outputs:
                         yield ops[other_node].results[other_node.outputs.index(inp)]
 
-        for node in workload.topological_sort():
+        # Ensure nodes are emitted in the same order as the scheduler reasoned about them.
+        timeslots = self.ctx.get("allocation").problem.timeslots
+        for node in sorted(workload, key=lambda n: timeslots[n]):
             if isinstance(node, InEdge):
                 shape = cast(ShapedType, node.output.subview.source.type).get_shape()
-                layer_dims = reversed(tuple(get_layer_dims([x for x in workload.successors(node)][0].output)))
+                # A tensor consumed by more than one node is multicast: its transfer has
+                # several outputs carrying the *same* tensor to different destinations, so
+                # any of them gives the layer dimensions. `.output` asserts there is only
+                # one, which a SwiGLU trips immediately -- its input feeds both projections.
+                successor = [x for x in workload.successors(node)][0]
+                layer_dims = reversed(tuple(get_layer_dims(successor.outputs[0])))
                 ops[node] = InEdgeOp(
                     node.name,
                     StrensorType(
