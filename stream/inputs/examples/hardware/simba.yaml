@@ -1,4 +1,4 @@
-# 6 × 6 SIMBA chiplet mesh plus a package-level DRAM controller
+# 6 × 6 SIMBA chiplet mesh plus package-level DRAM
 name: simba_package
 
 cores:     # id → YAML description
@@ -38,86 +38,308 @@ cores:     # id → YAML description
   33: simba_chiplet.yaml
   34: simba_chiplet.yaml
   35: simba_chiplet.yaml
-  36: simba_offchip.yaml      # DRAM controller
 
-offchip_core_id: 36           # external-memory interface
 unit_energy_cost: 0           # global default
 
-core_connectivity:
+memories:
+  simba_chiplet_0:
+    offchip: false
+    views: [0.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [0]}
+      w_port_1: {from: w_port_1, cores: [0]}
+  simba_chiplet_1:
+    offchip: false
+    views: [1.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [1]}
+      w_port_1: {from: w_port_1, cores: [1]}
+  simba_chiplet_2:
+    offchip: false
+    views: [2.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [2]}
+      w_port_1: {from: w_port_1, cores: [2]}
+  simba_chiplet_3:
+    offchip: false
+    views: [3.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [3]}
+      w_port_1: {from: w_port_1, cores: [3]}
+  simba_chiplet_4:
+    offchip: false
+    views: [4.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [4]}
+      w_port_1: {from: w_port_1, cores: [4]}
+  simba_chiplet_5:
+    offchip: false
+    views: [5.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [5]}
+      w_port_1: {from: w_port_1, cores: [5]}
+  simba_chiplet_6:
+    offchip: false
+    views: [6.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [6]}
+      w_port_1: {from: w_port_1, cores: [6]}
+  simba_chiplet_7:
+    offchip: false
+    views: [7.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [7]}
+      w_port_1: {from: w_port_1, cores: [7]}
+  simba_chiplet_8:
+    offchip: false
+    views: [8.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [8]}
+      w_port_1: {from: w_port_1, cores: [8]}
+  simba_chiplet_9:
+    offchip: false
+    views: [9.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [9]}
+      w_port_1: {from: w_port_1, cores: [9]}
+  simba_chiplet_10:
+    offchip: false
+    views: [10.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [10]}
+      w_port_1: {from: w_port_1, cores: [10]}
+  simba_chiplet_11:
+    offchip: false
+    views: [11.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [11]}
+      w_port_1: {from: w_port_1, cores: [11]}
+  simba_chiplet_12:
+    offchip: false
+    views: [12.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [12]}
+      w_port_1: {from: w_port_1, cores: [12]}
+  simba_chiplet_13:
+    offchip: false
+    views: [13.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [13]}
+      w_port_1: {from: w_port_1, cores: [13]}
+  simba_chiplet_14:
+    offchip: false
+    views: [14.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [14]}
+      w_port_1: {from: w_port_1, cores: [14]}
+  simba_chiplet_15:
+    offchip: false
+    views: [15.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [15]}
+      w_port_1: {from: w_port_1, cores: [15]}
+  simba_chiplet_16:
+    offchip: false
+    views: [16.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [16]}
+      w_port_1: {from: w_port_1, cores: [16]}
+  simba_chiplet_17:
+    offchip: false
+    views: [17.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [17]}
+      w_port_1: {from: w_port_1, cores: [17]}
+  simba_chiplet_18:
+    offchip: false
+    views: [18.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [18]}
+      w_port_1: {from: w_port_1, cores: [18]}
+  simba_chiplet_19:
+    offchip: false
+    views: [19.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [19]}
+      w_port_1: {from: w_port_1, cores: [19]}
+  simba_chiplet_20:
+    offchip: false
+    views: [20.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [20]}
+      w_port_1: {from: w_port_1, cores: [20]}
+  simba_chiplet_21:
+    offchip: false
+    views: [21.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [21]}
+      w_port_1: {from: w_port_1, cores: [21]}
+  simba_chiplet_22:
+    offchip: false
+    views: [22.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [22]}
+      w_port_1: {from: w_port_1, cores: [22]}
+  simba_chiplet_23:
+    offchip: false
+    views: [23.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [23]}
+      w_port_1: {from: w_port_1, cores: [23]}
+  simba_chiplet_24:
+    offchip: false
+    views: [24.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [24]}
+      w_port_1: {from: w_port_1, cores: [24]}
+  simba_chiplet_25:
+    offchip: false
+    views: [25.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [25]}
+      w_port_1: {from: w_port_1, cores: [25]}
+  simba_chiplet_26:
+    offchip: false
+    views: [26.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [26]}
+      w_port_1: {from: w_port_1, cores: [26]}
+  simba_chiplet_27:
+    offchip: false
+    views: [27.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [27]}
+      w_port_1: {from: w_port_1, cores: [27]}
+  simba_chiplet_28:
+    offchip: false
+    views: [28.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [28]}
+      w_port_1: {from: w_port_1, cores: [28]}
+  simba_chiplet_29:
+    offchip: false
+    views: [29.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [29]}
+      w_port_1: {from: w_port_1, cores: [29]}
+  simba_chiplet_30:
+    offchip: false
+    views: [30.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [30]}
+      w_port_1: {from: w_port_1, cores: [30]}
+  simba_chiplet_31:
+    offchip: false
+    views: [31.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [31]}
+      w_port_1: {from: w_port_1, cores: [31]}
+  simba_chiplet_32:
+    offchip: false
+    views: [32.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [32]}
+      w_port_1: {from: w_port_1, cores: [32]}
+  simba_chiplet_33:
+    offchip: false
+    views: [33.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [33]}
+      w_port_1: {from: w_port_1, cores: [33]}
+  simba_chiplet_34:
+    offchip: false
+    views: [34.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [34]}
+      w_port_1: {from: w_port_1, cores: [34]}
+  simba_chiplet_35:
+    offchip: false
+    views: [35.global_buffer]
+    ports:
+      r_port_1: {from: r_port_1, cores: [35]}
+      w_port_1: {from: w_port_1, cores: [35]}
+  simba_offchip:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports:
+      rw_port_1: {bandwidth: 64, serves: {any: [read, write]}, read_energy: 1.5625, write_energy: 1.5625}
+
+connections:
   # ───────── 2-D mesh links (bandwidth 256 each) ─────────
   # Wide (256) on-chip mesh: weights reach the compute chiplets by routing through the mesh from the
   # per-column DRAM entry points below, so the mesh must be as wide as the DRAM links or it becomes
   # the bottleneck (a 32-wide mesh made this design ~4x slower than the old shared bus).
-  - {type: link, cores: [0, 1],  bandwidth: 256}
-  - {type: link, cores: [0, 6],  bandwidth: 256}
-  - {type: link, cores: [1, 2],  bandwidth: 256}
-  - {type: link, cores: [1, 7],  bandwidth: 256}
-  - {type: link, cores: [2, 3],  bandwidth: 256}
-  - {type: link, cores: [2, 8],  bandwidth: 256}
-  - {type: link, cores: [3, 4],  bandwidth: 256}
-  - {type: link, cores: [3, 9],  bandwidth: 256}
-  - {type: link, cores: [4, 5],  bandwidth: 256}
-  - {type: link, cores: [4, 10], bandwidth: 256}
-  - {type: link, cores: [5, 11], bandwidth: 256}
-  - {type: link, cores: [6, 7],  bandwidth: 256}
-  - {type: link, cores: [6, 12], bandwidth: 256}
-  - {type: link, cores: [7, 8],  bandwidth: 256}
-  - {type: link, cores: [7, 13], bandwidth: 256}
-  - {type: link, cores: [8, 9],  bandwidth: 256}
-  - {type: link, cores: [8, 14], bandwidth: 256}
-  - {type: link, cores: [9, 10], bandwidth: 256}
-  - {type: link, cores: [9, 15], bandwidth: 256}
-  - {type: link, cores: [10,11], bandwidth: 256}
-  - {type: link, cores: [10,16], bandwidth: 256}
-  - {type: link, cores: [11,17], bandwidth: 256}
-  - {type: link, cores: [12,13], bandwidth: 256}
-  - {type: link, cores: [12,18], bandwidth: 256}
-  - {type: link, cores: [13,14], bandwidth: 256}
-  - {type: link, cores: [13,19], bandwidth: 256}
-  - {type: link, cores: [14,15], bandwidth: 256}
-  - {type: link, cores: [14,20], bandwidth: 256}
-  - {type: link, cores: [15,16], bandwidth: 256}
-  - {type: link, cores: [15,21], bandwidth: 256}
-  - {type: link, cores: [16,17], bandwidth: 256}
-  - {type: link, cores: [16,22], bandwidth: 256}
-  - {type: link, cores: [17,23], bandwidth: 256}
-  - {type: link, cores: [18,19], bandwidth: 256}
-  - {type: link, cores: [18,24], bandwidth: 256}
-  - {type: link, cores: [19,20], bandwidth: 256}
-  - {type: link, cores: [19,25], bandwidth: 256}
-  - {type: link, cores: [20,21], bandwidth: 256}
-  - {type: link, cores: [20,26], bandwidth: 256}
-  - {type: link, cores: [21,22], bandwidth: 256}
-  - {type: link, cores: [21,27], bandwidth: 256}
-  - {type: link, cores: [22,23], bandwidth: 256}
-  - {type: link, cores: [22,28], bandwidth: 256}
-  - {type: link, cores: [23,29], bandwidth: 256}
-  - {type: link, cores: [24,25], bandwidth: 256}
-  - {type: link, cores: [24,30], bandwidth: 256}
-  - {type: link, cores: [25,26], bandwidth: 256}
-  - {type: link, cores: [25,31], bandwidth: 256}
-  - {type: link, cores: [26,27], bandwidth: 256}
-  - {type: link, cores: [26,32], bandwidth: 256}
-  - {type: link, cores: [27,28], bandwidth: 256}
-  - {type: link, cores: [27,33], bandwidth: 256}
-  - {type: link, cores: [28,29], bandwidth: 256}
-  - {type: link, cores: [28,34], bandwidth: 256}
-  - {type: link, cores: [29,35], bandwidth: 256}
-  - {type: link, cores: [30,31], bandwidth: 256}
-  - {type: link, cores: [31,32], bandwidth: 256}
-  - {type: link, cores: [32,33], bandwidth: 256}
-  - {type: link, cores: [33,34], bandwidth: 256}
-  - {type: link, cores: [34,35], bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_0: [r_port_1, w_port_1], simba_chiplet_1: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_0: [r_port_1, w_port_1], simba_chiplet_6: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_1: [r_port_1, w_port_1], simba_chiplet_2: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_1: [r_port_1, w_port_1], simba_chiplet_7: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_2: [r_port_1, w_port_1], simba_chiplet_3: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_2: [r_port_1, w_port_1], simba_chiplet_8: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_3: [r_port_1, w_port_1], simba_chiplet_4: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_3: [r_port_1, w_port_1], simba_chiplet_9: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_4: [r_port_1, w_port_1], simba_chiplet_5: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_4: [r_port_1, w_port_1], simba_chiplet_10: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_5: [r_port_1, w_port_1], simba_chiplet_11: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_6: [r_port_1, w_port_1], simba_chiplet_7: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_6: [r_port_1, w_port_1], simba_chiplet_12: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_7: [r_port_1, w_port_1], simba_chiplet_8: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_7: [r_port_1, w_port_1], simba_chiplet_13: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_8: [r_port_1, w_port_1], simba_chiplet_9: [r_port_1, w_port_1]},  bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_8: [r_port_1, w_port_1], simba_chiplet_14: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_9: [r_port_1, w_port_1], simba_chiplet_10: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_9: [r_port_1, w_port_1], simba_chiplet_15: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_10: [r_port_1, w_port_1], simba_chiplet_11: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_10: [r_port_1, w_port_1], simba_chiplet_16: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_11: [r_port_1, w_port_1], simba_chiplet_17: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_12: [r_port_1, w_port_1], simba_chiplet_13: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_12: [r_port_1, w_port_1], simba_chiplet_18: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_13: [r_port_1, w_port_1], simba_chiplet_14: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_13: [r_port_1, w_port_1], simba_chiplet_19: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_14: [r_port_1, w_port_1], simba_chiplet_15: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_14: [r_port_1, w_port_1], simba_chiplet_20: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_15: [r_port_1, w_port_1], simba_chiplet_16: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_15: [r_port_1, w_port_1], simba_chiplet_21: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_16: [r_port_1, w_port_1], simba_chiplet_17: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_16: [r_port_1, w_port_1], simba_chiplet_22: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_17: [r_port_1, w_port_1], simba_chiplet_23: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_18: [r_port_1, w_port_1], simba_chiplet_19: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_18: [r_port_1, w_port_1], simba_chiplet_24: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_19: [r_port_1, w_port_1], simba_chiplet_20: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_19: [r_port_1, w_port_1], simba_chiplet_25: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_20: [r_port_1, w_port_1], simba_chiplet_21: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_20: [r_port_1, w_port_1], simba_chiplet_26: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_21: [r_port_1, w_port_1], simba_chiplet_22: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_21: [r_port_1, w_port_1], simba_chiplet_27: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_22: [r_port_1, w_port_1], simba_chiplet_23: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_22: [r_port_1, w_port_1], simba_chiplet_28: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_23: [r_port_1, w_port_1], simba_chiplet_29: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_24: [r_port_1, w_port_1], simba_chiplet_25: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_24: [r_port_1, w_port_1], simba_chiplet_30: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_25: [r_port_1, w_port_1], simba_chiplet_26: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_25: [r_port_1, w_port_1], simba_chiplet_31: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_26: [r_port_1, w_port_1], simba_chiplet_27: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_26: [r_port_1, w_port_1], simba_chiplet_32: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_27: [r_port_1, w_port_1], simba_chiplet_28: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_27: [r_port_1, w_port_1], simba_chiplet_33: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_28: [r_port_1, w_port_1], simba_chiplet_29: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_28: [r_port_1, w_port_1], simba_chiplet_34: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_29: [r_port_1, w_port_1], simba_chiplet_35: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_30: [r_port_1, w_port_1], simba_chiplet_31: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_31: [r_port_1, w_port_1], simba_chiplet_32: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_32: [r_port_1, w_port_1], simba_chiplet_33: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_33: [r_port_1, w_port_1], simba_chiplet_34: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_chiplet_34: [r_port_1, w_port_1], simba_chiplet_35: [r_port_1, w_port_1]}, bandwidth: 256}
 
   # ───────── Per-column off-chip DRAM links (Strix-style distributed memory access) ─────────
-  # Each column's edge chiplet (row 0 = cores 0..5) gets its OWN link to the DRAM controller
-  # (core 36), so DRAM bandwidth is distributed across 6 links rather than one shared bus. A single
-  # shared bus is used in every steady-state slot and so has zero boundary idle, pinning the TETRA
+  # Each column's edge chiplet (row 0 = cores 0..5) gets its OWN link to DRAM, so DRAM bandwidth is
+  # distributed across 6 links rather than one shared bus. A single shared bus is used in every
+  # steady-state slot and so has zero boundary idle, pinning the TETRA
   # inter-iteration overlap to 0; per-column links let that overlap grow when layers sit on different
   # columns. Deeper chiplets reach DRAM by routing up their column through the (wide) mesh.
-  - {type: link, cores: [36, 0], bandwidth: 256}
-  - {type: link, cores: [36, 1], bandwidth: 256}
-  - {type: link, cores: [36, 2], bandwidth: 256}
-  - {type: link, cores: [36, 3], bandwidth: 256}
-  - {type: link, cores: [36, 4], bandwidth: 256}
-  - {type: link, cores: [36, 5], bandwidth: 256}
+  - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_0: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_1: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_2: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_3: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_4: [r_port_1, w_port_1]}, bandwidth: 256}
+  - {type: link, ends: {simba_offchip: [rw_port_1], simba_chiplet_5: [r_port_1, w_port_1]}, bandwidth: 256}

@@ -26,7 +26,8 @@ def test_fusemax_has_a_mac_roof_a_vector_roof_and_one_shared_on_chip_memory():
     levels = {level["name"]: level for level in roofline["levels"]}
     assert list(levels) == ["off-chip memory", "off-chip links", "on-chip memory"]
     assert {tuple(r["cores"]) for r in levels["on-chip memory"]["resources"]} == {(0, 1)}
-    assert levels["off-chip links"]["bytes_per_cycle"] == 4 * 512 / 8
+    # its one off-chip link, each way
+    assert levels["off-chip links"]["bytes_per_cycle"] == 2 * 512 / 8
 
 
 def test_vector_cores_serving_other_operators_are_separate_roofs():
@@ -37,13 +38,13 @@ def test_vector_cores_serving_other_operators_are_separate_roofs():
 
 def test_aie_tiles_have_a_mac_and_a_vector_roof_and_keep_an_on_chip_measured_bandwidth_on_chip():
     """Each of the 32 tiles adds its library's 8x8x8 MAC tile and 16-wide vector rate; a measured bandwidth counts as
-    off-chip memory only on the off-chip core."""
+    off-chip memory only on the off-chip memory."""
     accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
-    accelerator.bandwidth[1] = accelerator.bandwidth[0]
+    accelerator.bandwidth[accelerator.memories["tile_0_1"]] = accelerator.bandwidth[accelerator.offchip_memory]
     roofline = hardware_roofline(accelerator)
     assert [(r["name"], r["ops_per_cycle"]) for r in roofline["roofs"]] == [("MAC", 32 * 512), ("vector", 32 * 16)]
     levels = {level["name"]: {r["resource"] for r in level["resources"]} for level in roofline["levels"]}
-    assert "measured@0" in levels["off-chip memory"] and "measured@1" in levels["on-chip memory"]
+    assert "dram" in levels["off-chip memory"] and "tile_0_1" in levels["on-chip memory"]
 
 
 def _onnx(path: Path, nodes: list[onnx.NodeProto], inputs: dict[str, list[int]], output: str, shape: list[int]) -> str:
@@ -129,7 +130,7 @@ def test_an_aie_gemm_has_a_roofline_point(tmp_path: Path):
 
 def _point(ops_per_cycle: float, utilization: float) -> dict[str, Any]:
     """A point bound by compute at 100 operations per cycle, whose on-chip memory runs at ``utilization``."""
-    busiest = {"resource": "sram.rw@0", "utilization": utilization}
+    busiest = {"resource": "sram.rw", "utilization": utilization}
     level = {"name": "on-chip memory", "bytes": 1.0, "intensity": 1.0, "attainable": 200.0, "busiest": busiest}
     return {
         "limiter": COMPUTE,

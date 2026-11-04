@@ -81,7 +81,7 @@ memories:
     served_dimensions: [D2]
 
   # The TensorCore's 64 MiB VMEM, shared with its other MXU, its VPU and its VMEM core
-  # (core_memory_sharing in tpu_v7_ironwood.yaml). Read and written at the vector load/store rate:
+  # (one memory in tpu_v7_ironwood.yaml). Read and written at the vector load/store rate:
   # three 8 x 128 x 32-bit loads and two stores a cycle.
   vmem:
     size: 536870912

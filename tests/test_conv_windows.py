@@ -153,7 +153,7 @@ def test_allocation_matches_the_oracle(scenario: str, hardware: str):
     if not found["in_place"]:
         handed = {(src, dst): n for dst, srcs in expected["sources"].items() for src, n in srcs.items() if src != dst}
         assert found["linked_bits"] == 16 * sum(handed.values())
-        assert {(src.id, dst.id) for src, dst in found["linked_pairs"]} == set(handed)
+        assert set(found["linked_pairs"]) == set(handed)
     assert all(received == moved for received, moved in found["received_bits"])
     assert found["input_copied"] == 16 * sum(prod(tile) for tile in expected["input_moved"])
     rows, inputs = expected["conv1_rows"], expected["input_moved_rows"]

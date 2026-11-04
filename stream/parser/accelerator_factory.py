@@ -4,12 +4,12 @@ from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFa
 
 from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
-from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
+from stream.hardware.architecture.accelerator import Accelerator, MemoryGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.hardware.ports import MemoryBanks
-from stream.parser.accelerator_validator import parse_memory_ref, parse_port_ref
+from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.hardware.ports import MemoryBanks, MemoryDma, PortKey, build_memory_ports
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -22,63 +22,49 @@ class AcceleratorFactory:
 
     def create(self) -> Accelerator:
         """! Create an Accelerator instance from the user-provided data."""
-        cores: list[Core] = []
-        shared_mem_group_ids: dict[int, int] = {}
-
-        for core_id, core_data in self.data["cores"].items():
-            shared_mem_group_id = self.get_shared_mem_group_id(core_id)
-            coordinates = self.data.get("core_coordinates", {}).get(core_id)
-            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates)
-            cores.append(core)
-            shared_mem_group_ids[core_id] = shared_mem_group_id
-
-        # Extra check on shared memory
-        if self.have_non_identical_shared_memory(cores):
-            raise ValueError(
-                "Some cores that were specified as having shared memory have non-identical top level "
-                "memories. Make sure that all properties of the shared memory instances are the same in "
-                "both yaml files, including the memory instance name."
+        coordinates = self.data["core_coordinates"]
+        cores = {
+            core_id: self.create_core(core_data, core_id, coordinates.get(core_id))
+            for core_id, core_data in self.data["cores"].items()
+        }
+        measured_names = {key for key in self.data["bandwidth"] if not isinstance(key, PortKey)}
+        memories = {}
+        for name, memory in self.data["memories"].items():
+            views = tuple((cores[core_id], instance) for core_id, instance in memory["views"])
+            memories[name] = Memory(
+                name,
+                views,
+                # A measured memory's ports only carry its DMA channels, so its views need not declare theirs.
+                build_memory_ports(name, views, memory["ports"], complete=name not in measured_names),
+                offchip=memory["offchip"],
+                capacity_bits=memory.get("capacity_bits"),
+                dma=MemoryDma(**memory["dma"]) if "dma" in memory else None,
             )
+        measured: dict[Memory, BandwidthModel] = {}
+        port_models: dict[PortKey, BandwidthModel] = {}
+        for key, description in self.data["bandwidth"].items():
+            if isinstance(key, PortKey):
+                port_models[key] = BandwidthModel.from_description(description)
+            else:
+                measured[memories[key]] = BandwidthModel.from_description(description)
 
-        # Save offchip core id if it exists
-        offchip_core_id = self.data.get("offchip_core_id", None)
-
-        cores_graph = self.create_core_graph(cores)
-
-        # Take next available core id
         accelerator = Accelerator(
             name=self.data["name"],
-            cores=cores_graph,
-            offchip_core_id=offchip_core_id,
-            shared_mem_group_ids=shared_mem_group_ids,
+            cores=list(cores.values()),
+            memories=list(memories.values()),
+            network=self.create_network(memories),
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
-            bandwidth={
-                core: BandwidthModel.from_description(model)
-                for core, model in self.data.get("bandwidth", {}).items()
-                if isinstance(core, int)
-            },
+            bandwidth=measured,
             reconfiguration=self.data.get("reconfiguration"),
-            port_bandwidth={
-                parse_port_ref(ref): BandwidthModel.from_description(model)
-                for ref, model in self.data.get("bandwidth", {}).items()
-                if isinstance(ref, str)
-            },
-            memory_aliases={
-                parse_memory_ref(alias): parse_memory_ref(group[0])
-                for group in self.data.get("memory_aliases") or []
-                for alias in group[1:]
-            },
+            port_bandwidth=port_models,
         )
-        if accelerator.port_bandwidth:
-            # Building the registry rejects a port key that names no port a core's backend models.
-            _ = accelerator.ports
+        accelerator.ports.check_connections(accelerator.network, accelerator.bandwidth)
         return accelerator
 
     def create_core(
         self,
         core_data: dict[str, Any],
         core_id: int,
-        shared_mem_group_id: int | None = None,
         coordinates: list[int] | None = None,
     ) -> Core:
         # Resolve the fully-qualified core type (e.g. "aie2.compute")
@@ -110,7 +96,6 @@ class AcceleratorFactory:
                 dma_channel_bits=dma.get("channel_bits", 0),
                 dma_buffer_descriptors=dma.get("buffer_descriptors", 0),
                 dma_iterations=dma.get("iterations", 0),
-                share_group=core_id if shared_mem_group_id is None else shared_mem_group_id,
             )
             core = Core(
                 backend=backend,
@@ -126,10 +111,11 @@ class AcceleratorFactory:
 
         if namespace == "zigzag":
             # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
-            zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=shared_mem_group_id)
+            # ZigZag uses this id to tell memory instances of different cores apart.
+            zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=core_id)
             # ZigZagCoreFactory returns a raw zigzag Accelerator — upgrade to
             # our ZigZagCoreBackend subclass so the backend protocol methods
-            # (get_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
+            # (top_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
             zigzag_core.__class__ = ZigZagCoreBackend
 
             core = Core(
@@ -149,90 +135,32 @@ class AcceleratorFactory:
             f"Supported namespaces: {', '.join(sorted(ALLOWED_NAMESPACES))}"
         )
 
-    def get_shared_mem_group_id(self, core_id: int):
-        """Calculate the memory group id for the given core. If the core shares the top level memory with other cores,
-        the mem group id of all cores that share this memory will be the same. By default, the mem group id is equal
-        to the core id"""
-        shared_mem_groups: list[tuple[int]] = self.data["core_memory_sharing"]
-
-        # Core does not share memory with other cores
-        if not any(core_id in group for group in shared_mem_groups):
-            return core_id
-        pair_this_core = next(group for group in shared_mem_groups if core_id in group)
-        # Mem sharing group id is the first core id of the sharing list
-        return pair_this_core[0]
-
-    def have_non_identical_shared_memory(self, cores: dict[int, Core]):
-        """Given the list of cores (where the index of the list equals the core id) and the user-specified shared
-        memory connections, check wether all cores that are supposed to share memory have identical top level memories
-        """
-        shared_mem_groups: list[tuple[int, ...]] = self.data["core_memory_sharing"]
-        for shared_mem_group in shared_mem_groups:
-            core_a = cores[shared_mem_group[0]]
-            if any(self.have_non_identical_top_memory(core_a, cores[id_b]) for id_b in shared_mem_group[1:]):
-                return True
-        return False
-
-    def have_non_identical_top_memory(self, core_a: Core, core_b: Core):
-        """Check wether the top level memories of two cores is exactly the same. This should be the case when the user
-        has specified the cores share memory"""
-        return core_a.get_memory_capacity() != core_b.get_memory_capacity()
-
-    def create_core_graph(self, cores: list[Core]):
-        assert all(core.id == i for i, core in enumerate(cores))
-        edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
-        core_connectivity: list[dict[str, Any]] = self.data["core_connectivity"]
-        default_unit_energy_cost = self.data.get("unit_energy_cost", 0)
-
-        # All links between cores
-        for connection in core_connectivity:
-            connection_type = connection.get("type", "link")
-            bw = connection["bandwidth"]
-            uec = connection.get("unit_energy_cost", default_unit_energy_cost)
-            core_objs = [cores[cid] for cid in connection["cores"]]
-            CONNECTION_LENGTH_FOR_ONE_TO_ONE = 2
-            if connection_type == "link":
-                if len(core_objs) != CONNECTION_LENGTH_FOR_ONE_TO_ONE:
-                    raise ValueError(
-                        f"Invalid connection type '{connection_type}' for connection {core_objs}. "
-                        f"Expected exactly {CONNECTION_LENGTH_FOR_ONE_TO_ONE} cores for a link."
-                    )
-                core_a, core_b = core_objs
-                edges += get_bidirectional_edges(
-                    core_a,
-                    core_b,
-                    bandwidth=bw,
-                    unit_energy_cost=uec,
-                    link_type=connection_type,
-                )
-            elif connection_type == "bus":
-                # Connect cores to bus, edge by edge
-                # Make sure all links refer to the same `CommunicationLink` instance
-                bus_instance = CommunicationLink("Any", "Any", bw, uec, bidirectional=True, members=tuple(core_objs))
-                pairs_this_connection = [(a, b) for idx, a in enumerate(core_objs) for b in core_objs[idx + 1 :]]
-                for core_a, core_b in pairs_this_connection:
-                    edges += get_bidirectional_edges(
-                        core_a,
-                        core_b,
-                        bandwidth=bw,
-                        unit_energy_cost=uec,
-                        link_type="bus",
-                        bus_instance=bus_instance,
-                    )
+    def create_network(self, memories: dict[str, Memory]) -> MemoryGraph:
+        """The graph of memories: an edge each way for every link, and between every two memories on a bus. All edges
+        of one bus share one `CommunicationLink`."""
+        edges: list[tuple[Memory, Memory, dict[str, CommunicationLink]]] = []
+        seen: dict[tuple[str, tuple[str, ...]], int] = {}
+        for connection in self.data["connections"]:
+            kind, bandwidth, energy = connection["type"], connection["bandwidth"], connection["unit_energy_cost"]
+            ports = {memories[name]: names for name, names in connection["ends"].items()}
+            ends = tuple(ports)
+            key = (kind, tuple(sorted(memory.name for memory in ends)))
+            parallel = seen[key] = seen.get(key, -1) + 1
+            if kind == "link":
+                a, b = ends
+                edges += [
+                    (a, b, {"cl": CommunicationLink.link(a, b, bandwidth, energy, parallel, ports)}),
+                    (b, a, {"cl": CommunicationLink.link(b, a, bandwidth, energy, parallel, ports)}),
+                ]
             else:
-                raise ValueError(
-                    f"Invalid connection type '{connection_type}' for connection {core_objs}. Expected 'link' or 'bus'."
-                )
-        graph = CoreGraph(edges)
-        # A core that shares another's memory is reached through it, so it needs no link of its own.
-        graph.add_nodes_from(cores[i] for group in self.data["core_memory_sharing"] for i in group)
-        return graph
+                bus = CommunicationLink.bus(ends, bandwidth, energy, parallel, ports)
+                edges += [(a, b, {"cl": bus}) for a in ends for b in ends if a is not b]
+        return MemoryGraph(edges)
 
 
 def _with_stream_fields(core: Core, core_data: dict[str, Any], operator_types: list[str] | None) -> Core:
-    """``core`` with the fields Stream reads beside any backend's: the operators it runs, its operand precision and
-    the banks of its memory."""
+    """``core`` with the Stream-specific fields set: its operators, operand precision and memory banks."""
     core.operator_types = operator_types
     core.operand_precision = core_data.get("operand_precision") or {}
-    core.banks = MemoryBanks(**core_data["banks"]) if core_data.get("banks") else None
+    core.memory_banks = {name: MemoryBanks(**banks) for name, banks in core_data["memory_banks"].items()}
     return core

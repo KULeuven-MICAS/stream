@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from pathlib import Path
 
 import networkx as nx
 
@@ -36,7 +37,14 @@ def _place(boxes, graph):
     return placed
 
 
-def _edge(one, other) -> str:
+EDGE_STYLES = {
+    "arrow": ' marker-end="url(#a)"',
+    "both": ' marker-start="url(#a)" marker-end="url(#a)"',
+    "dashed": ' stroke-dasharray="5 3" marker-end="url(#a)"',
+}
+
+
+def _edge(one, other, style: str) -> str:
     x1, y1, w1, h1 = one
     x2, y2, _, h2 = other
     start, end = (x1 + w1, y1 + h1 / 2), (x2, y2 + h2 / 2)
@@ -44,11 +52,14 @@ def _edge(one, other) -> str:
     return (
         f'<path d="M{start[0]:.1f},{start[1]:.1f} C{start[0] + bend:.1f},{start[1]:.1f} '
         f'{end[0] - bend:.1f},{end[1]:.1f} {end[0]:.1f},{end[1]:.1f}" '
-        'fill="none" stroke="#9aa3ad" stroke-width="1.4" marker-end="url(#a)"/>'
+        f'fill="none" stroke="#9aa3ad" stroke-width="1.4"{EDGE_STYLES[style]}/>'
     )
 
 
-def write_svg(path: str, boxes, edges, graph, palette) -> None:
+def write_svg(path: str | Path, boxes, edges, graph, palette, edge_styles=None) -> None:
+    """Draw ``boxes`` in layers of ``graph`` with ``edges`` between them. ``edge_styles`` maps an edge to a style in
+    ``EDGE_STYLES``; other edges are plain arrows."""
+    edge_styles = edge_styles or {}
     placed = _place(boxes, graph)
     width = max((x + w for x, _, w, _ in placed.values()), default=0) + MARGIN
     height = max((y + h for _, y, _, h in placed.values()), default=0) + MARGIN
@@ -59,7 +70,9 @@ def write_svg(path: str, boxes, edges, graph, palette) -> None:
         'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa3ad"/></marker></defs>',
         f'<rect width="{width:.0f}" height="{height:.0f}" fill="#fcfcfb"/>',
     ]
-    out += [_edge(placed[a], placed[b]) for a, b in edges if a in placed and b in placed]
+    out += [
+        _edge(placed[a], placed[b], edge_styles.get((a, b), "arrow")) for a, b in edges if a in placed and b in placed
+    ]
     for name, (lines, kind) in boxes.items():
         if name not in placed:
             continue

@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 ALLOWED_NAMESPACES: frozenset[str] = frozenset({"zigzag", "aie2"})
 """Namespace prefixes recognised by the core type system (e.g. ``"zigzag"``, ``"aie2"``)."""
 
-ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory", "shim", "offchip"})
+ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory"})
 """Core kind suffixes recognised by the core type system.
 
 * ``compute`` — processing tile (systolic array, SIMD, …)
 * ``memory``  — on-chip memory / cache tile
-* ``shim``    — interface / DMA tile (e.g. AIE2 shim-DMA)
-* ``offchip`` — off-chip DRAM or external memory controller
+
+Memories, including off-chip memory, are declared in the accelerator's ``memories``.
 """
 
 
@@ -186,7 +186,12 @@ class ZigZagBaseCoreValidator(ZigZagAcceleratorValidator):
                 f"(found '{core_kind_from_type(self.data['type'])}')."
             )
 
-        parent_valid = super().validate()
+        try:
+            parent_valid = super().validate()
+        except (TypeError, AttributeError, KeyError) as exc:
+            # ZigZag's validator can crash on a malformed description; report it as a validation error.
+            self.invalidate(f"malformed core description: {type(exc).__name__}: {exc}")
+            parent_valid = False
         self.is_valid = self.is_valid and parent_valid
         return self.is_valid
 
@@ -203,16 +208,6 @@ class ZigZagComputeCoreValidator(ZigZagBaseCoreValidator):
 @CoreValidatorRegistry.register
 class ZigZagMemoryCoreValidator(ZigZagBaseCoreValidator):
     CORE_KIND = "memory"
-
-
-@CoreValidatorRegistry.register
-class ZigZagShimCoreValidator(ZigZagBaseCoreValidator):
-    CORE_KIND = "shim"
-
-
-@CoreValidatorRegistry.register
-class ZigZagOffchipCoreValidator(ZigZagBaseCoreValidator):
-    CORE_KIND = "offchip"
 
 
 # =============================================================================
@@ -341,15 +336,3 @@ class AIE2ComputeCoreValidator(AIE2BaseCoreValidator):
 @CoreValidatorRegistry.register
 class AIE2MemoryCoreValidator(AIE2BaseCoreValidator):
     CORE_KIND = "memory"
-
-
-@CoreValidatorRegistry.register
-class AIE2ShimCoreValidator(AIE2BaseCoreValidator):
-    """AIE2 shim / DMA interface tile (row 0 of the AIE array)."""
-
-    CORE_KIND = "shim"
-
-
-@CoreValidatorRegistry.register
-class AIE2OffchipCoreValidator(AIE2BaseCoreValidator):
-    CORE_KIND = "offchip"

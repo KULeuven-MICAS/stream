@@ -4,6 +4,7 @@ import os
 from stream.parser.onnx.model import ONNXModelParser
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ _VIZ_NODE_LIMIT = 30
 
 class ONNXModelParserStage(Stage):
     reads = ("workload_path", "output_path")
+    optional_reads = ("artifacts",)
     writes = ("onnx_model", "workload")
 
     def __init__(
@@ -29,15 +31,8 @@ class ONNXModelParserStage(Stage):
         onnx_model_parser.run()
         onnx_model = onnx_model_parser.onnx_model
         workload = onnx_model_parser.workload
-        node_count = len(list(workload.nodes))
-        if node_count > _VIZ_NODE_LIMIT:
-            logger.warning("Skipping workload visualization: %d nodes exceeds limit %d", node_count, _VIZ_NODE_LIMIT)
-        else:
-            # A debug-only artifact; a failure to draw it must not stop code generation.
-            try:
-                workload.visualize(self.workload_visualization_path)
-            except Exception as e:  # noqa: BLE001 -- visualization is best-effort
-                logger.warning("Skipping workload visualization (%s): %s", type(e).__name__, e)
+        if self.ctx.get("artifacts", True):
+            self.visualize(workload)
 
         self.ctx.set(
             onnx_model=onnx_model,
@@ -45,3 +40,14 @@ class ONNXModelParserStage(Stage):
         )
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
+
+    def visualize(self, workload: Workload) -> None:
+        node_count = len(list(workload.nodes))
+        if node_count > _VIZ_NODE_LIMIT:
+            logger.warning("Skipping workload visualization: %d nodes exceeds limit %d", node_count, _VIZ_NODE_LIMIT)
+            return
+        # A debug-only artifact; a failure to draw it must not stop code generation.
+        try:
+            workload.visualize(self.workload_visualization_path)
+        except Exception as e:  # noqa: BLE001 -- visualization is best-effort
+            logger.warning("Skipping workload visualization (%s): %s", type(e).__name__, e)

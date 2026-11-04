@@ -13,7 +13,7 @@ concepts that do not apply to the AIE2 architecture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from stream.hardware.ports import ANY_OPERAND, READ, WRITE, PortSpec
@@ -41,14 +41,27 @@ class AIE2CoreBackend:
     dma_channel_bits: int = 0
     dma_buffer_descriptors: int = 0
     dma_iterations: int = 0
-    share_group: int = field(default=-1, compare=False)
 
     # ------------------------------------------------------------------
     # Backend protocol — same interface as ZigZagCoreBackend
     # ------------------------------------------------------------------
 
-    def get_memory_capacity(self) -> int:
-        """Total top-level memory capacity in bits."""
+    def top_instances(self) -> frozenset[str]:
+        """A tile's one memory."""
+        return frozenset({"memory"})
+
+    def top_instance(self, role: str) -> str:
+        """A tile holds every operand in its one memory."""
+        return "memory"
+
+    def top_instance_holding(self, role: str) -> str | None:
+        """A tile holds every operand in its one memory."""
+        return "memory"
+
+    def top_memory_capacity(self, instance: str) -> int:
+        """Capacity in bits of the tile's one memory instance, ``memory``."""
+        if instance != "memory":
+            raise ValueError(f"an AIE2 tile's one memory is `memory`, not `{instance}`")
         return self.memory_capacity_bits
 
     def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
@@ -61,8 +74,7 @@ class AIE2CoreBackend:
             return ()
         return tuple(
             PortSpec(
-                self.share_group,
-                "dma",
+                "memory",
                 name,
                 channels * self.dma_channel_bits,
                 frozenset({(ANY_OPERAND, direction)}),

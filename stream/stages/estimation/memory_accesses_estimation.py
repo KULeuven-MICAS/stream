@@ -4,10 +4,12 @@ from math import ceil, prod
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import Mapping
+from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import READ, WRITE
+from stream.mapping.mapping import Mapping, offchip_memory
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.node import InEdge, OutEdge, TransferNode
+from stream.workload.node import InEdge, OutEdge, TransferNode, TransferType
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.workload import Workload
 
@@ -23,13 +25,11 @@ def _flatten_cores(allocation) -> list[Core]:
     return out
 
 
-def _memory_tile_cores(allocation) -> list[Core]:
-    """The distinct memory-kind cores a transfer's memory allocation names."""
-    tiles: dict[int, Core] = {}
-    for core in _flatten_cores(allocation):
-        if core.kind == "memory":
-            tiles.setdefault(core.id, core)
-    return list(tiles.values())
+def _memory_tile_cores(allocation: tuple[tuple[Memory, ...], ...]) -> list[Core]:
+    """The memory-kind cores viewing the staging memories of a transfer's memory allocation, once each. These are
+    the cores its accesses are charged to, even when compute cores also view that memory."""
+    memories = dict.fromkeys(memory for placement in allocation for memory in placement if memory.staging)
+    return list(dict.fromkeys(core for memory in memories for core in memory.cores if core.kind == "memory"))
 
 
 class MemoryAccessesEstimationStage(Stage):
@@ -101,9 +101,10 @@ class MemoryAccessesEstimationStage(Stage):
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
-                cores = [self.accelerator.get_core(self.accelerator.offchip_core_id)]
-            else:
-                cores = _flatten_cores(self.mapping.get(src).resource_allocation)
+                bandwidth = self._offchip_bandwidth(READ)
+                self.core_memory_accesses.add_offchip_read(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                continue
+            cores = _flatten_cores(self.mapping.get(src).resource_allocation)
             for core in cores:
                 # Calculate the number of accesses per fire based on tensor size and bw on the core
                 bandwidth = core.get_max_memory_bandwidth(type="read")
@@ -112,7 +113,10 @@ class MemoryAccessesEstimationStage(Stage):
                 self.core_memory_accesses.add_read(core, t_core, total_accesses)
 
     def get_mem_core_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
-        # A transfer's tensor may reside on several memory tiles; account the accesses on each.
+        """The writes into and reads out of each memory tile a transfer stages its tensor in. Only transfers into
+        memory stage; a transfer into the memory its reader computes from is counted as the reader's write."""
+        if tn.transfer_type not in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
+            return
         mem_cores = _memory_tile_cores(self.mapping.get(tn).memory_allocation)
         if not mem_cores:
             return  # No mem tile involved in this transfer, skip
@@ -148,15 +152,29 @@ class MemoryAccessesEstimationStage(Stage):
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
-                cores = [self.accelerator.get_core(self.accelerator.offchip_core_id)]
-            else:
-                cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
+                bandwidth = self._offchip_bandwidth(WRITE)
+                self.core_memory_accesses.add_offchip_write(t_core, ceil(t_core.size_bits() / bandwidth) * nb_fires)
+                continue
+            cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
             for core in cores:
                 # Calculate the number of accesses per fire based on tensor size and bw on the core
                 bandwidth = core.get_max_memory_bandwidth(type="write")
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
                 total_accesses = accesses_per_fire * nb_fires
                 self.core_memory_accesses.add_write(core, t_core, total_accesses)
+
+    def _offchip_bandwidth(self, direction: str) -> float:
+        """Bits one access of the off-chip memory moves in ``direction``: its measured contiguous rate if it has one,
+        else its widest port serving the direction."""
+        memory = offchip_memory(self.accelerator)
+        measured = self.accelerator.bandwidth.get(memory)
+        if measured is not None:
+            return measured.contiguous
+        ports = [port for port in self.accelerator.ports if port.key.memory == memory.name]
+        widths = [port.bits_per_cycle for port in ports if any(d == direction for _, d in port.serves)]
+        if not widths:
+            raise ValueError(f"off-chip memory {memory.name} has no port serving {direction}")
+        return max(widths)
 
     def is_leaf(self):
         return True

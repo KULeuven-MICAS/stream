@@ -7,6 +7,7 @@ both backends are first-class citizens in the framework.
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Iterable, Mapping
 from typing import Literal
 
 from zigzag.datatypes import MemoryOperand
@@ -20,7 +21,6 @@ from stream.hardware.ports import (
     READ_BY_DATAPATH,
     WRITE,
     WRITE_BY_DATAPATH,
-    PortKey,
     PortSpec,
     Service,
     input_role,
@@ -43,11 +43,25 @@ def operand_role(memory_operand: str) -> str:
     raise ValueError(f"memory operand {memory_operand!r} has no operand role.")
 
 
+def memory_operand(role: str) -> MemoryOperand:
+    """The ZigZag memory operand of a neutral role: the output is ``O``, input k ``I<k>``."""
+    if role == OUTPUT:
+        return MemoryOperand("O")
+    if role.startswith("input") and role[5:].isdigit():
+        return MemoryOperand(f"I{role[5:]}")
+    raise ValueError(f"role {role!r} has no memory operand.")
+
+
+def top_levels(levels: Mapping[str, Iterable[Hashable]]) -> set[str]:
+    """Of the memory levels named innermost first with the operands each holds, the highest level of each operand."""
+    return set({operand: name for name, operands in levels.items() for operand in operands}.values())
+
+
 class ZigZagCoreBackend(_ZigZagAccelerator):
     """Thin wrapper around the ZigZag ``Accelerator`` that adds the backend protocol.
 
     Inherits all ZigZag attributes (``operational_array``, ``memory_hierarchy``,
-    ``dataflows``, …) and adds ``get_memory_capacity()``, ``get_max_memory_bandwidth()``,
+    ``dataflows``, …) and adds ``top_memory_capacity()``, ``get_max_memory_bandwidth()``,
     and ``get_ir()`` so that :class:`~stream.hardware.architecture.core.Core` can
     delegate uniformly without ``isinstance`` checks.
     """
@@ -56,10 +70,44 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
     # Backend protocol — same interface as AIE2CoreBackend
     # ------------------------------------------------------------------
 
-    def get_memory_capacity(self) -> int:
-        """Total top-level memory capacity in bits."""
-        memory_operand = MemoryOperand("I1")
-        return self.get_top_memory_instance(memory_operand).size
+    def _top_levels(self) -> dict[str, MemoryLevel]:
+        """The highest memory level of each operand, by instance name."""
+        levels = {level.name: level for level in self.memory_hierarchy.mem_level_list}
+        return {name: levels[name] for name in top_levels({name: level.operands for name, level in levels.items()})}
+
+    def top_instances(self) -> frozenset[str]:
+        """The core's top-level memory instances: the highest level of each operand."""
+        return frozenset(self._top_levels())
+
+    def top_instance(self, role: str) -> str:
+        """The top-level memory instance holding the operand of ``role``; raises if there is none."""
+        top = self.top_instance_holding(role)
+        if top is None:
+            tops = sorted(self.top_instances())
+            raise ValueError(f"{self} holds {role}'s operand {memory_operand(role)} in none of its top levels {tops}")
+        return top
+
+    def top_instance_holding(self, role: str) -> str | None:
+        """The top-level memory instance holding the operand of ``role``, or None if there is none. A core with one
+        top-level instance holds every operand there. Inputs beyond the second live with the first input."""
+        hierarchy, operand = self.memory_hierarchy, memory_operand(role)
+        if operand in hierarchy.get_operands():
+            return hierarchy.get_memory_levels(operand)[-1].name
+        tops = self.top_instances()
+        if len(tops) == 1:
+            (top,) = tops
+            return top
+        first = MemoryOperand("I1")
+        if role not in (OUTPUT, input_role(1), input_role(2)) and first in hierarchy.get_operands():
+            return hierarchy.get_memory_levels(first)[-1].name
+        return None
+
+    def top_memory_capacity(self, instance: str) -> int:
+        """Capacity in bits of the top-level memory instance ``instance``."""
+        tops = self._top_levels()
+        if instance not in tops:
+            raise ValueError(f"{instance} is no top-level memory of {self}: its top levels are {sorted(tops)}")
+        return tops[instance].memory_instance.size
 
     def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
         """Top-level memory read/write bandwidth in bits/cycle."""
@@ -74,12 +122,12 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         """Ports of each operand's top memory level, with the (role, direction) pairs they serve at that level."""
         hierarchy = self.memory_hierarchy
         tops = {op: len(hierarchy.get_memory_levels(op)) - 1 for op in hierarchy.get_operands()}
-        found: dict[PortKey, tuple[MemoryLevel, MemoryPort]] = {}
-        serves: dict[PortKey, set[Service]] = {}
+        found: dict[tuple[str, str], tuple[MemoryLevel, MemoryPort]] = {}
+        serves: dict[tuple[str, str], set[Service]] = {}
         for op in tops:
             level = hierarchy.get_memory_levels(op)[-1]
             for port in level.ports:
-                key = PortKey(level.memory_instance.shared_memory_group_id, level.name, port.name)
+                key = (level.name, port.name)
                 found.setdefault(key, (level, port))
                 serves.setdefault(key, set()).update(
                     (operand_role(str(served)), ZIGZAG_DIRECTION_NAMES[direction])
@@ -88,7 +136,6 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
                 )
         return tuple(
             PortSpec(
-                share_group=key[0],
                 memory=level.name,
                 name=port.name,
                 bits_per_cycle=float(port.bw_max),

@@ -24,7 +24,10 @@ print(allocation.solution.latency.total)
 
 ## Files written to disk
 
+- **Once per run**, in the output folder: a picture of the accelerator as Stream reads it (`hardware_graph.svg`): each core with the memory each of its top-level instances is a view of and the operands it holds there, each memory with its capacity, views, banks, measured bandwidth and ports (their width, the operands and directions they serve, the cores reaching them), and each link and bus between the memories. `python -m stream.visualization.hardware_graph <hardware.yaml> <out.svg>` draws one without solving.
 - **Per fused group**, in its `group_<index>/` folder: a picture of its tiled workload (`tiled_workload.svg`), the cost of each node on each core (`core_cost_lut.yaml`, with its `core_cost_lut.pickle` cache) and its allocation artifacts; under a tile search, those of the candidate it chose.
+
+`SolveOptions(artifacts=False)` writes none of these pictures (nor the ONNX parser's `workload_graph.svg`), and none of the allocation artifacts below.
 
 ## Allocation artifacts
 
@@ -34,11 +37,11 @@ Each allocation solve writes into `group_<index>/allocation/`:
 - `traces/` - the allocation as Perfetto JSON traces (`steady_state_trace.json` and `steady_state_trace_compact.json`); open them at <https://ui.perfetto.dev> to inspect each core's timeline and the inter-core transfers.
 - `figures/` - the solver's progress for Gurobi (`optimization_progress.png`) and a picture of the solved steady-state workload (`steady_state_workload_final.svg`).
 
-A sweep that only needs the estimates turns these off with `SolveOptions(artifacts=False)`. A solve that has no solution writes its model for diagnosis instead, whatever `artifacts` says: Gurobi's irreducible infeasible subsystem as `allocation/model.ilp`, OR-Tools' whole model as `allocation/model.mps`.
+A sweep that only needs the estimates turns these off, and the pictures with them, with `SolveOptions(artifacts=False)`. A solve that has no solution writes its model for diagnosis instead, whatever `artifacts` says: Gurobi's irreducible infeasible subsystem as `allocation/model.ilp`, OR-Tools' whole model as `allocation/model.mps`.
 
 ## YAML reference
 
-Every key of every YAML file a solve writes, one table per file. A nested key is a dotted path, an item of a list is `[]`, and a key that names something of the solve (a core id, a metadata entry) is in angle brackets. A test solves a small mapping and checks that these are exactly the keys the files hold. The `mapping.yaml` the generic mapping generator writes is a mapping in the input format, described in [Mapping](mapping.md).
+Every key of every YAML file a solve writes, one table per file. A nested key is a dotted path, an item of a list is `[]`, and a key that names something of the solve (a memory, a metadata entry) is in angle brackets. A test solves a small mapping and checks that these are exactly the keys the files hold. The `mapping.yaml` the generic mapping generator writes is a mapping in the input format, described in [Mapping](mapping.md).
 
 ### `core_cost_lut.yaml`
 
@@ -119,8 +122,8 @@ Where the latency of one steady-state iteration goes: its totals, each resource'
 | `totals.overlap_cycles` | how much of an iteration the next one overlaps | cycles |
 | `totals.initiation_interval_cycles` | the time between the starts of two iterations, the iteration latency less the overlap | cycles |
 | `totals.total_latency_cycles` | the latency of every iteration together, fill included | cycles |
-| `totals.shared_busy_cycles` | per core whose bandwidth its transfers share, the time it spends on one iteration's transfers | |
-| `totals.shared_busy_cycles.<core_id>` | that time for the core with this id; it bounds the initiation interval from below | cycles |
+| `totals.shared_busy_cycles` | per memory with a measured bandwidth, the time it spends on one iteration's transfers | |
+| `totals.shared_busy_cycles.<memory>` | that time for the memory of this name; it bounds the initiation interval from below | cycles |
 | `resource_slack` | per core and link, least first, its idle time within one iteration; the overlap is at most the least of them | |
 | `resource_slack[].resource` | the core or link | |
 | `resource_slack[].kind` | `core` or `link` | |
@@ -164,4 +167,4 @@ allocation_ir  = AllocationIR.from_internal(ctx.get("allocation"))
 allocation_data = allocation_ir.model_dump()      # JSON-compatible dict
 ```
 
-`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization, and, under `layouts`, every transfer on its chosen route: the tile it moves, the cores it reads and writes, the axis orders of both copies (`source_order`, `target_order`, outermost first), whether it converts the layout, its contiguous bytes per run on each side, and per side the strides, the DMA's size and stride loops and the memory banks it lands in (see [Data layout](data_layout.md)). Its `energy` gives the run's energy in pJ, per iteration split into the nodes and the transfers, and over every iteration, and under `components` where one iteration's energy is spent: each node's MAC array and memory levels on the cores it runs on, and each transfer's memory ports and links. `steady_state` is the solved steady state per core: its iterations and axes, where each tensor is placed and how it is buffered, and per tiled node its cores and tiles, or for a transfer its route, the window and moved tile of each target, its halos and what each source hands each target. `roofline` is the group's point on the accelerator's roofline. See [Using Stream with an AI agent](ai-agents.md) for details.
+`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization, and, under `layouts`, every transfer on its chosen route: the tile it moves, the memories it reads and writes, the axis orders of both copies (`source_order`, `target_order`, outermost first), whether it converts the layout, its contiguous bytes per run on each side, and per side the strides, the DMA's size and stride loops and the memory banks it lands in (see [Data layout](data_layout.md)). Its `energy` gives the run's energy in pJ, per iteration split into the nodes and the transfers, and over every iteration, and under `components` where one iteration's energy is spent: each node's MAC array and memory levels on the cores it runs on, and each transfer's memory ports and links. `steady_state` is the solved steady state per core: its iterations and axes, where each tensor is placed and how it is buffered, and per tiled node its cores and tiles, or for a transfer its route, the window and moved tile of each target, its halos and what each source hands each target. `roofline` is the group's point on the accelerator's roofline. See [Using Stream with an AI agent](ai-agents.md) for details.

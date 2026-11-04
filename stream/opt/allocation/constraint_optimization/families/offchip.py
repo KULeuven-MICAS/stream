@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 class OffchipTraffic:
     """The bits crossing the off-chip boundary, the objective level after the latency; with ``charge`` the latency
-    also pays the time the off-chip links take to move them, unless a shared-bandwidth model or the overlap's
-    off-chip contention already times them."""
+    also pays the time the off-chip links take to move them, unless a shared-bandwidth model of the off-chip memory
+    or the overlap's off-chip contention already times them."""
 
     name: ClassVar[str] = "offchip_traffic"
     requires: ClassVar[tuple[str, ...]] = ()
@@ -25,7 +25,9 @@ class OffchipTraffic:
 
     def build(self, ctx: FormulationContext) -> None:
         space = ctx.space
-        if self.charge and not space.shared_bandwidth and (bandwidth := space.offchip_bandwidth()):
+        timed = space.accelerator.offchip_memory in space.shared_bandwidth
+        bandwidth = space.offchip_bandwidth()
+        if self.charge and not timed and bandwidth:
             ctx.quantities.add("offchip_traffic_weight", space.iterations / bandwidth)
 
     def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:

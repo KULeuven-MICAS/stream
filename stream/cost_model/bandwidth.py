@@ -35,6 +35,17 @@ class BandwidthModel:
         """A rate that every access pattern reaches, as a hardware description's port width declares."""
         return cls(ceiling=bits_per_cycle, contiguous=bits_per_cycle, strided={side: {} for side in DIRECTIONS})
 
+    def scaled(self, factor: float) -> BandwidthModel:
+        """This model with every rate multiplied by ``factor``, as for identical ports used in parallel."""
+        return BandwidthModel(
+            ceiling=self.ceiling * factor,
+            contiguous=self.contiguous * factor,
+            strided={
+                side: {span: rate * factor for span, rate in table.items()} for side, table in self.strided.items()
+            },
+            burst=self.burst,
+        )
+
     def efficiency(self, span_bytes: float, direction: str) -> float:
         """Fraction of the contiguous rate a transfer gets whose contiguous span is ``span_bytes``."""
         table = sorted(self.strided[direction].items())

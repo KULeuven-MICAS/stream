@@ -19,7 +19,7 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.frontends import load_workload
-from stream.opt.allocation.constraint_optimization.space import DecisionSpace
+from stream.opt.allocation.constraint_optimization.space import DecisionSpace, communicating_pairs
 from stream.workload.affine_transform import AffineTransform
 from stream.workload.node import ComputationNode, Tensor, TransferNode
 from stream.workload.workload import Workload
@@ -202,8 +202,11 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
     mid, inp = conv2.inputs[0], conv1.inputs[0]
     moved = workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, ssis=ssis[mid])
     route = allocation.solution.transfer_routes[into2]
-    handed = {(route.sources[i], route.targets[j]): n for (i, j), n in space.overlaps(into2).items()}
-    handed = handed or {pair: prod(moved.shape) for pair in space.pairs(into2, route)}
+    # A route's positions are its nodes' cores, in order: conv1's sources, conv2's targets.
+    src_cores, dst_cores = space.cores(conv1), space.cores(conv2)
+    positions = route.pairs or communicating_pairs(range(len(route.sources)), range(len(route.targets)))
+    handed = {(src_cores[i].id, dst_cores[j].id): n for (i, j), n in space.overlaps(into2).items()}
+    handed = handed or {(src_cores[i].id, dst_cores[j].id): prod(moved.shape) for i, j in positions}
     oy = workload.get_dims(conv2)[2]
     work = workload.get_sliding_work(oy, allocation.problem.fusion_splits.get(oy, 1))
     routes = allocation.solution.transfer_routes
@@ -219,16 +222,20 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
         "moved": per_core(
             conv2, lambda c: workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, c, ssis[mid])
         ),
-        "sources": {dst.id: {src.id: n for (src, d), n in handed.items() if d == dst} for _, dst in handed},
+        "sources": {dst: {src: n for (src, d), n in handed.items() if d == dst} for _, dst in handed},
         "conv1_rows": work.get(conv1, (conv1.outputs[0].shape[2],)),
         "input_moved_rows": work.get(into1, (inp.shape[2],)),
         "in_place": allocation.solution.route_cycles[into2] == 0,
         "halos": {loop.type.name: loop.halo for loop in ssis[mid] if loop.halo},
         "linked_bits": space.moved_bits(into2, route),
-        "linked_pairs": [pair for pair in space.pairs(into2, route) if not space.hardware.shares_memory(*pair)],
+        "linked_pairs": [
+            (src_cores[i].id, dst_cores[j].id)
+            for i, j in positions
+            if not space.hardware.shares_memory(route.sources[i], route.targets[j])
+        ],
         "received_bits": [
             (
-                sum(space.moved_bits(tr, routes[tr], target=t) for t in routes[tr].targets),
+                sum(space.moved_bits(tr, routes[tr], target_at=j) for j in range(len(routes[tr].targets))),
                 space.moved_bits(tr, routes[tr]),
             )
             for tr in (into1, into2)

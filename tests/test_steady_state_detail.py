@@ -59,6 +59,11 @@ def _view(tmp_path: Path, hardware: str, workload: str, mapping: str) -> dict[st
     return _steady_state(_allocation(tmp_path, hardware, workload, mapping))
 
 
+def _core(memory: str) -> int:
+    """The eyeriss_like core whose memory, ``eyeriss_like_<id>``, this is."""
+    return int(memory.removeprefix("eyeriss_like_"))
+
+
 def _nodes(view: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {node["name"]: node for node in view["tiled_graph"]["nodes"]}
 
@@ -70,7 +75,7 @@ def test_the_detail_reports_the_tiles_windows_halos_and_sources(tmp_path: Path, 
     into2 = nodes[INTO_CONV2]
     handed: dict[int, dict[int, int]] = {}
     for hand in into2["handed"]:
-        handed.setdefault(hand["target"], {})[hand["source"]] = hand["elements"]
+        handed.setdefault(_core(hand["target"]), {})[_core(hand["source"])] = hand["elements"]
     assert view["iterations"] == expected["iterations"]
     assert (tuple(nodes["Conv1"]["cores"]), tuple(nodes["Conv2"]["cores"])) == expected["cores"]
     assert (nodes["Conv1"]["tiles"], nodes["Conv2"]["tiles"]) == (expected["conv1_tile"], expected["out_tile"])
@@ -79,7 +84,7 @@ def test_the_detail_reports_the_tiles_windows_halos_and_sources(tmp_path: Path, 
     assert {(h["type"], h["halo"]) for h in into2["halos"]} >= {("spatial", 2)}
     assert into2["links"] and into2["route_cycles"] > 0
     moved = [prod(tile) for tile in into2["moved"]]
-    assert moved == [sum(expected["sources"][core].values()) for core in into2["targets"]]
+    assert moved == [sum(expected["sources"][_core(memory)].values()) for memory in into2["targets"]]
     assert {axis["dim"] for axis in view["axes"] if axis["sliding"]} >= {h["dim"] for h in into2["halos"]}
     assert nodes["Conv1"]["waited_on"]
     if expected["iterations"] > 1:
@@ -132,7 +137,7 @@ fused_groups:
     load = _nodes(_view(tmp_path, "eyeriss_like_quad_core", workload, str(tmp_path / "mapping.yaml")))[
         "Transfer(input)"
     ]
-    assert load["targets"] == [0, 1, 2, 3]
+    assert [_core(memory) for memory in load["targets"]] == [0, 1, 2, 3]
     assert load["windows"] == load["moved"] == [[1, 8, 8, 16]] * 4
 
 
@@ -161,7 +166,7 @@ fused_groups:
     load = _nodes(_view(tmp_path, "eyeriss_like_quad_core", workload, str(tmp_path / "mapping.yaml")))[
         "Transfer(input)"
     ]
-    assert load["copies"] == 2 and load["targets"] == [0, 1, 0, 1]
+    assert load["copies"] == 2 and [_core(memory) for memory in load["targets"]] == [0, 1, 0, 1]
     assert load["windows"] == [[1, 8, 8, 16]] * 2 + [[1, 8, 10, 17]] * 2
 
 

@@ -56,11 +56,8 @@ class TestMacRooflinePeak:
     def test_vector_cores_are_excluded_from_the_peak(self) -> None:
         """The peak excludes the VPUs; fails if they ever creep back into the roofline denominator."""
         accelerator = load_accelerator(TPU_V7)
-        offchip_id = accelerator.offchip_core_id
         all_cores_peak = sum(
-            getattr(getattr(c, "operational_array", None), "total_unit_count", 0) or 0
-            for c in accelerator.core_list
-            if c.id != offchip_id
+            getattr(getattr(c, "operational_array", None), "total_unit_count", 0) or 0 for c in accelerator.core_list
         )
         peak, _ = mac_roofline_peak(accelerator)
         assert all_cores_peak == 1048576 + 4 * 8 * 128 * 4  # + the four (8, 128, 4) VPUs
@@ -69,14 +66,11 @@ class TestMacRooflinePeak:
     def test_unrestricted_cores_count_but_specialised_non_mac_cores_do_not(self) -> None:
         """The four unrestricted cores stay in the peak; the two non-MAC specialised cores do not."""
         accelerator = load_accelerator(os.path.join(HARDWARE_DIR, "tpu_like_quad_core.yaml"))
-        offchip_id = accelerator.offchip_core_id
-        unrestricted = [
-            c for c in accelerator.core_list if c.id != offchip_id and getattr(c, "operator_types", None) is None
-        ]
+        unrestricted = [c for c in accelerator.core_list if getattr(c, "operator_types", None) is None]
         peak, n_cores = mac_roofline_peak(accelerator)
         assert n_cores == len(unrestricted) == 4
         assert peak == sum(c.operational_array.total_unit_count for c in unrestricted)
-        assert peak < sum(c.operational_array.total_unit_count for c in accelerator.core_list if c.id != offchip_id)
+        assert peak < sum(c.operational_array.total_unit_count for c in accelerator.core_list)
 
 
 class TestEndToEndMacUtilization:

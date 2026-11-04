@@ -12,7 +12,7 @@ This needs only the base install (`pip install -e .`). We map a tiny two-layer c
 
 ### The inputs
 
-- **Hardware** - `tpu_like_quad_core.yaml` is a system of **four TPU-like compute cores** plus a pooling engine, a SIMD unit, and an off-chip DRAM controller, wired together by an on-chip interconnect.
+- **Hardware** - `tpu_like_quad_core.yaml` is a system of **four TPU-like compute cores** plus a pooling engine, a SIMD unit, and off-chip DRAM, wired together by an on-chip interconnect.
 - **Workload** - `2conv_1_8_32_32_16_32_3.onnx` is **two chained `Conv` layers** (a committed test fixture; only the tensor shapes matter for cost estimation, so the weights are cleared and the file stays tiny).
 - **Mapping** *(optional)* - a hand-written mapping YAML. **Omit it** and the mapping generator that claims the hardware proposes one: which cores each layer may run on, and how layers are tiled across cores.
 
@@ -36,10 +36,11 @@ Stream parses the hardware and workload, proposes a mapping, and runs the alloca
 
 ### What you get
 
-Everything lands under the output directory, one folder per fused group. The `allocation/` folder describes the allocation solve; `SolveOptions(artifacts=False)` writes none of its reports, traces and figures, as a sweep that only needs the estimates does, and a solve without a solution writes its model there for diagnosis (see [Outputs](outputs.md#allocation-artifacts)):
+Everything lands under the output directory, one folder per fused group. The `allocation/` folder describes the allocation solve and the `.svg` files picture the hardware and the workload; `SolveOptions(artifacts=False)` writes neither, as a sweep that only needs the estimates does, and a solve without a solution writes its model there for diagnosis (see [Outputs](outputs.md#allocation-artifacts)):
 
 ```
 outputs/first-run/
+├── hardware_graph.svg                       # the accelerator as Stream reads it
 └── group_0/                                 # one fused group of layers
     ├── mapping.yaml                         # the generated mapping that was used
     ├── tiled_workload.svg                   # the workload after inter-core tiling

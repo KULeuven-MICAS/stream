@@ -37,7 +37,7 @@ def _assert_sound_dataflow(ctx, node_count: int) -> None:
     assert len(nodes) == node_count
     for node in nodes:
         cores = {core.id for group in mapping.get(node).resource_allocation for core in group}
-        assert cores and accelerator.offchip_core_id not in cores, node.name
+        assert cores and all(accelerator.get_core(core).kind == "compute" for core in cores), node.name
 
     assert ctx.get("total_latency") > 0
     for group, allocation in ctx.get("group_allocations").items():

@@ -1,8 +1,8 @@
 {
   "_meta": {
     "backend": "ortools_gscip",
-    "baseline_date": "2026-10-11",
-    "baseline_sha": "9a23374c33c38173970b19f2dd7e552e75c55a8e",
+    "baseline_date": "2026-10-31",
+    "baseline_sha": "4f53fd44f72a057fdbf6b3a03171cdaa24821e9a",
     "python_version": "3.12.3"
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu[eyeriss_like_dual_core]": {
@@ -22,7 +22,7 @@
     "group_latencies_max": 201588932.0,
     "mac_spatial_utilization": 0.5255637455269948,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 18.0,
     "solve_time_s": 0.004413,
     "total_latency": 201588932.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -55,7 +55,7 @@
     "group_latencies_max": 201850911.0,
     "mac_spatial_utilization": 1,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 11.0,
     "solve_time_s": 0.002968,
     "total_latency": 201850911.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -66,7 +66,7 @@
     "group_latencies_max": 201588841.0,
     "mac_spatial_utilization": 0.6874879406307978,
     "mip_gap": 0.0,
-    "objective": 106.0,
+    "objective": 119.0,
     "solve_time_s": 0.027476,
     "total_latency": 201588841.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -77,7 +77,7 @@
     "group_latencies_max": 201588838.0,
     "mac_spatial_utilization": 0.6874879406307978,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 12.0,
     "solve_time_s": 0.012008,
     "total_latency": 201588838.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -88,7 +88,7 @@
     "group_latencies_max": 201588878.0,
     "mac_spatial_utilization": 1,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 18.0,
     "solve_time_s": 0.004323,
     "total_latency": 201588878.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -106,24 +106,24 @@
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_dual_core]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.21901791284199268,
-    "group_latencies_max": 80150.0,
+    "end_to_end_mac_utilization": 0.21911359563484634,
+    "group_latencies_max": 80115.0,
     "mac_spatial_utilization": 0.5079571759259259,
     "mip_gap": 0.0,
     "objective": 5.0,
     "solve_time_s": 0.001265,
-    "total_latency": 80150.0,
+    "total_latency": 80115.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_quad_core]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.19192982565749397,
-    "group_latencies_max": 45731.0,
+    "end_to_end_mac_utilization": 0.19208944164626654,
+    "group_latencies_max": 45693.0,
     "mac_spatial_utilization": 0.5079861336041293,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 7.0,
     "solve_time_s": 0.001661,
-    "total_latency": 45731.0,
+    "total_latency": 45693.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_single_core]": {
@@ -154,7 +154,7 @@
     "group_latencies_max": 16081.0,
     "mac_spatial_utilization": 0.75,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 6.0,
     "solve_time_s": 0.001141,
     "total_latency": 16081.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -165,31 +165,31 @@
     "group_latencies_max": 12853.0,
     "mac_spatial_utilization": 0.5,
     "mip_gap": 0.0,
-    "objective": 353.0,
+    "objective": 350.0,
     "solve_time_s": 0.045392,
     "total_latency": 12853.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[simba_small]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.10572687224669604,
-    "group_latencies_max": 13620.0,
+    "end_to_end_mac_utilization": 0.10575016523463318,
+    "group_latencies_max": 13617.0,
     "mac_spatial_utilization": 0.5,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 7.0,
     "solve_time_s": 0.002871,
-    "total_latency": 13620.0,
+    "total_latency": 13617.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[tpu_like_quad_core]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.0938722294654498,
-    "group_latencies_max": 15340.0,
+    "end_to_end_mac_utilization": 0.09401932619482893,
+    "group_latencies_max": 15316.0,
     "mac_spatial_utilization": 0.75,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 7.0,
     "solve_time_s": 0.001752,
-    "total_latency": 15340.0,
+    "total_latency": 15316.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[tpu_v7_ironwood]": {

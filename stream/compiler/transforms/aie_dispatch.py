@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from xdsl.context import Context
@@ -30,15 +31,17 @@ from stream.compiler.dialects.stream import (
     StrensorType,
     YieldOp,
 )
+from stream.compiler.transforms.aie_tiles import OFFCHIP, AIETileLocation
 
 
 @dataclass
 class FusionGroupDispatcher(RewritePattern):
     device: AIEDeviceEnum
+    tiles: Mapping[str, AIETileLocation]
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, fusion_op: FusionGroupOp, rewriter: PatternRewriter):
-        locs: dict[str, list[Operation]] = defaultdict(list)
+        locs: dict[str | tuple[int, int], list[Operation]] = defaultdict(list)
 
         # determine new location for each block
         for op in fusion_op.body.block.ops:
@@ -57,15 +60,15 @@ class FusionGroupDispatcher(RewritePattern):
             else:
                 raise NotImplementedError("unknown op found")
             assert len(strensor.core_allocation) == 1
-            core = strensor.core_allocation.data[0]
-            locs[core.data].append(op)
+            location = self.tiles[strensor.core_allocation.data[0].data]
+            locs["runtime" if location.kind == OFFCHIP else location.tile].append(op)
 
         root_ops = locs.pop("root")
         for op in root_ops:
             op.detach()
 
         # Create proper runtime sequence:
-        runtime_ops = locs.pop("tile_0_0")
+        runtime_ops = locs.pop("runtime")
         runtime = RuntimeSequenceOp(Region(Block(arg_types=fusion_op.body.block.arg_types)))
         for op in runtime_ops:
             op.detach()
@@ -76,9 +79,7 @@ class FusionGroupDispatcher(RewritePattern):
         core_ops: list[Operation] = []
 
         # All others go into Core() ops:
-        for core, ops in locs.items():
-            row = int(core[-1])
-            col = int(core[-3])
+        for (col, row), ops in locs.items():
             tile_op = TileOp(col, row)
             core_op = CoreOp(None, tile_op, Region(Block()))
             for op in ops:
@@ -104,7 +105,8 @@ class AIEDispatchPass(ModulePass):
 
     name = "aie-dispatch"
 
-    device: str = AIEDeviceEnum.npu2.value
+    device: str
+    tiles: Mapping[str, AIETileLocation]
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
-        PatternRewriteWalker(FusionGroupDispatcher(AIEDeviceEnum(self.device))).rewrite_module(op)
+        PatternRewriteWalker(FusionGroupDispatcher(AIEDeviceEnum(self.device), self.tiles)).rewrite_module(op)

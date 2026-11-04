@@ -95,8 +95,7 @@ class FusionGroupIterationStage(Stage):
             # exploration result can show where the traffic goes -- the memory-wall view.
             mem_accesses = ctx.get("memory_accesses")
             try:
-                offchip_id = getattr(self.accelerator, "offchip_core_id", None)
-                group_memory_accesses[i] = mem_accesses.to_ir(offchip_id) if mem_accesses is not None else None
+                group_memory_accesses[i] = mem_accesses.to_ir() if mem_accesses is not None else None
             except Exception as exc:  # noqa: BLE001 -- observability must never fail the solve
                 logger.warning(f"Group {i}: could not serialise memory accesses: {exc}")
                 group_memory_accesses[i] = None

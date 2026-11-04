@@ -69,6 +69,7 @@ nav:
       - user-guide.md
       - Workload: workload.md
       - Hardware: hardware.md
+      - Converting old hardware files: convert_hardware_prompt.md
       - Kernel library: kernel_library.md
       - Mapping: mapping.md
       - Stages: stages.md

@@ -254,7 +254,7 @@ def test_a_burst_is_a_positive_whole_number_of_bytes(burst):
     from stream.parser.accelerator_validator import AcceleratorValidator  # noqa: PLC0415
 
     data = open_yaml(TPU_V7)
-    data["bandwidth"]["16.hbm3e.rw_port_1"]["burst"] = burst
+    data["bandwidth"]["hbm.rw_port_1"]["burst"] = burst
     validator = AcceleratorValidator(data, accelerator_path=TPU_V7)
     assert not validator.validate()
     assert any("burst" in error for error in validator.errors)
@@ -271,8 +271,20 @@ def test_banks_are_a_whole_count_width_and_stripe(banks):
 
     validator = AcceleratorValidator(open_yaml(TPU_V7), accelerator_path=TPU_V7)
     core = open_yaml("stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml")
-    validator.validate_core_data({**core, "banks": banks}, "vmem")
+    core["memories"]["vmem"]["banks"] = banks
+    validator.validate_core_data(core, "vmem")
     assert any("banks" in error for error in validator.errors)
+
+
+def test_banks_declared_on_a_core_rather_than_its_memory_level_are_rejected():
+    from zigzag.utils import open_yaml  # noqa: PLC0415
+
+    from stream.parser.accelerator_validator import AcceleratorValidator  # noqa: PLC0415
+
+    validator = AcceleratorValidator(open_yaml(TPU_V7), accelerator_path=TPU_V7)
+    core = open_yaml("stream/inputs/examples/hardware/cores/tpu_v7_vmem.yaml")
+    validator.validate_core_data({**core, "banks": {"count": 8, "width": 16}}, "vmem")
+    assert validator.errors
 
 
 def test_a_layout_reports_each_side_the_dma_walks_and_the_banks_it_lands_in(tmp_path):

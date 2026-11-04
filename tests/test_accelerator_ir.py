@@ -28,9 +28,9 @@ HARDWARE_CASES = [
         "stream/inputs/examples/hardware/tpu_like_quad_core.yaml",
         {
             "name": "tpu_like_quad_core",
-            "offchip_core_id": 6,
+            "offchip_memory": "offchip",
             "expected_namespace": "zigzag",
-            "expected_num_cores": 7,
+            "expected_num_cores": 6,
         },
         id="examples/tpu_like_quad_core",
     ),
@@ -38,9 +38,9 @@ HARDWARE_CASES = [
         "stream/inputs/testing/hardware/tpu_like_quad_core.yaml",
         {
             "name": "tpu_like_quad_core",
-            "offchip_core_id": 6,
+            "offchip_memory": "offchip",
             "expected_namespace": "zigzag",
-            "expected_num_cores": 7,
+            "expected_num_cores": 6,
         },
         id="testing/tpu_like_quad_core",
     ),
@@ -48,9 +48,9 @@ HARDWARE_CASES = [
         "stream/inputs/aie/hardware/whole_array_strix.yaml",
         {
             "name": "whole_array_strix",
-            "offchip_core_id": 0,
+            "offchip_memory": "dram",
             "expected_namespace": "aie2",
-            "expected_num_cores": 41,
+            "expected_num_cores": 40,
         },
         id="aie/whole_array_strix",
     ),
@@ -65,7 +65,7 @@ HARDWARE_CASES = [
 def _build_accelerator(relative_path: str) -> Accelerator:
     path = REPO_ROOT / relative_path
     data = open_yaml(path)
-    validator = AcceleratorValidator(data, str(path))
+    validator = AcceleratorValidator(data, path)
     assert validator.validate(), f"{path} failed validation: {'; '.join(validator.errors)}"
     factory = AcceleratorFactory(validator.normalized_data)
     return factory.create()
@@ -90,19 +90,20 @@ def test_get_ir_top_level_keys(hardware_path, expected):
     """Top-level IR must contain all mandatory keys."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    required_keys = {"name", "num_cores", "offchip_core_id", "nb_shared_mem_groups", "cores", "core_connectivity"}
+    required_keys = {"name", "num_cores", "memories", "cores", "connections"}
     assert required_keys.issubset(ir.keys()), f"Missing keys: {required_keys - ir.keys()}"
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_name_and_metadata(hardware_path, expected):
-    """Accelerator name, offchip id, and core count must match the YAML definition."""
+    """Accelerator name, off-chip memory, and core count must match the YAML definition."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     assert ir["name"] == expected["name"]
-    assert ir["offchip_core_id"] == expected["offchip_core_id"]
+    assert [name for name, memory in ir["memories"].items() if memory["offchip"]] == [expected["offchip_memory"]]
     assert ir["num_cores"] == expected["expected_num_cores"]
-    assert ir["nb_shared_mem_groups"] >= 1
+    viewers = sorted(int(view.split(".")[0]) for memory in ir["memories"].values() for view in memory["views"])
+    assert viewers == [c["id"] for c in ir["cores"]]
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
@@ -146,13 +147,7 @@ def test_get_ir_cores_structure(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_core_ids_are_unique(hardware_path, expected):
-    """Core ids must be unique and the count must match num_cores.
-
-    Note: ids are not guaranteed to be sequential – cores that are defined in
-    the hardware YAML but have no connectivity edges are absent from the
-    CoreGraph and therefore absent from the IR (e.g. isolated shim-DMA tiles
-    in whole_array_strix).
-    """
+    """Core ids must be unique and the count must match num_cores."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     ids = [core["id"] for core in ir["cores"]]
@@ -234,42 +229,37 @@ def test_get_ir_type_specific_aie2_fields(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_connectivity_structure(hardware_path, expected):
-    """Every connectivity entry must be a dict with 'type', 'bandwidth', and core references."""
+    """Every connection is a link between two memories or a bus between two or more, with a bandwidth."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    for entry in ir["core_connectivity"]:
-        assert "type" in entry, f"Connectivity entry missing 'type': {entry}"
+    for entry in ir["connections"]:
         assert entry["type"] in {"link", "bus"}, f"Unknown connectivity type: {entry['type']}"
         assert "bandwidth" in entry, f"Connectivity entry missing 'bandwidth': {entry}"
-        if entry["type"] == "bus":
-            assert "cores" in entry, f"Bus entry missing 'cores': {entry}"
-            assert isinstance(entry["cores"], list) and len(entry["cores"]) >= 2  # noqa: PLR2004
-        else:
-            assert "from_core" in entry, f"Link entry missing 'from_core': {entry}"
-            assert "to_core" in entry, f"Link entry missing 'to_core': {entry}"
+        assert len(entry["ends"]) == 2 if entry["type"] == "link" else len(entry["ends"]) >= 2  # noqa: PLR2004
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
-def test_get_ir_connectivity_references_valid_core_ids(hardware_path, expected):
-    """Every core id referenced in connectivity must exist in the cores list."""
+def test_get_ir_connectivity_references_valid_memories(hardware_path, expected):
+    """Every memory a connection names is one of the accelerator's."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
-    valid_ids = {core["id"] for core in ir["cores"]}
-    for entry in ir["core_connectivity"]:
-        if entry["type"] == "bus":
-            for cid in entry["cores"]:
-                assert cid in valid_ids, f"Bus references unknown core id {cid}"
-        else:
-            assert entry["from_core"] in valid_ids, f"Link 'from_core' {entry['from_core']} not in cores"
-            assert entry["to_core"] in valid_ids, f"Link 'to_core' {entry['to_core']} not in cores"
+    for entry in ir["connections"]:
+        assert set(entry["ends"]) <= set(ir["memories"]), entry
+
+
+@pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
+def test_get_ir_lists_each_declared_connection_once(hardware_path, expected):
+    """One entry per declared link or bus, not one per direction."""
+    data = yaml.safe_load((REPO_ROOT / hardware_path).read_text())
+    assert len(_build_accelerator(hardware_path).get_ir()["connections"]) == len(data["connections"])
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_accelerator_ir_round_trips_through_yaml(hardware_path, expected):
     """The IR of a parsed hardware description is plain YAML."""
-    data = yaml.safe_load(yaml.dump(parse_accelerator(str(REPO_ROOT / hardware_path)).get_ir(), sort_keys=False))
+    data = yaml.safe_load(yaml.dump(parse_accelerator(REPO_ROOT / hardware_path).get_ir(), sort_keys=False))
 
     assert data["name"] == expected["name"]
     assert data["num_cores"] == expected["expected_num_cores"]
-    assert data["offchip_core_id"] == expected["offchip_core_id"]
+    assert data["memories"][expected["offchip_memory"]] == {"offchip": True, "views": []}
     assert len(data["cores"]) == expected["expected_num_cores"]
