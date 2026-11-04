@@ -5,14 +5,20 @@ import os
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
+import onnx
 import pytest
+import yaml
+from onnx import TensorProto, helper
 
+from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_decode_attention import make_decode_attention
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.mapping.mapping import whole_bits
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
@@ -221,3 +227,267 @@ def test_a_reduction_runs_innermost_only_where_its_outputs_cannot_stay_while_it_
         g for g in w.split_fusion_groups(cut_points=cuts) if node in {n.name for n in g.get_computation_nodes()}
     )
     assert gen._build_intra_core_tiling(group, tuple(group.get_computation_nodes()))[0]["dim"] == innermost
+
+
+_PACKED_CORE = """
+name: packed
+type: zigzag.compute
+memories:
+  wreg:
+    {size: 8, r_cost: 0.1, w_cost: 0.1, area: 0, latency: 1, auto_cost_extraction: False, operands: [I2],
+     served_dimensions: [],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 8, bandwidth_max: 8, allocation: ["I2, tl"]},
+     {name: w_port_1, type: write, bandwidth_min: 8, bandwidth_max: 8, allocation: ["I2, fh"]}]}
+  result_buffer:
+    {size: 4096, r_cost: 0.1, w_cost: 0.1, area: 0, latency: 1, operands: [O], served_dimensions: [D2, D3],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 32, bandwidth_max: 32, allocation: ["O, tl", "O, th"]},
+     {name: w_port_1, type: write, bandwidth_min: 32, bandwidth_max: 32, allocation: ["O, fh", "O, fl"]}]}
+  l1:
+    {size: L1_BITS, r_cost: 10, w_cost: 10, area: 0, latency: 1, operands: [I1, I2, O], served_dimensions: [D1, D2, D3],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 64, bandwidth_max: 4096,
+              allocation: ["I1, tl", "I2, tl", "O, tl", "O, th"]},
+             {name: w_port_1, type: write, bandwidth_min: 64, bandwidth_max: 4096,
+              allocation: ["I1, fh", "I2, fh", "O, fh", "O, fl"]}]}
+operational_array:
+  {unit_energy: 0.02, unit_area: 1, dimensions: [D1, D2, D3], sizes: [16, 16, 4], systolic_dimensions: [D1, D2]}
+operand_precision: {input: int8, accumulator: int32}
+operator_types: [MatMul, Gemm]
+"""
+
+_PACKED_CHIP = """
+name: chip
+cores: {0: packed.yaml}
+memories:
+  l1:
+    offchip: false
+    views: [0.l1]
+    ports: {r_port_1: {from: r_port_1, cores: [0]}, w_port_1: {from: w_port_1, cores: [0]}}
+  dram:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports: {rw_port_1: {bandwidth: 256, serves: {any: [read, write]}, read_energy: 1, write_energy: 1}}
+connections: [{type: link, bandwidth: 256, ends: {l1: [r_port_1, w_port_1], dram: [rw_port_1]}}]
+"""
+
+
+_SRAM_CORE = """
+name: sram
+type: zigzag.memory
+memories:
+  sram:
+    {size: SRAM_BITS, r_cost: 1, w_cost: 1, area: 0, latency: 1, operands: [I1, I2, O], served_dimensions: [D1, D2],
+     ports: [{name: r_port_1, type: read, bandwidth_min: 64, bandwidth_max: 512,
+              allocation: ["I1, tl", "I2, tl", "O, tl", "O, th"]},
+             {name: w_port_1, type: write, bandwidth_min: 64, bandwidth_max: 512,
+              allocation: ["I1, fh", "I2, fh", "O, fh", "O, fl"]}]}
+operational_array: {unit_energy: 0, unit_area: 0, dimensions: [D1, D2], sizes: [0, 0]}
+"""
+
+_STAGED_CHIP = """
+name: chip
+cores: {0: packed.yaml, 1: sram.yaml}
+core_coordinates: {0: [0, 0], 1: [1, 0]}
+memories:
+  l1:
+    offchip: false
+    views: [0.l1]
+    ports: {r_port_1: {from: r_port_1, cores: [0]}, w_port_1: {from: w_port_1, cores: [0]}}
+  sram:
+    offchip: false
+    views: [1.sram]
+    ports: {r_port_1: {from: r_port_1, cores: [1]}, w_port_1: {from: w_port_1, cores: [1]}}
+  dram:
+    offchip: true
+    views: []
+    capacity_bits: 10000000000
+    ports: {rw_port_1: {bandwidth: 256, serves: {any: [read, write]}, read_energy: 1, write_energy: 1}}
+connections:
+  - {type: link, bandwidth: 256, ends: {l1: [r_port_1, w_port_1], sram: [r_port_1, w_port_1]}}
+  - {type: link, bandwidth: 256, ends: {sram: [r_port_1, w_port_1], dram: [rw_port_1]}}
+"""
+
+
+def _gemm(tmp_path, m: int, k: int, n: int, l1_kib: int, sram_kib: int = 0, link: int = 256) -> tuple[str, str]:
+    """The chip and an int8 ``m x k`` by ``k x n`` Gemm on it: one packed core with an L1 of ``l1_kib``, reaching the
+    off-chip memory through the SRAM of ``sram_kib`` of a memory core, over a link of ``link`` bits a cycle, or directly
+    where there is none."""
+    (tmp_path / "packed.yaml").write_text(_PACKED_CORE.replace("L1_BITS", str(l1_kib * 8192)))
+    (tmp_path / "sram.yaml").write_text(_SRAM_CORE.replace("SRAM_BITS", str(sram_kib * 8192)))
+    staged = _STAGED_CHIP.replace("bandwidth: 256, ends: {l1", f"bandwidth: {link}, ends: {{l1")
+    (tmp_path / "chip.yaml").write_text(staged if sram_kib else _PACKED_CHIP)
+    graph = helper.make_graph(
+        [helper.make_node("Gemm", ["a", "w"], ["out"], name="Gemm")],
+        "g",
+        [
+            helper.make_tensor_value_info("a", TensorProto.INT8, [m, k]),
+            helper.make_tensor_value_info("w", TensorProto.INT8, [k, n]),
+        ],
+        [helper.make_tensor_value_info("out", TensorProto.INT8, [m, n])],
+    )
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "gemm.onnx")
+    return str(tmp_path / "chip.yaml"), str(tmp_path / "gemm.onnx")
+
+
+def _order(tmp_path, m, k, n, l1_kib, sram_kib, nb_cols_to_use=None, link=256) -> list[str]:
+    acc, w = _parse(*_gemm(tmp_path, m, k, n, l1_kib=l1_kib, sram_kib=sram_kib, link=link))
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), nb_cols_to_use=nb_cols_to_use)
+    (sub,) = gen.groups()
+    return [entry["dim"] for entry in gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))]
+
+
+@pytest.mark.parametrize(
+    ("shape", "nb_cols_to_use", "order"),
+    [
+        # a's 256 KiB exceeds the 96 KiB SRAM, so rows outermost read it once instead of once per column tile.
+        ((256, 1024, 4096, 32, 96), None, ["Gemm.D1", "Gemm.D2", "Gemm.D0"]),
+        # Rows innermost keep the 128 x 128 partial sums in the L1, so the 2 MiB of weights are read once.
+        ((128, 2048, 1024, 64, 0), None, ["Gemm.D0", "Gemm.D1", "Gemm.D2"]),
+        # On one column the SRAM's memory core is not the allocation's, so the default order stays.
+        ((256, 1024, 4096, 32, 96), 1, ["Gemm.D1", "Gemm.D0", "Gemm.D2"]),
+        # The tiles passing through the 32 KiB SRAM fill it, so it holds no block of rows: the default order stays.
+        ((128, 512, 8192, 64, 32), None, ["Gemm.D0", "Gemm.D1", "Gemm.D2"]),
+        # Held in the SRAM, a would reach the L1 once per column tile over a link no faster than off chip.
+        ((64, 512, 1024, 16, 32), 2, ["Gemm.D0", "Gemm.D1", "Gemm.D2"]),
+    ],
+    ids=["rows-outermost", "rows-innermost", "one-column", "staging-full", "l1-takes-more"],
+)
+def test_a_tile_loop_order_is_the_one_moving_the_least_data(tmp_path, shape, nb_cols_to_use, order):
+    assert _order(tmp_path, *shape, nb_cols_to_use) == order
+
+
+def test_a_wide_link_from_the_staging_memory_takes_the_rows_outermost(tmp_path):
+    """The last case above with the SRAM's link to the L1 16 times as wide: the L1 takes a again per column tile in
+    less time than a is read from off chip again, so the rows go outermost."""
+    assert _order(tmp_path, 64, 512, 1024, 16, 32, nb_cols_to_use=2, link=4096) == ["Gemm.D1", "Gemm.D2", "Gemm.D0"]
+
+
+def test_a_memory_behind_an_on_chip_buffer_takes_no_more_than_before(tmp_path):
+    """The last case above with a buffer no core uses between the SRAM and the L1, over a link of 64 bits a cycle: the
+    L1 has no link from off chip or a staging memory to time it by, so it may take no more than in the default order,
+    which stays."""
+    chip, gemm = _gemm(tmp_path, 64, 512, 1024, l1_kib=16, sram_kib=32)
+    port = "{bandwidth: 4096, serves: {any: [read, write]}, read_energy: 1, write_energy: 1}"
+    buffer = f"  buf:\n    offchip: false\n    views: []\n    capacity_bits: 8\n    ports: {{rw_port_1: {port}}}\n"
+    text = (
+        open(chip)
+        .read()
+        .replace("  dram:\n", buffer + "  dram:\n", 1)
+        .replace(
+            "  - {type: link, bandwidth: 256, ends: {l1: [r_port_1, w_port_1], sram: [r_port_1, w_port_1]}}\n",
+            "  - {type: link, bandwidth: 64, ends: {l1: [r_port_1, w_port_1], buf: [rw_port_1]}}\n"
+            "  - {type: link, bandwidth: 4096, ends: {buf: [rw_port_1], sram: [r_port_1, w_port_1]}}\n",
+        )
+    )
+    with open(chip, "w") as f:
+        f.write(text)
+    acc, w = _parse(chip, gemm)
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), nb_cols_to_use=2)
+    (sub,) = gen.groups()
+    order = [entry["dim"] for entry in gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))]
+    assert order == ["Gemm.D0", "Gemm.D1", "Gemm.D2"]
+
+
+def test_more_tiled_dims_than_are_ordered_keep_the_default_order(tmp_path, monkeypatch):
+    """The first case above with fewer loops ordered than it tiles: the default order, from the dim indexing the least
+    data to the most."""
+    monkeypatch.setattr(CapacityTiler, "MAX_ORDERED_LOOPS", 2)
+    assert _order(tmp_path, 256, 1024, 4096, 32, 96) == ["Gemm.D1", "Gemm.D0", "Gemm.D2"]
+
+
+def test_a_reduction_feeding_the_next_node_stays_innermost(tmp_path):
+    """Two matmuls fused, the first's 2048-long contraction tiled: the second reads only finished rows of its output,
+    so that contraction stays inside every other loop, the second's own contraction too."""
+    (tmp_path / "packed.yaml").write_text(_PACKED_CORE.replace("L1_BITS", str(16 * 8192)))
+    (tmp_path / "chip.yaml").write_text(_PACKED_CHIP)
+    nodes = [
+        helper.make_node("Gemm", ["a", "w1"], ["h"], name="G1"),
+        helper.make_node("Gemm", ["h", "w2"], ["out"], name="G2"),
+    ]
+    shapes = {"a": [64, 2048], "w1": [2048, 256], "w2": [256, 512]}
+    graph = helper.make_graph(
+        nodes,
+        "g",
+        [helper.make_tensor_value_info(name, TensorProto.INT8, shape) for name, shape in shapes.items()],
+        [helper.make_tensor_value_info("out", TensorProto.INT8, [64, 512])],
+    )
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "chain.onnx")
+    acc, w = _parse(str(tmp_path / "chip.yaml"), str(tmp_path / "chain.onnx"))
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    (sub,) = gen.groups(cut_points=[])
+    tiling = gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))
+    assert [entry["dim"] for entry in tiling] == ["G1.D1", "G1.D2", "G2.D2", "G1.D0"]
+
+
+_GIVEN = [{"dim": "Gemm.D1", "tile": 64}, {"dim": "Gemm.D0", "tile": 32}, {"dim": "Gemm.D2", "tile": 128}]
+
+
+@pytest.mark.parametrize("given_by", ["stage_option", "mapping"])
+def test_a_given_intra_core_tiling_keeps_its_loop_order(tmp_path, given_by):
+    """A lock on the order of a given tiling: the rows looped inside the columns, worse than outermost on this chip
+    (the first case above), as given, so the steady state walks the contraction's 16 tiles innermost, then the rows'
+    8, then the columns' 32."""
+    chip, gemm = _gemm(tmp_path, 256, 1024, 4096, l1_kib=32, sram_kib=96)
+    mapping = None
+    if given_by == "mapping":
+        mapping = str(tmp_path / "mapping.yaml")
+        group = {"name": "g", "layers": ["Gemm"], "intra_core_tiling": _GIVEN}
+        layer = {"name": "Gemm", "core_allocation": [[0]]}
+        with open(mapping, "w") as f:
+            yaml.safe_dump({"layers": [layer], "fused_groups": [group]}, f)
+    stage_options = {"intra_core_tiling": _GIVEN} if given_by == "stage_option" else {}
+    options = SolveOptions(nb_cols_to_use=2, artifacts=False, stage_options=stage_options)
+    ctx = evaluate_mapping(chip, gemm, str(tmp_path / "out"), mapping, options).context
+    (reuse, *_) = ctx.get("allocation").solution.performance["tensor_reuse"]
+    temporal = [int(loop.split(",")[1]) for loop in reuse["loop_nest_out_to_in"] if loop.startswith("T(")]
+    assert temporal[::-1] == [16, 8, 32]
+
+
+def test_a_weight_placed_on_chip_takes_its_room_from_the_tiles(tmp_path):
+    """A 256 KiB weight placed in the 288 KiB L1 for the whole run leaves 32 KiB: the tiles are cut to fit beside it,
+    where sized for the whole L1 they overflowed what is left."""
+    chip, gemm = _gemm(tmp_path, 16, 4096, 64, l1_kib=288)
+    placement = tmp_path / "placement.yaml"
+    placement.write_text(yaml.safe_dump({"runtime_args": {"w": {"placement": {"memories": ["l1"]}}}}))
+    options = SolveOptions(nb_cols_to_use=1, artifacts=False)
+    estimate = evaluate_mapping(chip, gemm, str(tmp_path / "out"), str(placement), options)
+    assert estimate.cycles > 0
+
+
+def test_a_weight_placed_in_the_l1_is_read_there_in_place(tmp_path):
+    """With the 1 MiB weight placed in the 1056 KiB L1 for the whole run, holding it moves nothing: the rows go
+    outermost so a is read once, not once per block of columns."""
+    acc, w = _parse(*_gemm(tmp_path, 512, 512, 2048, l1_kib=1056))
+    runtime_args = {"w": {"placement": {"memories": ["l1"]}}}
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), runtime_args=runtime_args, nb_cols_to_use=1)
+    (sub,) = gen.groups()
+    order = [entry["dim"] for entry in gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes()))]
+    assert order == ["Gemm.D2", "Gemm.D0"]
+
+
+def test_a_weight_placed_in_part_in_the_l1_takes_and_moves_the_rest_there(tmp_path):
+    """Half of the 64 KiB weight placed in the L1 saves its tile there half of what all of it placed saves, held or
+    moved."""
+    acc, w = _parse(*_gemm(tmp_path, 64, 256, 256, l1_kib=1056))
+    (cn,) = w.get_computation_nodes()
+    cores = {cn: [acc.get_core(0)]}
+    resident = {w.leading_dim(d)[0]: w.get_dimension_size(d) for d in w.get_dims(cn)}
+
+    def saved(share: float) -> tuple[float, float]:
+        tilers = (CapacityTiler(w, acc), CapacityTiler(w, acc, on_chip={"l1": {"w": share * 256 * 256 * 8}}))
+        held = [tiler.memory_bits((cn,), cores, {}, resident)["l1"] for tiler in tilers]
+        moved = [tiler._moved((cn,), cores, {}, resident, None, [], {"l1": 2**30})["l1"] for tiler in tilers]
+        return held[0] - held[1], moved[0] - moved[1]
+
+    assert saved(0.5) == (saved(1)[0] / 2, saved(1)[1] / 2)
+
+
+def test_each_output_of_a_node_with_several_is_placed_by_the_bridge_carrying_it(tmp_path, monkeypatch):
+    """A node writing out and a: each reaches the next group over a bridge named after it, placed apart."""
+    acc, w = _parse(*_gemm(tmp_path, 64, 256, 256, l1_kib=1056))
+    (cn,) = w.get_computation_nodes()
+    a, _, out = cn.tensors
+    monkeypatch.setattr(w, "get_computation_nodes", lambda: [SimpleNamespace(name="Gemm", outputs=(out, a))])
+    runtime_args = {f"{t.name}_bridge_out": {"placement": {"memories": ["l1"]}} for t in (out, a)}
+    gen = GenericMappingGenerator(acc, w, str(tmp_path / "gen"), runtime_args=runtime_args)
+    assert gen._on_chip == {"l1": {"out": whole_bits(out), "a": whole_bits(a)}}

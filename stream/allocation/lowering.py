@@ -9,7 +9,6 @@ from itertools import combinations, count
 from math import ceil, prod
 from typing import cast
 
-import networkx as nx
 import numpy as np
 from xdsl.ir.affine import AffineMap
 
@@ -99,13 +98,13 @@ def lower_steady_state(  # noqa: PLR0913
     cost_lut: CoreCostLUT,
     nb_cols_to_use: int,
     route_alternatives: int,
-    offchip_held: dict[Memory, dict[Tensor, float]] | None = None,
+    held: dict[Memory, dict[Tensor, float]] | None = None,
 ) -> AllocationProblem:
     """The steady-state problem of ``workload`` (one fused group) mapped by ``mapping`` on ``accelerator``, each
-    placement of a transfer offered up to ``route_alternatives`` routes, beside what the off-chip memories hold
-    already (:attr:`AllocationProblem.offchip_held`)."""
+    placement of a transfer offered up to ``route_alternatives`` routes, beside what the memories hold already
+    (:attr:`AllocationProblem.held`)."""
     lowering = _Lowering(workload, accelerator, mapping, nb_cols_to_use, route_alternatives)
-    return replace(lowering.lower(fusion_splits, cost_lut), offchip_held=offchip_held or {})
+    return replace(lowering.lower(fusion_splits, cost_lut), held=held or {})
 
 
 class _Lowering:
@@ -247,17 +246,13 @@ class _Lowering:
         return node_mapping.resource_allocation, tuple(map(str, index)), tiles
 
     def _stages_on_mem_tile(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs]) -> bool:
-        """Whether a transfer is staged in a memory tile instead of landing straight on the cores.
-
-        Two things ask for a staging buffer. An offchip input, or an output the next fused group reads, is held in
-        the tile, which keeps the fan-out off the shim's two DMA channels: one channel feeds the tile, which then
-        serves every core from its own. And a producer and consumer that disagree on layout need the
-        tensor re-laid out between them, which is the tile's other job.
-        """
+        """Whether a transfer is staged in a memory tile: an off-chip input or an output the next group reads, keeping
+        the fan-out off the shim's two DMA channels, or a tensor re-laid out between producer and consumer. One placed
+        on chip is not."""
         if not self._mem_tiles():
             return False
-        if isinstance(src, InEdge) or any(isinstance(dst, OutEdge) for dst in dsts):
-            return True
+        if edges := [node for node in (src, *dsts) if isinstance(node, InEdge | OutEdge)]:
+            return not all(self._placed_on_chip(edge) for edge in edges)
         produced = self._declared_layout(src, tensor)
         if produced is None:
             return False
@@ -277,6 +272,10 @@ class _Lowering:
             return None
         index = operands.index(tensor)
         return layouts[index] if index < len(layouts) else None
+
+    def _placed_on_chip(self, edge: InEdge | OutEdge) -> bool:
+        """Whether the mapping places ``edge``'s tensor on chip."""
+        return (placement := self.mapping.placement_of(edge)) is not None and placement.on_chip
 
     def update_destination_node_inputs(self, tensor, src, new_nodes, dst, updated_tensor):
         # Find corresponding node in new_nodes as it might have already been updated
@@ -457,9 +456,11 @@ class _Lowering:
             assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
             return (self._target_placement(dsts[0], node),)
         if node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
+            if any(isinstance(dst, OutEdge) for dst in dsts):
+                return (self._landing(dsts, src),)
             staged = self._mem_tile_placements(src, node)
             # No on-chip memory tiles: the copy lands off-chip.
-            return staged or (self._offchip_landing(dsts, src),)
+            return staged or (self._landing(dsts, src),)
         readers = []
         for dst in dsts:
             # An output edge is read off chip, by no core.
@@ -637,15 +638,15 @@ class _Lowering:
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
     def _destination_memories(self, dst: HasInputs, tensor: Tensor, src: HasOutputs) -> tuple[Memory, ...]:
-        """The memories ``dst`` reads ``tensor`` from ``src`` in: off-chip for an output edge (see
-        :meth:`_offchip_landing`), else the memory each of the computation's cores reads it in."""
+        """The memories ``dst`` reads ``tensor`` from ``src`` in: where an output edge's copy lands (see
+        :meth:`_landing`), else the memory each of the computation's cores reads it in."""
         if isinstance(dst, OutEdge):
-            return self._offchip_landing((dst,), src)
+            return self._landing((dst,), src)
         assert isinstance(dst, ComputationNode), f"Unexpected destination node type: {type(dst)}"
         return self._reads_in(dst, tensor)
 
-    def _offchip_landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
-        """The off-chip memories a copy of ``src``'s output lands in, one per position, beside the cores making it."""
+    def _landing(self, dsts: Sequence[HasInputs], src: HasOutputs) -> tuple[Memory, ...]:
+        """The memories a copy of ``src``'s output lands in, one per position (:func:`landing_of`)."""
         edge = next((d for d in dsts if isinstance(d, OutEdge) and d.name in self.mapping.edge_placements), None)
         while edge is None and isinstance(src, TransferNode):
             src = next(iter(self.ssw.predecessors(src)))
@@ -772,14 +773,9 @@ class _Lowering:
     def _reaches_every_core(self, tile: Memory, src: HasOutputs, node: TransferNode) -> bool:
         """Whether ``node``'s copy in ``tile`` has a route over on-chip memories to a memory of each of ``src``'s
         cores, or from one for an output transfer."""
-        on_chip = nx.subgraph_view(self.accelerator.network, filter_node=lambda memory: not memory.offchip)
-        gathers = node.transfer_type is TransferType.COMPUTE_TO_MEM
-        reached = (nx.ancestors if gathers else nx.descendants)(on_chip, tile) | {tile}
         allocations = self.mapping.get(src).resource_allocation
-        return all(
-            any(memory in reached for memory in self.accelerator.memories_of(core))
-            for core in (allocations[0] if allocations else ())
-        )
+        gathers = node.transfer_type is TransferType.COMPUTE_TO_MEM
+        return self.accelerator.reaches(tile, allocations[0] if allocations else (), gathers=gathers)
 
     def _each_column_reads_whole(self, dst: HasOutputs, node: TransferNode) -> bool:
         """Whether in every column ``dst`` runs in, its cores read every tile of ``node``'s tensor between them, so a

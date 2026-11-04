@@ -480,6 +480,11 @@ class AIECodeGenerationStage(Stage):
         workload: Workload = self.ctx.get("workload")
         assert workload is not None
         mapping = self.ctx.get("allocation").mapping
+        if on_chip := [name for name, placement in mapping.edge_placements.items() if placement.on_chip]:
+            raise ValueError(
+                f"{on_chip} are placed on chip, but the AIE runtime sequence brings every input in from off chip and "
+                "takes every output out: place them off chip to generate code"
+            )
         self.context.bindings = Bindings(self.npu)
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
             self.context.registered_kernels[kernel.unique_name] = kernel

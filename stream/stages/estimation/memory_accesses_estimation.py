@@ -101,8 +101,11 @@ class MemoryAccessesEstimationStage(Stage):
             # Get the source core allocation
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
+            if isinstance(src, InEdge) and (placement := self.mapping.placement_of(src)) and placement.on_chip:
+                self._add_on_chip(tn, src, t_core, READ, nb_fires)
+                continue
             if isinstance(src, InEdge):
-                for memory, bits in self._offchip_bits(tn, src, t_core, READ):
+                for memory, bits in self._edge_bits(tn, src, t_core, READ):
                     accesses = ceil(bits / self.accelerator.offchip_rate(memory, READ)) * nb_fires
                     self.core_memory_accesses.add_offchip_read(memory, t_core, accesses)
                 continue
@@ -153,8 +156,11 @@ class MemoryAccessesEstimationStage(Stage):
             # Get the destination core allocation
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
+            if isinstance(dst, OutEdge) and (placement := self.mapping.placement_of(dst)) and placement.on_chip:
+                self._add_on_chip(tn, dst, t_core, WRITE, nb_fires)
+                continue
             if isinstance(dst, OutEdge):
-                for memory, bits in self._offchip_bits(tn, dst, t_core, WRITE):
+                for memory, bits in self._edge_bits(tn, dst, t_core, WRITE):
                     accesses = ceil(bits / self.accelerator.offchip_rate(memory, WRITE)) * nb_fires
                     self.core_memory_accesses.add_offchip_write(memory, t_core, accesses)
                 continue
@@ -166,20 +172,31 @@ class MemoryAccessesEstimationStage(Stage):
                 total_accesses = accesses_per_fire * nb_fires
                 self.core_memory_accesses.add_write(core, t_core, total_accesses)
 
-    def _offchip_bits(
+    def _add_on_chip(
+        self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str, nb_fires: int
+    ) -> None:
+        """The reads (or writes) of ``tensor`` in each on-chip memory ``edge`` is placed in, its share
+        (:meth:`_edge_bits`), charged to the memory cores viewing it, else to the cores computing from it."""
+        add = self.core_memory_accesses.add_read if direction == READ else self.core_memory_accesses.add_write
+        for memory, bits in self._edge_bits(tn, edge, tensor, direction):
+            for core in _memory_tile_cores(((memory,),)) or memory.cores:
+                add(core, tensor, ceil(bits / core.get_max_memory_bandwidth(type=direction)) * nb_fires)
+
+    def _edge_bits(
         self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str
     ) -> list[tuple[Memory, float]]:
-        """Each off-chip memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, with the bits it moves per firing:
-        a split placement's share of what the route delivers over the walk, else its share of the route's data
-        (:meth:`MulticastPathPlan.memory_share`)."""
-        route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
+        """Each memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, off chip or placed on chip, with the bits it
+        moves per firing: a split placement's share of what the route delivers over the walk, else its share of the
+        route's data (:meth:`MulticastPathPlan.memory_share`)."""
         placement = self.mapping.placement_of(edge)
+        on_chip = placement is not None and placement.on_chip
+        route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
         if (shares := self.workload.placement_shares(placement, tn.inputs[0], route.delivered)) is not None:
             return [(memory, tensor.size_bits() * share) for memory, share in shares.items()]
         side = route.sources if leaving else route.targets
         return [
             (memory, tensor.size_bits() * route.memory_share(memory, leaving))
-            for memory in dict.fromkeys(memory for memory in side if memory.offchip)
+            for memory in dict.fromkeys(memory for memory in side if memory.offchip != on_chip)
         ]
 
     def is_leaf(self):

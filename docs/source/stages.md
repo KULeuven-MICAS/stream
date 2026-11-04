@@ -145,18 +145,18 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `AllocationStage` | `allocation_problem`, `output_path`, `backend`, `families`, `time_limit_s`, `solver_log`, `artifacts` | `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
 | `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
-| `FlashDecodingStage` | `accelerator`, `workload`, `output_path` | `mapping_path`, `attention_parts` | `workload`, `runtime_args` |  |  |
+| `FlashDecodingStage` | `accelerator`, `workload`, `output_path` | `mapping_path`, `attention_parts`, `nb_cols_to_use` | `workload`, `runtime_args` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |
 | `FusionAnalysisStage` | `workload` |  | `fusion_edges` |  |  |
-| `FusionGroupIterationStage` | `accelerator`, `output_path`, `sub_workloads`, `sub_mappings` | `memory_accesses` | `workload`, `mapping`, `output_path`, `group_index`, `offchip_held` | `allocation` | `total_latency`, `group_latencies`, `group_columns`, `group_cycles`, `group_wall_times`, `group_allocations`, `group_memory_accesses`, `roofline` |
+| `FusionGroupIterationStage` | `accelerator`, `output_path`, `sub_workloads`, `sub_mappings` | `memory_accesses` | `workload`, `mapping`, `output_path`, `group_index`, `held` | `allocation` | `total_latency`, `group_latencies`, `group_columns`, `group_cycles`, `group_wall_times`, `group_allocations`, `group_memory_accesses`, `roofline` |
 | `FusionProposalStage` | `workload` | `fusion_capacity_elements` | `proposed_fusion_regions` |  |  |
-| `GenericMappingGenerationStage` | `accelerator`, `workload`, `output_path` | `fusion_cut_points`, `intra_core_tiling`, `runtime_args` | `sub_workloads`, `sub_mappings` |  |  |
+| `GenericMappingGenerationStage` | `accelerator`, `workload`, `output_path` | `fusion_cut_points`, `intra_core_tiling`, `runtime_args`, `nb_cols_to_use` | `sub_workloads`, `sub_mappings` |  |  |
 | `KernelStateStage` | `workload`, `mapping` | `placement_alternatives`, `placement_reserves` | `workload`, `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
 | `LeafStage` |  |  |  |  |  |
 | `MemoryAccessesEstimationStage` | `workload`, `accelerator`, `mapping`, `allocation` |  | `memory_accesses` |  |  |
 | `ONNXModelParserStage` | `workload_path`, `output_path` | `artifacts` | `onnx_model`, `workload` |  |  |
 | `PlacementGenerationStage` | `workload`, `mapping`, `accelerator` |  | `mapping`, `placement_alternatives`, `placement_reserves` |  |  |
-| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits`, `nb_cols_to_use`, `route_alternatives` | `offchip_held` | `allocation_problem` |  |  |
+| `SteadyStateLoweringStage` | `workload`, `accelerator`, `mapping`, `cost_lut`, `fusion_splits`, `nb_cols_to_use`, `route_alternatives` | `held` | `allocation_problem` |  |  |
 | `StructuralDedupStage` | `workload` |  | `block_classes` |  |  |
 | `TileSearchStage` | `workload`, `mapping`, `output_path` | `tile_search` | `mapping`, `output_path`, `placement_alternatives`, `placement_reserves` | `allocation` | `output_path` |
 | `TilingGenerationStage` | `workload`, `mapping`, `output_path` | `artifacts` | `workload`, `mapping`, `fusion_splits`, `total_mac_ops` |  |  |

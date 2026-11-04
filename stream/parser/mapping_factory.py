@@ -228,16 +228,19 @@ class MappingFactory:
         return runtime_args
 
     def create_edge_placements(self) -> dict[str, EdgePlacement]:
-        """The off-chip memories each edge with a ``placement`` in its runtime args lives in, split along ``split``."""
+        """The memories each edge with a ``placement`` in its runtime args lives in, split along ``split``: off chip,
+        or on chip for the whole run."""
         placements = {}
         for name, args in self.runtime_args_data.items():
             if (declared := args.get("placement")) is None:
                 continue
             memories = declared["memories"]
-            unknown = [m for m in memories if m not in self.accelerator.memories]
-            if unknown or not all(self.accelerator.memories[m].offchip for m in memories):
-                offchip = [memory.name for memory in self.accelerator.offchip_memories]
-                raise ValueError(f"{name} is placed in {memories}, but the off-chip memories are {offchip}")
+            if unknown := [m for m in memories if m not in self.accelerator.memories]:
+                raise ValueError(
+                    f"{name} is placed in {unknown}, but the memories are {list(self.accelerator.memories)}"
+                )
+            if len({self.accelerator.memories[m].offchip for m in memories}) > 1:
+                raise ValueError(f"{name} is placed in {memories}, off chip and on chip; place it in one or the other")
             placement = EdgePlacement(tuple(self.accelerator.memories[m] for m in memories), declared.get("split"))
             if (
                 isinstance(self.workload.get_node_by_name(name), OutEdge)

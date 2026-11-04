@@ -16,7 +16,6 @@ from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
-from stream.opt.allocation.constraint_optimization.families.memory import MEMORY_CAPACITY
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.workload.steady_state.iteration_space import IterationVariableType
 from stream.workload.utils import is_mac_operator_type
@@ -414,20 +413,24 @@ def tensor_reuse_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
 
 
 def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
-    """Per memory: the bits the solved placement keeps resident against its capacity, largest tensors first."""
-    ledger = ctx.ledger
+    """Per memory: the bits the solved placement keeps resident, with the inputs and outputs placed in it for the whole
+    run, against its capacity, largest tensors first."""
+    ledger, space = ctx.ledger, ctx.space
+    placed = {memory: held for memory, held in space.problem.held.items() if not memory.offchip}
     rows: list[dict[str, Any]] = []
-    for memory, terms in sorted(ledger.memory.items(), key=lambda item: item[0].name):
+    for memory in sorted(ledger.memory.keys() | placed.keys(), key=lambda memory: memory.name):
         per_tensor: dict[str, int] = defaultdict(int)
-        for indicator, bits, tensor_name in terms:
+        for indicator, bits, tensor_name in ledger.memory.get(memory, ()):
             if indicator.X > VAR_THRESHOLD:
                 per_tensor[tensor_name] += bits
+        for tensor, bits in placed.get(memory, {}).items():
+            per_tensor[tensor.name] += int(bits)
         per_tensor = {name: bits for name, bits in per_tensor.items() if bits > 0}
         handed = ledger.handover_bits.get(memory, 0)
         if handed:
             per_tensor["handover"] = handed
         resident = sum(per_tensor.values())
-        capacity = int(ledger.bounds[(MEMORY_CAPACITY, memory)] * 8)
+        capacity = space.memory_capacity_bits(memory)
         rows.append(
             {
                 "memory": memory.name,

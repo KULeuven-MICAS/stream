@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from functools import cached_property
 from typing import Any
 
@@ -127,6 +128,21 @@ class Accelerator:
     def memories_of(self, core: Core) -> tuple[Memory, ...]:
         """Every memory ``core`` sees, one per top-level instance."""
         return tuple(dict.fromkeys(memory for (core_id, _), memory in self._viewed.items() if core_id == core.id))
+
+    def staging_memories(self, nb_cols: int | None = None) -> list[Memory]:
+        """The staging memories (:attr:`Memory.staging`) in the first ``nb_cols`` columns, all where None."""
+        return [
+            memory
+            for memory in self.memories.values()
+            if memory.staging and memory.col_id is not None and (nb_cols is None or memory.col_id < nb_cols)
+        ]
+
+    def reaches(self, memory: Memory, cores: Iterable[Core], *, gathers: bool = False) -> bool:
+        """Whether ``memory`` has a route over on-chip memories to a memory of each of ``cores``, or from one where it
+        ``gathers`` what they write."""
+        on_chip = nx.subgraph_view(self.network, filter_node=lambda other: not other.offchip)
+        reached = (nx.ancestors if gathers else nx.descendants)(on_chip, memory) | {memory}
+        return all(any(other in reached for other in self.memories_of(core)) for core in cores)
 
     @cached_property
     def ports(self) -> PortRegistry:

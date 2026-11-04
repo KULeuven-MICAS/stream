@@ -7,7 +7,7 @@ import yaml
 from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
-from stream.mapping.mapping import offchip_holdings, with_cut_landings
+from stream.mapping.mapping import holdings, with_cut_landings
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 
@@ -108,7 +108,7 @@ def offchip_reads(estimate) -> dict[tuple[str, str], int]:
     return {key: read for key, read in reads.items() if read}
 
 
-def held_once(estimate, held=offchip_holdings):
+def held_once(estimate, held=holdings):
     """``held`` of the step's groups, each tensor crossing a fusion cut counted once where it lands."""
     context = estimate.context
     accelerator, workloads = context.get("accelerator"), context.get("sub_workloads")

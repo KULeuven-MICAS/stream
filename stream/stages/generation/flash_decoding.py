@@ -7,7 +7,7 @@ from typing import Any
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.generic_generator import GenericMappingGenerator
-from stream.mapping.mapping import Mapping, check_offchip_capacity, viewed_placements
+from stream.mapping.mapping import Mapping, check_held_capacity, viewed_placements
 from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_parser import MappingParser
 from stream.stages.context import StageContext
@@ -34,14 +34,14 @@ def _check_input_capacity(accelerator: Accelerator, workload: Workload, runtime_
     inputs = Workload(list(workload.get_in_edges()))
     placed = {edge.name: runtime_args[edge.name] for edge in inputs.get_in_edges() if edge.name in runtime_args}
     placements = MappingFactory({"runtime_args": placed}, inputs, accelerator).create_edge_placements()
-    check_offchip_capacity(accelerator, [inputs], [Mapping(edge_placements=placements)])
+    check_held_capacity(accelerator, [inputs], [Mapping(edge_placements=placements)])
 
 
 class FlashDecodingStage(Stage):
     """Split each attention's sequence into the fewest parts that fit, as ``attention_parts`` sets instead."""
 
     reads = ("accelerator", "workload", "output_path")
-    optional_reads = ("mapping_path", "attention_parts")
+    optional_reads = ("mapping_path", "attention_parts", "nb_cols_to_use")
     writes = ("workload", "runtime_args")
 
     def run(self) -> Generator[StageContext]:
@@ -96,7 +96,11 @@ class FlashDecodingStage(Stage):
     def _generator(self, workload: Workload, declared: dict[str, Any]) -> GenericMappingGenerator:
         runtime_args = viewed_placements(workload, declared) or None
         return GenericMappingGenerator(
-            self.ctx.get("accelerator"), workload, self.ctx.get("output_path"), runtime_args=runtime_args
+            self.ctx.get("accelerator"),
+            workload,
+            self.ctx.get("output_path"),
+            runtime_args=runtime_args,
+            nb_cols_to_use=self.ctx.get("nb_cols_to_use", None),
         )
 
 
