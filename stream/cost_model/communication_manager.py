@@ -90,10 +90,11 @@ class MulticastPathPlan:
 
     def memory_share(self, memory: Memory, leaving: bool) -> float:
         """The share of the delivered data ``memory`` sends (``leaving``) or receives: all of it where it is the only
-        memory on its side."""
-        if set(self.sources if leaving else self.targets) == {memory}:
+        memory on its side, but for off-chip memory sending, a copy per link (:meth:`share_at`)."""
+        links = self.links_at(memory, leaving)
+        if set(self.sources if leaving else self.targets) == {memory} and not (leaving and memory.offchip and links):
             return 1.0
-        return self.share_at(memory, leaving, self.links_at(memory, leaving))
+        return self.share_at(memory, leaving, links)
 
 
 def box_bits(boxes: Iterable[Box], bitwidth: float) -> float:
@@ -282,18 +283,17 @@ class CommunicationManager:
     ) -> dict[Hop, list[DemandItem]]:
         """The hops of a tree from ``source`` to the targets of ``items``, with the items each carries, added to
         ``load``. ``striped`` from off-chip memory, what all the targets it has a link (not a bus) to read enters a part
-        over each."""
+        over each; ``single``, all of it over the one link out of ``source`` that keeps the tree least busy."""
         adjacency = self._adjacency()
+        direct = [(v, link) for v, link in adjacency[source] if not link.members]
+        if entry == "single" and direct:
+            return self._single_entry(source, targets, items, bitwidth, load, direct)
         read: dict[Memory, set[Box]] = {}
         for item in items:
             read.setdefault(targets[item.target], set()).add(item.box)
-        direct = [(v, link) for v, link in adjacency[source] if not link.members]
         entries = sorted({v for v, _ in direct} & read.keys()) if entry == "striped" and source.offchip else []
         common = set.intersection(*(read[entry] for entry in entries)) if len(entries) > 1 else set()
         rest = [item for item in items if item.box not in common]
-        if entry == "single" and direct:
-            first = min(direct, key=lambda edge: (edge[0] not in read, edge[0]))
-            adjacency = adjacency | {source: [first]}
         hops = self._tree(source, targets, rest, bitwidth, load, adjacency) if rest else {}
         for k, entrance in enumerate(entries if common else ()):
             part = [replace(item, box=_part(item.box, len(entries), k)) for item in items if item.box in common]
@@ -302,6 +302,31 @@ class CommunicationManager:
             through_entry = adjacency | {source: [(v, link) for v, link in direct if v == entrance]}
             for hop, carried in self._tree(source, targets, part, bitwidth, load, through_entry, spread=True).items():
                 hops.setdefault(hop, []).extend(carried)
+        return hops
+
+    def _single_entry(  # noqa: PLR0913
+        self,
+        source: Memory,
+        targets: tuple[Memory, ...],
+        items: list[DemandItem],
+        bitwidth: float,
+        load: dict[CommunicationLink, float],
+        direct: list[tuple[Memory, CommunicationLink]],
+    ) -> dict[Hop, list[DemandItem]]:
+        """Of the trees from ``source`` entering over one of the ``direct`` links, the one whose busiest link is busy
+        least, then all its links, added to ``load``."""
+        options = []
+        for v, link in direct:
+            trial = dict(load)
+            with suppress(nx.NetworkXNoPath):
+                entering = self._adjacency() | {source: [(v, link)]}
+                hops = self._tree(source, targets, items, bitwidth, trial, entering)
+                cycles = [trial[used] / used.bandwidth for used in dict.fromkeys(hop[2] for hop in hops)]
+                options.append(((max(cycles, default=0.0), sum(cycles), len(cycles), v), hops, trial))
+        if not options:
+            raise nx.NetworkXNoPath(f"no route from {source} over one link")
+        _, hops, trial = min(options, key=lambda option: option[0])
+        load.update(trial)
         return hops
 
     def _tree(  # noqa: PLR0913

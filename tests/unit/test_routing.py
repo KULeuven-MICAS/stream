@@ -268,6 +268,20 @@ def test_off_chip_memory_reads_a_copy_for_each_link_it_sends_on(tmp_path):
     assert reads(single, accelerator)["dram"] == 1.0
 
 
+def test_the_route_over_one_off_chip_link_enters_over_the_fastest(tmp_path):
+    """Off-chip memory has a slow link to core 0 and a fast one to core 1, so the broadcast enters at core 1."""
+    accelerator = _offchip_fed(tmp_path, 2, [("dram", "m0", 10), ("dram", "m1", 1000), ("m0", "m1", 1300)])
+    plan, _ = accelerator.communication_manager.route(
+        (_memory(accelerator, "dram", OUTPUT),),
+        tuple(_memory(accelerator, core, input_role(1)) for core in (0, 1)),
+        (DemandItem(0, (0,), WHOLE), DemandItem(1, (0,), WHOLE)),
+        16,
+        lambda one, other: False,
+        entry="single",
+    )
+    assert ends(plan) == {("dram", "m1"): 1.0, ("m1", "m0"): 1.0}
+
+
 def test_a_tree_from_off_chip_memory_forwards_what_its_port_would_send_again(tmp_path):
     """Core 1's window overlaps core 0's: over its own fast link the port, four times slower, would send the overlap
     again, so core 0 forwards it all."""
@@ -346,8 +360,9 @@ def test_a_scatter_round_a_ring_searches_once_per_kind_of_target_left(tmp_path, 
     assert len(searches) <= cores + kinds * cores
 
 
-def _solve_pair(tmp_path: Path, between: int, link_energy: float = 0):
-    """A matmul split over the output columns of two cores, each with a narrow link from off-chip memory."""
+def _solve_pair(tmp_path: Path, between: int, link_energy: float = 0, measured: bool = False):
+    """A matmul split over the output columns of two cores, each with a narrow link from off-chip memory, which has a
+    measured bandwidth of its port's width if ``measured``."""
     sram = {f"m{i}": [f"{i}.sram_2MB"] for i in range(2)}
     links = [("m0", "dram", 16), ("m1", "dram", 16), ("m0", "m1", between)]
     path = _hardware(
@@ -358,6 +373,8 @@ def _solve_pair(tmp_path: Path, between: int, link_energy: float = 0):
         yaml.safe_dump([{"type": "link", "memories": [a, b], "bandwidth": w} for a, b, w in links]),
     )
     data = yaml.safe_load(path.read_text()) | {"unit_energy_cost": link_energy}
+    if measured:
+        data["bandwidth"] = {"dram": {"ceiling": 64, "contiguous": 64, "burst": 64}}
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     layer = {"name": "projection", "core_allocation": [[0, 1]], "inter_core_tiling": [[{"dim": "D1", "split": 2}]]}
     mapping = {"layers": [layer], "fused_groups": [{"name": "g", "layers": ["projection"]}]}
@@ -387,6 +404,24 @@ def test_each_link_is_billed_the_bits_it_carries(tmp_path):
         for row in rows:
             bandwidth = 16 if "dram" in row["resource"] else 1024
             assert billed[row["resource"]] == pytest.approx(row["bits_per_iteration"] * 160 / bandwidth)
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_off_chip_memory_is_busy_and_counted_for_a_copy_per_link(tmp_path, measured):
+    """With a slow link between the cores each reads x over its own off-chip link: the port's bits, a measured
+    bandwidth's and the access report all count x twice."""
+    context = _solve_pair(tmp_path, 4, measured=measured).context
+    (x,) = [plan for tr, plan in context.get("allocation").solution.transfer_routes.items() if tr.name == "Transfer(x)"]
+    assert ends(x) == {("dram", "m0"): 1.0, ("dram", "m1"): 1.0}
+    (allocation,) = context.get("group_allocations").values()
+    resource = "dram" if measured else "dram.rw_port_1"
+    (row,) = [row for row in allocation["performance"]["memory_ports"] if row["resource"] == resource]
+    (accesses,) = context.get("group_memory_accesses").values()
+    counted = {entry["tensor"]: entry["read"] + entry["write"] for entry in accesses["offchip"]}
+    x_bits, w_bits, y_bits = 64 * 256 * 16, 256 * 256 * 16, 64 * 256 * 16
+    assert counted == {"x": 2 * x_bits / 64, "w": w_bits / 64, "y": y_bits / 64}
+    assert row["bits_per_iteration"] == 2 * x_bits + w_bits + y_bits
+    assert row["real_cycle"] == row["bits_per_iteration"] / 64
 
 
 def test_cores_in_one_memory_need_no_route(tmp_path):

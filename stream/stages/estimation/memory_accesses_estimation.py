@@ -6,7 +6,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import READ, WRITE
-from stream.mapping.mapping import Mapping, offchip_memory
+from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.node import InEdge, OutEdge, TransferNode, TransferType
@@ -169,11 +169,9 @@ class MemoryAccessesEstimationStage(Stage):
     def _offchip_bits(
         self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str
     ) -> list[tuple[Memory, float]]:
-        """Each off-chip memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, with the bits of it that memory
-        moves per firing: all of them with one off-chip memory, else, for a split placement, its share of what the
-        transfer's route delivers over the iterations walking the split axis, or its share of the route's data."""
-        if len(self.accelerator.offchip_memories) <= 1:
-            return [(offchip_memory(self.accelerator), tensor.size_bits())]
+        """Each off-chip memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, with the bits it moves per firing:
+        a split placement's share of what the route delivers over the walk, else its share of the route's data
+        (:meth:`MulticastPathPlan.memory_share`)."""
         route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
         placement = self.mapping.placement_of(edge)
         if (shares := self.workload.placement_shares(placement, tn.inputs[0], route.delivered)) is not None:

@@ -78,8 +78,8 @@ class SolveOptions:
     allocation solve; a sweep turns them off. ``solver_log`` prints the solver's log, and ``time_limit_s`` bounds each
     allocation solve, after which its best incumbent is taken. ``families`` are the constraint families the allocation
     model is built from, by name or ``{name: options}``; None builds :func:`default_families`. ``route_alternatives`` is
-    how many routes each placement of a transfer is offered: the fastest and others over comparably fast links. The
-    solve picks one.
+    how many routes each placement of a transfer is offered: the fastest and others over comparably fast links, plus
+    the striped and single-link routes from off-chip memory. The solve picks one.
     """
 
     backend: str = "ortools_gscip"
