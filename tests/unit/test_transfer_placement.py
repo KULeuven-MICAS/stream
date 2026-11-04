@@ -1,12 +1,18 @@
 """A transfer's copy lives in the memories its reader reads it from, not in every memory the transfer reaches."""
 
+from dataclasses import replace
+
 import pytest
 from conv_windows import onnx_graph
 from onnx import helper
 from placements import TPU_V7, hardware, solve
 
+from stream.allocation.lowering import _Lowering
 from stream.api import evaluate_mapping
+from stream.datatypes import LayerDim
+from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.opt.allocation.constraint_optimization.space import DecisionSpace
+from stream.stages.parsing.accelerator_parser import parse_accelerator
 from stream.workload.blocks import build_block
 from stream.workload.node import ComputationNode, InEdge, TransferType
 
@@ -119,3 +125,16 @@ def test_a_split_over_two_dims_is_gathered_in_the_memory_tiles_of_its_own_cores(
         ["vmem_0", "vmem_1", "vmem_2", "vmem_3"]
     ]
     assert [[(position[dim], f) for dim, f in tiling] for tiling in placement.inter_core_tiling] == [gathered]
+
+
+@pytest.mark.parametrize(("pairs_by_spatial_index", "gathered"), [(True, [("z3", 2)]), (False, [("z2", 2)])])
+def test_a_gather_pairing_by_spatial_index_splits_its_memory_tiles_along_one_loop(pairs_by_spatial_index, gathered):
+    """Where the code generator pairs by spatial index, as AIE2's object fifos do, a memory tile gathers along one loop
+    of the cores; elsewhere it gathers the block of consecutive cores."""
+    strix = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
+    facts = build_hardware_facts(strix, 8)
+    lowering = object.__new__(_Lowering)
+    lowering.hardware = facts if pairs_by_spatial_index else replace(facts, namespaces=())
+    tiles = tuple(memory for memory in facts.mem_memories if memory.col_id in (6, 7))
+    split = lowering.get_matching_tiling(((LayerDim(2), 4), (LayerDim(3), 2)), tiles)
+    assert [(str(dim), factor) for dim, factor in split] == gathered
