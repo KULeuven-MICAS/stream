@@ -92,7 +92,8 @@ def test_preferring_a_backend_no_one_registered_is_refused(monkeypatch):
     "options, refusal",
     [
         ({"other": {}}, r"unknown core-cost backends \['other'\]"),
-        ({"zigzag": {"level": 1}}, "the 'zigzag' core-cost backend takes no options"),
+        ({"aie": {"level": 1}}, "the 'aie' core-cost backend takes no options"),
+        ({"zigzag": {"level": 1}}, r"core_cost_options\['zigzag'\]: unknown options \['level'\]"),
         ({"counting": {"colour": "red"}}, "unknown option colour"),
     ],
 )

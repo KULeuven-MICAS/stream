@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from math import ceil
 
 import zigzag.mapping.spatial_mapping as zigzag_spatial_mapping
@@ -17,7 +18,15 @@ from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.main import MainStage as _KwargsMainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
-from zigzag.stages.results.reduce_stages import MinimalLatencyStage
+from zigzag.stages.results.reduce_stages import (
+    MinimalEDPStage,
+    MinimalEnergyStage,
+    MinimalLatencyStage,
+    Ranking,
+    cheapest_then_fastest,
+    fastest_then_cheapest,
+    lowest_energy_delay_product,
+)
 
 from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND, CoreCostEntry
 from stream.datatypes import ELEMENT_BITS, LayerDim
@@ -46,19 +55,56 @@ ZigZagMemoryOperandLinks = zigzag_layer_attributes.MemoryOperandLinks
 
 logger = logging.getLogger(__name__)
 
+SPATIAL_MAPPINGS_GENERATED = 8
+SPATIAL_MAPPING_SHORTLIST = 1
+LATENCY_TOLERANCE = 0.02
+"""Mappings this much slower than the fastest still compete on energy."""
+
+
+class MappingObjective(StrEnum):
+    """What a node is mapped for: ``latency``, the fewest steady-state cycles, comparing those within
+    ``LATENCY_TOLERANCE`` of the fastest on energy; ``energy``; or ``edp``, the energy-delay product."""
+
+    LATENCY = "latency"
+    ENERGY = "energy"
+    EDP = "edp"
+
+
+class SpatialMappingSearch(StrEnum):
+    """Which spatial mappings get ZigZag's full temporal search: ``shortlist``, the fullest and the best of the
+    ``nb_spatial_mappings_generated`` fullest by a quick search; ``quick``, only that best, about as fast as
+    ``fullest``; or ``fullest``, the fullest alone."""
+
+    SHORTLIST = "shortlist"
+    QUICK = "quick"
+    FULLEST = "fullest"
+
+
+REDUCE_STAGES = {
+    MappingObjective.LATENCY: MinimalLatencyStage,
+    MappingObjective.ENERGY: MinimalEnergyStage,
+    MappingObjective.EDP: MinimalEDPStage,
+}
+
 
 @dataclass
 class ZigZagCostEstimator:
     workload: Workload
     accelerator: Accelerator
     mapping: Mapping
-    nb_spatial_mappings_generated: int = 1
+    nb_spatial_mappings_generated: int = SPATIAL_MAPPINGS_GENERATED
     temporal_mapping_type: ZigZagTemporalMappingType = ZigZagTemporalMappingType.EVEN
     loma_lpf_limit: int = 8
+    mapping_objective: MappingObjective = MappingObjective.LATENCY
+    spatial_mapping_search: SpatialMappingSearch = SpatialMappingSearch.SHORTLIST
 
     input_operand_names = ["A", "B", "C", "D", "E", "F", "G", "H"]
     loma_show_progress_bar = False
     supported_pr_length = 2
+
+    def __post_init__(self) -> None:
+        self.mapping_objective = MappingObjective(self.mapping_objective)
+        self.spatial_mapping_search = SpatialMappingSearch(self.spatial_mapping_search)
 
     def _affine_binary_op_expr_to_dims_and_coefficients(
         self, expr: AffineBinaryOpExpr
@@ -341,11 +387,8 @@ class ZigZagCostEstimator:
             )
 
     def run_zigzag(self, node: ComputationNode, core: Core) -> CostModelEvaluation:
-        """Run the ZigZag flow to estimate performance of a given node on a core: its best spatial mapping unrolling
-        one loop per array dimension or, where unrolling several fills more of the array, as an array maps an im2col
-        convolution's whole contraction over its rows, the faster of the two. ZigZag ranks spatial mappings by how
-        much of the array they fill, and among those that fill it alike prefers the one spreading over most loops,
-        which can starve an operand of bandwidth; only the cost model tells which of the two is faster."""
+        """The best mapping of ``node`` on ``core`` for ``mapping_objective``, of those unrolling one loop per array
+        dimension and, where several fill more of it, of the mixed ones, as ``spatial_mapping_search`` searches each."""
         logger.info(f"Launching intra-core mapping optimization for {node} -> {core} ...")
         cmes: list[CostModelEvaluation] = []
         failure: Exception | None = None
@@ -362,7 +405,17 @@ class ZigZagCostEstimator:
         if not cmes:
             assert failure is not None
             raise failure
-        return min(cmes, key=self.steady_latency)
+        return min(cmes, key=self.ranking()(cmes))
+
+    def ranking(self) -> Ranking:
+        """How mappings rank for ``mapping_objective``, on the steady latency Stream reports."""
+        match self.mapping_objective:
+            case MappingObjective.LATENCY:
+                return fastest_then_cheapest(self.steady_latency, LATENCY_TOLERANCE)
+            case MappingObjective.ENERGY:
+                return cheapest_then_fastest(self.steady_latency)
+            case MappingObjective.EDP:
+                return lowest_energy_delay_product(self.steady_latency)
 
     @staticmethod
     def steady_latency(cme: CostModelEvaluation) -> float:
@@ -385,11 +438,13 @@ class ZigZagCostEstimator:
     def instantiate_zigzag_flow(self, node: ComputationNode, core: Core, mix: bool = False) -> _KwargsMainStage:
         """Instantiate a runnable ZigZag mainstage, generating spatial mappings that unroll several loops over one
         array dimension if ``mix``."""
+        reduce = REDUCE_STAGES[self.mapping_objective]
+        fullest = self.spatial_mapping_search is SpatialMappingSearch.FULLEST
         main_stage = _KwargsMainStage(
             [  # Initializes the MainStage as entry point
-                MinimalLatencyStage,  # type: ignore
+                reduce,  # type: ignore
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
-                MinimalLatencyStage,  # Reduces all CMEs, returning minimal EDP one
+                reduce,  # Reduces the CMEs of one SM's temporal mappings to the best for the objective
                 TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
@@ -398,8 +453,11 @@ class ZigZagCostEstimator:
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
             temporal_mapping_type=self.temporal_mapping_type,
-            nb_mappings_generated=self.nb_spatial_mappings_generated,
+            nb_mappings_generated=1 if fullest else self.nb_spatial_mappings_generated,
             enable_mix_spatial_mapping_generation=mix,
+            shortlist_size=None if fullest else SPATIAL_MAPPING_SHORTLIST,
+            shortlist_ranking=self.ranking(),
+            shortlist_keeps_fullest=self.spatial_mapping_search is SpatialMappingSearch.SHORTLIST,
         )
         return main_stage
 

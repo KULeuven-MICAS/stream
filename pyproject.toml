@@ -32,9 +32,7 @@ classifiers = [
 ]
 keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", "zigzag", "dse", "design-space-exploration", "machine-learning", "deep-learning", "mapping"]
 dependencies = [
-    "zigzag-dse==3.9.1",
-    # zigzag's mapping validator imports six without declaring it
-    "six",
+    "zigzag-dse==3.10.0",
     "cerberus",
     "ortools>=9.15",
     "pydantic>=2.0,<2.12",

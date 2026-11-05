@@ -125,7 +125,12 @@ def _projection(path, weights_are_parameters: bool):
     return str(path)
 
 
-def _layouts(path, tmp_path):
+FULLEST_SPATIAL_MAPPING = {"core_cost_options": {"zigzag": {"spatial_mapping_search": "fullest"}}}
+"""The MXU's fullest spatial mapping unrolls the contraction over its rows and the outputs' rows over its columns,
+so the weights and the outputs need converting; the search keeps the weights stationary, which needs none."""
+
+
+def _layouts(path, tmp_path, **stage_options):
     spaces = []
     original = copy_layouts.CopyLayouts.__init__
 
@@ -135,7 +140,8 @@ def _layouts(path, tmp_path):
 
     copy_layouts.CopyLayouts.__init__ = record
     try:
-        estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), options=SolveOptions(artifacts=False))
+        options = SolveOptions(artifacts=False, stage_options=stage_options)
+        estimate = evaluate_mapping(TPU_V7, path, str(tmp_path), options=options)
     finally:
         copy_layouts.CopyLayouts.__init__ = original
     space = spaces[-1]
@@ -143,17 +149,31 @@ def _layouts(path, tmp_path):
 
 
 def test_the_mxu_reads_a_matmul_operand_with_its_contraction_innermost(tmp_path):
-    """The MXU unrolls the contraction over its rows, so the weights' contraction axis is what one memory word feeds;
+    """Unrolling the contraction over its rows, the MXU reads the weights' contraction axis from one memory word;
     its output is written along the axis its spatial mapping unrolls widest, here the rows."""
-    _, space, _ = _layouts(_projection(tmp_path / "p.onnx", True), tmp_path)
+    _, space, _ = _layouts(_projection(tmp_path / "p.onnx", True), tmp_path, **FULLEST_SPATIAL_MAPPING)
     node = next(n for n in space.ssc_nodes if n.name == "projection")
     _, w, y = node.tensors
     assert space.layouts.needs(node, w) == {0}
     assert space.layouts.needs(node, y) == {0}
 
 
+def test_the_mxu_loads_stationary_weights_as_a_block_and_writes_along_its_columns(tmp_path):
+    """Holding the weights stationary, the MXU loads a block of them along both axes and needs no conversion; its
+    outputs and inputs run along the columns and the rows it unrolls."""
+    estimate, space, _ = _layouts(_projection(tmp_path / "p.onnx", True), tmp_path)
+    node = next(n for n in space.ssc_nodes if n.name == "projection")
+    x, w, y = node.tensors
+    assert (space.layouts.needs(node, x), space.layouts.needs(node, w), space.layouts.needs(node, y)) == (
+        {1},
+        {0, 1},
+        {1},
+    )
+    assert not [r for r in estimate.context.get("allocation").get_ir()["performance"]["layouts"] if r["converts"]]
+
+
 def test_a_parameter_is_packed_for_its_kernel_and_crosses_no_conversion(tmp_path):
-    estimate, space, transfers = _layouts(_projection(tmp_path / "p.onnx", True), tmp_path)
+    estimate, space, transfers = _layouts(_projection(tmp_path / "p.onnx", True), tmp_path, **FULLEST_SPATIAL_MAPPING)
     weights = [tr for name, tr in transfers.items() if name.startswith("Transfer(w")]
     assert weights
     for tr in weights:
@@ -166,7 +186,7 @@ def test_a_parameter_is_packed_for_its_kernel_and_crosses_no_conversion(tmp_path
 def test_a_host_input_is_converted_by_the_last_dma_that_can_and_in_the_memory_that_costs_nothing(tmp_path):
     """The host hands the weights row-major. VMEM feeds the MXU in place, so the HBM-to-VMEM DMA lays them out for
     the MXU: it reads HBM in long runs, whose 32-byte bursts short runs would waste, and scatters into VMEM."""
-    estimate, space, transfers = _layouts(_projection(tmp_path / "h.onnx", False), tmp_path)
+    estimate, space, transfers = _layouts(_projection(tmp_path / "h.onnx", False), tmp_path, **FULLEST_SPATIAL_MAPPING)
     into_vmem, into_mxu = transfers["Transfer(w)"], transfers["Transfer(w_1)"]
     assert space.layouts.of(into_vmem.inputs[0]) == Layout((0, 1))
     assert space.layouts.of(into_vmem.outputs[0]) == space.layouts.of(into_mxu.outputs[0]) == Layout((1, 0))

@@ -19,6 +19,7 @@ from stream.stages.estimation.core_cost_backends import (
     discover_backends,
     select_backend,
 )
+from stream.stages.estimation.zigzag_cost_estimator import SPATIAL_MAPPINGS_GENERATED
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import ComputationNode, Workload
 
@@ -56,7 +57,9 @@ class CoreCostEstimationStage(Stage):
         self.mapping: Mapping = self.ctx.get("mapping")
         self.loma_lpf_limit = self.ctx.get("loma_lpf_limit")
         self.output_path = self.ctx.get("output_path")
-        self.nb_spatial_mappings_generated: int = self.ctx.get("nb_spatial_mappings_generated", 1)
+        self.nb_spatial_mappings_generated: int = self.ctx.get(
+            "nb_spatial_mappings_generated", SPATIAL_MAPPINGS_GENERATED
+        )
         self.temporal_mapping_type: TemporalMappingType = self.ctx.get("temporal_mapping_type")
         self.fusion_splits: dict = self.ctx.get("fusion_splits", {}) or {}
         self.loma_show_progress_bar: bool = self.ctx.get("loma_show_progress_bar", False)
