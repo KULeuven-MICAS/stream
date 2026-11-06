@@ -12,7 +12,7 @@ from zigzag.hardware.architecture.memory_port import DataDirection
 from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.hardware.architecture.backends.zigzag import ZIGZAG_DIRECTION_NAMES, operand_role
 from stream.plugins import load_group
-from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
+from stream.stages.estimation.zigzag_cost_estimator import MappingObjective, SpatialMappingSearch, ZigZagCostEstimator
 
 if TYPE_CHECKING:
     from zigzag.mapping.temporal_mapping import TemporalMappingType
@@ -150,7 +150,24 @@ class ZigZagBackend:
             temporal_mapping_type=context.temporal_mapping_type,
             loma_lpf_limit=context.loma_lpf_limit,
             nb_spatial_mappings_generated=context.nb_spatial_mappings_generated,
+            **self.options(context.core_cost_options.get(self.name, {})),
         )
+
+    def cache_identity(self, options: abc.Mapping[str, Any]) -> dict[str, str]:
+        return {name: str(value) for name, value in self.options(options).items()}
+
+    @staticmethod
+    def options(options: abc.Mapping[str, Any]) -> dict[str, Any]:
+        """``mapping_objective`` (``latency``, ``energy`` or ``edp``) and ``spatial_mapping_search`` (``shortlist``,
+        ``quick`` or ``fullest``), with their defaults."""
+        if unknown := sorted(set(options) - {"mapping_objective", "spatial_mapping_search"}):
+            raise ValueError(f"core_cost_options['zigzag']: unknown options {unknown}")
+        return {
+            "mapping_objective": MappingObjective(options.get("mapping_objective", MappingObjective.LATENCY)),
+            "spatial_mapping_search": SpatialMappingSearch(
+                options.get("spatial_mapping_search", SpatialMappingSearch.SHORTLIST)
+            ),
+        }
 
     def contiguous_axes(self, entry: CoreCostEntry) -> ContiguousAxes:
         """Per operand, the axes its spatial mapping unrolls widest over the array: one memory word feeds the units
