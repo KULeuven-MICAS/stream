@@ -54,7 +54,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,accelforge]"
+          python -m pip install --no-deps "accelforge @ git+https://github.com/Accelergy-Project/accelforge.git@bfc12161157912bea8bdb0cab58d15cee1323431"
 
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short -m "not slow"

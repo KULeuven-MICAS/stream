@@ -60,6 +60,29 @@ exact = ["islpy"]
 # torch.export frontend (stream/frontends/torch_export.py). Optional: the conversion is torch-free and
 # unit-tested without it; torch is only needed to lower a real ExportedProgram. Heavy, so opt-in.
 torch = ["torch>=2.4"]
+# AccelForge core-cost backend (stream/stages/estimation/accelforge/). AccelForge itself cannot be listed: its own
+# requirements include hwcomponents-cacti (HP CACTI licence, no sale for compensation), -neurosim (CC BY-NC 4.0) and
+# -library (needs both), none of which the backend uses. This extra lists what AccelForge imports; AccelForge itself
+# is installed with --no-deps (docs/source/accelforge.md).
+accelforge = [
+    "numpy>=2.2.0",
+    "pandas>=2.2.0",
+    "tqdm>=4.67.0",
+    "pydantic_core>=2.33.0",
+    "ruamel.yaml>=0.18.0",
+    "islpy>=2025",
+    "jinja2>=3.1.0",
+    "sympy>=1.14.0",
+    "symengine>=0.14.0",
+    "numba>=0.61.2",
+    "matplotlib>=3.10.0",
+    "plotly>=6.1.0",
+    "pydot>=4.0.0",
+    "platformdirs>=4.3.0",
+    "joblib>=1.5.1",
+    "requests>=2.33.1",
+    "hwcomponents==1.0.114",
+]
 dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest", "pytest-timeout", "hypothesis"]
 # The AIE codegen dialects (xdsl-aie, snax-mlir) cannot be an extra: they are direct-reference
 # (git) installs that PyPI forbids in package metadata. Install them after `pip install stream-dse`
@@ -89,6 +112,8 @@ timing = "stream.profiling:TimingInstrumentation"
 [project.entry-points."stream.core_cost_backends"]
 aie = "stream.stages.estimation.core_cost_backends:AIE_BACKEND"
 zigzag = "stream.stages.estimation.core_cost_backends:ZIGZAG_BACKEND"
+# Never chosen by the priority rule (priority -10): SolveOptions(stage_options={"core_cost_backend": "accelforge"}).
+accelforge = "stream.stages.estimation.accelforge.backend:ACCELFORGE_BACKEND"
 
 # Code generation backends: the entry-point name is the backend's `name`, its object a CodegenBackend
 # that `claims` the accelerators it emits code for and returns the per-group codegen `stage()`.

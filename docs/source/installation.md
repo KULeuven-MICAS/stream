@@ -41,6 +41,14 @@ pip install -e ".[gurobi]"
 
 The `[gurobi]` extra adds `gurobipy` (a Gurobi license is still required at solve time; see the note below).
 
+**With the AccelForge core-cost backend** (optional - a second per-core cost model beside ZigZag, see [AccelForge core costs](accelforge.md)):
+
+```bash
+pip install -e ".[accelforge]"
+```
+
+then AccelForge itself, without its non-permissive requirements, as [AccelForge core costs](accelforge.md) shows.
+
 **With the AMD AIE toolchain** (only needed for AIE-target MLIR codegen and on-device tracing):
 
 ```bash

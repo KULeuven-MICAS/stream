@@ -73,6 +73,7 @@ nav:
       - Kernel library: kernel_library.md
       - Mapping: mapping.md
       - Stages: stages.md
+      - AccelForge core costs: accelforge.md
       - Outputs: outputs.md
       - Using an AI agent: ai-agents.md
   - Future Plans: future.md
