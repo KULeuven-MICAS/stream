@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.fuzz.memory_fuzz import run
+from .memory_fuzz import run
 
 
 @pytest.mark.slow
