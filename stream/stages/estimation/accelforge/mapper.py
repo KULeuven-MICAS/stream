@@ -6,11 +6,12 @@ from __future__ import annotations
 import copy
 import math
 import time
-import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
-import stream.stages.estimation.accelforge.library  # noqa: F401
+from stream.stages.estimation.accelforge.library import contained
+
+# isort: split
 from accelforge import Metrics, Spec
 from accelforge.frontend.mapping import Compute, Loop, MappingNode, Nested, Reservation, Spatial, Storage
 from accelforge.frontend.workload import Einsum, TensorAccess, Workload
@@ -55,6 +56,11 @@ def to_workload(einsum: EinsumDescription) -> Workload:
 def map_node(einsum: EinsumDescription, core: Core, memory_order: str, imperfect_spatial_loops: bool) -> MappedNode:
     """The best mapping of ``einsum`` on ``core``. In ``free`` memory order, a node whose free-order template
     AccelForge rejects is mapped again in ``forced`` order."""
+    with contained():
+        return _map(einsum, core, memory_order, imperfect_spatial_loops)
+
+
+def _map(einsum: EinsumDescription, core: Core, memory_order: str, imperfect_spatial_loops: bool) -> MappedNode:
     workload = to_workload(einsum)
     if memory_order == "forced":
         return _mapped(einsum, core, workload, imperfect_spatial_loops, "forced", None)
@@ -114,9 +120,7 @@ def map_best(spec: Spec, imperfect_spatial_loops: bool) -> Mappings:
     ``mapping.svg``."""
     spec.mapper.metrics = Metrics.LATENCY | Metrics.ENERGY
     spec.mapper.explore_imperfect_spatial_loops = imperfect_spatial_loops
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", module=r"accelforge\.")  # its own dependencies' deprecations
-        pareto = map_workload_to_arch(spec, eval_in_detail=False, print_progress=False)
+    pareto = map_workload_to_arch(spec, eval_in_detail=False, print_progress=False)
     if len(pareto) == 0:
         raise ValueError("AccelForge found no valid mapping")
     totals = pareto.data
@@ -127,11 +131,7 @@ def map_best(spec: Spec, imperfect_spatial_loops: bool) -> Mappings:
     detailed = copy.deepcopy(spec)
     detailed.model.metrics = detailed.mapper.info_metrics
     detailed.mapping = pareto.mapping(best)
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", module=r"accelforge\.")
-        return evaluate_mapping(
-            detailed, flattened_arches=pareto.flattened_arches, evaluated_specs=pareto.evaluated_specs
-        )
+    return evaluate_mapping(detailed, flattened_arches=pareto.flattened_arches, evaluated_specs=pareto.evaluated_specs)
 
 
 def _einsum_path(nodes: Sequence[MappingNode], einsum: str) -> list[MappingNode]:

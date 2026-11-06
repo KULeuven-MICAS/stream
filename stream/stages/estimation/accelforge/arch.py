@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import stream.stages.estimation.accelforge.library  # noqa: F401
+
+# isort: split
 from accelforge import Spec
 from accelforge.frontend.arch import Action, Arch, Compute, Container, Memory, Spatial, TensorHolderAction, Tensors
 from stream.datatypes import ELEMENT_BITS

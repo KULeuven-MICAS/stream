@@ -97,15 +97,21 @@ def test_its_cached_entries_are_reused_with_the_same_options_and_repriced_with_o
     assert {e.metadata["memory_order"] for e in _entries(stage).values()} == {"forced"}
 
 
-IMPORT = """
+MAP_IN_A_FRESH_PROCESS = """
 import logging, os, sys, warnings
-state = lambda: (list(logging.root.handlers), list(warnings.filters), dict(os.environ))
+sys.path.insert(0, "tests/unit/accelforge")
+from cores import example_core, matmul
+state = lambda: (list(logging.root.handlers), logging.root.level, list(warnings.filters), dict(os.environ))
 before = state()
-import stream.stages.estimation.accelforge.mapper
+from stream.stages.estimation.accelforge.mapper import map_node
+from stream.stages.estimation.accelforge.workload import describe
+map_node(describe(matmul(), (64, 64, 64)), example_core("tpu_like"), "free", False)
 print("accelforge" in sys.modules, state() == before)
 """
 
 
-def test_importing_accelforge_leaves_logging_warnings_and_the_environment_as_they_were():
-    result = subprocess.run([sys.executable, "-c", IMPORT], capture_output=True, text=True, cwd=REPO, check=True)
+def test_accelforge_leaves_logging_warnings_and_the_environment_as_they_were_after_mapping():
+    result = subprocess.run(
+        [sys.executable, "-c", MAP_IN_A_FRESH_PROCESS], capture_output=True, text=True, cwd=REPO, check=True
+    )
     assert result.stdout.split() == ["True", "True"]
