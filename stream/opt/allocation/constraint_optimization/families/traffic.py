@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from stream.hardware.ports import READ, WRITE, Port, PortKey
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
-from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
+from stream.stages.estimation.core_cost_backends import discover_backends, entry_backend, port_traffic
 from stream.workload.workload import ComputationNode, InEdge, TransferNode
 
 if TYPE_CHECKING:
@@ -124,13 +124,13 @@ def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
     """The top-level port traffic of each node from its cost backend, on each core it runs on, at a port of the
     memory that core holds the operand in."""
     traffic: list[NodeTraffic] = []
-    backends: dict[Core, CoreCostBackend] = {}
+    backends = discover_backends()
     accelerator = ctx.space.accelerator
     for node in ctx.space.ssc_nodes:
         fraction = active_fraction(node, ctx.space.ssis)
         for core in placed_cores(ctx, node):
-            backend = backends.setdefault(core, select_backend(core))
-            for operand, direction, bits in port_traffic(backend, ctx.space.cost_lut.get_cost(node, core)):
+            entry = ctx.space.cost_lut.get_cost(node, core)
+            for operand, direction, bits in port_traffic(entry_backend(entry, core, backends), entry):
                 port = accelerator.ports.port_for(core, direction, operand, accelerator.memory_holding(core, operand))
                 if port is not None:
                     traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))

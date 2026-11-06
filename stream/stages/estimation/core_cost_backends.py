@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from collections import abc
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from xdsl.ir.affine import AffineDimExpr
 from zigzag.hardware.architecture.memory_port import DataDirection
 
+from stream.cost_model.core_cost import IDEAL_CYCLE_BACKEND
 from stream.hardware.architecture.backends.zigzag import ZIGZAG_DIRECTION_NAMES, operand_role
 from stream.plugins import load_group
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
@@ -25,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 CORE_COST_BACKENDS_GROUP = "stream.core_cost_backends"
 CONTRACT_VERSION = 1
+COST_BACKEND = "cost_backend"
+"""``metadata`` key of the backend a run chose for an entry's core and that backend's cache identity."""
 
 PortTraffic = tuple[tuple[str, str, float], ...]
 ContiguousAxes = tuple[frozenset[int], ...]
@@ -46,6 +50,8 @@ class CoreCostContext(Protocol):
     loma_lpf_limit: int
     nb_spatial_mappings_generated: int
     fusion_splits: dict
+    core_cost_options: abc.Mapping[str, abc.Mapping[str, Any]]
+    """Per backend name, the options the run gives that backend (the ``core_cost_options`` stage option)."""
 
 
 class CoreCostBackend(Protocol):
@@ -62,6 +68,25 @@ class CoreCostBackend(Protocol):
     def make(self, context: CoreCostContext) -> CoreEstimator:
         """Build the estimator, reading whatever it needs from the stage ``context``."""
         ...
+
+
+@runtime_checkable
+class ConfigurableBackend(Protocol):
+    """Optional backend capability: it takes options, and says what besides a node and core decides its entries."""
+
+    def cache_identity(self, options: abc.Mapping[str, Any]) -> Any:
+        """What decides an entry priced with ``options``, such as the options and the model's version. Raises
+        ``ValueError`` for an option it does not take."""
+        ...
+
+
+def cache_identity(backend: CoreCostBackend, options: abc.Mapping[str, Any]) -> Any:
+    """``backend``'s cache identity with ``options``; None for a backend that takes no options."""
+    if isinstance(backend, ConfigurableBackend):
+        return backend.cache_identity(options)
+    if options:
+        raise ValueError(f"the {backend.name!r} core-cost backend takes no options")
+    return None
 
 
 @runtime_checkable
@@ -184,12 +209,19 @@ def discover_backends() -> list[CoreCostBackend]:
     return backends
 
 
-def select_backend(core: Core, backends: list[CoreCostBackend] | None = None) -> CoreCostBackend:
-    """The backend that costs ``core``: highest ``priority`` among those whose ``claims(core)`` is true.
-
-    Ties go to the later registration (an overlay outranks a built-in of equal priority).
-    """
+def select_backend(
+    core: Core, backends: list[CoreCostBackend] | None = None, prefer: str | None = None
+) -> CoreCostBackend:
+    """The backend that costs ``core``: the one named ``prefer`` if it claims ``core``, else the highest ``priority``
+    among those whose ``claims(core)`` is true, ties going to the later registration (an overlay outranks a built-in of
+    equal priority)."""
     candidates = discover_backends() if backends is None else backends
+    if prefer is not None:
+        preferred = _named(prefer, candidates)
+        if preferred is None:
+            raise ValueError(f"unknown core-cost backend {prefer!r}; {_registered(candidates)}")
+        if preferred.claims(core):
+            return preferred
     chosen: CoreCostBackend | None = None
     for backend in candidates:
         if backend.claims(core) and (chosen is None or backend.priority >= chosen.priority):
@@ -201,3 +233,25 @@ def select_backend(core: Core, backends: list[CoreCostBackend] | None = None) ->
             "points are missing -- reinstall the package"
         )
     return chosen
+
+
+def entry_backend(
+    entry: CoreCostEntry, core: Core, backends: list[CoreCostBackend] | None = None
+) -> CoreCostBackend | None:
+    """The backend that priced ``entry``: the one its ``metadata["backend"]`` names (ZigZag for its ideal-cycle
+    fallback), the priority rule's choice for ``core`` when the entry names none, and None for a backend no longer
+    registered."""
+    candidates = discover_backends() if backends is None else backends
+    tag = entry.metadata.get("backend")
+    if tag is None:
+        return select_backend(core, candidates)
+    return _named(ZIGZAG_BACKEND.name if tag == IDEAL_CYCLE_BACKEND else tag, candidates)
+
+
+def _named(name: str, backends: list[CoreCostBackend]) -> CoreCostBackend | None:
+    """The backend called ``name`` registered last, as a later registration wins the priority rule's ties."""
+    return next((b for b in reversed(backends) if b.name == name), None)
+
+
+def _registered(backends: list[CoreCostBackend]) -> str:
+    return "registered: " + ", ".join(sorted({b.name for b in backends}))

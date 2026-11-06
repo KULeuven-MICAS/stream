@@ -29,7 +29,7 @@ The public API functions in `stream/api.py` assemble the right stage list for yo
 6. **`KernelStateStage`** - the state a kernel carries between iterations.
 7. **`TileSearchStage`** - with `tile_search`, price the tile candidates around the mapping's seed, each in its own `[p<placement>_]tile_<index>/` folder, and keep the fastest, whose files it copies into the group's folder.
 8. **`TilingGenerationStage`** - generate the intra-/inter-core tilings for each node.
-9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core.
+9. **`CoreCostEstimationStage`** - estimate per-(node, core) cost through the core-cost backend that claims each core, or through the one the `core_cost_backend` stage option names on the cores it claims (the [AccelForge backend](accelforge.md) is chosen that way), with each backend's `core_cost_options`. A cached entry is reused only when this run chooses the same backend for it, with the same cache identity.
 10. **`SteadyStateLoweringStage`** - lower the group to its steady state (`stream.allocation.lowering`): make the transfers explicit with the placements each may take and up to `route_alternatives` routes per placement, plus the striped and single-link routes from off-chip memory, and fix the iteration spaces and timeslots, as an `AllocationProblem`.
 11. **`AllocationStage`** - build the MILP (`AllocationModel`) for that problem from its [constraint families](#constraint-families) and solve it: decide tensor placement and transfer paths, producing the `Allocation` the context carries as `allocation`.
 12. **`MemoryAccessesEstimationStage`** - estimate memory traffic for the chosen allocation.
@@ -143,7 +143,7 @@ A stage declares the context fields it touches, as tuples of field names on the 
 | `AIECodeGenerationStage` |  | `trace_size`, `trace_max_tiles`, `trace_tiles`, `trace_group`, `npu`, `group_index` |  | `allocation`, `workload`, `accelerator`, `output_path` | `module` |
 | `AcceleratorParserStage` | `accelerator` | `kernel_library`, `output_path`, `artifacts` | `accelerator` |  |  |
 | `AllocationStage` | `allocation_problem`, `output_path`, `backend`, `families`, `time_limit_s`, `solver_log`, `artifacts` | `total_mac_ops` | `allocation`, `workload`, `mapping` |  |  |
-| `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar` | `cost_lut` |  |  |
+| `CoreCostEstimationStage` | `workload`, `accelerator`, `mapping`, `loma_lpf_limit`, `output_path`, `temporal_mapping_type` | `nb_spatial_mappings_generated`, `fusion_splits`, `loma_show_progress_bar`, `core_cost_backend`, `core_cost_options` | `cost_lut` |  |  |
 | `ExpandNormalizationStage` | `workload` |  | `workload` |  |  |
 | `FlashDecodingStage` | `accelerator`, `workload`, `output_path` | `mapping_path`, `attention_parts`, `nb_cols_to_use` | `workload`, `runtime_args` |  |  |
 | `FixedMappingGenerationStage` | `accelerator`, `workload`, `mapping_path` |  | `sub_workloads`, `sub_mappings` |  |  |

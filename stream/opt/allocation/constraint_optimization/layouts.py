@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from stream.cost_model.layout import Layout, Rate, transfer_stream
 from stream.hardware.ports import READ, WRITE
-from stream.stages.estimation.core_cost_backends import contiguous_axes, select_backend
+from stream.stages.estimation.core_cost_backends import contiguous_axes, entry_backend
 from stream.workload.workload import ComputationNode, InEdge, OutEdge, Tensor, TransferNode
 
 if TYPE_CHECKING:
@@ -68,7 +68,8 @@ class CopyLayouts:
         if (found := self._needs.get((node, index))) is None:
             found = frozenset()
             for core in self.space.cost_lut.get_cores(node):
-                axes = contiguous_axes(select_backend(core), self.space.cost_lut.get_cost(node, core))
+                entry = self.space.cost_lut.get_cost(node, core)
+                axes = contiguous_axes(entry_backend(entry, core), entry)
                 if axes:
                     found = axes[index]
                     break
