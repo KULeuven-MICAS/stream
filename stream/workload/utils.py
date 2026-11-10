@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from math import ceil
 from typing import TYPE_CHECKING
 
@@ -49,50 +50,140 @@ def operand_inputs(node: ComputationNode) -> tuple[Tensor, ...]:
     return node.inputs[:2] if is_mac_operator_type(node.type) else node.inputs
 
 
+class UnfinishedReductionUnrollError(NonlinearReductionUnrollError):
+    """Raised when a fused group tiles a dim a node reduces over before a node computed from its output walks it."""
+
+
+@dataclass(frozen=True)
+class UnfinishedReduction:
+    """Why a dim stays whole in a fused group: ``node`` reduces over it at its dim ``position``, nonlinearly, or
+    before ``walkers``, computed from its output, walk it."""
+
+    node: str
+    position: int
+    nonlinear: bool
+    walkers: tuple[str, ...] = ()
+
+
 def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[LayerDim, int]:
-    """
-    Determine the best dimension to fuse the layers on.
-    Currently, we fuse on the dimension with the smallest total size across all layers.
-    """
-    # Go through the defined mapping intra_core_tiling dims and check that they occur for all layers
+    """The number of blocks the fused group's intra-core tiling cuts each of its dims into."""
     assert len(mapping.fused_groups) == 1, "Only single fused group mappings are supported currently."
     fused_group = mapping.fused_groups[0]
-    _, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
-    unique_unrollings_dict = dict(unique_spatial_unrollings)
-    protected = unfinished_reduction_dims(workload)
+    _, largest = collect_spatial_unrollings(workload, mapping)
+    unfinished = unfinished_reductions(workload)
     result = {}
     for dim, tile_size in fused_group.intra_core_tiling:
-        # assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
-        nb_splits, rem = divmod(workload.get_dimension_size(dim), int(tile_size * unique_unrollings_dict.get(dim, 1)))
-        assert rem == 0, (
-            f"Dimension size {workload.get_dimension_size(dim)} not divisible by "
-            f"desired tile size {tile_size * unique_unrollings_dict.get(dim, 1)}"
-        )
-        # Tiling a nonlinear (softmax/layernorm) reduction into blocks needs the online-softmax rewrite.
-        if nb_splits > 1 and dim in protected:
-            raise NonlinearReductionUnrollError(
-                f"Fused group tiles nonlinear-reduction dimension {dim} into {nb_splits} blocks; keep it "
-                f"resident (a normalization reduces over it) or apply the online-softmax rewrite."
-            )
+        nb_splits = fused_tile_splits(workload, fused_group.name, dim, tile_size, largest.get(dim))
+        if nb_splits > 1 and dim in unfinished:
+            raise _unfinished_reduction_error(fused_group.name, dim, nb_splits, unfinished[dim])
         result[dim] = nb_splits
     return result
 
 
+def _unfinished_reduction_error(group: str, dim: LayerDim, blocks: int, why: UnfinishedReduction) -> ValueError:
+    """The refusal of a fused group cutting ``dim`` into ``blocks`` though ``why`` says it must stay whole."""
+    tiles = f"Fused group {group} tiles {dim} into {blocks} blocks, but {why.node}.D{why.position} reduces"
+    if why.nonlinear:
+        return NonlinearReductionUnrollError(
+            f"{tiles} nonlinearly over it (softmax/normalization): keep {dim} whole or apply the online-softmax "
+            "rewrite."
+        )
+    return UnfinishedReductionUnrollError(
+        f"{tiles} over it and {', '.join(why.walkers)}, computed from its output, walk it: each block would read "
+        f"{why.node}'s unfinished reduction. Keep {dim} whole or cut the group after {why.node}."
+    )
+
+
+def checked_core_splits(workload: "Workload", node: "HasIterationSpace", mapping: "Mapping") -> InterCoreTiling:
+    """``node``'s core splits over unique dims; a ValueError names the node, dim, extent and factor of one that does
+    not divide its dim (the steady state has no remainder tiles)."""
+    node_tiling = mapping.get(node).inter_core_tiling
+    splits = workload.get_unique_dims_inter_core_tiling(node, mapping)
+    for (named, factor), (dim, _) in zip(node_tiling[0] if node_tiling else (), splits, strict=True):
+        if (extent := workload.get_dimension_size(dim)) % factor:
+            raise ValueError(
+                f"{node.name} splits {_split_axis(workload, node, named)} over {factor} cores, but the axis it splits, "
+                f"{dim}, has extent {extent}, which {factor} does not divide."
+            )
+    return splits
+
+
+def _split_axis(workload: "Workload", node: "HasIterationSpace", named: LayerDim) -> str:
+    """The axis a mapping names ``node``'s split by, with its own extent and stride where it strides its unique dim."""
+    if named.prefix != "d":
+        return str(named)
+    node_dim = workload.get_dims(node)[named.position]
+    step = abs(workload.leading_dim(node_dim)[1])
+    if step == 1:
+        return f"D{named.position}"
+    return f"D{named.position} (extent {workload.get_dimension_size(node_dim)}, stride {step})"
+
+
+def _check_splits_nest(
+    workload: "Workload",
+    mapping: "Mapping",
+    spatial_unrollings: dict["HasIterationSpace", InterCoreTiling],
+    largest: dict[LayerDim, tuple["HasIterationSpace", int]],
+) -> None:
+    """Refuse a node's core split of a dim that does not divide the largest split of that dim: the smaller split's
+    cores must each take whole groups of the larger's."""
+    for node, splits in spatial_unrollings.items():
+        for dim, factor in splits:
+            splitter, cores = largest[dim]
+            if cores % factor:
+                raise ValueError(
+                    f"{node.name} splits {_named_split(workload, mapping, node, dim)} over {factor} cores and "
+                    f"{splitter.name} splits {_named_split(workload, mapping, splitter, dim)} over {cores}, but "
+                    f"{factor} does not divide {cores}: splits of one dim ({dim}) must nest."
+                )
+
+
+def _named_split(workload: "Workload", mapping: "Mapping", node: "HasIterationSpace", dim: LayerDim) -> str:
+    """The axis the mapping names ``node``'s split of unique ``dim`` by."""
+    named = mapping.get(node).inter_core_tiling[0]
+    unique = workload.get_unique_dims_inter_core_tiling(node, mapping)
+    return next(_split_axis(workload, node, n) for (n, _), (u, _) in zip(named, unique, strict=True) if u == dim)
+
+
+def fused_tile_splits(
+    workload: "Workload", group: str, dim: LayerDim, tile: int, core_split: tuple["HasIterationSpace", int] | None
+) -> int:
+    """The blocks a fused ``tile`` of ``dim``, times its largest ``core_split``, cuts the dim into; a ValueError names
+    the group, dim, tile, splitting node and extent when the product does not divide it."""
+    splitter, cores = core_split or (None, 1)
+    extent = workload.get_dimension_size(dim)
+    blocks, rem = divmod(extent, tile * cores)
+    if rem:
+        split = f" and {splitter.name} splits it over {cores} cores" if splitter is not None else ""
+        raise ValueError(
+            f"Fused group {group} tiles {dim} by {tile}{split}, but its extent {extent} is not a multiple of "
+            f"{tile * cores}."
+        )
+    return blocks
+
+
 def unfinished_reduction_dims(workload: "Workload") -> set[LayerDim]:
     """Global dims a node reduces over that a node computed from its output walks, or a normalization reduces."""
-    protected: set[LayerDim] = set()
+    return set(unfinished_reductions(workload))
+
+
+def unfinished_reductions(workload: "Workload") -> dict[LayerDim, UnfinishedReduction]:
+    """Each of :func:`unfinished_reduction_dims` with why it stays whole: a nonlinear reduction wins over a walked
+    one, else the first node found reducing it."""
+    found: dict[LayerDim, UnfinishedReduction] = {}
     for node in workload.get_iteration_space_nodes():
         node_dims = workload.get_dims(node)
         reduced = {p for p, kind in derive_iterator_types(node).items() if kind is IteratorType.REDUCTION}
-        walked = {
-            d
-            for later in nx.descendants(workload, node)
-            if isinstance(later, ComputationNode)
-            for d in workload.get_dims(later)
-        }
-        protected |= {node_dims[p] for p in reduced if p < len(node_dims) and node_dims[p] in walked}
-        protected |= {node_dims[p] for p in nonlinear_reduction_dims(node) if p < len(node_dims)}
-    return protected
+        later = sorted(
+            (n for n in nx.descendants(workload, node) if isinstance(n, ComputationNode)), key=lambda n: n.name
+        )
+        for p in sorted(p for p in reduced if p < len(node_dims)):
+            if walkers := tuple(n.name for n in later if node_dims[p] in workload.get_dims(n)):
+                found.setdefault(node_dims[p], UnfinishedReduction(node.name, p, False, walkers))
+        for p in sorted(p for p in nonlinear_reduction_dims(node) if p < len(node_dims)):
+            if node_dims[p] not in found or not found[node_dims[p]].nonlinear:
+                found[node_dims[p]] = UnfinishedReduction(node.name, p, True)
+    return found
 
 
 def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload", dim: LayerDim):
@@ -113,7 +204,8 @@ def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload",
 def generate_steady_state_iteration_spaces(
     workload: "Workload", mapping: "Mapping", fusion_splits: dict[LayerDim, int]
 ) -> dict["HasIterationSpace", SteadyStateIterationSpace]:
-    spatial_unrollings, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
+    spatial_unrollings, largest = collect_spatial_unrollings(workload, mapping)
+    unique_spatial_unrollings = [(dim, factor) for dim, (_, factor) in largest.items()]
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)
     iteration_variables = _add_temporal_iteration_variables(iteration_variables, fusion_splits, workload)
     iteration_variables = _insert_kernel_iteration_variables(iteration_variables, workload, unique_spatial_unrollings)
@@ -305,29 +397,26 @@ def _reject_illegal_spatial_unroll(
         check_spatial_unroll_accumulation_free(node, spatial_positions)
 
 
-def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
-    spatial_unrollings: dict[ComputationNode, InterCoreTiling] = {}
+def collect_spatial_unrollings(
+    workload: "Workload", mapping: "Mapping"
+) -> tuple[dict["HasIterationSpace", InterCoreTiling], dict[LayerDim, tuple["HasIterationSpace", int]]]:
+    """Each node's core splits above one, and the largest split of each dim with the first node splitting it so;
+    a ValueError names a split that does not divide its dim or the dim's largest split."""
+    spatial_unrollings: dict[HasIterationSpace, InterCoreTiling] = {}
     for node in workload.get_iteration_space_nodes():
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         # A factor of one spreads nothing: the node then has no spatial variable of that dimension.
-        unrollings = tuple(u for u in workload.get_unique_dims_inter_core_tiling(node, mapping) if u[1] > 1)
+        unrollings = tuple(u for u in checked_core_splits(workload, node, mapping) if u[1] > 1)
         _reject_illegal_spatial_unroll(workload, node, unrollings, node_mapping.kernel is not None)
         spatial_unrollings[node] = unrollings
-
-    unique_spatial_unrollings: list[tuple[LayerDim, int]] = []
-    for unrollings in spatial_unrollings.values():
-        for unrolling in unrollings:
-            # Keep the largest unrolling size for each dimension
-            dim, size = unrolling
-            existing = next((u for u in unique_spatial_unrollings if u[0] == dim), None)
-            if existing is None:
-                unique_spatial_unrollings.append((dim, size))
-            elif size > existing[1]:
-                idx = unique_spatial_unrollings.index(existing)
-                unique_spatial_unrollings.pop(idx)
-                unique_spatial_unrollings.insert(idx, (dim, size))
-    return spatial_unrollings, unique_spatial_unrollings
+    largest: dict[LayerDim, tuple[HasIterationSpace, int]] = {}
+    for node, unrollings in spatial_unrollings.items():
+        for dim, factor in unrollings:
+            if dim not in largest or factor > largest[dim][1]:
+                largest[dim] = (node, factor)
+    _check_splits_nest(workload, mapping, spatial_unrollings, largest)
+    return spatial_unrollings, largest
 
 
 def get_compute_predecessors_successors(tr: TransferNode, workload: "Workload") -> list[ComputationNode]:
