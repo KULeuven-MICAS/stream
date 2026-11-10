@@ -69,7 +69,7 @@ class TileSearchStage(Stage):
             self.mapping = mapping
             try:
                 found = self._search()
-            except RuntimeError as e:
+            except (RuntimeError, ValueError) as e:
                 error = error or e
                 logger.info("Placement %d has no feasible tile", a)
                 continue
@@ -111,6 +111,8 @@ class TileSearchStage(Stage):
                 dead_dims.add(grown_dim)
                 continue
             except (RuntimeError, ValueError, AssertionError) as e:
+                if i == 0 and isinstance(e, ValueError):
+                    raise
                 if i == 0:
                     seed_error = e
                 logger.info("Tile candidate %s failed: %s", tiling, e)
@@ -130,8 +132,7 @@ class TileSearchStage(Stage):
                 best_index = i
                 best_context = StageContext(data=dict(ctxs[0].data))
         if best_context is None:
-            reason = "the allocation solve ran out of time" if timed_out else "none is feasible"
-            raise RuntimeError(f"No tile candidate was priced: {reason}.") from seed_error
+            raise _unpriced(timed_out) from seed_error
         return best_context, best_index, best_latency, len(candidates)
 
     def _finish(self, best_context, best_index, best_latency, n):
@@ -154,3 +155,9 @@ class TileSearchStage(Stage):
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
         return ctxs, ctxs[0].get("allocation").estimated_cycles
+
+
+def _unpriced(timed_out: bool) -> RuntimeError:
+    """The failure of a search that priced no tile candidate."""
+    reason = "the allocation solve ran out of time" if timed_out else "none is feasible"
+    return RuntimeError(f"No tile candidate was priced: {reason}.")
