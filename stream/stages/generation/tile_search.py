@@ -90,16 +90,20 @@ class TileSearchStage(Stage):
         return [candidate for bound, candidate in faster if bound <= last and bound < float("inf")]
 
     def _alternatives(self, gi: int, call: object, mapping: Mapping) -> list[tuple[object, Mapping]]:
-        """Group ``gi`` of ``mapping`` with its staged block, the other operand held, or more output tiles held."""
+        """Group ``gi`` of ``mapping`` with its staged block, the other operand held, more output tiles held, or both of
+        the last two."""
         groups = mapping.fused_groups
         group = groups[gi]
         staged = self._staged(group)
         alternatives = [("staged", staged), ("order", _reordered(group))]
         alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
         extent = self.workload.get_dimension_size
-        alternatives += [("rows", _rows_held(group, f, extent)) for f in GROWTH_FACTORS]
-        if staged is not None:
-            alternatives += [("staged rows", _rows_held(staged, f, extent)) for f in GROWTH_FACTORS]
+        for key, base in (("rows", group), ("staged rows", staged)):
+            if base is None:
+                continue
+            held = [(f, _rows_held(base, f, extent)) for f in GROWTH_FACTORS]
+            alternatives += [(key, rows) for _, rows in held]
+            alternatives += [(f"{key} order", _reordered(rows, 1) if rows else None) for _, rows in held]
         found = []
         for key, alternative in alternatives:
             if alternative is not None:
@@ -240,12 +244,16 @@ class TileSearchStage(Stage):
         return ctxs, ctxs[0].get("allocation").estimated_cycles
 
 
-def _reordered(group: FusedGroup) -> FusedGroup | None:
-    """``group`` with the two tile loops just outside its innermost dim's loops swapped: a memory tile then holds across
-    the inner of the two the operand the other loop indexes. None where no two loops over other dims follow."""
+def _reordered(group: FusedGroup, held: int = 0) -> FusedGroup | None:
+    """``group`` with the two tile loops just outside its innermost dim's loops swapped, the ``held`` innermost loops
+    (the output tiles a core holds) left where they are: a memory tile then holds across the inner of the two the
+    operand the other loop indexes. None where no two loops over other dims follow."""
     tiling = group.intra_core_tiling
-    first = next((i for i, (dim, _) in enumerate(tiling) if dim != tiling[0][0]), len(tiling))
-    if first + 1 >= len(tiling) or tiling[first + 1][0] in (tiling[0][0], tiling[first][0]):
+    if held >= len(tiling):
+        return None
+    inner = tiling[held][0]
+    first = next((i for i, (dim, _) in enumerate(tiling) if i > held and dim != inner), len(tiling))
+    if first + 1 >= len(tiling) or tiling[first + 1][0] in (inner, tiling[first][0]):
         return None
     swapped = (*tiling[:first], tiling[first + 1], tiling[first], *tiling[first + 2 :])
     return replace(group, intra_core_tiling=swapped)
