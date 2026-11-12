@@ -100,3 +100,14 @@
 {"mode": "both", "columns": 4, "per_column": 1, "run": 8192, "adjacent": false, "seconds": 0.007059302879497409, "gb_per_s": 76.0515480302246, "bits_per_cycle": 338.0}
 {"mode": "both", "columns": 8, "per_column": 1, "run": 8192, "adjacent": false, "seconds": 0.014194838935509324, "gb_per_s": 75.6431142951516, "bits_per_cycle": 336.2}
 {"mode": "both", "columns": 8, "per_column": 2, "run": 8192, "adjacent": false, "seconds": 0.03070751391351223, "gb_per_s": 69.9334910031594, "bits_per_cycle": 310.8}
+{"mode": "read", "columns": 8, "per_column": 1, "run": 128, "adjacent": true, "slabs": 1, "seconds": 0.0019442830234766006, "gb_per_s": 34.51599545420176, "bits_per_cycle": 153.4}
+{"mode": "read", "columns": 8, "per_column": 1, "run": 32, "adjacent": true, "slabs": 1, "seconds": 0.0021310439333319664, "gb_per_s": 7.872768710952007, "bits_per_cycle": 35.0}
+{"mode": "read", "columns": 8, "per_column": 1, "run": 64, "adjacent": true, "slabs": 1, "seconds": 0.0018223931547254324, "gb_per_s": 18.41229040670723, "bits_per_cycle": 81.8}
+{"mode": "read", "columns": 8, "per_column": 1, "run": 256, "adjacent": true, "slabs": 1, "seconds": 0.002713241148740053, "gb_per_s": 49.46767376807868, "bits_per_cycle": 219.9}
+{"mode": "read", "columns": 8, "per_column": 1, "run": 512, "adjacent": true, "slabs": 1, "seconds": 0.004983718041330576, "gb_per_s": 53.86248856252146, "bits_per_cycle": 239.4}
+{"mode": "write", "columns": 8, "per_column": 1, "run": 32, "adjacent": true, "slabs": 1, "seconds": 0.0037364689633250237, "gb_per_s": 4.4901258821296945, "bits_per_cycle": 20.0}
+{"mode": "write", "columns": 8, "per_column": 1, "run": 64, "adjacent": true, "slabs": 1, "seconds": 0.003815227188169956, "gb_per_s": 8.794871273732717, "bits_per_cycle": 39.1}
+{"mode": "write", "columns": 8, "per_column": 1, "run": 128, "adjacent": true, "slabs": 1, "seconds": 0.003798075020313263, "gb_per_s": 17.669178107615394, "bits_per_cycle": 78.5}
+{"mode": "write", "columns": 8, "per_column": 1, "run": 256, "adjacent": true, "slabs": 1, "seconds": 0.0038550919853150845, "gb_per_s": 34.8157005101994, "bits_per_cycle": 154.7}
+{"mode": "write", "columns": 8, "per_column": 1, "run": 512, "adjacent": true, "slabs": 1, "seconds": 0.004897386068478227, "gb_per_s": 54.81198587298866, "bits_per_cycle": 243.6}
+{"mode": "read", "columns": 8, "per_column": 1, "run": 128, "adjacent": true, "slabs": 1, "seconds": 0.0019893969874829054, "gb_per_s": 33.73326913745347, "bits_per_cycle": 149.9}

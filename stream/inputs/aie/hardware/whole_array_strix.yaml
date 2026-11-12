@@ -92,9 +92,10 @@ bandwidth:  # bits per cycle at 1.8 GHz, scripts/benchmark/shim_ddr_bandwidth.py
       read: {32: 19.4, 64: 39.6, 128: 66.0, 256: 69.6, 512: 138.6}
       write: {32: 19.8, 64: 39.1, 128: 60.3, 256: 61.7, 512: 125.6}
     adjacent:
-      # adjacent runs: neighbouring channels move neighbouring runs of the same rows, the faster of 8 and 16 channels
-      read: {32: 83.9, 64: 172.7, 128: 246.3, 256: 252.4, 512: 251.5}
-      write: {32: 44.3, 64: 83.3, 128: 147.5, 256: 213.1, 512: 252.8}
+      # adjacent runs: one channel per column, neighbouring channels moving neighbouring runs of one column block of
+      # each row, as a GEMM operand split over the columns is read and written
+      read: {32: 35.0, 64: 81.8, 128: 153.4, 256: 219.9, 512: 239.4}
+      write: {32: 20.0, 64: 39.1, 128: 78.5, 256: 154.7, 512: 243.6}
 reconfiguration:  # fit to measurements/strix_group_runs.json by tests/unit/test_hardware_described_costs.py
   cycles_per_core: 18683
   cycles_per_group: 54934
