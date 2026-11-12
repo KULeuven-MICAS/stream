@@ -43,10 +43,19 @@ class GemmKernel(AIEKernelWithZeroing):
     """The elementwise kernels, by their registry names, the core runs on each output tile once its sum is done, in
     order: the first reads the sum cast to the output's type, each writes the output, and a binary one also reads the
     node's next input after its two operands, at the output tile."""
+    b_col_maj: bool = False
+    """B is stored (n, k), K innermost, as a linear layer holds its weight; mm.cc built with ``B_COL_MAJ`` reads its
+    tile of it in MAC blocks of n by k."""
 
     @property
     def unique_name(self) -> str:
-        return "_".join([f"{self.library_name}_{self.m}_{self.k}_{self.n}", *self.post_ops])
+        return "_".join(
+            [
+                f"{self.library_name}_{self.m}_{self.k}_{self.n}",
+                *(["b_col_maj"] if self.b_col_maj else []),
+                *self.post_ops,
+            ]
+        )
 
     @property
     def SCRATCH_BITS(self) -> int:  # noqa: N802
@@ -89,7 +98,7 @@ class GemmKernel(AIEKernelWithZeroing):
         r, s, t = self.mac["m"], self.mac["k"], self.mac["n"]
         return [
             tiled_layout(self.m, self.k, r, s),
-            tiled_layout(self.k, self.n, s, t),
+            tiled_layout(self.n, self.k, t, s) if self.b_col_maj else tiled_layout(self.k, self.n, s, t),
             *[tiled_layout(self.m, self.n, r, t)] * self.post_op_inputs(),
             tiled_layout(self.m, self.n, r, t),
         ]
@@ -98,7 +107,8 @@ class GemmKernel(AIEKernelWithZeroing):
         """The object file is compiled for one tile, so a mapping that tiles the loop
         differently would read past its operands."""
         assert op.output is not None
-        tiles = ((self.m, self.k), (self.k, self.n), *[(self.m, self.n)] * (self.post_op_inputs() + 1))
+        b = (self.n, self.k) if self.b_col_maj else (self.k, self.n)
+        tiles = ((self.m, self.k), b, *[(self.m, self.n)] * (self.post_op_inputs() + 1))
         for operand, expected in zip(op.inputs, tiles, strict=True):
             shape = tuple(cast(MemRefType[AnyDenseElement], operand.type).get_shape())
             # Leading axes of extent one are the batch index the call is made at.
@@ -117,7 +127,7 @@ class GemmKernel(AIEKernelWithZeroing):
         return "fp32" if self.library is not None and self.spec.binding is not None else None
 
     def binding_options(self) -> dict[str, bool]:
-        return {"accumulate": self.ACCUMULATOR is not None}
+        return {"accumulate": self.ACCUMULATOR is not None} | ({"b_col_maj": True} if self.b_col_maj else {})
 
     def bind(self, call: str, dims: dict[str, int], bindings: Bindings) -> Binding:
         """A post-op's call binds as its own kernel at the output tile."""

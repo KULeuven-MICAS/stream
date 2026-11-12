@@ -32,12 +32,17 @@ def _target(npu: str) -> bool:
     return device.arch is AIEArch.AIE2p
 
 
-def mm(npu: str, m: int, k: int, n: int, bfp16: bool = True, accumulate: bool = False) -> linalg.MatrixKernel:
+def mm(
+    npu: str, m: int, k: int, n: int, bfp16: bool = True, accumulate: bool = False, b_col_maj: bool = False
+) -> linalg.MatrixKernel:
     """mm.cc as IRON's GEMM builds it, its multiplies in bfp16 when ``bfp16`` (``Precision.MEDIUM``), else bf16; where
-    it ``accumulate``s, into a float tile, with the cast of that tile to the bf16 output beside it."""
+    it ``accumulate``s, into a float tile, with the cast of that tile to the bf16 output beside it. ``b_col_maj``
+    reads B stored (n, k)."""
     _target(npu)
     output = np.float32 if accumulate else bfloat16
-    kernel = linalg.mm(m, k, n, bfloat16, output, emulate_bf16_mmul_with_bfp16=bfp16, round_conv_even=True)
+    kernel = linalg.mm(
+        m, k, n, bfloat16, output, b_col_maj=b_col_maj, emulate_bf16_mmul_with_bfp16=bfp16, round_conv_even=True
+    )
     if accumulate:
         kernel.cast = datamovement.convert_copy(m * n)
     return kernel
