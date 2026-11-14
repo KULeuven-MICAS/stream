@@ -14,7 +14,7 @@ from onnx import TensorProto, helper, numpy_helper
 from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
-from stream.hardware.ports import OUTPUT, READ, READ_BY_DATAPATH, WRITE_BY_DATAPATH
+from stream.hardware.ports import OUTPUT, READ, READ_BY_DATAPATH, WRITE, WRITE_BY_DATAPATH
 from stream.ir import AllocationIR
 from stream.opt.allocation.constraint_optimization.families.traffic import _running_sum_traffic
 from stream.parser.accelerator_validator import AcceleratorValidator
@@ -298,15 +298,19 @@ def test_partial_sums_cross_cores_at_the_accumulator_precision(tmp_path):
     assert links - ports["offchip.rw_port_1"] == 3 * 16 * 128 * 32
 
 
-def test_the_cores_read_the_partial_sums_they_send_at_the_accumulator_precision(tmp_path):
+def test_the_cores_read_the_partial_sums_they_send_and_add_at_the_accumulator_precision(tmp_path):
     """Of the split above, the four cores send 3 x 16 x 128 = 6144 partial sums to be added up at the int32
-    accumulator and write the 16 x 128 = 2048 finished sums off chip at bf16: their read ports pass
-    (6144 x 32 + 2048 x 16) / (2048 x 16) = 7 times the bits the reduction delivers."""
+    accumulator and write the 16 x 128 = 2048 finished sums off chip at bf16, (6144 x 32 + 2048 x 16) / (2048 x 16)
+    = 7 times the bits the reduction delivers. The cores receiving the 6144 write them, 6144 x 32 / (2048 x 16) = 6
+    times, and read as many to add each into the sum they hold, 6 times more: their read ports pass 13 times."""
     allocation = _estimated_mlp(TPU_QUAD, _SPLIT_REDUCTION, tmp_path).context.get("allocation")
     (tr, route) = next((tr, r) for tr, r in allocation.solution.transfer_routes.items() if tr.name == "Transfer(Y_1)")
     cores = [memory for memory in route.sources if not memory.offchip]
-    sent = sum(sum(allocation.space.side_ports(tr, route, memory, READ).values()) for memory in cores)
-    assert sent == pytest.approx(7)
+    read, written = (
+        sum(sum(allocation.space.side_ports(tr, route, memory, direction).values()) for memory in cores)
+        for direction in (READ, WRITE)
+    )
+    assert (read, written) == (pytest.approx(13), pytest.approx(6))
 
 
 def _output_traffic(hardware, tmp_path):

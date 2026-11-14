@@ -12,7 +12,7 @@ import networkx as nx
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.hardware.ports import READ
-from stream.workload.demand import Box, DemandItem, box_bits, firing_count, meet, moved_elements
+from stream.workload.demand import Box, DemandItem, box_bits, covered, firing_count, meet, moved_elements
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -64,7 +64,8 @@ class MulticastPathPlan:
         """The share of the delivered data ``memory`` sends over ``links`` (``leaving``) to the targets it serves, or
         receives over them for its own targets: all of a broadcast, the part of a split. Of data it passes on, it
         reads only what it holds as a target itself. Off-chip memory, with no switch, sends a copy per link.
-        With ``copies``, the share of what it delivers to exactly those copies."""
+        With ``copies``, the share of what it delivers to exactly those copies. Partial sums count wherever they
+        arrive or leave."""
         links = frozenset(links)
         key = (memory, leaving, links, copies)
         if (found := self._shares.get(key)) is None:
@@ -75,22 +76,96 @@ class MulticastPathPlan:
         self, memory: Memory, leaving: bool, links: frozenset["CommunicationLink"], copies: tuple[int, ...] | None
     ) -> float:
         """:meth:`share_at`, uncached."""
-        kept = (lambda item: item.copies == copies) if copies is not None else (lambda item: True)
-        boxes: dict[CommunicationLink | None, list[Box]] = {}
+        kept = _kept(copies)
+        boxes: dict[CommunicationLink | int | None, list[Box]] = {}
         if leaving:
             for link, item, parts in self._sent_from(memory):
                 if link in links and kept(item):
                     own = boxes.setdefault(link if memory.offchip else None, [])
                     own += [part for held, part in parts if copies is None or held == copies]
         else:
-            for (_, v, link), demand in zip(self.hops, self.hop_demand, strict=True):
+            for k, ((_, v, link), demand) in enumerate(zip(self.hops, self.hop_demand, strict=True)):
                 if link in links and v is memory:
                     own = boxes.setdefault(None, [])
-                    own += [item.box for item in demand if kept(item) and self.targets[item.target] is memory]
+                    own += [i.box for i in demand if kept(i) and not i.reduce and self.targets[i.target] is memory]
+                    boxes[k] = [item.box for item in demand if kept(item) and item.reduce]
+        return self._of_delivered(sum(box_bits(own, 1) for own in boxes.values()), copies)
+
+    def _of_delivered(self, points: float, copies: tuple[int, ...] | None) -> float:
+        """``points`` of all firings' boxes as a share of the delivered data, or of what is delivered to ``copies``."""
         if (delivered := self._shares.get(("delivered", copies))) is None:
-            delivered = self._shares["delivered", copies] = moved_elements(filter(kept, self.delivered_items))
-        sent = sum(box_bits(own, 1) for own in boxes.values()) / firing_count(self.demand)
-        return sent / delivered if delivered else 0.0
+            delivered = self._shares["delivered", copies] = moved_elements(filter(_kept(copies), self.delivered_items))
+        return points / firing_count(self.demand) / delivered if delivered else 0.0
+
+    def sum_read_share(
+        self, memory: Memory, links: Iterable["CommunicationLink"], copies: tuple[int, ...] | None = None
+    ) -> float:
+        """The share of the delivered data (of ``copies``) read from ``memory`` to add the partial sums arriving over
+        ``links`` into a sum held there: its own or one received before."""
+        links = frozenset(links)
+        key = ("sum_read", memory, links, copies)
+        if (found := self._shares.get(key)) is not None:
+            return found
+        kept = _kept(copies)
+        mine = [i.box for i in self.delivered_items if i.reduce and kept(i) and self._sources_in(i, memory)]
+        added = 0
+        for (_, v, link), demand in zip(self.hops, self.hop_demand, strict=True):
+            if v is memory:
+                arriving = [item.box for item in demand if item.reduce and kept(item)]
+                if link in links:
+                    added += covered(part for box in arriving for held in mine if (part := meet(box, held)))
+                mine += arriving
+        found = self._shares[key] = self._of_delivered(added, copies)
+        return found
+
+    def local_sum_share(
+        self, memory: Memory, links: Iterable["CommunicationLink"], copies: tuple[int, ...] | None = None
+    ) -> float:
+        """The share of the delivered data (of ``copies``) read from ``memory``, and written to it as their sum, to add
+        up the partial sums of one box that several sources there hold: the box once per source past the first, on the
+        links the sum leaves on, or where it is collected there, the first it arrives on."""
+        links = frozenset(links)
+        key = ("local_sum", memory, links, copies)
+        if (found := self._shares.get(key)) is not None:
+            return found
+        kept = _kept(copies)
+        points = 0
+        for item in self.delivered_items:
+            if not (item.reduce and kept(item)) or (extra := self._sources_in(item, memory) - 1) < 1:
+                continue
+            on = (
+                self._partial_sum_links(memory, item, leaving=True)
+                or self._partial_sum_links(memory, item, leaving=False)[:1]
+            )
+            points += extra * covered(part for link, part in on if link in links)
+        found = self._shares[key] = self._of_delivered(points, copies)
+        return found
+
+    def _sources_in(self, item: DemandItem, memory: Memory) -> int:
+        """How many of ``item``'s sources are in ``memory``."""
+        return sum(self.sources[s] is memory for s in item.sources)
+
+    def _partial_sum_links(
+        self, memory: Memory, item: DemandItem, leaving: bool
+    ) -> list[tuple["CommunicationLink", Box]]:
+        """The links of the hops that carry partial sums of ``item`` out of ``memory`` (``leaving``) or into it, each
+        with the part of the box it carries."""
+        return [
+            (link, part)
+            for (u, v, link), demand in zip(self.hops, self.hop_demand, strict=True)
+            if (u if leaving else v) is memory
+            for carried in demand
+            if carried.reduce and (part := meet(carried.box, item.box))
+        ]
+
+    def sum_memories(self) -> tuple[Memory, ...]:
+        """The memories a partial sum is added into by the core owning them: those partial sums arrive in, and those
+        holding several of one box."""
+        arriving = (
+            v for (_, v, _), demand in zip(self.hops, self.hop_demand, strict=True) if any(i.reduce for i in demand)
+        )
+        holding = (m for i in self.delivered_items if i.reduce for m in self.sources if self._sources_in(i, m) > 1)
+        return tuple(dict.fromkeys((*arriving, *holding)))
 
     def _sent_from(self, memory: Memory) -> Sent:
         """Per item ``memory`` sends over a link of the route, the parts it sends with the copies they are for: all of
@@ -108,7 +183,7 @@ class MulticastPathPlan:
         found = self._sent[memory] = []
         for (u, _, link), demand in zip(self.hops, self.hop_demand, strict=True):
             for item in demand if u is memory else ():
-                if any(self.sources[i] is memory for i in item.sources):
+                if item.reduce or any(self.sources[i] is memory for i in item.sources):
                     found.append((link, item, [(item.copies, item.box)]))
                     continue
                 if (passed := parts.get(item.box)) is None:
@@ -116,13 +191,32 @@ class MulticastPathPlan:
                 found.append((link, item, passed))
         return found
 
+    def unique_sent_share(self, memory: Memory, copies: tuple[int, ...] | None = None) -> float:
+        """The share of the delivered data (of ``copies``) ``memory`` sends, each element once whatever the links."""
+        key = ("unique_sent", memory, copies)
+        if (found := self._shares.get(key)) is None:
+            kept = _kept(copies)
+            sent = [
+                p for _, item, parts in self._sent_from(memory) if kept(item) for c, p in parts if copies in (None, c)
+            ]
+            found = self._shares[key] = self._of_delivered(covered(sent), copies)
+        return found
+
     def memory_share(self, memory: Memory, leaving: bool, copies: tuple[int, ...] | None = None) -> float:
         """The share of the delivered data ``memory`` sends (``leaving``) or receives: all of it where it is the only
         memory on its side, but for off-chip memory sending, a copy per link (:meth:`share_at`)."""
         links = self.links_at(memory, leaving)
-        if set(self.sources if leaving else self.targets) == {memory} and not (leaving and memory.offchip and links):
+        alone = set(self.sources if leaving else self.targets) == {memory} and not any(
+            i.reduce for i in self.delivered_items
+        )
+        if alone and not (leaving and memory.offchip and links):
             return 1.0
         return self.share_at(memory, leaving, links, copies)
+
+
+def _kept(copies: tuple[int, ...] | None) -> Callable[[DemandItem], bool]:
+    """Whether an item is delivered to exactly ``copies``; every item where None."""
+    return (lambda item: item.copies == copies) if copies is not None else (lambda item: True)
 
 
 class CommunicationManager:
@@ -365,13 +459,13 @@ class CommunicationManager:
         bitwidth: float,
         load: dict[CommunicationLink, float],
     ) -> dict[Hop, list[DemandItem]]:
-        """Add to ``load`` the links that bring the partial sums ``items`` from their sources to ``target``, adding
-        them up on the way, and return the parts of ``items`` each of their hops carries: a Steiner tree over the
-        reversed links into the target, every link carrying the sum once. Partial sums in one memory are added there.
-        Off-chip memory cannot add, so a sum headed there is completed in one of the on-chip memories next to it; cut
-        into a part per memory holding partial sums, each completed where it then loads the busiest link least and all
-        links least, the reduction becomes a reduce-scatter. A bus adds nothing, so each memory sending over it sends
-        its own sum."""
+        """Add to ``load`` the links that bring the partial sums ``items`` from their sources to ``target``, the cores
+        on the way adding them up, and return the parts of ``items`` each of their hops carries: a Steiner tree over the
+        reversed links into the target, every link carrying the sum once. Partial sums in one memory are added by the
+        core owning it. No core adds in off-chip memory, so a sum headed there is completed in one of the on-chip
+        memories next to it; cut into a part per memory holding partial sums, each completed where it then loads the
+        busiest link least and all links least, the reduction becomes a reduce-scatter. No core adds on a bus, so each
+        memory sending over it sends its own sum."""
         reverse = self._reverse_adjacency()
         holders = [{sources[s] for s in item.sources} - {target} for item in items]
         memories = set().union(*holders)
