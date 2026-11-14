@@ -147,3 +147,14 @@ def test_a_softmax_reduction_is_kept_whole_as_a_nonlinear_reduction_of_the_softm
     for position in softmax.reduction_axes:
         why = reasons[group.get_dims(softmax)[position]]
         assert (why.node, why.position, why.nonlinear) == (softmax.name, position, True)
+
+
+@pytest.mark.parametrize("cores", ["[]", "[[]]"], ids=["no core group", "an empty core group"])
+def test_a_layer_without_cores_is_refused_by_name(cores: str):
+    """Conv2 with no cores and no kernel is not placed by Stream, so the mapping is refused naming it."""
+    mapping = _mapping({"Conv1": 1, "Conv2": 1}, [0], None, "{dim: Conv2.D2, tile: 2}").replace(
+        "- name: Conv2\n  core_allocation: [[0]]", f"- name: Conv2\n  core_allocation: {cores}"
+    )
+    message = "Conv2 has an empty core_allocation: give it at least one group of cores, as in \\[\\[0\\]\\]."
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        _evaluate(_rows(12, 1), mapping)

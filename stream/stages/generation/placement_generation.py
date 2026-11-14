@@ -58,6 +58,12 @@ class PlacementGenerationStage(Stage):
                 alternatives.extend(self._materialize(variant, self._pending_fallbacks))
             self.mapping = declared
             self.ctx.set(mapping=declared, placement_alternatives=alternatives, placement_reserves=reserves)
+        for node in self.workload.get_computation_nodes():
+            allocation = self.mapping.get(node).resource_allocation
+            if not allocation or not all(allocation):
+                raise ValueError(
+                    f"{node.name} has an empty core_allocation: give it at least one group of cores, as in [[0]]."
+                )
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
