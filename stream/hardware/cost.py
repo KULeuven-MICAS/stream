@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,7 @@ from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.utils import is_mac_operator_type
 
 if TYPE_CHECKING:
+    from stream.hardware.architecture.backends.zigzag import OutputBufferUse
     from stream.hardware.architecture.core import Core
     from stream.workload.node import ComputationNode
     from stream.workload.workload import Workload
@@ -26,10 +28,12 @@ __all__ = [
     "HardwareBudgetExceededError",
     "HardwareCostReport",
     "MemoryCost",
+    "RunningSumCall",
     "accumulator_format",
     "assert_within_budget",
     "check_budget",
     "evaluate_bundle_cost",
+    "kept_in_output_buffer",
     "reduced_dims",
     "partial_sum_format",
     "running_sum_bits",
@@ -441,6 +445,61 @@ def running_sum_bits(
     """Bits per element of :func:`running_sum_format`; None where it gives none."""
     found = running_sum_format(workload, node, cores, fused, split)
     return None if found is None else ELEMENT_BITS[found]
+
+
+@dataclass(frozen=True)
+class RunningSumCall:
+    """A call of ``node`` on each of its ``cores``: ``elements`` outputs on a core, the ``tiles`` of that size it sums
+    into across calls (0 for none), and the mapping its cost backend chose on each core, where known."""
+
+    node: ComputationNode
+    cores: tuple[Core, ...]
+    elements: int
+    tiles: int
+    mappings: Mapping[Core, Any] = field(default_factory=dict)
+
+
+def kept_in_output_buffer[K](calls: Mapping[K, RunningSumCall]) -> dict[K, dict[Core, OutputBufferUse]]:
+    """The running sums among ``calls`` that every core of theirs keeps across calls in its output buffer, with that
+    buffer's use on each core (:meth:`Core.output_buffers`)."""
+    shares = {
+        key: {c: c.output_buffers(call.elements, call.mappings.get(c)) for c in call.cores}
+        for key, call in calls.items()
+    }
+    on: dict[Core, list[K]] = defaultdict(list)
+    for key, call in calls.items():
+        for core in call.cores:
+            on[core].append(key)
+    levels = {
+        core: _output_buffer_level([(calls[key], shares[key][core]) for key in keys]) for core, keys in on.items()
+    }
+    held = {core: level for core, level in levels.items() if level is not None}
+    return {
+        key: {core: shares[key][core][held[core]] for core in call.cores}
+        for key, call in calls.items()
+        if call.tiles and call.cores and all(core in held for core in call.cores)
+    }
+
+
+def _output_buffer_level(calls: Sequence[tuple[RunningSumCall, tuple[OutputBufferUse, ...]]]) -> int | None:
+    """The highest level of a core where one instance fits every running sum among ``calls`` at the accumulator
+    precision, in addition to the most another node's call holds there; None where none does."""
+    sums = [(call, shares) for call, shares in calls if call.tiles]
+    for i in range(min(len(shares) for _, shares in calls) if sums else 0):
+        taken = [shares[i].outputs for _, shares in sums]
+        if None in taken:
+            continue
+        held = sum(call.tiles * outputs * _width(call) for (call, _), outputs in zip(sums, taken, strict=True))
+        other = max((s[i].resident * _width(call) for call, s in calls if not call.tiles), default=0)
+        if held + other <= sums[0][1][i].bits:
+            return i
+    return None
+
+
+def _width(call: RunningSumCall) -> int:
+    """Bits an output of ``call`` takes while summed: the accumulator's where wider than the output's type."""
+    found = accumulator_format(call.node, call.cores)
+    return max(ELEMENT_BITS[found] if found else 0, call.node.outputs[0].operand_type.bitwidth)
 
 
 def reduced_dims(workload: Workload, node: ComputationNode) -> set[LayerDim]:

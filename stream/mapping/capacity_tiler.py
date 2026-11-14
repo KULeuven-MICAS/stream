@@ -10,7 +10,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
-from stream.hardware.cost import running_sum_bits
+from stream.hardware.cost import RunningSumCall, kept_in_output_buffer, reduced_dims, running_sum_bits
 from stream.hardware.ports import READ
 from stream.mapping.mapping import placement_split_bits, role_of, whole_bits
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
@@ -747,17 +747,22 @@ class CapacityTiler:
         held: dict[str, dict[tuple, float]] = {}
         tensors: dict[str, Tensor] = {}
         producers = {t: cn for cn in cns for t in cn.outputs}
+        stepped = {d for d, r in resident.items() if r * unroll.get(d, 1) < full[d]}
+        sizes = {cn: self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll) for cn in cns}
+        whole = {cn: {d: full[d] // unroll.get(d, 1) for d in accumulated_over} for cn in accumulating}
+        spanned = {
+            cn: self._node_sizes(cn, cores_per_node, unroll, resident | whole[cn], node_unroll)
+            for cn in cns
+            if whole.get(cn)
+        }
+        summed = self._kept_in_output_buffer(cns, cores_per_node, sizes | spanned, loops, accumulating)
         for cn in cns:
             cores = cores_per_node.get(cn, [])
-            sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
-            stepped = {d for d, r in resident.items() if r * unroll.get(d, 1) < full[d]}
             split = {d for d, f in self._own_split(cn, cores_per_node, unroll, node_unroll).items() if f > 1}
-            running = running_sum_bits(self.sub_workload, cn, cores, stepped, split)
-            whole = {d: full[d] // unroll.get(d, 1) for d in accumulated_over} if cn in accumulating else {}
-            spanned = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll) if whole else sizes
+            running = running_sum_bits(self.sub_workload, cn, cores, set() if cn in summed else stepped, split)
             for t in dict.fromkeys(cn.tensors):
-                kept = bool(whole) and t in cn.outputs
-                shape = self._shape(cn, t, spanned if kept else sizes)
+                kept = cn in spanned and t in cn.outputs
+                shape = self._shape(cn, t, spanned[cn] if kept else sizes[cn])
                 stepping = bool(self._indexing(cn, t) & stepped)
                 from_producer = t in cn.inputs and producers.get(t, cn) is not cn
                 stop = self._held_stop(cn, t, producers[t], loops) if from_producer else -1
@@ -770,12 +775,34 @@ class CapacityTiler:
                 bits = buffers * math.prod(shape) * width
                 if t in cn.inputs and not kept:
                     split = self._own_split(cn, cores_per_node, unroll, node_unroll)
-                    bits += self._kept_halo(cn, t, sizes, split, loops, stop) * width
+                    bits += self._kept_halo(cn, t, sizes[cn], split, loops, stop) * width
                 for core in cores:
                     tiles = held.setdefault(self.accelerator.memory_of(core, role_of(cn, t)).name, {})
                     tiles[(t.name, cn.name)] = tiles.get((t.name, cn.name), 0.0) + bits
         made = {t.name: cn.name for t, cn in producers.items()}
         return {memory: self._beyond_placed(memory, tiles, tensors, made) for memory, tiles in held.items()}
+
+    def _kept_in_output_buffer(
+        self,
+        cns: tuple[ComputationNode, ...],
+        cores_per_node: dict[ComputationNode, list[Core]],
+        sizes: dict[ComputationNode, dict[LayerDim, int]],
+        loops: list[tuple[LayerDim, int]],
+        accumulating: tuple[ComputationNode, ...],
+    ) -> set[ComputationNode]:
+        """The nodes whose running sums their cores keep in their output buffer (:func:`kept_in_output_buffer`),
+        before cost estimation, with no mapping from a cost backend."""
+        calls: dict[tuple[ComputationNode, Tensor], RunningSumCall] = {}
+        for cn in cns:
+            reduced = reduced_dims(self.sub_workload, cn)
+            outer = max((i for i, (d, _) in enumerate(loops) if d in reduced), default=None)
+            for t in cn.outputs:
+                moving = self._indexing(cn, t)
+                trips = math.prod(n for d, n in loops[:outer] if d in moving) if outer is not None else 0
+                elements = math.prod(self._shape(cn, t, sizes[cn]))
+                cores = tuple(cores_per_node.get(cn, []))
+                calls[(cn, t)] = RunningSumCall(cn, cores, elements, 1 if cn in accumulating and trips else trips)
+        return {cn for cn, _ in kept_in_output_buffer(calls)}
 
     def _loops(
         self,

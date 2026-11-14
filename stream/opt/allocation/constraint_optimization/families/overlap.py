@@ -297,7 +297,7 @@ def _skipped_step_floor(
             fraction = (entry.metadata or {}).get("computed_fraction", 1.0)
             if fraction >= 1.0 - 1e-9:
                 continue
-            busy = get_active_latency(n, float(ceil(entry.latency_total)), space.ssis)
+            busy = get_active_latency(n, float(ceil(space.core_runtime(n, core))), space.ssis)
             for key in ctx.vars.y:
                 tr, choice = key
                 if core not in space.compute_cores(tr):

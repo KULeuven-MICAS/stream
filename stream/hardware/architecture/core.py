@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
 from stream.hardware.ports import MemoryBanks, PortSpec
+
+if TYPE_CHECKING:
+    from zigzag.cost_model.cost_model import CostModelEvaluation
+
+    from stream.hardware.architecture.backends.zigzag import OutputBufferUse
 
 
 class Core:
@@ -163,6 +168,11 @@ class Core:
         """Capacity in bits of the top-level memory instance ``instance``."""
         assert self._backend is not None, f"{self} has no backend"
         return self._backend.top_memory_capacity(instance)
+
+    def output_buffers(self, elements: int, cme: CostModelEvaluation | None = None) -> tuple[OutputBufferUse, ...]:
+        """How a call of ``elements`` outputs under ``cme`` uses each output buffer of the core."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.output_buffers(elements, cme)
 
     def get_max_memory_bandwidth(self, type: str) -> int:
         """Top-level memory read/write bandwidth in bits/cycle."""

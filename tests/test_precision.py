@@ -209,6 +209,7 @@ def test_cores_with_different_accumulators_do_not_share_costs():
 FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
 TPU_QUAD = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 EYERISS = "stream/inputs/examples/hardware/eyeriss_like_single_core.yaml"
+IRONWOOD = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
 
 
 def _mlp(path):
@@ -256,16 +257,24 @@ fused_groups:
 """
 
 
-def test_a_running_sum_across_a_fused_loop_is_held_at_the_accumulator_precision(tmp_path):
+@pytest.mark.parametrize(
+    ("hardware", "memory", "offchip", "bits"),
+    [(FUSEMAX, "sram", "dram", 32), (IRONWOOD, "vmem_0", "hbm", 16)],
+    ids=["reduction-spread-over-the-pes", "lanes-hold-the-sum"],
+)
+def test_a_running_sum_across_a_fused_loop_is_held_at_the_accumulator_precision(
+    tmp_path, hardware, memory, offchip, bits
+):
     """Fused on the hidden dim (tile 64, 4 iterations), Gemm2's output Y_1[64,128] is a running sum between
-    iterations, held at fusemax's fp32 accumulator, 64 x 128 x 32 bits; the finished Y off chip keeps bf16."""
-    ir = _solved_mlp(FUSEMAX, _FUSED_HIDDEN, tmp_path)
+    iterations. fusemax's sram holds it at the fp32 accumulator, 64 x 128 x 32 bits; Ironwood's MXU sums within its
+    output lanes, so its vmem holds only the finished Y_1 at bf16. The finished Y off chip keeps bf16."""
+    ir = _solved_mlp(hardware, _FUSED_HIDDEN, tmp_path)
     tensors = {t["name"]: t["bits"] for t in ir["steady_state"]["tensors"]}
     occupancy = {
         (m["memory"], t["tensor"]): t["bits"] for m in ir["performance"]["memory_occupancy"] for t in m["tensors"]
     }
-    assert tensors["Y_1"] == occupancy[("sram", "Y_1")] == 64 * 128 * 32
-    assert tensors["Y"] == occupancy[("dram", "Y")] == 64 * 128 * 16
+    assert tensors["Y_1"] == occupancy[(memory, "Y_1")] == 64 * 128 * bits
+    assert tensors["Y"] == occupancy[(offchip, "Y")] == 64 * 128 * 16
 
 
 _SPLIT_REDUCTION = """
@@ -344,6 +353,25 @@ def test_a_running_sum_is_written_and_read_back_at_the_accumulator_precision(tmp
     at fp32 on 3 of the 4."""
     moved = _output_traffic(FUSEMAX, tmp_path)
     assert moved == {WRITE_BY_DATAPATH: 64 * 128 * 28, READ_BY_DATAPATH: 64 * 128 * 32 * 3 / 4}
+
+
+def test_a_running_sum_a_lower_memory_holds_is_written_once_at_its_type(tmp_path):
+    """Fused on the hidden dim (tile 64, 4 firings) on ironwood, whose MXU's lanes hold the 64 x 128 fp32 sum: Gemm2
+    writes the finished sum to vmem once, at bf16, 64 x 128 x 16 / 4 bits a firing, and reads nothing back."""
+    moved = _output_traffic(IRONWOOD, tmp_path)
+    assert moved == {WRITE_BY_DATAPATH: 64 * 128 * 16 / 4, READ_BY_DATAPATH: 0}
+
+
+def test_a_call_holding_its_sum_below_the_top_memory_skips_writing_it_up(tmp_path):
+    """Fused on the hidden dim (4 firings), a call of Gemm2 on ironwood keeps its sum in the MXU's result buffer on 3
+    of its 4 firings, so it takes its cost backend's cycles less 3 / 4 of those writing its outputs up to vmem."""
+    space = _estimated_mlp(IRONWOOD, _FUSED_HIDDEN, tmp_path).context.get("allocation").space
+    (gemm2,) = (n for n in space.ssc_nodes if n.name == "Gemm2")
+    (core,) = space.cost_lut.get_cores(gemm2)
+    entry = space.cost_lut.get_cost(gemm2, core)
+    offload = entry.cme.data_offloading_cycle
+    assert offload > 0
+    assert space.core_runtime(gemm2, core) == entry.latency_total - offload * 3 / 4
 
 
 _FUSED_AND_SPLIT = """

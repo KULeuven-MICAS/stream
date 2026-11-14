@@ -17,7 +17,14 @@ from stream.datatypes import ELEMENT_BITS
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.cost import partial_sum_format, reduced_dims, running_sum_bits, running_sum_format
+from stream.hardware.cost import (
+    RunningSumCall,
+    kept_in_output_buffer,
+    partial_sum_format,
+    reduced_dims,
+    running_sum_bits,
+    running_sum_format,
+)
 from stream.hardware.ports import OUTPUT, READ
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.capacity_tiler import buffer_count
@@ -48,6 +55,7 @@ if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.cost_model.layout import Rate
     from stream.datatypes import LayerDim
+    from stream.hardware.architecture.backends.zigzag import OutputBufferUse
     from stream.hardware.ports import Port
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
@@ -203,9 +211,20 @@ class DecisionSpace:
         return self._candidates[t]
 
     def runtime(self, n: ComputationNode) -> int:
-        """Cycles ``n`` takes on the slowest core it may run on, before its active fraction."""
-        latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+        """Cycles ``n`` takes on the slowest core it may run on, before its active fraction (:meth:`core_runtime`)."""
+        latencies = [self.core_runtime(n, c) for c in self.cost_lut.get_cores(n)]
         return ceil(max(latencies)) if latencies else 0
+
+    def core_runtime(self, n: ComputationNode, core: Core) -> float:
+        """Cycles a call of ``n`` takes on ``core``: its cost backend's, less the write up to the top memory of a sum
+        kept in the output buffer (:attr:`sums_in_output_buffer`) on every call but the last, averaged over the
+        calls."""
+        skipped = sum(
+            share.offload * (1 - 1 / self.reduction_trips(t))
+            for t in n.outputs
+            if (share := self.sums_in_output_buffer.get(t, {}).get(core)) is not None
+        )
+        return self.cost_lut.get_cost(n, core).latency_total - skipped
 
     def active_runtime(self, n: ComputationNode) -> float:
         """Cycles ``n`` takes per iteration: its runtime over the iterations it is not idle on an absent loop."""
@@ -329,13 +348,40 @@ class DecisionSpace:
                 (fused if v.type is IterationVariableType.TEMPORAL else split).add(v.dimension)
         return fused, split
 
+    def _top_memory_cuts(self, t: Tensor) -> tuple[set[LayerDim], set[LayerDim]]:
+        """:meth:`_cuts`, without the fused loops for a sum kept in the output buffer (:attr:`sums_in_output_buffer`):
+        the top memory holds it complete."""
+        fused, split = self._cuts(t)
+        return (set() if t in self.sums_in_output_buffer else fused), split
+
+    @cached_property
+    def sums_in_output_buffer(self) -> dict[Tensor, dict[Core, OutputBufferUse]]:
+        """The running sums their producer's cores keep across fused loops in their output buffer, with that buffer's
+        use on each core (:func:`kept_in_output_buffer`)."""
+        calls: dict[Tensor, RunningSumCall] = {}
+        for node in self.ssc_nodes:
+            cores = self.cores(node)
+            mappings = {c: self.cost_lut.get_cost(node, c).cme for c in cores if self.cost_lut.has_cost(node, c)}
+            for t in node.outputs:
+                elements = self.workload.get_tensor_single_core(t, node, self.mapping).size_elements()
+                calls[t] = RunningSumCall(node, cores, elements, self._running_sum_tiles(t), mappings)
+        return kept_in_output_buffer(calls)
+
+    def _running_sum_tiles(self, t: Tensor) -> int:
+        """Tiles of ``t`` its producer sums into at once: one per trip of the fused loops moving ``t`` inside the
+        outermost one over a dim the producer reduces; 0 where no fused loop does."""
+        reduced = reduced_dims(self.workload, self.producers[t])
+        loops = self.ssis[t].get_temporal_variables()
+        outer = max((i for i, v in enumerate(loops) if v.dimension in reduced and v.size > 1), default=None)
+        return 0 if outer is None else prod(v.size for v in loops[:outer] if v.relevant)
+
     def running_sum_bits(self, t: Tensor) -> int | None:
         """Bits per element ``t`` is held in while it is a running sum: the accumulator's across a fused loop cutting
-        a dimension the producer reduces over, the partial-sum format where only its split over cores does. None
-        otherwise."""
+        a dimension the producer reduces over, unless the output buffer keeps it (:attr:`sums_in_output_buffer`), the
+        partial-sum format where only its split over cores does. None otherwise."""
         if (node := self.producers.get(t)) is None:
             return None
-        return running_sum_bits(self.workload, node, self.cores(node), *self._cuts(t))
+        return running_sum_bits(self.workload, node, self.cores(node), *self._top_memory_cuts(t))
 
     def partial_sum_element_bits(self, t: Tensor) -> int:
         """Bits per element the cores of ``t``'s producer send each other their partial sums of ``t`` in: the
@@ -361,7 +407,7 @@ class DecisionSpace:
     def running_sum_format(self, t: Tensor) -> str | None:
         """The format ``t`` is held in while it is a running sum, else None."""
         node = self.producers.get(t)
-        return running_sum_format(self.workload, node, self.cores(node), *self._cuts(t)) if node else None
+        return running_sum_format(self.workload, node, self.cores(node), *self._top_memory_cuts(t)) if node else None
 
     def element_bits(self, t: Tensor) -> int:
         """Bits per element ``t`` is held at: a running sum's width (:meth:`running_sum_bits`), else its type's."""

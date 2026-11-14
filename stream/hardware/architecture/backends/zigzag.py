@@ -7,8 +7,10 @@ both backends are first-class citizens in the framework.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Hashable, Iterable, Mapping
-from typing import Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as _ZigZagAccelerator
@@ -25,6 +27,9 @@ from stream.hardware.ports import (
     Service,
     input_role,
 )
+
+if TYPE_CHECKING:
+    from zigzag.cost_model.cost_model import CostModelEvaluation
 
 ZIGZAG_DIRECTION_NAMES = {
     DataDirection.RD_OUT_TO_HIGH: READ,
@@ -55,6 +60,32 @@ def memory_operand(role: str) -> MemoryOperand:
 def top_levels(levels: Mapping[str, Iterable[Hashable]]) -> set[str]:
     """Of the memory levels named innermost first with the operands each holds, the highest level of each operand."""
     return set({operand: name for name, operands in levels.items() for operand in operands}.values())
+
+
+@dataclass(frozen=True)
+class OutputBufferUse:
+    """A call's use of one instance of an output buffer (a memory level below the top that holds only outputs): the
+    instance's ``bits``, the outputs it takes over the call (``outputs``, None where a reduced dim is unrolled over the
+    instances), the outputs it holds at once (``resident``) and the cycles writing them up to the top level
+    (``offload``)."""
+
+    bits: int
+    outputs: int | None
+    resident: int
+    offload: float
+
+
+def _output_buffer_use(index: int, bits: int, elements: int, cme: CostModelEvaluation) -> OutputBufferUse:
+    """:class:`OutputBufferUse` of the output buffer at level ``index`` of ``bits`` for ``elements`` outputs under
+    ``cme``."""
+    operand, mapping = cme.layer.output_operand, cme.mapping
+    spatial = mapping.spatial_mapping
+    unrolled = math.prod(spatial.unroll_size_ir[operand][index + 1 :]) > 1
+    outputs = None if unrolled else math.ceil(elements / spatial.unit_unique[operand][index + 1])
+    resident = mapping.data_elem_per_level_unrolled[operand][index + 1]
+    hops = cme.data_offloading_cc_pair_combined
+    offload = cme.data_offloading_cycle * sum(hops[index:]) / sum(hops) if sum(hops) else 0.0
+    return OutputBufferUse(bits, outputs, resident, offload)
 
 
 class ZigZagCoreBackend(_ZigZagAccelerator):
@@ -108,6 +139,22 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         if instance not in tops:
             raise ValueError(f"{instance} is no top-level memory of {self}: its top levels are {sorted(tops)}")
         return tops[instance].memory_instance.size
+
+    def output_buffers(self, elements: int, cme: CostModelEvaluation | None = None) -> tuple[OutputBufferUse, ...]:
+        """Each output buffer (a memory level below the top that holds only outputs), highest first, as a call of
+        ``elements`` outputs uses it under the mapping ``cme``. Without a mapping, only a level of one instance is taken
+        to hold the outputs."""
+        operand, hierarchy = MemoryOperand("O"), self.memory_hierarchy
+        levels = hierarchy.get_memory_levels(operand) if operand in hierarchy.get_operands() else []
+        return tuple(
+            _output_buffer_use(index, level.memory_instance.size, elements, cme)
+            if cme is not None
+            else OutputBufferUse(
+                level.memory_instance.size, elements if level.unroll_count == 1 else None, elements, 0.0
+            )
+            for index, level in reversed(list(enumerate(levels[:-1])))
+            if list(level.operands) == [operand]
+        )
 
     def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
         """Top-level memory read/write bandwidth in bits/cycle."""

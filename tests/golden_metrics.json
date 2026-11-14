@@ -111,15 +111,15 @@
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu[tpu_v7_ironwood]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.031192013138823242,
-    "energy_pj": 65292986974.208,
-    "group_latencies_max": 393947.0,
+    "end_to_end_mac_utilization": 0.031192092317221143,
+    "energy_pj": 61407849054.208,
+    "group_latencies_max": 393946.0,
     "iteration_latency": 9,
-    "mac_spatial_utilization": 0.6129032258064516,
+    "mac_spatial_utilization": 0.6417910447761194,
     "mip_gap": 0.0,
-    "objective": 393947.0,
+    "objective": 393946.0,
     "solve_time_s": 0.079984,
-    "total_latency": 393947.0,
+    "total_latency": 393946.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_dual_core]": {
