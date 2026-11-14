@@ -41,13 +41,21 @@ def unsplit():
 
 
 @pytest.fixture(scope="module")
+def halves():
+    """The column with the value GEMM split over two cores by halves of the head, on the rows either side of the
+    softmax: score, first half, softmax, second half."""
+    return _column(split=True, head_split=True)[0]
+
+
+@pytest.fixture(scope="module")
 def full():
     """The column of an attention without a mask, and the bindings its calls resolved to."""
     return _column(split=True, causal=False)
 
 
-def _column(split, causal=True, rows=TILE, keys=TILE):
-    """The column at ``rows`` queries by ``keys`` keys a block, its head ``TILE`` wide."""
+def _column(split, causal=True, rows=TILE, keys=TILE, head_split=False):
+    """The column at ``rows`` queries by ``keys`` keys a block, its head ``TILE`` wide, split over two value cores by
+    halves where ``head_split``."""
     from xdsl.dialects.arith import ConstantOp
     from xdsl.dialects.builtin import IndexType, IntegerAttr, ModuleOp, bf16
     from xdsl.dialects.scf import ForOp, YieldOp
@@ -85,8 +93,8 @@ def _column(split, causal=True, rows=TILE, keys=TILE):
     points = (StrensorVar(StrensorVarType.POINT, 0, query),) if split else ()
     position = StrensorSpaceAttr(StrensorSpace(points))
 
-    def node(kernel_name, shapes, kernel_dims):
-        """One computation node, its operands taken from fifos the way codegen leaves them."""
+    def node(kernel_name, shapes, kernel_dims, half=None):
+        """One computation node, its operands taken from fifos the way codegen leaves them; ``half`` of the head."""
         acquires = [
             ObjectFifoAcquireOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),
@@ -98,8 +106,13 @@ def _column(split, causal=True, rows=TILE, keys=TILE):
             for shape in shapes
         ]
         kernel_vars = tuple(StrensorVar(StrensorVarType.KERNEL, size, dim) for dim, size in kernel_dims)
-        output = StrensorType(bf16, StrensorSpace(outer + kernel_vars))
-        node = ComputationNodeOp([a.results[0] for a in acquires], (output,), kernel_name, position)
+        space, at = outer, position
+        if half is not None:
+            # The halves outermost, as the placement lists them: the query blocks pair as without the split.
+            space = (StrensorVar(StrensorVarType.SPATIAL, 2, head), *outer)
+            at = StrensorSpaceAttr(StrensorSpace((*points, StrensorVar(StrensorVarType.POINT, half, head))))
+        output = StrensorType(bf16, StrensorSpace(space + kernel_vars))
+        node = ComputationNodeOp([a.results[0] for a in acquires], (output,), kernel_name, at)
         return [*acquires, node]
 
     def core(row, body):
@@ -116,13 +129,18 @@ def _column(split, causal=True, rows=TILE, keys=TILE):
     flags = {"layout": "default", "causal": causal, "library": LIBRARY}
     scores = AIE_KERNELS["gemm"](m=rows, k=TILE, n=keys, **flags)
     softmax = AIE_KERNELS["partial_softmax"](m=rows, n=keys, layout="contiguous", causal=causal, library=LIBRARY)
-    context = AIE_KERNELS["gemm"](m=rows, k=keys, n=TILE, flash=True, **flags)
-    score_side, value_side = ((query, rows), (key, keys)), ((query, rows), (head, TILE))
+    width = TILE // 2 if head_split else TILE
+    context = AIE_KERNELS["gemm"](m=rows, k=keys, n=width, flash=True, **flags)
+    score_side, value_side = ((query, rows), (key, keys)), ((query, rows), (head, width))
+    value = [(rows, keys), (keys, width), (rows, width)]
     nodes = [
         node(scores.unique_name, [(rows, TILE), (TILE, keys), (rows, keys)], score_side),
         node(softmax.unique_name, [(rows, keys)] * 2, score_side),
-        node(context.unique_name, [(rows, keys), (keys, TILE), (rows, TILE)], value_side),
+        node(context.unique_name, value, value_side),
     ]
+    if head_split:
+        nodes = [nodes[0], node(context.unique_name, value, value_side, 0), nodes[1]]
+        nodes.append(node(context.unique_name, value, value_side, 1))
     tiles = [op for row, body in enumerate(nodes) for op in core(row, body)]
     device = DeviceOp(
         IntegerAttr.from_int_and_width(AIEDeviceEnum.npu2.get_int(), 32), Region(Block([*tiles, EndOp()]))
@@ -439,3 +457,26 @@ def test_the_value_core_accumulates_in_float_and_rescales_into_the_output(column
         core = core.parent_op()
     calls = [op.callee.root_reference.data for op in core.walk() if isinstance(op, CallOp)]
     assert not any(callee.endswith("zero") for callee in calls)
+
+
+def test_a_head_split_value_side_takes_every_blocks_scale_on_both_halves(halves):
+    """Split by halves of the head, both value cores hold the softmax's query blocks: each takes every block's scale,
+    from shared memory on either side of the softmax, rather than every other block as a query split would hand it."""
+    from xdsl.dialects.func import CallOp
+    from xdsl.dialects.scf import IndexSwitchOp
+    from xdsl_aie.dialects.aie import ObjectFifoAcquireOp, ObjectFifoOp
+
+    fifos = sorted(op.sym_name.data for op in halves.walk() if isinstance(op, ObjectFifoOp))
+    assert fifos == ["flash_scale_0_2_0_1", "flash_scale_0_2_0_3"]
+    snapshot = [
+        op
+        for op in halves.walk()
+        if isinstance(op, CallOp) and op.callee.root_reference.data.endswith("passThroughLine")
+    ]
+    assert len(snapshot) == 2 and not any(isinstance(op, IndexSwitchOp) for op in halves.walk())
+    taken = {
+        op.objFifo_name.root_reference.data
+        for op in halves.walk()
+        if isinstance(op, ObjectFifoAcquireOp) and op.objFifo_name.root_reference.data.startswith("flash_scale")
+    }
+    assert taken == set(fifos)

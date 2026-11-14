@@ -83,7 +83,9 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
             raise _unfinished_reduction_error(fused_group.name, dim, nb_splits, unfinished[dim])
         if nb_splits > 1 and dim in uncoupled:
             raise _uncoupled_read_error(fused_group.name, dim, nb_splits, uncoupled[dim])
-        result[dim] = nb_splits
+        # A tile the cores' split already covers leaves no loop to step: one of a single trip is none.
+        if nb_splits > 1 or largest.get(dim) is None:
+            result[dim] = nb_splits
     return result
 
 
