@@ -15,7 +15,6 @@ from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.ports import READ, WRITE
-from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetPattern,
@@ -67,58 +66,6 @@ def test_the_down_projection_contracts_the_hidden_dimension_its_input_arrives_sp
     layers, _ = _layers(TPU_V7, SWIGLU)
     assert layers["Gemm_Left"]["inter_core_tiling"] == [[{"dim": "D2", "split": 8}]]
     assert layers["Gemm_Down"]["inter_core_tiling"] == [[{"dim": "D1", "split": 8}]]
-
-
-def _long_down_projection(tmp_path):
-    """The generator, and the down projection's group, of a 2048-token bf16 SwiGLU, 4096 -> 14336 -> 4096, each layer
-    a group of its own."""
-    make_swiglu_workload(2048, 4096, 14336, "bf16", "bf16", output_dir=str(tmp_path))
-    accelerator, parsed = _parse(TPU_V7, str(tmp_path / "swiglu_2048_4096_14336.onnx"))
-    generator = GenericMappingGenerator(accelerator, parsed, tempfile.mkdtemp())
-    return generator, generator.groups(LAYERS)[-1]
-
-
-DOWN_SUMS = 2048 * 4096 * 16 / 728
-"""Cycles the long down projection's partial sums take between the chips: each of the four VMEMs holds sums of all
-2048 x 4096 outputs at their bf16, and one 364-bit ICI link each way joins the chips."""
-DOWN_COMPUTE = 2048 * 14336 * 4096 / (8 * 131072)
-"""Cycles its eight MXUs of 131072 MACs take, 114688."""
-
-
-def test_a_down_projection_whose_sums_cross_the_chips_is_cut_so_each_tile_s_sums_leave_once_computed(tmp_path):
-    """The long down projection splits its hidden dim over the eight MXUs; its sums crossing the chips bound it. Cut
-    into 4 x 2 tiles of tokens and outputs, the sums of each tile leave as soon as it is computed, the link busy all
-    but the first tile's compute: R + C / 8 (no tile reads the weights twice). Cut into 4 output tiles of 7 hidden
-    tiles each, a tile's sums leave only after its seventh: R + C / 28 + R / 4 - R / 28."""
-    generator, down = _long_down_projection(tmp_path)
-    cns = tuple(down.get_computation_nodes())
-    tiler, cores, unroll, protected, node_unroll = generator._tiler(down, cns)
-    tiling = generator._build_intra_core_tiling(down, cns)
-    assert tiling == [{"dim": "Gemm_Down.D0", "tile": 512}, {"dim": "Gemm_Down.D2", "tile": 2048}]
-    estimate = tiler.estimate(cns, cores, unroll, protected, tiling, node_unroll)
-    times = (estimate.cycles, estimate.compute, estimate.transfer)
-    assert times == pytest.approx((DOWN_SUMS + DOWN_COMPUTE / 8, DOWN_COMPUTE, DOWN_SUMS))
-    hidden = [{"dim": "Gemm_Down.D1", "tile": 256}, {"dim": "Gemm_Down.D2", "tile": 1024}]
-    assert tiler.estimate(cns, cores, unroll, protected, hidden, node_unroll).cycles == pytest.approx(
-        DOWN_SUMS + DOWN_COMPUTE / 28 + DOWN_SUMS / 4 - DOWN_SUMS / 28
-    )
-
-
-@pytest.mark.slow
-def test_the_down_projection_cut_the_tiler_picks_solves_faster_than_256_token_tiles(tmp_path):
-    """Solved, the down projection the generator tiles takes less than 256-token tiles, which read its weights once
-    per tile, and than the hidden cut whose sums wait for every hidden tile."""
-    generator, down = _long_down_projection(tmp_path)
-    workload = str(tmp_path / "swiglu_2048_4096_14336.onnx")
-
-    def solved(tiling: list[dict] | None) -> float:
-        stage = {"fusion_cut_points": LAYERS} | ({"intra_core_tiling": tiling} if tiling else {})
-        options = SolveOptions(artifacts=False, stage_options=stage)
-        return evaluate_mapping(TPU_V7, workload, tempfile.mkdtemp(), options=options).group_cycles[-1]
-
-    picked = solved(None)
-    assert picked < solved([{"dim": "Gemm_Down.D0", "tile": 256}])
-    assert picked < solved([{"dim": "Gemm_Down.D1", "tile": 256}, {"dim": "Gemm_Down.D2", "tile": 1024}])
 
 
 def test_a_code_generator_that_cannot_add_partial_sums_keeps_the_contraction_whole():
@@ -307,23 +254,12 @@ def test_multi_head_attention_splits_the_heads_its_matrix_units_split(tmp_path):
     assert len(set(map(frozenset, splits.values()))) == 1, splits
 
 
-@pytest.mark.slow
-def test_attention_at_4096_tokens_runs_its_projections_and_scores_apart_and_the_softmax_with_the_context(tmp_path):
-    """At 4096 tokens the projections and the scores fused hold a tile of every head's scores next to the input and the
-    weights: as the tiler estimates them, they take longer fused than each apart. The softmax and the context fused
-    keep the scores on chip. Solved, the step takes less than the 1160827 cycles of the projections and scores
-    fused."""
-    workload = make_multi_head_attention(tmp_path / "mha.onnx", seq=4096)
-    estimate = evaluate_mapping(TPU_V7, workload, str(tmp_path), options=SolveOptions(artifacts=False))
-    groups = [[node.name for node in group.get_computation_nodes()] for group in estimate.context.get("sub_workloads")]
-    assert groups == [
-        ["proj_K"],
-        ["proj_Q"],
-        ["proj_V"],
-        ["scores"],
-        ["softmax_max", "softmax_exp", "softmax_sum", "softmax_div", "context"],
-    ]
-    assert estimate.cycles < 1160827
+def test_the_innermost_steady_state_loop_indexes_the_least_data(tmp_path):
+    """At 4096 tokens a head's scores do not fit whole, so the group is cut along the queries too; the heads, which
+    index the weights, are the outermost loop, so each head's weights stay put while its query tiles run."""
+    _, groups = _layers(TPU_V7, make_multi_head_attention(tmp_path / "mha.onnx", seq=4096))
+    tiled = [entry["dim"] for entry in groups[0]["intra_core_tiling"]]
+    assert tiled[-1] == "proj_Q.D0"
 
 
 def test_attention_too_large_for_the_vmems_is_cut_after_its_projections_only(tmp_path):

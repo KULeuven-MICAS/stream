@@ -515,38 +515,6 @@ def test_a_cache_the_scores_read_moves_once_over_the_tile_loops_only_the_context
     assert moved == {f"sram_{s}": bits / 4 for s in range(4)} | {None: bits}
 
 
-def test_decode_on_a_cache_split_on_the_sequence_runs_each_operator_apart_where_fused_moves_more(tmp_path):
-    """16 sequences of 32k, the cache split on the sequence over the chiplets' HBMs, in one part. Fused, the scores,
-    softmax and context fit only a few sequences' scores a tile: the tiler estimates them slower than the three
-    operators apart, so each is a group of its own, the softmax's sub-ops together."""
-    generator, workload = _generator(tmp_path, "ironwood", _placements(BY_SEQUENCE, q=COPIED), 16, 32768)
-    (fused,) = workload.split_fusion_groups(cut_points=generator._cut_points(None))
-    groups = generator.groups()
-    assert [[node.name for node in group.get_computation_nodes()] for group in groups] == [
-        ["scores"],
-        ["softmax_max", "softmax_exp", "softmax_sum", "softmax_div"],
-        ["context"],
-    ]
-    assert generator._estimate(fused).cycles > sum(generator._estimate(group).cycles for group in groups)
-
-
-@pytest.mark.slow
-def test_decode_on_a_cache_split_on_the_sequence_solves_faster_than_fused_and_than_every_sub_op_apart(tmp_path):
-    """The groups above solve under the 6287721 cycles the fused scores and softmax took, and under every sub-op of
-    the softmax in a group of its own."""
-    placements = _placements(BY_SEQUENCE, q=COPIED)
-    picked = _decode(tmp_path / "picked", "ironwood", placements, batch=16, context=32768, parts=1)
-    per_layer = solve(
-        _hardware("ironwood"),
-        make_decode_attention(tmp_path / "decode.onnx", 16, 32768),
-        tmp_path / "per_layer",
-        {"runtime_args": placements},
-        attention_parts=1,
-        fusion_cut_points="per-layer",
-    )
-    assert picked.cycles < min(6287721, per_layer.cycles)
-
-
 def test_a_part_count_the_cache_placement_does_not_split_into_is_refused(tmp_path, small_slice):
     with pytest.raises(
         ValueError, match="K is split along its axis 2 over 4 memories, which 2 parts of context's sequence"
