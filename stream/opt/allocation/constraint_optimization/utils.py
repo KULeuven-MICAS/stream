@@ -45,6 +45,11 @@ def get_active_transfer_latency_for_path(tr: TransferNode, choice: MulticastPath
     return active_latency
 
 
+def absent_trips(ssis: SteadyStateIterationSpace) -> int:
+    """The trips of the temporal loops a node or tensor is absent from: the iterations one run of it spans."""
+    return prod(v.size for v in ssis.get_temporal_variables() if v.effect is LoopEffect.ABSENT)
+
+
 def active_fraction(n: Node, ssis: dict[ComputationNode, SteadyStateIterationSpace]) -> float:
     """Fraction of the steady-state iterations in which ``n`` is not idle on an absent loop."""
     temporal = ssis.get(n).get_temporal_variables()

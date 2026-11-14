@@ -50,6 +50,16 @@ TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
 MemoryAlloc: TypeAlias = dict[TransferNode, Placement]
 
 
+def solved_latency(total: float, slots: dict[int, float], overlap: float, fill: float) -> Latency:
+    """The solved latency with every integer variable rounded, one iteration being the sum of its rounded slots."""
+    return Latency(
+        total=round(total),
+        per_iteration=sum(round(slot) for slot in slots.values()),
+        overlap=round(overlap),
+        fill=round(fill),
+    )
+
+
 class AllocationModel:
     """The allocation model of a problem: the core decision variables -- where every movable tensor lives, which route
     each transfer takes, where each tensor's reuse stops -- the constraints and objective levels its families build on
@@ -174,15 +184,15 @@ class AllocationModel:
             routing = self.get_transfer_routing()
             memory_placements = self.get_chosen_memory_placements(tensor_alloc)
             reuse_levels = self.get_tensor_reuse_levels()
-            slot_latencies = {s: float(v.X) for s, v in self.vars.slot_latency.items()}
-            reuse_factors = {tr: value(factor.expr) for tr, factor in q.indexed("reuse_factor").items()}
+            slots = {s: float(v.X) for s, v in self.vars.slot_latency.items()}
+            reuse_factors = {tr: round(value(factor.expr)) for tr, factor in q.indexed("reuse_factor").items()}
 
         with span("milp_report"):
-            latency = Latency(
-                total=int(value(q.get("total_latency").expr)),
-                per_iteration=int(sum(slot_latencies.values())),
-                overlap=int(value(q.get("overlap").expr)),
-                fill=round(value(q.get("fill").expr)),
+            latency = solved_latency(
+                value(q.get("total_latency").expr),
+                slots,
+                value(q.get("overlap").expr),
+                value(q.get("fill").expr),
             )
             performance, capacity_slack, breakdown = solved_reports(
                 self.context, self.families, reuse_levels, latency.total, total_mac_ops
@@ -196,7 +206,7 @@ class AllocationModel:
                 depths={t: space.tiles_needed_levels[(t, stop)] for t, stop in reuse_levels.items()},
                 single_buffered=frozenset(self.get_single_buffered()),
                 latency=latency,
-                slot_latencies=slot_latencies,
+                slot_latencies={s: round(slot) for s, slot in slots.items()},
                 reuse_factors=reuse_factors,
                 route_cycles={tr: space.transfer_latency_for_path(tr, route) for tr, route in routing.items()},
                 primary_cost=value(self.objective["latency"].expr),

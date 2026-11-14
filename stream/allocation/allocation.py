@@ -13,7 +13,6 @@ from stream.opt.allocation.constraint_optimization.report import guarded
 from stream.workload.node import InEdge, OutEdge, Tensor, declared_of, edge_tensor
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
-    LoopEffect,
     Reuse,
     SteadyStateIterationSpace,
 )
@@ -164,6 +163,22 @@ class Allocation:
                 add(str(layer_dim), size, "core_temporal")
         return loops
 
+    def _group_loops(self) -> list[dict]:
+        """The group's shared loops, outermost first; a dim split over cores is one loop at the largest split."""
+        loops: list[dict] = []
+        splits: dict[str, int] = {}
+        for cn in self.problem.workload.get_computation_nodes():
+            parts: dict[str, int] = {}
+            for iv in reversed(self.ssis[cn].variables) if cn in self.ssis else ():
+                loop = {"dim": str(iv.dimension), "size": iv.size, "type": iv.type.name.lower()}
+                if iv.type in (IterationVariableType.SPATIAL, IterationVariableType.SPATIOTEMPORAL):
+                    parts[loop["dim"]] = parts.get(loop["dim"], 1) * iv.size
+                elif iv.size > 1 and loop not in loops:
+                    loops.append(loop)
+            for dim, n in parts.items():
+                splits[dim] = max(splits.get(dim, 1), n)
+        return loops + [{"dim": dim, "size": n, "type": "spatial"} for dim, n in splits.items() if n > 1]
+
     def _steady_state_ir(self) -> dict:
         """Serialise the tiled/steady-state inspection view: operators, loop nest and transfer graph, and with the
         decision space the per-core detail of every tiled node, axis and tensor."""
@@ -175,16 +190,7 @@ class Allocation:
             }
             for cn in self.problem.source_workload.get_computation_nodes()
         ]
-        loops: list[dict] = []
-        seen: set = set()
-        for ssis in self.ssis.values():
-            for iv in ssis.variables:
-                if iv.effect is LoopEffect.ABSENT:
-                    continue
-                key = (str(iv.dimension), int(iv.size))
-                if int(iv.size) > 1 and key not in seen:
-                    seen.add(key)
-                    loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
+        loops = self._group_loops()
         expanded = False
         for cn in self.problem.source_workload.get_computation_nodes():
             core_loops = self._core_loops(cn)

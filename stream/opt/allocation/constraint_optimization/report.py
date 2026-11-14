@@ -16,8 +16,8 @@ from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.families import ReportingFamily
-from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
-from stream.workload.steady_state.iteration_space import IterationVariableType
+from stream.opt.allocation.constraint_optimization.utils import absent_trips, active_fraction, get_active_latency
+from stream.workload.steady_state.iteration_space import IterationVariableType, SteadyStateIterationSpace
 from stream.workload.utils import is_mac_operator_type
 from stream.workload.workload import ComputationNode, Tensor, TransferNode
 
@@ -35,6 +35,11 @@ VAR_THRESHOLD = 0.5
 """A MILP binary comes back as 0.9999...; anything above the midpoint is a 1."""
 
 _OCCUPANCY_TOP_TENSORS = 8
+
+
+def reported_reuse(solved: float, ssis: SteadyStateIterationSpace) -> int:
+    """The iterations one firing serves: the reuse the solve chose times the trips of the loops it is absent from."""
+    return round(solved) * absent_trips(ssis)
 
 
 def guarded[T](section: str, compute: Callable[..., T], *args: Any) -> T | None:
@@ -272,9 +277,9 @@ def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_laten
         tiles = math.prod(factor for _, factor in split[0]) if split else 1
         per_node[n.name] = node_utilization(lut.get_cost(n, cores[0]), len(cores), space.runtime(n), active, tiles)
 
-    compute_cycles = transfer_cycles = 0.0
+    compute_cycles = transfer_cycles = 0
     for s, latency in ctx.vars.slot_latency.items():
-        lat = float(latency.X)
+        lat = round(latency.X)
         if lat <= 0:
             continue
         if compute_by_slot.get(s, 0.0) >= lat * 0.999:
@@ -302,8 +307,8 @@ def _utilization(ctx: FormulationContext, total_mac_ops: int | None, total_laten
     return {
         "per_node": per_node,
         "bottleneck": {
-            "compute_bound_cycles": int(compute_cycles),
-            "transfer_bound_cycles": int(transfer_cycles),
+            "compute_bound_cycles": compute_cycles,
+            "transfer_bound_cycles": transfer_cycles,
             "compute_bound_pct": round(100.0 * compute_cycles / per_iter, 2) if per_iter else None,
             "transfer_bound_pct": round(100.0 * transfer_cycles / per_iter, 2) if per_iter else None,
         },
@@ -364,7 +369,7 @@ def overlap_section(ctx: FormulationContext, slack: list[dict[str, Any]] | None)
     slack = slack or []
     least = min((d["slack_cycles"] for d in slack), default=None)
     return {
-        "overlap_cycles": int(value(q.get("overlap").expr)) if "overlap" in q else None,
+        "overlap_cycles": round(value(q.get("overlap").expr)) if "overlap" in q else None,
         "binding_resources": [d["resource"] for d in slack if d["slack_cycles"] == least],
         "per_resource_slack": slack,
         "recurrence_bound_cycles": q.get("recurrence_bound").expr if "recurrence_bound" in q else 0,
@@ -402,7 +407,9 @@ def tensor_reuse_breakdown(ctx: FormulationContext, reuse_levels: dict[Tensor, i
             {
                 "tensor": t.name,
                 "size_bits": int(t.size_bits()),
-                "reuse_factor": space.reuse_levels.get((t, stop)) if stop is not None else None,
+                "reuse_factor": (
+                    reported_reuse(space.reuse_levels[(t, stop)], ssis) if (t, stop) in space.reuse_levels else None
+                ),
                 "reuse_stop_level": stop,
                 "on_chip_tiles": space.tiles_needed_levels.get((t, stop)) if stop is not None else None,
                 "loop_nest_out_to_in": [repr(v) for v in reversed(ssis.variables)],
@@ -473,7 +480,7 @@ def slot_latency_breakdown(
     the totals, each resource's ``slack`` and each tensor's ``reuse``."""
     space, q, value = ctx.space, ctx.quantities, ctx.model.value
     breakdown: dict[int, dict[str, Any]] = {
-        s: {"slot_latency_cycles": _json_scalar(latency.X), "compute_contributors": [], "transfer_contributors": []}
+        s: {"slot_latency_cycles": round(latency.X), "compute_contributors": [], "transfer_contributors": []}
         for s, latency in ctx.vars.slot_latency.items()
     }
     for n in space.ssc_nodes:
@@ -500,19 +507,19 @@ def slot_latency_breakdown(
                 ),
                 "path_cycles": raw,
                 "active_latency_cycles": round(get_active_latency(tr, float(raw), space.ssis)),
-                "reuse_factor": _json_scalar(value(q.get("reuse_factor", tr).expr)),
+                "reuse_factor": reported_reuse(value(q.get("reuse_factor", tr).expr), space.ssis[tr]),
                 "latency_contribution_cycles": _json_scalar(value(q.get("transfer_latency", (tr, choice)).expr)),
             }
         )
-    per_iteration = sum(latency.X for latency in ctx.vars.slot_latency.values())
-    overlap = value(q.get("overlap").expr)
+    per_iteration = sum(round(latency.X) for latency in ctx.vars.slot_latency.values())
+    overlap = round(value(q.get("overlap").expr))
     shared = q.indexed("shared_busy") if "shared_busy" in q else {}
     return {
         "totals": {
-            "iteration_latency_cycles": _json_scalar(per_iteration),
-            "overlap_cycles": _json_scalar(overlap),
-            "initiation_interval_cycles": _json_scalar(per_iteration - overlap),
-            "total_latency_cycles": _json_scalar(value(q.get("total_latency").expr)),
+            "iteration_latency_cycles": per_iteration,
+            "overlap_cycles": overlap,
+            "initiation_interval_cycles": per_iteration - overlap,
+            "total_latency_cycles": round(value(q.get("total_latency").expr)),
             "shared_busy_cycles": {memory.name: _json_scalar(value(busy.expr)) for memory, busy in shared.items()},
         },
         "resource_slack": slack,

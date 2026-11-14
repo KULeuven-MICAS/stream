@@ -7,7 +7,8 @@ from math import prod
 from typing import TYPE_CHECKING, Any
 
 from stream.opt.allocation.constraint_optimization.families.traffic import link_name
-from stream.opt.allocation.constraint_optimization.report import guarded
+from stream.opt.allocation.constraint_optimization.report import guarded, reported_reuse
+from stream.opt.allocation.constraint_optimization.utils import absent_trips
 from stream.workload.node import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
@@ -54,12 +55,15 @@ def _axes(allocation: Allocation, sliding: set[LayerDim]) -> list[dict[str, Any]
 
 
 def _tensors(allocation: Allocation) -> list[dict[str, Any]]:
-    solution = allocation.solution
+    """Each tensor as the solution placed and buffered it, a transfer's copy at the window its reader holds."""
+    solution, workload, mapping = allocation.solution, allocation.problem.workload, allocation.problem.mapping
+    writers = {copy: tn for tn in workload.get_transfer_nodes() for copy in tn.outputs}
+    held = {t: workload.get_tensor_single_core(t, tn, mapping) for t, tn in writers.items() if t in allocation.ssis}
     return [
         {
             "name": t.name,
-            "shape": _shape(t),
-            "bits": int(t.size_bits()),
+            "shape": _shape(held.get(t, t)),
+            "bits": int(held.get(t, t).size_bits()),
             "loops": _loops(ssis),
             "placement": [memory.name for memory in solution.tensor_placements.get(t, ())],
             "reuse_level": solution.reuse_levels.get(t),
@@ -104,11 +108,12 @@ class _NodeDetail:
         }
 
     def compute(self, cn: ComputationNode) -> dict[str, Any]:
-        """Its cores, the output tile at each core position and whether a reader waits on it."""
+        """Its cores, how often it runs, the output tile at each core position and whether a reader waits on it."""
         tile = self.workload.get_tensor_single_core
         return {
             "dims": [str(dim) for dim in self.workload.get_dims(cn)],
             "loops": _loops(self.allocation.ssis.get(cn)),
+            "calls": self.allocation.problem.iterations // absent_trips(self.space.ssis[cn]),
             "cores": [core.id for core in self.space.cores(cn)],
             "tiles": [_shape(tile(cn.outputs[0], cn, self.mapping, p)) for p in range(self._positions(cn))],
             "waited_on": self.space.is_waited_on(cn),
@@ -116,9 +121,9 @@ class _NodeDetail:
         }
 
     def transfer(self, tn: TransferNode) -> dict[str, Any]:
-        """Its route, the window of each copy a target holds and what one firing moves to it, the halos its loops
-        keep, what each source hands each target, and the bits it moves. A target holds the copies of the nodes it
-        runs, each at its position among that copy's targets modulo the positions, as sources pair with targets."""
+        """Its loops, route, copies and the copy each target holds (the copy of a node the target runs), the window
+        and moved tile of that copy, each copy's halos, the demand each source serves at each target, the bits it moves
+        and the iterations one firing serves."""
         space, solution = self.space, self.allocation.solution
         route = solution.transfer_routes[tn]
         # Pair each copy with the targets it may land in; a target no copy may land in gets the first copy.
@@ -133,14 +138,18 @@ class _NodeDetail:
             for copy, p in at
         ]
         return {
+            "loops": _loops(self.allocation.ssis.get(tn)),
             "sources": [m.name for m in route.sources],
             "targets": [m.name for _, m in held],
+            "copy_names": [copy.name for copy in tn.outputs],
+            "target_copies": [tn.outputs.index(copy) for copy, _ in held],
             "links": [link_name(link) for link in route.links_used],
             "windows": [_shape(self.workload.get_tensor_single_core(copy, tn, self.mapping, p)) for copy, p in at],
             "moved": [_shape(tile) for tile in moved],
             "halos": [
-                {"dim": str(loop.dimension), "type": loop.type.name.lower(), "halo": loop.halo}
-                for loop in space.ssis.get(tn.outputs[0]) or ()
+                {"dim": str(loop.dimension), "type": loop.type.name.lower(), "halo": loop.halo, "copy": i}
+                for i, copy in enumerate(tn.outputs)
+                for loop in reversed(space.ssis[copy].variables)
                 if loop.halo
             ],
             "handed": [
@@ -149,7 +158,7 @@ class _NodeDetail:
             ],
             "moved_bits": 0 if space.choice_shares_memory(tn, route) else space.moved_bits(tn, route),
             "route_cycles": solution.route_cycles[tn],
-            "reuse_factor": solution.reuse_factors.get(tn),
+            "reuse_factor": reported_reuse(solution.reuse_factors[tn], space.ssis[tn]),
             **self._sliding(tn),
         }
 

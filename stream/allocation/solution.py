@@ -34,8 +34,8 @@ class AllocationSolution:
     depths: Mapping[Tensor, int]
     single_buffered: frozenset[Tensor]
     latency: Latency
-    slot_latencies: Mapping[int, float]
-    reuse_factors: Mapping[TransferNode, float]
+    slot_latencies: Mapping[int, int]
+    reuse_factors: Mapping[TransferNode, int]
     route_cycles: Mapping[TransferNode, int]
     primary_cost: float
     solve_stats: SolveStats
