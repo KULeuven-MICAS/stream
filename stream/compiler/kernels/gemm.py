@@ -42,7 +42,12 @@ class GemmKernel(AIEKernelWithZeroing):
 
     @property
     def library_name(self) -> str:
-        return self.function_name if self.precision == "medium" else f"{self.function_name}_{self.precision}"
+        """The library's entry: ``medium`` takes the entry of the call that sums into a float accumulator where the
+        library describes one, as a provider's binding builds it."""
+        if self.precision != "medium":
+            return f"{self.function_name}_{self.precision}"
+        summed = f"matmul_{self.element_type}_f32"
+        return summed if self.library is not None and self.library.spec(summed) is not None else self.function_name
 
     @property
     def function_name(self) -> str:
