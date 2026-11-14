@@ -48,14 +48,16 @@ class Layout:
             strides[axis], step = step, step * extent[axis]
         return tuple(strides)
 
-    def access(self, block: tuple[int, ...], extent: tuple[int, ...], walk: Layout) -> list[tuple[int, int]]:
+    def access(
+        self, block: tuple[int, ...], extent: tuple[int, ...], walk: Layout, index_steps: tuple[int, ...] | None = None
+    ) -> list[tuple[int, int]]:
         """The (size, stride) loops, outermost first, in elements, that visit ``block`` of a buffer of ``extent`` laid
-        out so in ``walk``'s axis order: loops of one element dropped and a loop continuing the one inside it merged
-        into it, as a DMA descriptor writes them."""
-        strides = self.strides(extent)
+        out so, every ``index_steps``-th index along each axis, in ``walk``'s axis order: loops of one element dropped
+        and a loop continuing the one inside it merged into it, as a DMA descriptor writes them."""
+        strides, index_steps = self.strides(extent), index_steps or (1,) * len(extent)
         loops: list[tuple[int, int]] = []
         for axis in reversed(walk.order):
-            size, stride = block[axis], strides[axis]
+            size, stride = block[axis], strides[axis] * index_steps[axis]
             if size == 1:
                 continue
             if loops and stride == loops[0][0] * loops[0][1]:
@@ -64,11 +66,19 @@ class Layout:
                 loops.insert(0, (size, stride))
         return loops or [(1, 1)]
 
-    def contiguous_bytes(self, block: tuple[int, ...], full: tuple[int, ...], element_bits: int) -> float:
+    def contiguous_bytes(
+        self,
+        block: tuple[int, ...],
+        full: tuple[int, ...],
+        element_bits: int,
+        index_steps: tuple[int, ...] | None = None,
+    ) -> float:
         """Bytes a ``block`` of a ``full`` tensor laid out so covers in one contiguous run: its innermost axes up to
-        and including the first it does not span whole."""
+        and including the first it does not span whole, up to the first read every ``index_steps``-th index only."""
         span = 1
         for axis in reversed(self.data_order(full)):
+            if index_steps and index_steps[axis] > 1:
+                break
             span *= block[axis]
             if block[axis] != full[axis]:
                 break
@@ -82,14 +92,16 @@ def shared_run_bytes(  # noqa: PLR0913
     one: Layout,
     other: Layout,
     extents: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
+    index_steps: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
 ) -> float:
     """Bytes of ``block`` contiguous in both layouts at once: the innermost axes they order alike, up to and including
-    the first the block does not span whole in either buffer (``extents``, the whole tensor where not given); one
-    element where their innermost axes differ."""
+    the first the block does not span whole in either buffer (``extents``, the whole tensor where not given), up to
+    the first either reads every ``index_steps``-th index of only; one element where their innermost axes differ."""
     first, second = extents or (full, full)
+    skips = {axis for side in index_steps or () for axis, step in enumerate(side) if step > 1}
     span = 1
     for axis, same in zip(reversed(one.data_order(full)), reversed(other.data_order(full)), strict=True):
-        if axis != same:
+        if axis != same or axis in skips:
             break
         span *= block[axis]
         if block[axis] != first[axis] or block[axis] != second[axis]:
@@ -117,17 +129,20 @@ def transfer_stream(  # noqa: PLR0913
     read_rate: Rate,
     write_rate: Rate,
     extents: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
+    *,
+    index_steps: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
 ) -> tuple[Layout, float, float]:
     """The layout a transfer streams ``block`` of a ``full`` tensor in, and the contiguous bytes per run it reads and
     writes, from a ``source`` layout to a ``target`` one, each in the buffer that side holds (``extents``: the
-    source's and the target's, the whole tensor where not given). Between two layouts the DMA gathers in the target's
-    order, reading runs only as long as the layouts share, or scatters in the source's order, writing such runs,
-    whichever the slower of its two sides moves faster."""
+    source's and the target's, the whole tensor where not given), at every ``index_steps``-th index along each axis
+    where given. Between two layouts the DMA gathers in the target's order, reading runs only as long as the layouts
+    share, or scatters in the source's order, writing such runs, whichever the slower of its two sides moves faster."""
     source_extent, target_extent = extents or (full, full)
-    read = source.contiguous_bytes(block, source_extent, element_bits)
-    write = target.contiguous_bytes(block, target_extent, element_bits)
+    source_steps, target_steps = index_steps or (None, None)
+    read = source.contiguous_bytes(block, source_extent, element_bits, source_steps)
+    write = target.contiguous_bytes(block, target_extent, element_bits, target_steps)
     if source.same_data_order(target, full):
         return source, read, write
-    shared = shared_run_bytes(block, full, element_bits, source, target, (source_extent, target_extent))
+    shared = shared_run_bytes(block, full, element_bits, source, target, (source_extent, target_extent), index_steps)
     gather, scatter = (target, shared, write), (source, read, shared)
     return max(gather, scatter, key=lambda runs: min(read_rate(runs[1]), write_rate(runs[2])))

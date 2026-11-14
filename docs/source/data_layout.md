@@ -65,6 +65,7 @@ loop the copy does not index), and describes both sides (`read`, `write`):
 |-------|---------|
 | `extent` | The buffer the copy sits in, per axis: the whole tensor off chip, the tile on chip |
 | `strides` | Elements between neighbours along each axis of that buffer, from its axis order |
+| `offset` | The element of that buffer the DMA starts at |
 | `access` | The `[size, stride]` loops, outermost first, in elements, the DMA walks the tile in on that side, in the order it streams; loops of one element dropped and a loop continuing the one inside it merged, as a DMA descriptor writes them |
 | `memory`, `port` | The memory and port the side passes (`measured` for a memory with a measured bandwidth) |
 | `bits_per_cycle`, `burst_bytes` | That port's contiguous rate and the bytes it moves per access, where declared |
@@ -72,3 +73,5 @@ loop the copy does not index), and describes both sides (`read`, `write`):
 
 A 64x64 weight tile of a 512x64 row-major tensor transposed into a core reads `[[64, 1], [64, 64]]`, one element
 at a stride of 64 per step, and writes `[[4096, 1]]`, one contiguous run.
+A copy of a strided read holds only the indices read: the DMA gathers them at that stride, starting at `offset`,
+and writes them in one run.
