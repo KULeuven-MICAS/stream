@@ -11,9 +11,10 @@ are the bytes that core holds.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
-from xdsl.dialects.builtin import bf16
+from xdsl.dialects.builtin import bf16, f32
 from xdsl.ir.affine import AffineMap
 
 from stream.datatypes import LayerDim
@@ -26,13 +27,14 @@ from stream.workload.workload import Workload
 pytest.importorskip("snaxc", reason="the AIE kernels are a separate install, via stream-setup-aie")
 
 from stream.compiler.kernels.aie_kernel import StateOperand  # noqa: E402
+from stream.stages.estimation.aie_cost_estimator import AIECostEstimator  # noqa: E402
 from stream.stages.generation.kernel_state import state_tensor  # noqa: E402
 
 QUERY, KEY, ROWS = 128, 256, 4
 IDENTITY = AffineMap.from_callable(lambda q, k: (q, k))
 
 
-def _softmax_with_state():
+def _softmax_with_state(element_type=None):
     scores = Tensor.create("scores", bf16, (QUERY, KEY))
     probs = Tensor.create("probs", bf16, (QUERY, KEY))
     node = ComputationNode(
@@ -43,7 +45,9 @@ def _softmax_with_state():
         operand_mapping=(IDENTITY, IDENTITY),
     )
     state, mapping = state_tensor(
-        node, StateOperand("flash_state", ROWS, carried_over="n", indexed_by="m"), {"m": 0, "n": 1}
+        node,
+        StateOperand("flash_state", ROWS, carried_over="n", indexed_by="m", element_type=element_type),
+        {"m": 0, "n": 1},
     )
     node = replace(node, inputs=(scores, state), operand_mapping=(IDENTITY, mapping, IDENTITY))
     workload = Workload([InEdge(name="scores_in", outputs=(scores,)), node, OutEdge(name="probs_out", inputs=(probs,))])
@@ -101,3 +105,12 @@ def test_the_state_keeps_its_declared_rows_whatever_the_key_is():
     mapping = Mapping({})
     mapping.set(node, NodeMapping(inter_core_tiling=(((key, 4),),)))
     assert workload.get_tensor_single_core(state, node, mapping).shape[0] == ROWS
+
+
+def test_a_float_state_is_held_at_its_type_beside_the_bf16_the_kernel_computes_on():
+    """mha.cc keeps the running state in float next to bf16 scores: the state is charged at 32 bits, and the core
+    still computes at the bf16 rate."""
+    workload, node, state, _ = _softmax_with_state(f32)
+    assert state.operand_type == f32 and state.size_bits() == 32 * ROWS * QUERY
+    core = SimpleNamespace(core_type="aie2.compute")
+    assert AIECostEstimator(workload, Mapping({})).ops_per_cycle(node, core) == 32

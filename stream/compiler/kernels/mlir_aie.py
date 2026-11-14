@@ -3,6 +3,8 @@
 Imported only when codegen binds a call; each provider takes the target ``npu`` and the call's dimensions.
 """
 
+from typing import get_args
+
 import numpy as np
 from aie.iron import ExternalFunction
 from aie.iron.device import from_name
@@ -12,15 +14,15 @@ from ml_dtypes import bfloat16
 
 from stream.compiler.kernels.flash import SCALE_ROWS
 
-INDEX = np.ndarray[(2,), np.dtype[np.int32]]
+INDEX = np.ndarray[(3,), np.dtype[np.int32]]
 
 
-def _tile(size: int) -> type[np.ndarray]:
-    return np.ndarray[(size,), np.dtype[bfloat16]]
+def _tile(size: int, dtype: type = bfloat16) -> type[np.ndarray]:
+    return np.ndarray[(size,), np.dtype[dtype]]
 
 
 def _scale(rows: int) -> type[np.ndarray]:
-    return _tile(SCALE_ROWS * rows)
+    return _tile(SCALE_ROWS * rows, np.float32)
 
 
 def _target(npu: str) -> None:
@@ -34,7 +36,7 @@ def mm(npu: str, m: int, k: int, n: int) -> linalg.MatrixKernel:
 
 def silu(npu: str, m: int, n: int) -> ExternalFunction:
     _target(npu)
-    return activation.silu_sized(m * n)
+    return activation.silu(m * n, use_lut=True)
 
 
 def mul(npu: str, m: int, n: int) -> ExternalFunction:
@@ -43,8 +45,8 @@ def mul(npu: str, m: int, n: int) -> ExternalFunction:
 
 
 class Entry(ExternalFunction):
-    """An entry point of ``owner``'s object that mlir-aie builds but does not declare yet,
-    with the calls the flash kernels make beside it on a ``rows``-query block."""
+    """An entry point of ``owner``'s object, with the calls the flash kernels make beside it on a
+    ``rows``-query block, which mlir-aie builds but does not declare."""
 
     def __init__(self, owner: ExternalFunction, symbol: str, arg_types: list, rows: int = 0) -> None:
         super().__init__(
@@ -68,12 +70,15 @@ class Entry(ExternalFunction):
 
     @property
     def rescale_O(self) -> "Entry":
-        return Entry(self.owner, "rescale_O", [self.owner.arg_types()[2], self.scale, np.int32, INDEX], self.rows)
+        """The float accumulator divided by the row sums into a bf16 output of its size."""
+        accumulator = self.owner.arg_types()[2]
+        output = _tile(get_args(accumulator)[0][0])
+        return Entry(self.owner, "rescale_O", [accumulator, output, self.scale, np.int32, INDEX], self.rows)
 
     @property
     def passThroughLine(self) -> "Entry":
-        """The copy of 16-bit lanes that hands the running scale on, declared on the bf16 buffers it copies."""
-        copy = eltwise.passthrough(SCALE_ROWS * self.rows, np.int16)
+        """The copy of 32-bit lanes that hands the running scale on, declared on the float buffers it copies."""
+        copy = eltwise.passthrough(SCALE_ROWS * self.rows, np.int32)
         return Entry(copy, "passThroughLine", [self.scale, self.scale, np.int32], self.rows)
 
 
@@ -91,8 +96,10 @@ def partial_softmax(npu: str, m: int, n: int) -> Entry:
 
 
 def matmul_pv(npu: str, m: int, k: int, n: int) -> Entry:
-    mha = _mha(npu, m, k, n)
-    return Entry(mha, "matmul_PV", [*mha.arg_types()[:3], _scale(m), np.int32, np.int32, INDEX, np.int32], m)
+    """``O += P V`` into a float accumulator, as mlir-aie declares it: P m queries by k keys, V k keys by n."""
+    _target(npu)
+    pv = linalg.mha(dim_m=m, dim_k=n, dim_n=k, pv=True, float_o=True, emulate_bf16_mmul_with_bfp16=True)
+    return Entry(pv, "matmul_PV", pv.arg_types(), m)
 
 
 def softmax_rows(npu: str, m: int, n: int) -> Entry:

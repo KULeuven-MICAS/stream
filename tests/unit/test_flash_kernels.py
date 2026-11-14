@@ -241,17 +241,19 @@ def test_only_the_kernels_that_carry_a_running_scale_declare_state():
     }
 
 
-def test_the_declared_state_is_the_size_the_core_buffer_holds():
+def test_the_declared_state_is_the_size_the_core_buffer_holds(column):
     """The declaration and the allocation are two statements of one fact, so they are checked
     against each other rather than both against a number written twice."""
-    from stream.compiler.kernels.flash import SCALE_ROWS
+    from xdsl_aie.dialects.aie import BufferOp
+
     from stream.compiler.kernels.registry import AIE_KERNELS
 
     kernel = AIE_KERNELS["partial_softmax"](n=TILE, layout="contiguous", m=TILE)
     (state,) = kernel.state_operands()
-    # _core_buffer allocates SCALE_ROWS * m elements; the declaration says rows per step, and
-    # the node supplies the query extent that a split then divides.
-    assert state.rows * kernel.m == SCALE_ROWS * kernel.m
+    (buffer,) = (op for op in column.walk() if isinstance(op, BufferOp) and op.sym_name.data.startswith("flash_state"))
+    # The declaration says rows per step, and the node supplies the query extent that a split then divides.
+    assert buffer.buffer.type.get_shape() == (state.rows * kernel.m,)
+    assert buffer.buffer.type.element_type == state.element_type
     assert (state.carried_over, state.indexed_by) == ("n", "m")
 
 
@@ -260,3 +262,102 @@ def test_an_unsplit_step_still_hands_its_scale_on(unsplit):
     from xdsl_aie.dialects.aie import ObjectFifoOp
 
     assert [op.sym_name.data for op in unsplit.walk() if isinstance(op, ObjectFifoOp)] == ["flash_scale_0_1_0_2"]
+
+
+def _array(size, dtype):
+    import numpy as np
+
+    return np.ndarray[(size,), np.dtype[dtype]]
+
+
+def _flash_entries(m, keys, head):
+    """Each flash entry point of mha.cc the providers bind, at an m-query block over ``keys`` keys of a ``head``-wide
+    value: the softmax side's on a square block, as mha.cc sizes it, the value side's at the shape given."""
+    from stream.compiler.kernels import mlir_aie
+
+    softmax, context = mlir_aie.partial_softmax("npu2", m, keys), mlir_aie.matmul_pv("npu2", m, keys, head)
+    return {
+        "partial_softmax": softmax,
+        "init_scale_buffer": softmax.init_scale_buffer,
+        "matmul_PV": context,
+        "rescale_O": context.rescale_O,
+    }
+
+
+@pytest.mark.parametrize("m", [32, 64])
+def test_the_flash_entries_take_mlir_aie_1_4_6s_arguments(m):
+    """mlir-aie 1.4.6 keeps O and the running state in float, and ``rescale_O`` writes O into a bf16 output: a binding
+    that still passed bf16 compiled, linked and computed garbage."""
+    import numpy as np
+    from ml_dtypes import bfloat16
+
+    keys, head = 32, 64
+    index, state = _array(3, np.int32), _array(4 * m, np.float32)
+    expected = {
+        "partial_softmax": [
+            _array(m * keys, bfloat16),
+            _array(m * keys, bfloat16),
+            state,
+            index,
+            bfloat16,
+            *[np.int32] * 4,
+        ],
+        "init_scale_buffer": [state, np.int32],
+        "matmul_PV": [
+            _array(m * keys, bfloat16),
+            _array(keys * head, bfloat16),
+            _array(m * head, np.float32),
+            state,
+            np.int32,
+            np.int32,
+            index,
+            np.int32,
+        ],
+        "rescale_O": [_array(m * head, np.float32), _array(m * head, bfloat16), state, np.int32, index],
+    }
+    assert {name: entry.arg_types() for name, entry in _flash_entries(m, keys, head).items()} == expected
+
+
+def test_the_flash_entries_take_what_mha_cc_defines():
+    """Arity and element types against the C definitions in the source the bindings compile; ``score_t`` is bf16, as
+    no binding builds ``MHA_F32_SCORES``."""
+    import re
+    from pathlib import Path
+    from typing import get_args
+
+    import numpy as np
+    from ml_dtypes import bfloat16
+
+    c_types = {"bfloat16": bfloat16, "score_t": bfloat16, "float": np.float32, "int32_t": np.int32}
+    for name, entry in _flash_entries(64, 64, 64).items():
+        source = Path(entry.source_file).read_text()
+        (parameters,) = re.findall(rf"^void {name}\(([^)]*)\)\s*{{", source, re.MULTILINE)
+        defined = []
+        for parameter in parameters.split(","):
+            words = re.sub(r"\bconst\b|\b__restrict\b|\*", " ", parameter).split()
+            defined.append(("*" in parameter, np.dtype(c_types[words[0]])))
+        declared = [
+            (True, np.dtype(get_args(get_args(arg)[1])[0])) if get_args(arg) else (False, np.dtype(arg))
+            for arg in entry.arg_types()
+        ]
+        assert declared == defined, name
+
+
+def test_the_value_core_accumulates_in_float_and_rescales_into_the_output(column):
+    """``matmul_PV`` adds into the core's float buffer, which it zeroes on the first key block itself, and the closing
+    ``rescale_O`` writes that buffer into the bf16 output tile."""
+    from math import prod
+
+    from xdsl.dialects.builtin import MemRefType, bf16, f32
+    from xdsl.dialects.func import CallOp
+    from xdsl_aie.dialects.aie import CoreOp
+
+    pv, rescale = _call(column, "matmul_PV"), _call(column, "rescale_O")
+    accumulator, output = rescale.arguments[0], rescale.arguments[1]
+    assert pv.arguments[2] is accumulator and accumulator.type == MemRefType(f32, (TILE * TILE,))
+    assert output.type.element_type == bf16 and prod(output.type.get_shape()) == TILE * TILE
+    core = pv.parent_op()
+    while not isinstance(core, CoreOp):
+        core = core.parent_op()
+    calls = [op.callee.root_reference.data for op in core.walk() if isinstance(op, CallOp)]
+    assert not any(callee.endswith("zero") for callee in calls)

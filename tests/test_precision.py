@@ -15,6 +15,7 @@ from tpu_quad import tpu_quad
 from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.hardware.cost import running_sum_format
 from stream.hardware.ports import OUTPUT, READ, READ_BY_DATAPATH, WRITE, WRITE_BY_DATAPATH
 from stream.ir import AllocationIR
 from stream.opt.allocation.constraint_optimization.families.traffic import _running_sum_traffic
@@ -288,6 +289,25 @@ fused_groups:
 REDUCTION = [(None, 16), ("int32", 32)]
 """tpu_like_quad_core's int32 accumulators exchanging partial sums at the bf16 outputs' type, or declaring an int32
 reduction: the bits per partial sum."""
+
+
+@pytest.mark.parametrize(
+    ("fused", "split", "found"), [({1}, set(), "fp32"), (set(), {1}, None)], ids=["fused", "split"]
+)
+def test_a_kernels_accumulator_takes_the_place_of_the_cores(tmp_path, fused, split, found):
+    """A kernel that sums into an fp32 buffer of its own (mlir-aie's ``matmul_PV``) on a core whose accumulator, fp16,
+    is no wider than the bf16 output: the running sum across a fused loop is held at fp32; a split over cores alone
+    leaves each core's finished share at the output's type."""
+    path = _mlp(tmp_path / "mlp.onnx")
+    ctx = StageContext.from_kwargs(accelerator=TPU_QUAD, workload_path=path, output_path=str(tmp_path))
+    out = MainStage([AcceleratorParserStage, ONNXModelParserStage, LeafStage], ctx).run()[0]
+    workload = out.get("workload")
+    (gemm2,) = (n for n in workload.get_computation_nodes() if n.name == "Gemm2")
+    core = copy.copy(out.get("accelerator").get_core(0))
+    core.operand_precision = {"input": "int8", "accumulator": "fp16"}
+    dims = [workload.leading_dim(d)[0] for d in workload.get_dims(gemm2)]
+    picked = ({dims[i] for i in fused}, {dims[i] for i in split})
+    assert running_sum_format(workload, gemm2, [core], *picked, accumulator="fp32") == found
 
 
 @pytest.mark.parametrize(("reduction", "bits"), REDUCTION)

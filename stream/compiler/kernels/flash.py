@@ -6,7 +6,7 @@ contraction, and the nonlinearity -- a running row maximum and sum -- lives insi
 kernel. So to the tiling machinery these are an ordinary elementwise node and an
 ordinary GEMM node, and the key is freely blockable with nothing relaxed.
 
-The running state is ``mha.cc``'s scale buffer, four ``B_q``-long rows holding
+The running state is ``mha.cc``'s float scale buffer, four ``B_q``-long rows holding
 ``[m_{i-1} | m_i | l_i | exp2(m_{i-1} - m_i)]``. ``partial_softmax`` writes it and
 ``matmul_PV``/``rescale_O`` read it, and the two cannot share a core: the probability
 block leaves ``partial_softmax`` row major and reaches ``matmul_PV`` in the MAC tiling,
@@ -77,7 +77,7 @@ from stream.compiler.kernels.softmax import SoftmaxKernel
 SCALE_ROWS = 4
 
 # The running scale, carried over the key block ``n`` and indexed by the query block ``m``.
-STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over="n", indexed_by="m", handover=2)
+STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over="n", indexed_by="m", handover=2, element_type=f32)
 """Rows of ``B_q`` the scale buffer holds: m_{i-1}, m_i, l_i and exp2(m_{i-1} - m_i)."""
 
 SNAPSHOT, SNAPSHOT_OBJECT = "passThroughLine", "mha_passThrough.o"
@@ -234,8 +234,8 @@ def _core_buffer(
 
 
 def _index_buffer(device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
-    """``[kv_block, q_block]``, which every mha.cc entry point takes as a pointer."""
-    return _core_buffer(device, tile, "index", i32, 2, rewriter)
+    """``[kv_block, q_block, row_offset]``, which every mha.cc entry point takes as a pointer."""
+    return _core_buffer(device, tile, "index", i32, 3, rewriter)
 
 
 def _scale_fifo(
@@ -370,11 +370,15 @@ def _block_index(op: ComputationNodeOp, dim) -> tuple[list[Operation], SSAValue,
 
 
 def _store_index(buffer: SSAValue, key: SSAValue, query: SSAValue) -> list[Operation]:
+    """The block indices, the query block starting at its first row."""
     return [
         first := ConstantOp.from_int_and_width(0, IndexType()),
         second := ConstantOp.from_int_and_width(1, IndexType()),
+        third := ConstantOp.from_int_and_width(2, IndexType()),
+        offset := ConstantOp.from_int_and_width(0, i32),
         StoreOp.get(key, buffer, [first.result]),
         StoreOp.get(query, buffer, [second.result]),
+        StoreOp.get(offset.result, buffer, [third.result]),
     ]
 
 
@@ -458,11 +462,11 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
         for target in _partners(device, op, "matmul_PV"):
-            _scale_fifo(device, rewriter, tile, target, self.element_type, SCALE_ROWS * self.m)
+            _scale_fifo(device, rewriter, tile, target, f32, SCALE_ROWS * self.m)
         AIEKernel.rewrite(self, op, rewriter, bindings)
 
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
-        return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
+        return _core_buffer(device, tile, "state", f32, SCALE_ROWS * self.m, rewriter)
 
     def state_operands(self) -> Sequence[StateOperand]:
         """The online softmax's running maximum and sum, carried from one key block to the next.
@@ -519,7 +523,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
             _partners(device, op, "matmul_PV"),
             state,
             width.result,
-            self.element_type,
+            f32,
             SCALE_ROWS * self.m,
         )
         return ops
@@ -546,7 +550,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         return "matmul_softmax"
 
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
-        return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
+        return _core_buffer(device, tile, "state", f32, SCALE_ROWS * self.m, rewriter)
 
     def state_operands(self) -> Sequence[StateOperand]:
         """The online softmax's running maximum and sum, carried from one key block to the next.
@@ -561,7 +565,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
         for target in _partners(device, op, "matmul_PV"):
-            _scale_fifo(device, rewriter, tile, target, self.element_type, SCALE_ROWS * self.m)
+            _scale_fifo(device, rewriter, tile, target, f32, SCALE_ROWS * self.m)
         GemmKernel.rewrite(self, op, rewriter, bindings)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
@@ -609,7 +613,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
             _partners(device, op, "matmul_PV"),
             state,
             width.result,
-            self.element_type,
+            f32,
             SCALE_ROWS * self.m,
         )
         return ops
@@ -623,18 +627,29 @@ class FlashKernel(GemmKernel):
     the running state buys: the context is scaled by ``exp2(m_{i-1} - m_i)`` before every
     block after the first, and divided by the final row sum after the last one. The key
     is the contraction, so the context stays on the compute tile across the key loop by
-    the same reuse the backend already gives a GEMM's output.
+    the same reuse the backend already gives a GEMM's output. It accumulates in a float
+    buffer of the core's own, which the closing rescale writes into the output.
     """
+
+    ACCUMULATOR: ClassVar[str | None] = "fp32"
 
     @property
     def function_name(self) -> str:
         return "matmul_PV"
 
+    def initialize(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> list[CallOp]:
+        """Nothing: ``matmul_PV`` zeroes the accumulator on the first key block, and ``rescale_O`` writes every row."""
+        return []
+
+    def _accumulator(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
+        return _core_buffer(device, tile, "accumulator", f32, self.m * self.n, rewriter)
+
     def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter, bindings: Bindings) -> None:
         device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
+        self._accumulator(device, tile, rewriter)
         for source in _partners(device, op, SCORE_SIDE):
-            _scale_fifo(device, rewriter, source, tile, self.element_type, SCALE_ROWS * self.m)
+            _scale_fifo(device, rewriter, source, tile, f32, SCALE_ROWS * self.m)
         GemmKernel.rewrite(self, op, rewriter, bindings)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
@@ -681,9 +696,10 @@ class FlashKernel(GemmKernel):
             1,
             _scale_name(source, _tile(op)),
             (SCALE_ROWS * self.m,),
-            self.element_type,
+            f32,
         )
         scale = acquire.results[0]
+        accumulator = self._accumulator(device_of(op), _tile(op))
         return [
             acquire,
             rows := ConstantOp.from_int_and_width(self.m, i32),
@@ -696,7 +712,7 @@ class FlashKernel(GemmKernel):
             keys := ConstantOp.from_int_and_width(key_blocks * self.k, i32),
             CallOp(
                 self.function_name,
-                [op.inputs[0], op.inputs[1], op.inputs[2], scale, rows.result, carried.result, index, keys.result],
+                [op.inputs[0], op.inputs[1], accumulator, scale, rows.result, carried.result, index, keys.result],
                 [],
             ),
             last := ConstantOp.from_int_and_width(key_blocks - 1, i32),
@@ -704,7 +720,9 @@ class FlashKernel(GemmKernel):
             IfOp(
                 closing,
                 [],
-                Region(Block([CallOp("rescale_O", [op.inputs[2], scale, rows.result, index], []), YieldOp()])),
+                Region(
+                    Block([CallOp("rescale_O", [accumulator, op.inputs[2], scale, rows.result, index], []), YieldOp()])
+                ),
             ),
             ObjectFIFOReleaseOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),

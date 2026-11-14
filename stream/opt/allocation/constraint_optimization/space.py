@@ -381,7 +381,9 @@ class DecisionSpace:
         partial-sum format where only its split over cores does. None otherwise."""
         if (node := self.producers.get(t)) is None:
             return None
-        return running_sum_bits(self.workload, node, self.cores(node), *self._top_memory_cuts(t))
+        return running_sum_bits(
+            self.workload, node, self.cores(node), *self._top_memory_cuts(t), self._accumulator(node)
+        )
 
     def partial_sum_element_bits(self, t: Tensor) -> int:
         """Bits per element the cores of ``t``'s producer send each other their partial sums of ``t`` in: the
@@ -406,8 +408,15 @@ class DecisionSpace:
 
     def running_sum_format(self, t: Tensor) -> str | None:
         """The format ``t`` is held in while it is a running sum, else None."""
-        node = self.producers.get(t)
-        return running_sum_format(self.workload, node, self.cores(node), *self._top_memory_cuts(t)) if node else None
+        if (node := self.producers.get(t)) is None:
+            return None
+        return running_sum_format(
+            self.workload, node, self.cores(node), *self._top_memory_cuts(t), self._accumulator(node)
+        )
+
+    def _accumulator(self, node: ComputationNode) -> str | None:
+        """The format ``node``'s kernel keeps its running sum in, where it declares one."""
+        return getattr(self.mapping.get(node).kernel, "ACCUMULATOR", None)
 
     def element_bits(self, t: Tensor) -> int:
         """Bits per element ``t`` is held at: a running sum's width (:meth:`running_sum_bits`), else its type's."""

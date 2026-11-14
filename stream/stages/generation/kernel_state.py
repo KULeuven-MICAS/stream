@@ -41,7 +41,8 @@ def state_tensor(node: ComputationNode, state, positions: dict[str, int]) -> tup
     dims = max(rank, carried + 1, index + 1)
     carry: AffineExpr = AffineDimExpr(carried) - 1
     mapping = AffineMap(dims, 0, (carry, AffineDimExpr(index)))
-    tensor = Tensor.create(f"{state.name}_{node.name}", node.outputs[0].operand_type, (state.rows, indexed))
+    element_type = state.element_type or node.outputs[0].operand_type
+    tensor = Tensor.create(f"{state.name}_{node.name}", element_type, (state.rows, indexed))
     return tensor, mapping
 
 

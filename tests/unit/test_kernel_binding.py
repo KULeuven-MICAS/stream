@@ -162,3 +162,17 @@ def test_the_recorded_bindings_rebuild_the_objects_the_design_links(tmp_path):
     bindings.write(tmp_path / "kernels.json")
     rebuilt = load_bindings(tmp_path / "kernels.json")
     assert {(b.name, b.object_file_name) for b in rebuilt} == set(_declarations(device).items())
+
+
+def test_silu_binds_mlir_aies_lut_build_of_the_sized_entry_point():
+    """SiLU computes tanh from the interpolated table, as upstream IRON's SiLU does, through ``(in, out, size)``."""
+    pytest.importorskip("aie.iron.kernels", reason="the library binds SiLU through mlir-aie")
+    from ml_dtypes import bfloat16
+
+    from stream.compiler.kernels.mlir_aie import silu
+
+    binding = silu("npu2", 32, 64)
+    tile = np.ndarray[(2048,), np.dtype[bfloat16]]
+    assert binding.name.endswith("_silu_bf16_size")
+    assert binding.arg_types() == [tile, tile, np.int32]
+    assert "-DACTIVATIONS_TANH_LUT=1" in binding.compile_flags
