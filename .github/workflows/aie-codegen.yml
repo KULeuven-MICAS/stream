@@ -20,6 +20,8 @@ on:
       - "stream/compiler/**"
       - "stream/inputs/aie/**"
       - "tests/integration/test_aie_codegen.py"
+      - "tests/fixtures/aie/**"
+      - "tests/integration/test_aie_buffer_accounting.py"
       - ".github/workflows/aie-codegen.yml"
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC -- catches upstream wheel-index rotation
@@ -85,4 +87,4 @@ jobs:
         # ending in the element-wise multiply, whose terminal transfer back to DRAM once failed codegen.
         run: |
           python -m pip install pytest
-          python -m pytest tests/integration/test_aie_codegen.py -m slow -q -p no:cacheprovider
+          python -m pytest tests/integration/test_aie_codegen.py tests/integration/test_aie_buffer_accounting.py -m slow -q -p no:cacheprovider

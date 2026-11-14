@@ -59,7 +59,6 @@ from stream.compiler.dialects.stream import (
     StrensorVarType,
     YieldOp,
 )
-from stream.compiler.fifo_depths import FifoDepths, elem_bits, object_bytes
 from stream.compiler.transforms.aie_tiles import COMPUTE, MEMORY, OFFCHIP, AIETileLocation
 from stream.compiler.transforms.unroll import iterate_spat_vars
 from stream.datatypes import LayerDim
@@ -310,23 +309,9 @@ class ChannelToObjectFifoPass(RewritePattern):
     shim_tiles: dict[int, SSAValue]
     tiles: Mapping[str, AIETileLocation]
     of_count: int = 0
-    depths: FifoDepths | None = None
     """
     Converts channels to object fifo definitions
     """
-
-    def pick_depths(
-        self,
-        depths: Sequence[int | float],
-        tiles: tuple[SSAValue, ...],
-        element_type: Attribute,
-        shape: Iterable[int],
-        feed: bool = True,
-    ) -> tuple[int, ...]:
-        counts = tuple(int(d) for d in depths)
-        if self.depths is None:
-            return counts
-        return self.depths.deepen(counts, tiles, object_bytes(elem_bits(element_type), tuple(shape)), feed=feed)
 
     def compute_to_mem(
         self,
@@ -361,6 +346,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 )
 
                 switch_join: list[ObjectFifoOp] = []
+                assert isinstance(target_type := target.output.type, StrensorType)
 
                 # find correct consumer:
                 for j, join in enumerate(iterate_spat_vars(join_dims)):
@@ -374,19 +360,13 @@ class ChannelToObjectFifoPass(RewritePattern):
                     # number of elements is the kernel shape
                     local_shape = source_type.get_local_shape()
                     assert len(local_shape) <= 1
-                    num_elements = max((2, prod(local_shape)))
+                    num_elements = max((self.held_count(source_type), prod(local_shape)))
 
                     object_fifo = ObjectFifoOp.from_referenced_type(
                         self.get_tile(source),
                         [self.get_tile(target)],
                         name_base + f"join_{i}_{j}",
-                        self.pick_depths(
-                            (num_elements, 2),
-                            (self.get_tile(source), self.get_tile(target)),
-                            source_type.get_element_type(),
-                            source_type.get_kernel_shape(),
-                            feed=False,
-                        ),
+                        (num_elements, self.held_count(target_type)),
                         source_type.get_element_type(),
                         source_type.get_kernel_shape(),
                     )
@@ -414,17 +394,12 @@ class ChannelToObjectFifoPass(RewritePattern):
                     if c.spatial_index is not None and set(spatial) <= set(c.spatial_index.data.vars)
                 )
                 assert isinstance(source_type := source.input.type, StrensorType)
+                assert isinstance(target_type := target.output.type, StrensorType)
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     self.get_tile(source),
                     [self.get_tile(target)],
                     name_base + f"unicast_{i}",
-                    self.pick_depths(
-                        (2, 2),
-                        (self.get_tile(source), self.get_tile(target)),
-                        source_type.get_element_type(),
-                        source_type.get_kernel_shape(),
-                        feed=False,
-                    ),
+                    (self.held_count(source_type), self.held_count(target_type)),
                     source_type.get_element_type(),
                     source_type.get_kernel_shape(),
                 )
@@ -707,12 +682,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     producer_tile,
                     consumer_tiles,
                     name_base + f"{s}_{i}",
-                    self.pick_depths(
-                        (self.held_count(source_type),) + (num_elements,) * len(consumer_tiles),
-                        (producer_tile, *consumer_tiles),
-                        target_type.get_element_type(),
-                        target_type.get_kernel_shape(),
-                    ),
+                    (self.held_count(source_type),) + (num_elements,) * len(consumer_tiles),
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                     repeat_count=repeat,
@@ -776,13 +746,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     shim_tile,
                     [self.get_tile(target)],
                     name_base + f"mem_{i}",
-                    self.pick_depths(
-                        (held, held),
-                        (shim_tile, self.get_tile(target)),
-                        target_type.get_element_type(),
-                        self.held_shape(target_type),
-                        feed=False,
-                    ),
+                    (held, held),
                     target_type.get_element_type(),
                     self.held_shape(target_type),
                 )
@@ -806,13 +770,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=self.pick_depths(
-                    (held,) * (1 + len(consumer_tiles)),
-                    (producer_tile, *consumer_tiles),
-                    strensor.get_element_type(),
-                    self.held_shape(strensor),
-                    feed=False,
-                ),
+                elemNumber=(held,) * (1 + len(consumer_tiles)),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -856,13 +814,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [shim_tile],
                     name_base + f"mem_{j}",
-                    self.pick_depths(
-                        (2, 2),
-                        (self.get_tile(source), shim_tile),
-                        source_type.get_element_type(),
-                        self.held_shape(source_type),
-                        feed=False,
-                    ),
+                    (self.held_count(source_type),) * 2,
                     source_type.get_element_type(),
                     self.held_shape(source_type),
                 )
@@ -893,13 +845,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=self.pick_depths(
-                    (2,) * (1 + len(consumer_tiles)),
-                    (producer_tile, *consumer_tiles),
-                    strensor.get_element_type(),
-                    self.held_shape(strensor),
-                    feed=False,
-                ),
+                elemNumber=(self.held_count(strensor),) * (1 + len(consumer_tiles)),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -924,11 +870,13 @@ class ChannelToObjectFifoPass(RewritePattern):
 
     @staticmethod
     def held_count(strensor: StrensorType) -> int:
-        """Buffers of one fifo element a tile holds: one when nothing varies outside the tensor's reuse window, so
-        the fifo hands over the same data every iteration, otherwise the buffers the allocator chose."""
+        """Buffers of one fifo element a tile holds: one when no loop of more than one trip runs outside the tensor's
+        reuse window, so the fifo hands over the same data every iteration, otherwise the buffers the allocator
+        chose."""
         variables = strensor.ssis.data.vars
         outer = variables[: len(variables) - strensor.reuse_index.data]
-        return strensor.buffers.data if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
+        moving = any(var.type == StrensorVarType.TEMPORAL and var.size > 1 for var in outer)
+        return strensor.buffers.data if moving else 1
 
     def held_shape(self, strensor: StrensorType) -> tuple[int, ...]:
         """The shape the tile this strensor lives on holds of it.
@@ -1885,7 +1833,6 @@ class AIEConvertOfs(ModulePass):
 
     name = "aie-convert-ofs"
     tiles: Mapping[str, AIETileLocation]
-    depths: FifoDepths | None = None
     # The buffer descriptors a shim tile has and the steps one iterates; without both every loop stays unrolled.
     shim_descriptors: int = 0
     shim_iterations: int = 0
@@ -1895,7 +1842,7 @@ class AIEConvertOfs(ModulePass):
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
         shim_tiles = {column: TileOp(column, 0) for column in range(NB_COLUMNS)}
         PatternRewriteWalker(
-            ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()}, self.tiles, depths=self.depths)
+            ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()}, self.tiles)
         ).rewrite_module(op)
         Rewriter().insert_op(
             [x for x in shim_tiles.values() if x.result.uses], InsertPoint.at_start(device.region.block)

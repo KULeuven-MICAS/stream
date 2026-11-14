@@ -441,6 +441,8 @@ def memory_occupancy(ctx: FormulationContext) -> list[dict[str, Any]]:
         handed = ledger.handover_bits.get(memory, 0)
         if handed:
             per_tensor["handover"] = handed
+        if scratch := space.kernel_scratch.get(memory, 0):
+            per_tensor["kernel scratch"] = scratch
         resident = sum(per_tensor.values())
         capacity = space.memory_capacity_bits(memory)
         rows.append(
