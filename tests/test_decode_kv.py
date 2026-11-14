@@ -35,8 +35,16 @@ from stream.inputs.testing.workload.make_decode_attention import (
     make_flash_decoding,
 )
 from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.mapping.mapping import viewed_placements
+from stream.opt.allocation.constraint_optimization.families.traffic import link_name
+from stream.stages.context import StageContext
+from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
+from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
+from stream.stages.stage import LeafStage, MainStage
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import ComputationNode
+from stream.workload.normalization import expand_normalizations
 from stream.workload.utils import determine_fusion_splits
 
 BY_HEADS, BY_BATCH, BY_SEQUENCE = split_on(1), split_on(0), split_on(2)
@@ -58,26 +66,40 @@ def _placements(cache, q=BY_HEADS):
     return {"q": q, "K": cache, "V": cache, "O": BY_HEADS}
 
 
-def _decode(
-    tmp_path, hardware, placements, batch=1, context=None, make=make_decode_attention, mapping=None, parts=None
+def _decode(  # noqa: PLR0913
+    tmp_path,
+    hardware,
+    placements,
+    batch=1,
+    context=None,
+    make=make_decode_attention,
+    mapping=None,
+    parts=None,
+    *,
+    cut_points=None,
 ):
     """``make``'s decode step on ``hardware`` mapped by the generic generator from a mapping file that only places
-    its edges, its attention split into ``parts`` if given, or as ``mapping`` maps it."""
+    its edges, its attention split into ``parts`` if given and cut at ``cut_points`` if given, or as ``mapping`` maps
+    it."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     workload = make(tmp_path / "decode.onnx", batch, context or CONTEXT[hardware])
     accelerator = _hardware(hardware) if isinstance(hardware, str) else hardware
-    return solve(accelerator, workload, tmp_path, {"runtime_args": placements} | (mapping or {}), attention_parts=parts)
+    mapping = {"runtime_args": placements} | (mapping or {})
+    return solve(accelerator, workload, tmp_path, mapping, attention_parts=parts, fusion_cut_points=cut_points)
 
 
 @pytest.fixture(scope="module")
 def by_heads(tmp_path_factory):
-    """The decode step on the named hardware, its cache split by KV heads as the cores split them, solved once."""
+    """The decode step on the named hardware, its cache split by KV heads as the cores split them, fused in one group
+    whose allocation gives the cache's routes, solved once."""
     solved = {}
 
     def solve_once(name, context=None):
         key = (name, context or CONTEXT[name])
         if key not in solved:
-            solved[key] = _decode(tmp_path_factory.mktemp(name), name, _placements(BY_HEADS), context=key[1])
+            solved[key] = _decode(
+                tmp_path_factory.mktemp(name), name, _placements(BY_HEADS), context=key[1], cut_points=[]
+            )
         return solved[key]
 
     return solve_once
@@ -94,16 +116,18 @@ def _cache_bits(batch, context):
 
 
 def _link_bits(estimate):
-    """Bits per firing each tensor's transfers carry over each link, by tensor name and the link's memories."""
-    allocation = estimate.context.get("allocation")
+    """Bits per firing each tensor's transfers carry over each link in every group, by tensor name and the link's
+    memories, as each group's allocation reports them."""
+    links = {data["cl"] for *_, data in estimate.context.get("accelerator").network.edges(data=True)}
+    memories = {link_name(link): tuple(sorted(memory.name for memory in link.memories)) for link in links}
     bits: dict[str, dict[tuple[str, ...], float]] = {}
-    for tr in allocation.problem.workload.get_transfer_nodes():
-        route = allocation.mapping.get(tr).resource_allocation[0]
-        moved = allocation.space.moved_bits(tr, route)
-        per_link = bits.setdefault(tr.inputs[0].name, {})
-        for link, share in route.link_shares:
-            key = tuple(sorted(memory.name for memory in link.memories))
-            per_link[key] = per_link.get(key, 0) + share * moved
+    for group in estimate.context.get("group_allocations").values():
+        for node in group["steady_state"]["tiled_graph"]["nodes"]:
+            if node["kind"] != "transfer":
+                continue
+            per_link = bits.setdefault(node["name"].removeprefix("Transfer(").removesuffix(")"), {})
+            for link, carried in zip(node["links"], node["link_bits"], strict=True):
+                per_link[memories[link]] = per_link.get(memories[link], 0) + carried
     return bits
 
 
@@ -168,7 +192,7 @@ POOLED_CROSSINGS = {
 def test_a_cache_pooled_in_one_slice_s_hbm_waits_on_that_hbm_or_the_slowest_link_out(tmp_path, hardware):
     """Three quarters of the cache leave the first slice, half of it over the slowest link the ring or ICI has, so the
     step takes what that HBM or that link takes, whichever is slower."""
-    pooled = _decode(tmp_path, hardware, _placements(POOLED))
+    pooled = _decode(tmp_path, hardware, _placements(POOLED), cut_points=[])
     assert _hbm_shares(pooled) == {"hbm_0": 1.0}
     assert _cache_on_chip(pooled) == POOLED_CROSSINGS[hardware]
     crossing = _cache_bits(1, CONTEXT[hardware]) / 2 / CROSSING_BITS_PER_CYCLE[hardware]
@@ -203,7 +227,7 @@ def test_fewer_kv_heads_than_chiplets_copied_in_each_hbm_are_read_from_the_hbm_b
     """Two KV heads over four chiplets, the cache copied in each HBM: every chiplet streams the head its cores attend
     to from its own HBM, at most one head's K and V, and none crosses the die-to-die link or ICI."""
     placements = {"q": COPIED, "K": COPIED, "V": COPIED, "O": {"placement": {"memories": HBMS, "split": 3}}}
-    estimate = _decode(tmp_path, "ironwood", placements, make=partial(make_decode_attention, kv_heads=2))
+    estimate = _decode(tmp_path, "ironwood", placements, make=partial(make_decode_attention, kv_heads=2), cut_points=[])
     bits = _link_bits(estimate)
     assert _cache_on_chip(estimate) == {}
     assert _hbm_shares(estimate) == dict.fromkeys(HBMS, 0.25)
@@ -457,6 +481,72 @@ def test_attention_that_fits_as_the_generator_cuts_it_is_not_split(tmp_path):
     assert split.cycles == whole.cycles
 
 
+def _generator(tmp_path, hardware, placements, batch, context):
+    """The generic generator of ``make_decode_attention``'s step on ``hardware``, its softmax expanded and its edges
+    placed by ``placements``, as the generation stages hand it over for one part."""
+    workload = make_decode_attention(tmp_path / "decode.onnx", batch, context)
+    ctx = StageContext.from_kwargs(accelerator=_hardware(hardware), workload_path=workload, output_path=str(tmp_path))
+    ctx = MainStage([AcceleratorParserStage, ONNXModelParserStage, LeafStage], ctx).run()[0]
+    parsed = expand_normalizations(ctx.get("workload"))
+    runtime_args = viewed_placements(parsed, placements)
+    return GenericMappingGenerator(ctx.get("accelerator"), parsed, str(tmp_path), runtime_args=runtime_args), parsed
+
+
+def test_a_cache_the_scores_read_moves_once_over_the_tile_loops_only_the_context_steps(tmp_path):
+    """One sequence of 8k on the ring by heads, fused and tiled along the scores' head dim, then the context's: the
+    scores do not step the context's dim, so they read K once, its 8 x 8192 x 128 bf16, a quarter into each slice's
+    SRAM, though no SRAM holds a quarter next to the tiles."""
+    generator, workload = _generator(tmp_path, "ring", _placements(BY_HEADS), 1, 8192)
+    (fused,) = workload.split_fusion_groups(cut_points=generator._cut_points(None))
+    cns = tuple(fused.get_computation_nodes())
+    tiler, cores, unroll, protected, node_unroll = generator._tiler(fused, cns)
+    unroll = {fused.leading_dim(d)[0]: f for d, f in unroll.items()}
+    per_core = tiler._per_core(cns, unroll, {fused.leading_dim(d)[0] for d in protected})
+    tiling = [{"dim": "scores.D4", "tile": 8}, {"dim": "context.D3", "tile": 16}]
+    resident = per_core | tiler._seed_resident(cns, tiling, per_core)
+    order = list(tiler._seed_resident(cns, tiling, per_core))
+    args = (cns, cores, unroll, resident, node_unroll)
+    capacities, tiles, _ = tiler._transfers(*args, tiler._capacities(cns, cores))
+    room = {memory: capacity - tiles[memory] for memory, capacity in capacities.items()}
+    (cache,) = (t for t in cns[0].inputs if t.name == "K")
+    assert all(free < 8 * 8192 * 128 * 16 / 4 for free in room.values())
+    moved = tiler._moved(*args, order, room, spills=True, tensors={cache})
+    bits = 8 * 8192 * 128 * 16
+    assert moved == {f"sram_{s}": bits / 4 for s in range(4)} | {None: bits}
+
+
+def test_decode_on_a_cache_split_on_the_sequence_runs_each_operator_apart_where_fused_moves_more(tmp_path):
+    """16 sequences of 32k, the cache split on the sequence over the chiplets' HBMs, in one part. Fused, the scores,
+    softmax and context fit only a few sequences' scores a tile: the tiler estimates them slower than the three
+    operators apart, so each is a group of its own, the softmax's sub-ops together."""
+    generator, workload = _generator(tmp_path, "ironwood", _placements(BY_SEQUENCE, q=COPIED), 16, 32768)
+    (fused,) = workload.split_fusion_groups(cut_points=generator._cut_points(None))
+    groups = generator.groups()
+    assert [[node.name for node in group.get_computation_nodes()] for group in groups] == [
+        ["scores"],
+        ["softmax_max", "softmax_exp", "softmax_sum", "softmax_div"],
+        ["context"],
+    ]
+    assert generator._estimate(fused).cycles > sum(generator._estimate(group).cycles for group in groups)
+
+
+@pytest.mark.slow
+def test_decode_on_a_cache_split_on_the_sequence_solves_faster_than_fused_and_than_every_sub_op_apart(tmp_path):
+    """The groups above solve under the 6287721 cycles the fused scores and softmax took, and under every sub-op of
+    the softmax in a group of its own."""
+    placements = _placements(BY_SEQUENCE, q=COPIED)
+    picked = _decode(tmp_path / "picked", "ironwood", placements, batch=16, context=32768, parts=1)
+    per_layer = solve(
+        _hardware("ironwood"),
+        make_decode_attention(tmp_path / "decode.onnx", 16, 32768),
+        tmp_path / "per_layer",
+        {"runtime_args": placements},
+        attention_parts=1,
+        fusion_cut_points="per-layer",
+    )
+    assert picked.cycles < min(6287721, per_layer.cycles)
+
+
 def test_a_part_count_the_cache_placement_does_not_split_into_is_refused(tmp_path, small_slice):
     with pytest.raises(
         ValueError, match="K is split along its axis 2 over 4 memories, which 2 parts of context's sequence"
@@ -540,5 +630,5 @@ def test_a_cache_split_by_heads_over_an_hbm_per_chiplet_costs_what_the_pooled_hb
     """Each chiplet reaches the pooled HBM over its own link at its four stacks' rate, so the split cache, read only
     by the chiplet beside it, streams as the pooled one does."""
     split = by_heads("ironwood", context)
-    pooled = solve(TPU_V7, make_decode_attention(tmp_path / "pooled.onnx", 1, context), tmp_path)
+    pooled = solve(TPU_V7, make_decode_attention(tmp_path / "pooled.onnx", 1, context), tmp_path, fusion_cut_points=[])
     assert split.cycles == pooled.cycles

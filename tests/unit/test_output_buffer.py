@@ -180,3 +180,35 @@ def test_a_sum_the_lanes_hold_keeps_the_weights_reused_across_row_tiles(
     assert {t.name for t in space.sums_in_output_buffer} == ({"out_1"} if held else set())
     assert {t["tensor"]: t["bits"] for t in l1["tensors"]} == {"a_1": 32768, "w_1": w, "out_1": out}
     assert reused["w_1"] == reuse
+
+
+_ROWS_INNER = """
+layers:
+- {name: Gemm, core_allocation: [[0]]}
+fused_groups:
+- {name: G, layers: [Gemm], intra_core_tiling: [{dim: Gemm.D0, tile: 32}, {dim: Gemm.D1, tile: 64}]}
+"""
+
+
+def test_the_tiler_estimates_a_sum_the_output_buffer_holds_as_written_off_chip_once(tmp_path):
+    """A 128 x 512 by 512 x 64 int8 Gemm on the packed core, 32-row tiles inside a contraction tiled to 64. The result
+    buffer holds the 4 row tiles' sums across the 8 contraction tiles, so the tiler estimates, as the allocation
+    moves, a, w and the output off chip once, (128 x 512 + 512 x 64 + 128 x 64) x 8 = 851968 bits, not the output
+    2 x 8 - 1 = 15 times."""
+    chip, gemm = _packed(tmp_path, 128, 17, "D1, D2, D3", 262144)
+    accelerator, w = _parse(chip, gemm)
+    (cn,) = w.get_computation_nodes()
+    tiling = [{"dim": "Gemm.D0", "tile": 32}, {"dim": "Gemm.D1", "tile": 64}]
+    estimate = CapacityTiler(w, accelerator).estimate((cn,), {cn: [accelerator.get_core(0)]}, {}, set(), tiling)
+    assert estimate.offchip_bits == (128 * 512 + 512 * 64 + 128 * 64) * 8
+    (tmp_path / "mapping.yaml").write_text(_ROWS_INNER)
+    solved = evaluate_mapping(chip, gemm, str(tmp_path / "out"), str(tmp_path / "mapping.yaml"), SolveOptions())
+    (accesses,) = solved.context.data["group_memory_accesses"].values()
+    assert {t.name for t in solved.context.get("allocation").space.sums_in_output_buffer} == {"out_1"}
+    assert {
+        (r["tensor"], r["read"] * r["read_bandwidth"], r["write"] * r["write_bandwidth"]) for r in accesses["offchip"]
+    } == {
+        ("a", 128 * 512 * 8, 0),
+        ("w", 512 * 64 * 8, 0),
+        ("out", 0, 128 * 64 * 8),
+    }

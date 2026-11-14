@@ -10,7 +10,9 @@
     "end_to_end_mac_utilization": 0.1899797567494933,
     "energy_pj": 320941396241.06665,
     "group_latencies_max": 201852676.0,
-    "iteration_latency": 519,
+    "iteration_latencies": [
+      519
+    ],
     "mac_spatial_utilization": 0.8150482622880099,
     "mip_gap": 0.0,
     "objective": 201852676.0,
@@ -23,7 +25,9 @@
     "end_to_end_mac_utilization": 0.09511322046857688,
     "energy_pj": 320957124881.06665,
     "group_latencies_max": 201590915.0,
-    "iteration_latency": 903,
+    "iteration_latencies": [
+      903
+    ],
     "mac_spatial_utilization": 0.8121658955273922,
     "mip_gap": 0.0,
     "objective": 201590915.0,
@@ -36,7 +40,9 @@
     "end_to_end_mac_utilization": 0.37508822360524907,
     "energy_pj": 320933531921.06665,
     "group_latencies_max": 204474147.0,
-    "iteration_latency": 328,
+    "iteration_latencies": [
+      328
+    ],
     "mac_spatial_utilization": 0.8148085904808184,
     "mip_gap": 0.0,
     "objective": 204474147.0,
@@ -49,7 +55,9 @@
     "end_to_end_mac_utilization": 0.007499683584211573,
     "energy_pj": 240776957132.8,
     "group_latencies_max": 26215506.0,
-    "iteration_latency": 30,
+    "iteration_latencies": [
+      30
+    ],
     "mac_spatial_utilization": 1,
     "mip_gap": 0.0,
     "objective": 26215506.0,
@@ -62,7 +70,9 @@
     "end_to_end_mac_utilization": 0.031168687717829668,
     "energy_pj": 212997748817.92004,
     "group_latencies_max": 201851809.0,
-    "iteration_latency": 417,
+    "iteration_latencies": [
+      417
+    ],
     "mac_spatial_utilization": 0.5056755767118272,
     "mip_gap": 0.0,
     "objective": 201851809.0,
@@ -75,7 +85,9 @@
     "end_to_end_mac_utilization": 0.0017338439251828462,
     "energy_pj": 25765987082.239998,
     "group_latencies_max": 201589848.0,
-    "iteration_latency": 6191,
+    "iteration_latencies": [
+      6191
+    ],
     "mac_spatial_utilization": 0.731622746185853,
     "mip_gap": 0.0,
     "objective": 201589848.0,
@@ -88,7 +100,9 @@
     "end_to_end_mac_utilization": 0.015604590062927552,
     "energy_pj": 25759110922.239998,
     "group_latencies_max": 201589916.0,
-    "iteration_latency": 809,
+    "iteration_latencies": [
+      809
+    ],
     "mac_spatial_utilization": 0.731622746185853,
     "mip_gap": 0.0,
     "objective": 201589916.0,
@@ -101,7 +115,9 @@
     "end_to_end_mac_utilization": 0.015604576439203172,
     "energy_pj": 214397613244.41605,
     "group_latencies_max": 201590092.0,
-    "iteration_latency": 787,
+    "iteration_latencies": [
+      787
+    ],
     "mac_spatial_utilization": 0.9674616695059626,
     "mip_gap": 0.0,
     "objective": 201590092.0,
@@ -114,7 +130,9 @@
     "end_to_end_mac_utilization": 0.031192092317221143,
     "energy_pj": 61407849054.208,
     "group_latencies_max": 393946.0,
-    "iteration_latency": 9,
+    "iteration_latencies": [
+      9
+    ],
     "mac_spatial_utilization": 0.6417910447761194,
     "mip_gap": 0.0,
     "objective": 393946.0,
@@ -127,7 +145,9 @@
     "end_to_end_mac_utilization": 0.2653067393266287,
     "energy_pj": 93146773.33333333,
     "group_latencies_max": 66166.0,
-    "iteration_latency": 66166,
+    "iteration_latencies": [
+      66166
+    ],
     "mac_spatial_utilization": 0.6347070257333236,
     "mip_gap": 0.0,
     "objective": 66166.0,
@@ -140,7 +160,9 @@
     "end_to_end_mac_utilization": 0.22704009046128604,
     "energy_pj": 96241226.66666667,
     "group_latencies_max": 38659.0,
-    "iteration_latency": 38659,
+    "iteration_latencies": [
+      38659
+    ],
     "mac_spatial_utilization": 0.6349022241598848,
     "mip_gap": 0.0,
     "objective": 38659.0,
@@ -153,7 +175,9 @@
     "end_to_end_mac_utilization": 0.3052945802013185,
     "energy_pj": 81211750.66666667,
     "group_latencies_max": 114999.0,
-    "iteration_latency": 114999,
+    "iteration_latencies": [
+      114999
+    ],
     "mac_spatial_utilization": 0.6772569799425848,
     "mip_gap": 0.0,
     "objective": 114999.0,
@@ -166,7 +190,9 @@
     "end_to_end_mac_utilization": 0.028544243577545196,
     "energy_pj": 39205273.6,
     "group_latencies_max": 3153.0,
-    "iteration_latency": 2133,
+    "iteration_latencies": [
+      2133
+    ],
     "mac_spatial_utilization": 1,
     "mip_gap": 0.0,
     "objective": 3153.0,
@@ -179,7 +205,9 @@
     "end_to_end_mac_utilization": 0.1788597689727984,
     "energy_pj": 12946902.4,
     "group_latencies_max": 16102.0,
-    "iteration_latency": 16102,
+    "iteration_latencies": [
+      16102
+    ],
     "mac_spatial_utilization": 0.75,
     "mip_gap": 0.0,
     "objective": 16102.0,
@@ -192,7 +220,9 @@
     "end_to_end_mac_utilization": 0.011954572624028692,
     "energy_pj": 4903457.28,
     "group_latencies_max": 13384.0,
-    "iteration_latency": 1820,
+    "iteration_latencies": [
+      1820
+    ],
     "mac_spatial_utilization": 0.603448275862069,
     "mip_gap": 0.0,
     "objective": 13384.0,
@@ -205,7 +235,9 @@
     "end_to_end_mac_utilization": 0.10111649462818623,
     "energy_pj": 4012303.36,
     "group_latencies_max": 14241.0,
-    "iteration_latency": 2338,
+    "iteration_latencies": [
+      2338
+    ],
     "mac_spatial_utilization": 0.5,
     "mip_gap": 0.0,
     "objective": 14241.0,
@@ -218,7 +250,9 @@
     "end_to_end_mac_utilization": 0.09496801424520214,
     "energy_pj": 16518631.040000001,
     "group_latencies_max": 15163.0,
-    "iteration_latency": 15055,
+    "iteration_latencies": [
+      15055
+    ],
     "mac_spatial_utilization": 0.75,
     "mip_gap": 0.0,
     "objective": 15163.0,
@@ -231,7 +265,9 @@
     "end_to_end_mac_utilization": 0.007129277566539924,
     "energy_pj": 6013420.88,
     "group_latencies_max": 789.0,
-    "iteration_latency": 65,
+    "iteration_latencies": [
+      65
+    ],
     "mac_spatial_utilization": 0.58125,
     "mip_gap": 0.0,
     "objective": 789.0,
