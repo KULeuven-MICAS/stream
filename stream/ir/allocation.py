@@ -478,6 +478,10 @@ class LayoutSideIR(BaseModel):
     extent: list[int] = Field(description="The buffer the copy sits in, per axis: tensor off chip, tile on chip")
     strides: list[int] = Field(description="Elements between neighbours along each axis of that buffer")
     offset: int = Field(default=0, description="The element of that buffer the DMA starts at")
+    index_steps: list[int] = Field(
+        default_factory=list,
+        description="The step between the indices of that buffer the DMA touches, per axis; 1 for a compact copy",
+    )
     access: list[list[int]] = Field(
         description="The [size, stride] loops, outermost first, in elements, the DMA walks the tile in on this side"
     )

@@ -10,7 +10,7 @@ from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.demand import copy_sets, item_bits, moved_elements
-from stream.workload.node import InEdge, OutEdge, TransferNode, TransferType
+from stream.workload.node import ComputationNode, InEdge, OutEdge, TransferNode, TransferType
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
@@ -112,12 +112,15 @@ class MemoryAccessesEstimationStage(Stage):
                     self.core_memory_accesses.add_offchip_read(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(src).resource_allocation)
-            for core in cores:
-                # Calculate the number of accesses per fire based on tensor size and bw on the core
+            computed = isinstance(src, ComputationNode)
+            tiling = self.workload.get_unique_dims_inter_core_tiling(src, self.mapping) if computed else ()
+            positions = prod(f for _, f in tiling) if computed else 0
+            for i, core in enumerate(cores):
+                taken = self.workload.get_tensor_of_transfer_from_single_core(
+                    tensor, tn, self.mapping, i if i < positions else None
+                )
                 bandwidth = core.get_max_memory_bandwidth(type="read")
-                accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
-                total_accesses = accesses_per_fire * nb_fires
-                self.core_memory_accesses.add_read(core, t_core, total_accesses)
+                self.core_memory_accesses.add_read(core, taken, ceil(taken.size_bits() / bandwidth) * nb_fires)
 
     def get_mem_core_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
         """The writes into and reads out of each memory tile a transfer stages its tensor in. Only transfers into

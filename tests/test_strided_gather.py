@@ -148,6 +148,22 @@ def test_a_strided_gather_is_described_from_the_first_index_it_reads(tmp_path):
     assert {stride for _, stride in read["access"]} >= {60, 2}
 
 
+def test_a_strided_side_gives_the_steps_it_takes(tmp_path):
+    """The same gather reads rows 1, 3, ..., 29 and columns 1, 3, 5, 7 of the row-major (1, 8, 30, 30) input in steps
+    of (1, 1, 2, 2): its last element (7, 14, 3) sits at 31 + 7 x 900 + 14 x 2 x 30 + 3 x 2 = 7177."""
+    mapping = _mapping({"Down": "core_allocation: [[0]]"}, "Down")
+    _, ir = _solve(tmp_path, _down(shape=(1, 8, 30, 30), strides=[2, 2], pads=[1, 1, 1, 1]), mapping)
+    row = _layout(ir, "Transfer(input)")
+    read, write = row["read"], row["write"]
+    assert row["tile_shape"] == [1, 8, 15, 4]
+    assert read["index_steps"] == [1, 1, 2, 2] and write["index_steps"] == [1, 1, 1, 1]
+    last = [size - 1 for size in row["tile_shape"]]
+    address = read["offset"] + sum(
+        i * step * stride for i, step, stride in zip(last, read["index_steps"], read["strides"], strict=True)
+    )
+    assert address == 7177
+
+
 def test_a_dilated_strided_window_keeps_its_halo_on_the_index_steps(tmp_path):
     """A 3x3 conv of stride 2, dilation 2 and padding 2, four output columns a step: its window covers 6 even input
     columns and steps 4 of them, so it keeps a halo of 2 and moves 8 x 16 x 4 = 512 elements per firing."""
@@ -197,6 +213,33 @@ def test_a_copy_of_an_intermediate_moves_only_what_its_strided_reader_reads(tmp_
     assert row["read"]["access"] == [[16, 256], [4, 32], [16, 1]]
     assert row["write"]["extent"] == [1, 16, 16, 4] and row["write"]["access"] == [[1024, 1]]
     assert (row["read_run_bytes"], row["write_run_bytes"]) == (32, 2048)
+
+
+def test_each_source_core_hands_the_odd_indices_its_own_tile_holds(tmp_path):
+    """A (16, 3x3, padded) on a (1, 8, 30, 30) input is split by columns: core 0 computes columns 0..14 of ``a``, core
+    1 columns 15..29. B (1x1, stride 2, padded by 1) reads the odd rows and columns: 7 columns of core 0, 8 of core 1.
+    At 2048 bits a read, core 0 reads its 16 x 15 x 7 x 16 = 26880 bits in 14 reads and core 1 its 30720 in 15; the
+    transfer moves 16 x 15 x 15 elements, not the whole tensor."""
+    nodes = [conv("A", "input", "w", "a"), conv("B", "a", "wb", "b", k=1, stride=2, pads=1)]
+    workload = onnx_graph(nodes, {"input": [1, 8, 30, 30], "w": [16, 8, 3, 3], "wb": [16, 16, 1, 1]}, ["b"])
+    split = "core_allocation: [[0, 1]], inter_core_tiling: [[{dim: D1, split: 2}]]"
+    layers = f"- {{name: A, {split}}}\n- {{name: B, core_allocation: [[2]]}}\n"
+    (tmp_path / "mapping.yaml").write_text(f"layers:\n{layers}fused_groups:\n- {{name: g, layers: [A, B]}}\n")
+    estimate = evaluate_mapping(
+        HARDWARE.format("tpu_like_quad_core"),
+        workload,
+        str(tmp_path),
+        str(tmp_path / "mapping.yaml"),
+        SolveOptions(artifacts=False),
+    )
+    cores = estimate.context.data["group_memory_accesses"][0]["cores"]
+    reads = {c["core_id"]: (t["size_bits"], t["read"]) for c in cores for t in c["tensors"] if t["tensor"] == "a"}
+    assert reads == {0: (26880, 14), 1: (30720, 15)}
+    slots = estimate.context.get("allocation").solution.slot_latency_breakdown["slots"]
+    (bits,) = [
+        t["tensor_bits"] for slot in slots for t in slot["transfer_contributors"] if t["transfer"] == "Transfer(a)"
+    ]
+    assert bits == 16 * 15 * 15 * BF16
 
 
 def test_aie_code_generation_refuses_a_strided_gather():
