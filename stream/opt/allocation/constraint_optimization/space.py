@@ -41,6 +41,7 @@ from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge,
 if TYPE_CHECKING:
     from stream.allocation.problem import AllocationProblem
     from stream.cost_model.layout import Rate
+    from stream.datatypes import LayerDim
     from stream.hardware.ports import Port
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
@@ -83,7 +84,7 @@ class DecisionSpace:
         self._candidates: dict[Tensor, set[Memory]] = {}
         self._broadcast: dict[TransferNode, bool] = {}
         self._one_memory: dict[TransferNode, bool] = {}
-        self._overlaps: dict[TransferNode, dict[tuple[int, int], int]] = {}
+        self._overlaps: dict[TransferNode, dict[tuple[int, int], float]] = {}
         self._compute_cores: dict[TransferNode, frozenset[Core]] = {}
 
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
@@ -613,8 +614,8 @@ class DecisionSpace:
         pairs = self.pairs(tr, choice)
         return bool(pairs) and all(self.hardware.shares_memory(one, other) for one, other in pairs)
 
-    def overlaps(self, tr: TransferNode) -> dict[tuple[int, int], int]:
-        """Elements per firing each source position hands each target position where windows overlap tiles."""
+    def overlaps(self, tr: TransferNode) -> dict[tuple[int, int], float]:
+        """Elements per firing each source position serves each target position where windows overlap tiles."""
         if (found := self._overlaps.get(tr)) is None:
             found = self._overlaps[tr] = self.workload.get_transfer_overlaps(tr, self.mapping, self.ssis[tr.outputs[0]])
         return found
@@ -723,7 +724,8 @@ class DecisionSpace:
     def warmup(self) -> dict[HasIterationSpace, float]:
         """How far, in interior tiles, each node's work along the sliding windows runs ahead of its steady pace at most,
         the fused loops nested as listed, innermost first: the lookahead a producer computes and the halo a transfer
-        moves before a window slides, each sweep of an inner loop restarting them."""
+        moves before a window slides, each pass over an inner loop's trips restarting them; along a dim its split
+        places, a producer runs no lookahead but its readers wait for it (:meth:`neighbour_waits`)."""
         found: dict[HasIterationSpace, float] = {}
         if not any(loop.halo for ssis in self.ssis.values() for loop in ssis):
             return found
@@ -731,12 +733,34 @@ class DecisionSpace:
         rates: dict[HasIterationSpace, list] = {}
         for k, (dim, n) in enumerate(splits.items()):
             for node, work in self.workload.get_sliding_work(dim, n).items():
-                rates.setdefault(node, [np.ones(m) for m in splits.values()])[k] = np.array(work) * n / sum(work)
+                if dim not in self._split_dims(node):
+                    rates.setdefault(node, [np.ones(m) for m in splits.values()])[k] = np.array(work) * n / sum(work)
         for node, rate in rates.items():
             excess = np.cumsum(reduce(np.multiply.outer, reversed(rate)).ravel() - 1).max()
             if excess > 0:
                 found[node] = float(excess)
+        for node, lead in self.neighbour_waits.items():
+            found[node] = found.get(node, 0.0) + lead
         return found
+
+    @cached_property
+    def neighbour_waits(self) -> dict[ComputationNode, int]:
+        """Per producer, the most firings ahead of its own a reader on another core reads its tiles at
+        (:meth:`Workload.neighbour_wait`)."""
+        found: dict[ComputationNode, int] = {}
+        for tr in self.transfer_nodes:
+            src = next(iter(self.workload.predecessors(tr)))
+            if isinstance(src, ComputationNode) and (
+                lead := self.workload.neighbour_wait(tr, self.mapping, self.problem.fusion_splits)
+            ):
+                found[src] = max(found.get(src, 0), lead)
+        return found
+
+    def _split_dims(self, node: HasIterationSpace) -> set[LayerDim]:
+        """The dims a computation node's split spreads over several cores; none for a transfer."""
+        if not isinstance(node, ComputationNode):
+            return set()
+        return {d for d, f in self.workload.get_unique_dims_inter_core_tiling(node, self.mapping) if f > 1}
 
     def is_waited_on(self, node: ComputationNode) -> bool:
         """Whether a reader of ``node``'s output waits for its tiles: one on a core ``node`` does not run on, or behind
@@ -807,7 +831,7 @@ def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:
 
 
 def communicating_pairs(
-    src: Sequence[Memory], dst: Sequence[Memory], overlaps: Mapping[tuple[int, int], int] | None = None
+    src: Sequence[Memory], dst: Sequence[Memory], overlaps: Mapping[tuple[int, int], float] | None = None
 ) -> tuple[tuple[Memory, Memory], ...]:
     """Which ``src`` positions hand to which ``dst`` positions: those whose tiles ``overlaps`` the targets' windows,
     else by spatial index as codegen pairs them, its contract and why overlaps only pair windowed transfers: the

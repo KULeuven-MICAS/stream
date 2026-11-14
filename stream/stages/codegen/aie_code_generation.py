@@ -10,6 +10,7 @@ from xdsl.dialects.builtin import (
 from xdsl.ir import Block, Operation, Region, SSAValue
 from xdsl.parser import StringAttr
 
+from stream.allocation.problem import AllocationProblem
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
     DOUBLE_BUFFERED,
@@ -45,6 +46,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.mapping.mapping import Mapping, NodeMapping
+from stream.stages.allocation.steady_state_allocation import AllocationStage
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.normalization import reduction_axes
@@ -98,6 +100,33 @@ def reject_strided_reads(workload: Workload) -> None:
                 )
 
 
+def reject_fused_split_windows(problem: AllocationProblem) -> None:
+    """Refuse a fused loop over a dim a split spreads over cores where a window overlaps a neighbouring core's tile: AIE
+    code generation has no lowering that sends a core its neighbours' tiles of other trips."""
+    for held, ssis in problem.ssis.items():
+        fused = {v.dimension for v in ssis.get_temporal_variables() if v.size > 1}
+        if crossed := sorted(
+            {str(v.dimension) for v in ssis.get_spatial_variables() if v.halo and v.dimension in fused}
+        ):
+            raise ValueError(
+                f"{held.name} slides a window past a core's tile along {crossed}, which a fused loop also steps: AIE "
+                "code generation does not lower sending a core its neighbour's tiles of other trips"
+            )
+
+
+class AIELoweringCheckStage(Stage):
+    """Refuse, once a group is lowered and before it is solved, what AIE code generation cannot lower."""
+
+    reads = ("allocation_problem",)
+
+    def run(self):
+        reject_fused_split_windows(self.ctx.get("allocation_problem"))
+        yield from self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run()
+
+    def is_leaf(self) -> bool:
+        return False
+
+
 def _location(at: Core | Memory) -> AIETileLocation:
     if isinstance(at, Memory) and at.offchip:
         return AIETileLocation(OFFCHIP, None, None)
@@ -149,7 +178,9 @@ class AIECodeGenerationStage(Stage):
         self.module = None
 
     def run(self):
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
+        callables = list(self.list_of_callables)
+        callables.insert(callables.index(AllocationStage), AIELoweringCheckStage)
+        sub_stage = callables[0](callables[1:], self.ctx)
 
         for ctx in sub_stage.run():
             self.ctx = ctx
