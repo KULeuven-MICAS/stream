@@ -294,6 +294,45 @@ def test_a_produced_tensor_takes_one_buffer_the_size_of_its_largest_tile_or_wind
     assert held == {"sram": 532480}
 
 
+def test_a_reader_holds_every_window_it_reads_of_a_tile_across_a_loop_its_producer_does_not_step(tmp_path):
+    """The bf16 MLP on fusemax's array core, its 64 tokens cut to 16 inside its 128 outputs cut to 64: Gemm1 makes
+    each 16 x 256 tile of H1 once, but Gemm2 reads all four token tiles again for its second half of the outputs, so
+    it holds them across the outputs loop, 4 x 4096 elements, 262144 bits, the one buffer of H1. Next to it X's 16 x
+    128 and Y's 16 x 64, double-buffered, 65536 and 32768 bits, W1 whole, 524288, and W2's 256 x 64 halves,
+    double-buffered, 524288: 1409024 bits."""
+    acc, w = _parse("stream/inputs/examples/hardware/fusemax.yaml", _mlp(tmp_path))
+    gemm1, gemm2 = sorted(w.get_computation_nodes(), key=lambda n: n.name)
+    tokens, outputs = (w.leading_dim(w.get_dims(gemm2)[i])[0] for i in (0, 2))
+    cores = dict.fromkeys((gemm1, gemm2), [acc.get_core(0)])
+    tiler = CapacityTiler(w, acc)
+    held = tiler.memory_bits((gemm1, gemm2), cores, {}, {tokens: 16, outputs: 64}, order=[tokens, outputs])
+    assert held == {"sram": 1409024}
+
+
+def test_a_produced_tensor_two_windowed_readers_read_is_held_once_and_each_window_beyond_it(tmp_path):
+    """On fusemax's shared SRAM, columns cut to 8 and double-buffered: a 1 x 1 convolution makes y, 8 columns of 16 x
+    32, 131072 bits, which two 3 x 3 convolutions each read as a 10-column window, 163840 bits, 32768 beyond y's tile
+    apiece, as the allocation charges each copy beyond its source. Next to them x's 8 columns and the two outputs, each
+    131072, which the add on the vector core reads as they are, and z, 131072; w0, 4096, and wa and wb, 36864 each:
+    798720 bits."""
+    nodes = [
+        helper.make_node("Conv", ["x", "w0"], ["y"], name="Conv0", kernel_shape=[1, 1]),
+        helper.make_node("Conv", ["y", "wa"], ["a"], name="ConvA", kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+        helper.make_node("Conv", ["y", "wb"], ["b"], name="ConvB", kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+        helper.make_node("Add", ["a", "b"], ["z"], name="Add"),
+    ]
+    shapes = {"x": [1, 16, 32, 32], "w0": [16, 16, 1, 1], "wa": [16, 16, 3, 3], "wb": [16, 16, 3, 3]}
+    info = {name: helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape) for name, shape in shapes.items()}
+    out = helper.make_tensor_value_info("z", TensorProto.BFLOAT16, [1, 16, 32, 32])
+    graph = helper.make_graph(nodes, "g", list(info.values()), [out])
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "fan_out.onnx")
+    acc, w = _parse("stream/inputs/examples/hardware/fusemax.yaml", str(tmp_path / "fan_out.onnx"))
+    cns = {cn.name: cn for cn in w.get_computation_nodes()}
+    columns = w.leading_dim(w.get_dims(cns["Conv0"])[1])[0]
+    cores = {cn: [acc.get_core(1 if name == "Add" else 0)] for name, cn in cns.items()}
+    assert CapacityTiler(w, acc).memory_bits(tuple(cns.values()), cores, {}, {columns: 8}) == {"sram": 798720}
+
+
 def test_divisors_desc():
     assert _divisors_desc(12) == [12, 6, 4, 3, 2, 1]
     assert _divisors_desc(1) == [1]

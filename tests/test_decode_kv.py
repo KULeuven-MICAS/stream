@@ -500,12 +500,12 @@ def test_a_long_batched_cache_split_over_the_hbms_fits_and_its_scores_stay_besid
 
 @pytest.mark.parametrize(
     ("placements", "context", "parts"),
-    [(_placements(BY_HEADS), 2**21, None), (_placements(BY_SEQUENCE, q=COPIED), 32768, 1)],
+    [(_placements(BY_HEADS), 2**21, None), (_placements(BY_SEQUENCE, q=COPIED), 65536, 1)],
     ids=["heads", "sequence"],
 )
 def test_a_fusion_cut_without_a_placement_is_read_back_where_it_landed(tmp_path, placements, context, parts):
     """Split by heads, 16 sequences of 2M spill their scores, which no longer fit beside the cache, to the HBMs. Split
-    on the sequence, 16 sequences of 32k spill them at a cut made by cores splitting the sequence the scores reduce
+    on the sequence, 16 sequences of 64k spill them at a cut made by cores splitting the sequence the scores reduce
     over, which indexes no axis of what they write. Either cut is read back where each core landed it."""
     estimate = _decode(tmp_path, "ironwood", placements, batch=16, context=context, parts=parts)
     assert len(estimate.context.get("group_memory_accesses")) > 1

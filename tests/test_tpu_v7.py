@@ -251,9 +251,9 @@ def test_multi_head_attention_splits_the_heads_its_matrix_units_split(tmp_path):
 
 
 def test_the_innermost_steady_state_loop_indexes_the_least_data(tmp_path):
-    """At 2048 tokens a head's scores do not fit whole, so the group is cut along the queries too; the heads, which
+    """At 4096 tokens a head's scores do not fit whole, so the group is cut along the queries too; the heads, which
     index the weights, are the outermost loop, so each head's weights stay put while its query tiles run."""
-    _, groups = _layers(TPU_V7, make_multi_head_attention(tmp_path / "mha.onnx", seq=2048))
+    _, groups = _layers(TPU_V7, make_multi_head_attention(tmp_path / "mha.onnx", seq=4096))
     tiled = [entry["dim"] for entry in groups[0]["intra_core_tiling"]]
     assert tiled[-1] == "proj_Q.D0"
 
