@@ -217,8 +217,8 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
     # A route's positions are its nodes' cores, in order: conv1's sources, conv2's targets.
     src_cores, dst_cores = space.cores(conv1), space.cores(conv2)
     positions = route.pairs or communicating_pairs(range(len(route.sources)), range(len(route.targets)))
-    handed = {(src_cores[i].id, dst_cores[j].id): n for (i, j), n in space.overlaps(into2).items()}
-    handed = handed or {(src_cores[i].id, dst_cores[j].id): prod(moved.shape) for i, j in positions}
+    served = {(src_cores[i].id, dst_cores[j].id): n for (i, j), n in space.overlaps(into2).items()}
+    served = served or {(src_cores[i].id, dst_cores[j].id): prod(moved.shape) for i, j in positions}
     oy = workload.get_dims(conv2)[2]
     work = workload.get_sliding_work(oy, allocation.problem.fusion_splits.get(oy, 1))
     routes = allocation.solution.transfer_routes
@@ -234,7 +234,7 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
         "moved": per_core(
             conv2, lambda c: workload.get_tensor_of_transfer_to_single_core(mid, into2, mapping, c, ssis[mid])
         ),
-        "sources": {dst: {src: n for (src, d), n in handed.items() if d == dst} for _, dst in handed},
+        "sources": {dst: {src: n for (src, d), n in served.items() if d == dst} for _, dst in served},
         "conv1_rows": work.get(conv1, (conv1.outputs[0].shape[2],)),
         "input_moved_rows": work.get(into1, (inp.shape[2],)),
         "in_place": allocation.solution.route_cycles[into2] == 0,

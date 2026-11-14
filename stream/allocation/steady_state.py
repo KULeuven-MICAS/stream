@@ -9,11 +9,14 @@ from typing import TYPE_CHECKING, Any
 from stream.opt.allocation.constraint_optimization.families.traffic import link_name
 from stream.opt.allocation.constraint_optimization.report import guarded, reported_reuse
 from stream.opt.allocation.constraint_optimization.utils import absent_trips
+from stream.workload.demand import Box, DemandItem, covered, firing_count
 from stream.workload.node import ComputationNode, Tensor, TransferNode
 
 if TYPE_CHECKING:
     from stream.allocation.allocation import Allocation
+    from stream.cost_model.communication_manager import MulticastPathPlan
     from stream.datatypes import LayerDim
+    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.node import HasIterationSpace
     from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
@@ -94,6 +97,11 @@ def _shape(tensor: Tensor) -> list[int]:
     return [int(s) for s in tensor.shape]
 
 
+def _per_firing(points: int, spanned: int) -> int | float:
+    """Points over the firings a demand spans, an integer where they divide."""
+    return points // spanned if points % spanned == 0 else points / spanned
+
+
 class _NodeDetail:
     """What one tiled node does on its cores, read off the solution and the decision space it was solved in."""
 
@@ -152,11 +160,9 @@ class _NodeDetail:
                 for loop in reversed(space.ssis[copy].variables)
                 if loop.halo
             ],
-            "handed": [
-                {"source": route.sources[i].name, "target": route.targets[j].name, "elements": elements}
-                for (i, j), elements in space.overlaps(tn).items()
-            ],
+            "demand": self._demand_by_kind(tn, route),
             **self._copy_bits(tn),
+            "link_bits": self._link_bits(tn, route),
             "route_cycles": solution.route_cycles[tn],
             **self._sliding(tn),
         }
@@ -184,6 +190,48 @@ class _NodeDetail:
             "copy_moved_bits": moved,
             "copy_reuse_factors": reuse,
         }
+
+    def _demand_by_kind(self, tn: TransferNode, route: MulticastPathPlan) -> list[dict[str, Any]]:
+        """Per source, target and kind, the elements of the target's demand the source serves per firing: over links
+        ('moved'), from a source in or sharing the target's memory ('in_place'), from a larger copy in that memory
+        ('local_copy'), or as a source's partial sum of a split reduction ('partial_sum')."""
+        served: dict[tuple[Memory, Memory, str], list[Box]] = {}
+        kind = "in_place" if self.space.choice_shares_memory(tn, route) else "moved"
+        sent = [item for item in route.delivered_items if not item.reduce]
+        delivered = {(item.target, item.box, item.copies) for item in sent}
+        for item in sent:
+            served.setdefault((route.sources[item.sources[0]], route.targets[item.target], kind), []).append(item.box)
+        for item in route.demand:
+            for key in self._served_without_links(route, item, delivered):
+                served.setdefault(key, []).append(item.box)
+        spanned = firing_count(route.demand)
+        return [
+            {"source": one.name, "target": other.name, "kind": kind, "elements": _per_firing(covered(boxes), spanned)}
+            for (one, other, kind), boxes in served.items()
+        ]
+
+    def _served_without_links(
+        self, route: MulticastPathPlan, item: DemandItem, delivered: set[tuple[int, Box, tuple[int, ...]]]
+    ) -> list[tuple[Memory, Memory, str]]:
+        """The source that serves a demand item no link carries, and the kind."""
+        target = route.targets[item.target]
+        if item.reduce:
+            return [(route.sources[s], target, "partial_sum") for s in item.sources]
+        if not item.sources:
+            return [(target, target, "local_copy")]
+        if (item.target, item.box, item.copies) in delivered:
+            return []
+        held = [s for s in item.sources if route.sources[s] is target] or [
+            s for s in item.sources if self.space.hardware.shares_memory(route.sources[s], target)
+        ]
+        return [(route.sources[(held or list(item.sources))[0]], target, "in_place")]
+
+    def _link_bits(self, tn: TransferNode, route: MulticastPathPlan) -> list[float]:
+        """Per link of the route, the bits one firing carries over it, as its route cycles count them."""
+        if self.space.choice_shares_memory(tn, route):
+            return [0.0] * len(route.links_used)
+        moved, shares = self.space.moved_bits(tn, route), dict(route.link_shares)
+        return [moved * shares.get(link, 0.0) if shares else moved for link in route.links_used]
 
     def _positions(self, node: HasIterationSpace) -> int:
         tiling = self.mapping.get(node).inter_core_tiling
