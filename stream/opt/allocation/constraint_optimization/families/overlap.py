@@ -108,7 +108,7 @@ class Overlap:
     def objective(self, ctx: FormulationContext) -> list[ObjectiveLevel]:
         q = ctx.quantities
         iterations = ctx.space.iterations
-        total_latency = ctx.model.add_var(vtype=SolverVarType.INTEGER, name="total_latency")
+        total_latency = ctx.model.add_var(vtype=SolverVarType.CONTINUOUS, name="total_latency")
         ctx.model.add_constr(
             total_latency
             == iterations * q.get("iteration").expr - (iterations - 1) * q.get("overlap").expr + q.get("fill").expr
