@@ -112,8 +112,10 @@ SCORE_SIDE = ("partial_softmax", "partial_softmax_mode", "matmul_softmax")
 # mha.cc's bitmask for which side of the step is in a GEMM's tiling.
 TILED_IN, TILED_OUT = 1, 2
 
-# Stamped on a core so the relation survives its node being rewritten.
-FLASH_POINT, FLASH_EXTENT, FLASH_KERNEL = "flash_point", "flash_extent", "flash_kernel"
+# Stamped on a core so the relation survives its node being rewritten: per dimension the
+# node's output varies or loops along, ``[dim, point, extent]``, where the core sits along it and over how many cores
+# the dimension is split (1, point 0, where it is not).
+FLASH_POINTS, FLASH_KERNEL = "flash_points", "flash_kernel"
 
 
 def _spatial_point(op: ComputationNodeOp, dim) -> int | None:
@@ -143,45 +145,52 @@ def _spatial_extent(op: ComputationNodeOp, dim) -> int:
 
 
 def _stamp_points(device: DeviceOp) -> None:
-    """Record on every core which query blocks it holds, before any node is rewritten.
+    """Record on every core which blocks of each dimension it holds, before any node is rewritten.
 
     A node carries its spatial index; a call does not, and the two halves of a step are
     rewritten in whatever order the walker reaches them. Stamping once, on the first
     rewrite, leaves the relation readable from either side afterwards.
     """
     cores = [core for core in device.walk() if isinstance(core, CoreOp)]
-    if any(FLASH_POINT in core.attributes for core in cores):
+    if any(FLASH_POINTS in core.attributes for core in cores):
         return
     for core in cores:
         node = next((n for n in core.walk() if isinstance(n, ComputationNodeOp)), None)
         if node is None or node.spatial_index is None:
             continue
-        dim = _split_dim(node)
-        # A step no split hands out holds every query block on its one core.
-        point = 0 if dim is None else _spatial_point(node, dim)
-        if point is None:
-            continue
-        core.attributes[FLASH_POINT] = IntegerAttr.from_int_and_width(point, 32)
-        core.attributes[FLASH_EXTENT] = IntegerAttr.from_int_and_width(_spatial_extent(node, dim), 32)
+        space = cast(StrensorType, node.output.type).ssis.data
+        dims = dict.fromkeys(v.dim for v in space.vars if v.type is not StrensorVarType.ABSENT)
+        points = [(dim, _spatial_point(node, dim) or 0, _spatial_extent(node, dim)) for dim in dims]
+        core.attributes[FLASH_POINTS] = ArrayAttr(
+            [ArrayAttr([IntAttr(dim.position), IntAttr(point), IntAttr(extent)]) for dim, point, extent in points]
+        )
         core.attributes[FLASH_KERNEL] = StringAttr(node.kernel.data)
 
 
-def _partners(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str, ...]) -> list[TileOp]:
-    """The tiles running the other half of this step, in the order this half meets them.
+def _points(core: CoreOp) -> dict[int, tuple[int, int]]:
+    """A stamped core's point and extent along each dimension of its node's output."""
+    stamp = cast(ArrayAttr, core.attributes[FLASH_POINTS])
+    return {
+        dim.data: (point.data, extent.data)
+        for dim, point, extent in (cast(ArrayAttr, entry).data for entry in stamp.data)
+    }
+
+
+def _partners(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str, ...]) -> list[list[TileOp]]:
+    """The tiles running the other half of this step, grouped by the blocks they hold, in the order met.
 
     A step's two halves share the running scale, so they are the cores holding the same
-    query blocks -- not the cores that happen to sit next to each other. Where the halves
-    are the same width that is one tile each, and neighbours share the memory the scale
-    crosses through; where one half is wider it is several, and the scale takes a stream.
+    query blocks -- not the cores that happen to sit next to each other. The blocks are
+    compared along the dimensions this half's output has: a value core that also splits the
+    head, which the softmax does not have, holds the same query blocks as its partner in the
+    other half of the head, so the two are one group and both take every block's scale.
+    Where the halves are the same width that is one group each, and neighbours share the
+    memory the scale crosses through; where one half is wider it is several, taken in turn.
     """
     _stamp_points(device)
     names = (function,) if isinstance(function, str) else function
     others = [
-        (
-            core.attributes[FLASH_POINT].value.data,
-            core.attributes[FLASH_EXTENT].value.data,
-            core.tile.op,
-        )
+        (_points(core), core.tile.op)
         for core in device.walk()
         if isinstance(core, CoreOp)
         and FLASH_KERNEL in core.attributes
@@ -191,17 +200,28 @@ def _partners(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str
     ]
     mine = _tile(op)
     core = next(c for c in device.walk() if isinstance(c, CoreOp) and c.tile.op is mine)
-    if not others or FLASH_POINT not in core.attributes:
+    if not others or FLASH_POINTS not in core.attributes:
         raise ValueError(f"no core runs {function} to share a scale buffer with")
-    point = core.attributes[FLASH_POINT].value.data
-    narrow = min([core.attributes[FLASH_EXTENT].value.data, *(extent for _, extent, _ in others)])
-    found = sorted((p, tile) for p, _, tile in others if p % narrow == point % narrow)
-    if not found:
+    own = _points(core)
+    shared = sorted(dim for dim in own if all(dim in points for points, _ in others))
+    narrow = {dim: min([own[dim][1], *(points[dim][1] for points, _ in others)]) for dim in shared}
+    groups: dict[tuple[int, ...], list[TileOp]] = {}
+    for points, tile in others:
+        if all(points[dim][0] % narrow[dim] == own[dim][0] % narrow[dim] for dim in shared):
+            groups.setdefault(tuple(points[dim][0] for dim in shared), []).append(tile)
+    if not groups:
         raise ValueError(
             f"no core running {function} holds the query blocks of the one at "
             f"{_position(mine)}, so they cannot share a scale buffer"
         )
-    return [tile for _, tile in found]
+    return [sorted(groups[key], key=_position) for key in sorted(groups)]
+
+
+def _source(groups: list[list[TileOp]], tile: TileOp) -> list[TileOp]:
+    """The one score core of each group, which a value core takes its scale from."""
+    if any(len(group) != 1 for group in groups):
+        raise ValueError(f"the value core at {_position(tile)} holds query blocks of more than one score core at once")
+    return [group[0] for group in groups]
 
 
 def _named(device: DeviceOp, kind: type, name: str):
@@ -283,12 +303,13 @@ def _turn_var(op: ComputationNodeOp):
     return next(v for v in reversed(space.vars) if v.type is StrensorVarType.TEMPORAL and v.dim == dim)
 
 
-def _hand_scale(op: ComputationNodeOp, targets: Sequence[TileOp], state, width, element_type, rows: int):
-    """Snapshot the running scale into the fifo of whichever value core owns this block.
+def _hand_scale(op: ComputationNodeOp, groups: Sequence[Sequence[TileOp]], state, width, element_type, rows: int):
+    """Snapshot the running scale into the fifo of each value core that owns this block.
 
     A value side wider than this one holds this core's query blocks on several cores, and
     they come round in the order the blocks do, so the block loop's innermost turn says
-    which fifo this iteration owes. With one target there is nothing to choose between.
+    which group this iteration owes; every core of that group, one per share of the head,
+    takes the scale. With one group there is nothing to choose between.
     """
     tile = _tile(op)
 
@@ -312,19 +333,22 @@ def _hand_scale(op: ComputationNodeOp, targets: Sequence[TileOp], state, width, 
             ),
         ]
 
-    if len(targets) == 1:
-        return hand(targets[0])
+    def hand_all(group: Sequence[TileOp]) -> list[Operation]:
+        return [operation for target in group for operation in hand(target)]
+
+    if len(groups) == 1:
+        return hand_all(groups[0])
     turn = induction_variable(op, _turn_var(op))
-    count = ConstantOp(IntegerAttr.from_index_int_value(len(targets)), IndexType())
+    count = ConstantOp(IntegerAttr.from_index_int_value(len(groups)), IndexType())
     which = RemUIOp(turn, count)
     return [
         count,
         which,
         IndexSwitchOp(
             arg=which.result,
-            cases=DenseArrayBase.from_list(IntegerType(64), list(range(len(targets)))),
-            default_region=Region(Block([*hand(targets[0]), YieldOp()])),
-            case_regions=[Region(Block([*hand(target), YieldOp()])) for target in targets],
+            cases=DenseArrayBase.from_list(IntegerType(64), list(range(len(groups)))),
+            default_region=Region(Block([*hand_all(groups[0]), YieldOp()])),
+            case_regions=[Region(Block([*hand_all(group), YieldOp()])) for group in groups],
             result_types=[],
         ),
     ]
@@ -476,8 +500,9 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
-        for target in _partners(device, op, "matmul_PV"):
-            _scale_fifo(device, rewriter, tile, target, f32, SCALE_ROWS * self.m)
+        for group in _partners(device, op, "matmul_PV"):
+            for target in group:
+                _scale_fifo(device, rewriter, tile, target, f32, SCALE_ROWS * self.m)
         AIEKernel.rewrite(self, op, rewriter, bindings)
 
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
@@ -580,8 +605,9 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
-        for target in _partners(device, op, "matmul_PV"):
-            _scale_fifo(device, rewriter, tile, target, f32, SCALE_ROWS * self.m)
+        for group in _partners(device, op, "matmul_PV"):
+            for target in group:
+                _scale_fifo(device, rewriter, tile, target, f32, SCALE_ROWS * self.m)
         GemmKernel.rewrite(self, op, rewriter, bindings)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
@@ -679,14 +705,14 @@ class FlashKernel(GemmKernel):
         device, tile = device_of(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._accumulator(device, tile, rewriter)
-        for source in _partners(device, op, SCORE_SIDE):
+        for source in _source(_partners(device, op, SCORE_SIDE), tile):
             _scale_fifo(device, rewriter, source, tile, f32, SCALE_ROWS * self.m)
         GemmKernel.rewrite(self, op, rewriter, bindings)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         self.check_operands(op)
         device, tile = device_of(op), _tile(op)
-        sources = _partners(device, op, SCORE_SIDE)
+        sources = _source(_partners(device, op, SCORE_SIDE), tile)
         kernel_dims = self.output_axes(op)
         space = cast(StrensorType, op.output.type).ssis.data
         indexed = {var.dim for var in space.get_kernel_variables()}

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections import Counter
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping  #
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload  # noqa: E402
 
 ACCELERATOR = "stream/inputs/aie/hardware/whole_array_strix.yaml"
+LIBRARY = "stream/inputs/aie/kernels/aie2p.toml"
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "aie"
 ELEMENT_BYTES = {"bf16": 2, "f32": 4, "i32": 4}
 BUFFER = re.compile(r"aie\.buffer\(%(?:mem_)?(tile_\d+_\d+)\)\s*\{[^}]*\}\s*:\s*memref<([^>]+)>")
@@ -54,13 +56,24 @@ def _mha(out: str) -> tuple[str, str, SolveOptions]:
     return workload, mapping, SolveOptions(nb_cols_to_use=4, stage_options={"npu": "npu2"})
 
 
+def _mha_halves(out: str) -> tuple[str, str, SolveOptions]:
+    """The same attention at 64-query blocks, the value GEMM split by halves of the head on the rows either side of the
+    softmax, ``matmul_PV`` built at a half."""
+    workload = str(FIXTURES / "iron_mha_flash_causal_s256_d64.onnx")
+    mapping = str(FIXTURES / "iron_mha_flash_causal_s256_d64_halves.yaml")
+    library = tomllib.loads(Path(LIBRARY).read_text())
+    pv = library["kernel"]["matmul_PV"]
+    pv["dims"] = [{"name": "n", "blocks": [32, 64]} if d["name"] == "n" else d for d in pv["dims"]]
+    return workload, mapping, SolveOptions(nb_cols_to_use=4, kernel_library=library, stage_options={"npu": "npu2"})
+
+
 def _swiglu(out: str) -> tuple[str, str, SolveOptions]:
     workload = make_swiglu_workload(256, 512, 2048, "bf16", "bf16", last_gemm_down=False, output_dir=out)
     mapping = make_swiglu_mapping(256, 512, 2048, False, 32, 32, 64, output_dir=out)
     return workload, mapping, SolveOptions(nb_cols_to_use=8, stage_options={"npu": "npu2"})
 
 
-@pytest.fixture(scope="module", params=[_mha, _swiglu], ids=["mha", "swiglu"])
+@pytest.fixture(scope="module", params=[_mha, _mha_halves, _swiglu], ids=["mha", "mha_halves", "swiglu"])
 def accounts(request, tmp_path_factory) -> tuple[str, Counter[str], Counter[str]]:
     """A design's name, the bytes the allocation charges each tile and the bytes mlir-aie allocates there."""
     out = tmp_path_factory.mktemp(request.param.__name__)

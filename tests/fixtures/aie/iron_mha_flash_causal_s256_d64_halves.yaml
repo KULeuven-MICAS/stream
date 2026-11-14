@@ -1,0 +1,68 @@
+layers:
+- name: Attn_Scores
+  core_allocation:
+  - - 2
+    - 8
+    - 14
+    - 20
+  inter_core_tiling:
+  - - dim: D1
+      split: 4
+  kernel:
+    name: gemm
+    kwargs:
+      m: 64
+      k: 64
+      n: 64
+      layout: default
+      causal: true
+- name: Attn_Softmax
+  core_allocation:
+  - - 4
+    - 10
+    - 16
+    - 22
+  inter_core_tiling:
+  - - dim: D1
+      split: 4
+  kernel:
+    name: partial_softmax
+    kwargs:
+      m: 64
+      n: 64
+      layout: contiguous
+- name: Attn_Context
+  core_allocation:
+  - - 3
+    - 9
+    - 15
+    - 21
+    - 5
+    - 11
+    - 17
+    - 23
+  inter_core_tiling:
+  - - dim: D2
+      split: 2
+    - dim: D1
+      split: 4
+  kernel:
+    name: gemm
+    kwargs:
+      m: 64
+      k: 64
+      n: 32
+      layout: default
+      flash: true
+fused_groups:
+- name: Fused_Group_1
+  layers:
+  - Attn_Scores
+  - Attn_Softmax
+  - Attn_Context
+  intra_core_tiling: []
+runtime_args:
+  q: {}
+  k_t: {}
+  v: {}
+  output: {}

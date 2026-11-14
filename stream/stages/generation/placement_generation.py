@@ -179,6 +179,43 @@ class PlacementGenerationStage(Stage):
         for node, kernel, r, r_next in zip(nodes, kernels, counts, (*counts[1:], counts[-1]), strict=True):
             if r > r_next:
                 self._retile(node, kernel, tiled_out=True)
+        if (half := self._column_split(nodes[-1], kernels, counts, len(rows))) is not None:
+            layer_rows = _column_split_rows(counts, rows, handed=len(nodes) - 1 in state_consumers)
+            plan = []
+            for node, own, at in zip(nodes, layer_rows, rows_at, strict=True):
+                cores = tuple(grid[(col, row)] for half_rows in own for row in half_rows for col in columns[:width])
+                split = ((at, width * len(own[0])),)
+                plan.append((node, cores, split if len(own) == 1 else ((half.dim_positions(node)["n"], 2), *split)))
+            self._pending_fallbacks.append(lambda m: self._assign_plan(plan, half, m))
+
+    def _column_split(self, last: ComputationNode, kernels, counts, num_rows: int):
+        """The kernel of the chain's last layer split in two over its output columns, where that is worth offering.
+
+        A layer split over its rows takes part of each block the layer before computes, which a state handed per
+        block (an online softmax's scale) cannot follow; split over its columns, both halves take every block. Offered
+        when the spare rows hold a second copy of the layer, it is the costliest per row and a matmul, and each half
+        is a call the library builds. None otherwise.
+        """
+        kernel, r = kernels[-1], counts[-1]
+        per_row = [layer_cost(k) / c for k, c in zip(kernels, counts, strict=True)]
+        if not is_matmul(kernel) or num_rows - sum(counts) < r or per_row[-1] < max(per_row):
+            return None
+        extent = self.workload.get_dimension_size(self.workload.get_dims(last)[kernel.dim_positions(last)["n"]])
+        if extent % 2 or kernel.n > extent:
+            return None
+        try:
+            half = replace(kernel, n=min(kernel.n, extent // 2))
+            half.validate()
+        except (TypeError, ValueError) as error:
+            logger.info("%s is not split over its columns: %s", last.name, error)
+            return None
+        return half
+
+    def _assign_plan(self, plan, half, mapping: Mapping) -> None:
+        """Place each layer of ``plan`` on its cores and split, the last running ``half``."""
+        for node, cores, split in plan:
+            self._assign(node, cores, split, mapping)
+        mapping.get(plan[-1][0]).kernel = half
 
     def _place_tenancies(self, nodes: list[ComputationNode], grid, columns, rows) -> None:
         kernels = [self.mapping.get(n).kernel for n in nodes]
@@ -239,3 +276,25 @@ class PlacementGenerationStage(Stage):
             (mapping or self.mapping).get(node).kernel = replace(kernel, **kwargs)
         except TypeError:
             logger.info("Kernel of %s takes no %s; placement keeps it as declared", node.name, sorted(kwargs))
+
+
+def _column_split_rows(counts, rows, handed: bool) -> list[list[list[int]]]:
+    """Each layer's rows, as one group or, for the last, two halves of twice its rows, the halves outermost.
+
+    The halves keep the queries in the order the layer before holds them, so each core pairs with the one it did.
+    Where that layer hands the last a state, the two halves sit on the rows either side of it, whose memory each
+    shares; otherwise they follow the chain.
+    """
+    groups, offset = [], 0
+    for r in counts[:-1]:
+        groups.append([list(rows[offset : offset + r])])
+        offset += r
+    last = counts[-1]
+    if handed:
+        offset -= counts[-2]
+        before, producer, after = offset, offset + last, offset + last + counts[-2]
+        groups[-1] = [list(rows[producer:after])]
+        groups.append([list(rows[before:producer]), list(rows[after : after + last])])
+    else:
+        groups.append([list(rows[offset : offset + last]), list(rows[offset + last : offset + 2 * last])])
+    return groups
