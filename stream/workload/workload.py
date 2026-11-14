@@ -183,6 +183,86 @@ def _order_inputs_by_use(nodes: list[Node]) -> None:
     nodes.extend(rest)
 
 
+@dataclass(frozen=True)
+class _DemandBuilder:
+    """The sources serving each box of a transfer's firings: ``source_tiles`` each source's tiles, ``split_by_index``
+    the copies split over the sources by spatial index, ``shares_memory`` whether a source shares the target's memory,
+    ``target_demand`` each firing's boxes (:meth:`Workload._target_demand`)."""
+
+    n_sources: int
+    n_targets: int
+    by_spatial_index: bool
+    partial: bool
+    source_tiles: list[list[Box]]
+    split_by_index: set[int]
+    shares_memory: Callable[[int, int], bool]
+    target_demand: list[list[_TargetDemand]]
+
+    def demand(self, held_blocks: list | None, target_blocks: list | None) -> list[DemandItem]:
+        """The items of every firing of the nest, or, where placements walk the tensor in blocks, of the one firing in
+        which each source block serves each target block."""
+        if target_blocks:
+            entries = [
+                _TargetDemand(t, tuple(block), [(lo, hi, True) for lo, hi in block], (0,), False)
+                for t, block in enumerate(target_blocks)
+            ]
+            return self.items(entries, held_blocks)
+        return _over_firings([self.items(entries, held_blocks) for entries in self.target_demand])
+
+    def items(self, entries: list[_TargetDemand], held_blocks: list | None) -> list[DemandItem]:
+        """One firing's items: each box from the sources holding it, a local copy from the larger copy in the same
+        memory."""
+        items: list[DemandItem] = []
+        for entry in entries:
+            if entry.local_copy:
+                items += self._local_copy_items(entry, held_blocks)
+            elif self.by_spatial_index and self.split_by_index.issuperset(entry.copies):
+                items += self._split_by_index(entry)
+            else:
+                items += [
+                    DemandItem(entry.target, tuple(sources), part, self.partial, entry.copies)
+                    for part, sources in self._sources_holding(entry, held_blocks).items()
+                ]
+        return items
+
+    def _local_copy_items(self, entry: _TargetDemand, held_blocks: list | None) -> list[DemandItem]:
+        """A box a larger copy in the target's memory holds: what a source sharing that memory holds from it, the rest a
+        local copy from the larger copy."""
+        here = {} if self.partial else self._sources_holding(entry, held_blocks)
+        in_place = {
+            part: local
+            for part, found in here.items()
+            if (local := [s for s in found if self.shares_memory(s, entry.target)])
+        }
+        return [DemandItem(entry.target, tuple(s), part, False, entry.copies) for part, s in in_place.items()] + [
+            DemandItem(entry.target, (), rest, False, entry.copies, entry.copied_from)
+            for rest in less(entry.box, in_place)
+        ]
+
+    def _split_by_index(self, entry: _TargetDemand) -> list[DemandItem]:
+        """A box split over the sources target ``j`` pairs with by spatial index, ``j``, ``j + m``, ..."""
+        narrow = min(self.n_sources, self.n_targets)
+        feeding = [s for s in range(self.n_sources) if s % narrow == entry.target % narrow]
+        parts = zip(feeding, _split(list(entry.box), len(feeding)), strict=True)
+        return [
+            DemandItem(entry.target, (s,), part, False, entry.copies)
+            for s, part in parts
+            if all(lo <= hi for lo, hi in part)
+        ]
+
+    def _sources_holding(self, entry: _TargetDemand, held_blocks: list | None) -> dict[Box, list[int]]:
+        """Each part of the box the sources hold, with the sources holding it: their tiles across the window, or the
+        blocks a placement walks."""
+        found: dict[Box, list[int]] = {}
+        tiles = [[tuple(map(tuple, b))] for b in held_blocks] if held_blocks else self.source_tiles
+        for s, boxes in enumerate(tiles):
+            for have in boxes:
+                held = have if held_blocks else _source_part_of_window(have, entry.window)
+                if (part := meet(entry.box, held)) is not None:
+                    found.setdefault(part, []).append(s)
+        return found
+
+
 class Workload(DiGraphWrapper[Node]):
     """A dataflow graph of nodes, immutable once built.
 
@@ -1225,11 +1305,10 @@ class Workload(DiGraphWrapper[Node]):
         allow_local_copy: bool,
         shares_memory: Callable[[int, int], bool],
     ) -> tuple[DemandItem, ...]:
-        """What each of the ``n_targets`` targets of ``transfer`` reads per firing from which of the ``n_sources``:
-        each copy's window less what its sliding loop keeps, a box several copies read once. With ``allow_local_copy``,
-        a copy may be a local copy from a larger copy in the same memory. A walked split placement is taken at its
-        busiest (``cost``). ``by_spatial_index`` pairs target ``j`` with sources ``j``, ``j + m``, ..., as code
-        generation does."""
+        """What each of the ``n_targets`` targets of ``transfer`` reads per firing from which of the ``n_sources``
+        (:meth:`_target_demand`, :class:`_DemandBuilder`), sliding copies at each firing of their nest
+        (:meth:`_firing_nest`), a walked split placement at its busiest (``cost``); ``allow_local_copy`` lets a window
+        be copied from a larger copy in the same memory."""
         source, src = transfer.inputs[0], next(self.predecessors(transfer))
         src_tiling = self._tiling(src, mapping) if isinstance(src, ComputationNode | TransferNode) else ()
         placed = {d for d, _ in (*tiling, *src_tiling)}
@@ -1239,7 +1318,7 @@ class Workload(DiGraphWrapper[Node]):
             else [found for t in transfer.outputs if (found := self._reader(t, transfer))] or [(source, src)]
         )
         trips = self._overlapping_split_loops(transfer, mapping, placed, fusion_splits)
-        haves = [
+        source_tiles = [
             self._trip_tiles([(*read, src_tiling, s, n_sources) for read in held], placed, trips)
             for s in range(n_sources)
         ]
@@ -1256,7 +1335,7 @@ class Workload(DiGraphWrapper[Node]):
             if by_spatial_index or held_walk or target_walk
             else self._firing_nest(transfer, placed, ssis, fusion_splits, set(trips))
         )
-        wanted = [
+        target_demand = [
             self._target_demand(
                 transfer,
                 mapping,
@@ -1271,61 +1350,18 @@ class Workload(DiGraphWrapper[Node]):
             for firing in ([None] if nest is None else [(nest, s) for s in range(len(nest.trip_indices))])
         ]
         dims = [d for d, _ in tiling]
-        spread = {c for c, copy in enumerate(transfer.outputs) if not self.get_windows(copy, transfer, mapping, dims)}
+        split_by_index = {
+            c for c, copy in enumerate(transfer.outputs) if not self.get_windows(copy, transfer, mapping, dims)
+        }
 
-        def firing(entries: list[_TargetDemand], held_blocks: list | None) -> list[DemandItem]:
-            items: list[DemandItem] = []
-
-            def holders(t: int, box: Box, want: list[tuple[int, int, bool]]) -> dict[Box, list[int]]:
-                found: dict[Box, list[int]] = {}
-                tiles = [[tuple(map(tuple, b))] for b in held_blocks] if held_blocks else haves
-                for s, boxes in enumerate(tiles):
-                    for have in boxes:
-                        held = have if held_blocks else _source_part_of_window(have, want)
-                        if (part := meet(box, held)) is not None:
-                            found.setdefault(part, []).append(s)
-                return found
-
-            for t, box, want, copies, local_copy, copied_from in (
-                (e.target, e.box, e.window, e.copies, e.local_copy, e.copied_from) for e in entries
-            ):
-                if local_copy:
-                    here = {} if partial else holders(t, box, want)
-                    in_place = {
-                        part: s for part, found in here.items() if (s := [s for s in found if shares_memory(s, t)])
-                    }
-                    items += [DemandItem(t, tuple(s), part, False, copies) for part, s in in_place.items()]
-                    items += [DemandItem(t, (), rest, False, copies, copied_from) for rest in less(box, in_place)]
-                elif by_spatial_index and spread.issuperset(copies):
-                    narrow = min(n_sources, n_targets)
-                    feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
-                    parts = zip(feeding, _split(list(box), len(feeding)), strict=True)
-                    items += [
-                        DemandItem(t, (s,), part, False, copies)
-                        for s, part in parts
-                        if all(lo <= hi for lo, hi in part)
-                    ]
-                else:
-                    items += [
-                        DemandItem(t, tuple(sources), part, partial, copies)
-                        for part, sources in holders(t, box, want).items()
-                    ]
-            return items
-
-        def demand(held_blocks: list | None, target_blocks: list | None) -> list[DemandItem]:
-            if target_blocks:
-                entries = [
-                    _TargetDemand(t, tuple(block), [(lo, hi, True) for lo, hi in block], (0,), False)
-                    for t, block in enumerate(target_blocks)
-                ]
-                return firing(entries, held_blocks)
-            return _over_firings([firing(entries, held_blocks) for entries in wanted])
-
+        builder = _DemandBuilder(
+            n_sources, n_targets, by_spatial_index, partial, source_tiles, split_by_index, shares_memory, target_demand
+        )
         if held_walk and target_walk and held_at and target and held_at.split == target.split:
             walks = zip(held_walk, target_walk, strict=True)
         else:
             walks = product(held_walk or [None], target_walk or [None])
-        return tuple(_busiest([demand(held, target) for held, target in walks], cost))
+        return tuple(_busiest([builder.demand(held, target) for held, target in walks], cost))
 
     def neighbour_wait(self, transfer: TransferNode, mapping: "Mapping", fusion_splits: dict[LayerDim, int]) -> int:
         """The most firings of the fused nest a reader of ``transfer`` reads a tile before its producer's own firing
