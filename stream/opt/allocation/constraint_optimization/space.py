@@ -653,8 +653,9 @@ class DecisionSpace:
         if direction is None:
             return 0
         span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
+        adjacent = self.layouts.adjacent_runs(tr, path, memory, direction)
         bits = self.moved_bits(tr, path, copies=copies) * self.memory_share(tr, path, memory, direction == READ, copies)
-        return ceil(bits / (rate * self.shared_bandwidth[memory].efficiency(span, direction)))
+        return ceil(bits / (rate * self.shared_bandwidth[memory].efficiency(span, direction, adjacent)))
 
     @cached_property
     def layouts(self) -> CopyLayouts:

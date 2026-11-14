@@ -117,7 +117,7 @@ The `memory_ports` [constraint family](stages.md#constraint-families), in the de
 
 ### Measured bandwidth
 
-`bandwidth` gives a measured model, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes, or, where nothing is measured, `burst`, the bytes moved per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). Its key is either:
+`bandwidth` gives a measured model, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, `strided.read` / `strided.write` per contiguous span in bytes, and `adjacent.read` / `adjacent.write` per span where neighbouring channels move adjacent runs of the same rows (a transfer a route moves over several links gets at most the adjacent rate of the shortest run one link moves), or, where nothing is measured, `burst`, the bytes moved per access, of which a shorter contiguous run uses only its share (see [Data layout](data_layout.md)). Its key is either:
 
 - a **memory** (e.g. `dram`): the model bounds every transfer into or out of it, in place of its ports' widths, so its views need not list their ports;
 - a **port** `<memory>.<port>` (e.g. `hbm.rw_port_1`): the model replaces that port's width.
