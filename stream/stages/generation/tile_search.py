@@ -1,12 +1,15 @@
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import replace
 
+from stream.datatypes import LayerDim
 from stream.hardware.ports import READ
 from stream.ir.infeasibility import InfeasibleAllocationError, save_infeasibility_report
-from stream.mapping.blocks import measured_calls, with_call
+from stream.mapping.blocks import call_bound, measured_calls, with_call
 from stream.mapping.mapping import FusedGroup, Mapping
+from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import Workload
@@ -14,6 +17,7 @@ from stream.workload.workload import Workload
 logger = logging.getLogger(__name__)
 
 GROWTH_FACTORS = (2, 4)
+CALLS_KEPT = 3
 
 
 class TileSearchStage(Stage):
@@ -49,19 +53,41 @@ class TileSearchStage(Stage):
                     new_groups = list(groups)
                     new_groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
                     seeds.append(((gi, ti), self.mapping.with_fused_groups(new_groups)))
-            calls: list[tuple[object, Mapping]] = [(None, self.mapping)]
+            seeds += self._alternatives(gi, None, self.mapping)
+            other_calls: list[tuple[object, Mapping]] = []
             for call in measured_calls(self.workload, self.mapping, group):
                 try:
-                    called = with_call(self.workload, self.mapping, gi, group, call)
+                    built = with_call(self.workload, self.mapping, gi, group, call)
                 except ValueError as e:
                     logger.info("Call %s is not buildable: %s", call, e)
                     continue
+                if built is None:
+                    continue
                 key = tuple(sorted((str(d), t) for d, t in call.items()))
-                calls.append((key, called))
-                seeds.append(((gi, key), called))
-            for key, mapping in calls:
-                seeds += self._alternatives(gi, key, mapping)
+                other_calls += [((gi, key), built), *self._alternatives(gi, key, built)]
+            seeds += self._fastest_calls(gi, other_calls)
         return seeds
+
+    def _fastest_calls(self, gi: int, called: list[tuple[object, Mapping]]) -> list[tuple[object, Mapping]]:
+        """Of the candidates that change group ``gi``'s call, those whose calls are bound to take the fewest cycles
+        per MAC (:func:`call_bound`): the ``CALLS_KEPT`` best and any tied with the last of them, each at least as fast
+        as the seed's and fitting the cores' memory; all of them where none is bound."""
+        accelerator = self.ctx.get("accelerator")
+        links = [
+            data["cl"].bandwidth for _, target, data in accelerator.network.edges(data=True) if target.kind == "compute"
+        ]
+        if not links:
+            return called
+        hardware = build_hardware_facts(accelerator, None)
+        capacity = min(hardware.usable_bits(m) for m in accelerator.memories.values() if m.kind == "compute")
+        width = min(links)
+        seed = call_bound(self.workload, self.mapping, self.mapping.fused_groups[gi], width)
+        bounds = [(call_bound(self.workload, m, m.fused_groups[gi], width, capacity), (key, m)) for key, m in called]
+        if any(bound is None for bound, _ in bounds):
+            return called
+        faster = sorted((pair for pair in bounds if seed is None or pair[0] <= seed), key=lambda pair: pair[0])
+        last = faster[CALLS_KEPT - 1][0] if len(faster) >= CALLS_KEPT else float("inf")
+        return [candidate for bound, candidate in faster if bound <= last and bound < float("inf")]
 
     def _alternatives(self, gi: int, call: object, mapping: Mapping) -> list[tuple[object, Mapping]]:
         """Group ``gi`` of ``mapping`` with its staged block, the other operand held, or more output tiles held."""
@@ -70,9 +96,10 @@ class TileSearchStage(Stage):
         staged = self._staged(group)
         alternatives = [("staged", staged), ("order", _reordered(group))]
         alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
-        alternatives += [(("rows", f), _rows_held(group, f)) for f in GROWTH_FACTORS]
+        extent = self.workload.get_dimension_size
+        alternatives += [("rows", _rows_held(group, f, extent)) for f in GROWTH_FACTORS]
         if staged is not None:
-            alternatives += [(("staged rows", f), _rows_held(staged, f)) for f in GROWTH_FACTORS]
+            alternatives += [("staged rows", _rows_held(staged, f, extent)) for f in GROWTH_FACTORS]
         found = []
         for key, alternative in alternatives:
             if alternative is not None:
@@ -224,15 +251,16 @@ def _reordered(group: FusedGroup) -> FusedGroup | None:
     return replace(group, intra_core_tiling=swapped)
 
 
-def _rows_held(group: FusedGroup, factor: int) -> FusedGroup | None:
+def _rows_held(group: FusedGroup, factor: int, extent: Callable[[LayerDim], int]) -> FusedGroup | None:
     """``group`` with its outermost tile loop's dim also looped innermost, over ``factor`` tiles: each core then holds
     that many output tiles across the loops between, and reuses each operand tile it fetches for all of them. None
-    where the outermost loop is a single index or its dim is tiled at several sizes already."""
+    where the outermost loop is a single index, its dim is tiled at several sizes already, or ``factor`` tiles do not
+    divide its ``extent``."""
     tiling = group.intra_core_tiling
     if not tiling:
         return None
     dim, tile = tiling[-1]
-    if tile <= 1 or sum(d == dim for d, _ in tiling) > 1:
+    if tile <= 1 or sum(d == dim for d, _ in tiling) > 1 or extent(dim) % (tile * factor):
         return None
     return replace(group, intra_core_tiling=((dim, tile), *tiling[:-1], (dim, tile * factor)))
 
