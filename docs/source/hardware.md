@@ -77,7 +77,7 @@ connections:
 | `bandwidth` | no | Measured bandwidth models, keyed by memory name or by `<memory>.<port>`, see [Measured bandwidth](#measured-bandwidth). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
-| `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
+| `reconfiguration` | no | What a dispatch costs beyond its designs' prices, read by the cores' namespace; for `aie2`, `cycles_per_group` per design (its first fetch and last write) and, where a dispatch holds several designs, `cycles_per_core` per compute core of each to configure it. |
 
 ### Memories
 

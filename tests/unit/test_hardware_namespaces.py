@@ -126,8 +126,8 @@ def test_from_config_maps_the_aie2_reconfiguration():
     accelerator = _accelerator(_AIE)
     built = AIE2Namespace.from_config(_config(accelerator))
     reconfiguration = accelerator.reconfiguration
-    assert built.cycles_per_column == float(reconfiguration.get("cycles_per_column", 0.0))
-    assert built.reset_cycles == float(reconfiguration.get("reset_cycles", 0.0))
+    assert built.cycles_per_core == float(reconfiguration.get("cycles_per_core", 0.0))
+    assert built.cycles_per_group == float(reconfiguration.get("cycles_per_group", 0.0))
 
 
 def test_compute_tiles_reserve_the_toolchain_stack():

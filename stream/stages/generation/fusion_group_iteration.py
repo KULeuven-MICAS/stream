@@ -29,16 +29,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _compute_columns(allocation: "Allocation") -> tuple[int, ...]:
-    """The distinct compute-tile columns the solved allocation occupies."""
-    columns: set[int] = set()
+def _compute_cores(allocation: "Allocation") -> set[Core]:
+    """The compute cores the solved allocation occupies."""
+    cores: set[Core] = set()
     for node_mapping in allocation.mapping.values():
         for group in node_mapping.resource_allocation or ():
             items = group if isinstance(group, (list, tuple)) else (group,)
-            for item in items:
-                if isinstance(item, Core) and item.type == "compute" and item.col_id is not None:
-                    columns.add(item.col_id)
-    return tuple(sorted(columns))
+            cores.update(item for item in items if isinstance(item, Core) and item.type == "compute")
+    return cores
 
 
 class FusionGroupIterationStage(Stage):
@@ -53,7 +51,7 @@ class FusionGroupIterationStage(Stage):
     result_writes = (
         "total_latency",
         "group_latencies",
-        "group_columns",
+        "group_cores",
         "group_cycles",
         "group_wall_times",
         "group_allocations",
@@ -72,7 +70,7 @@ class FusionGroupIterationStage(Stage):
         sub_workloads = self.sub_workloads
         total_latency = 0.0
         group_latencies: dict[int, float] = {}
-        group_columns: dict[int, tuple[int, ...]] = {}
+        group_cores: dict[int, int] = {}
         group_cycles: dict[int, float] = {}
         group_wall_times: dict[int, float] = {}
         group_allocations: dict[int, dict | None] = {}
@@ -116,7 +114,7 @@ class FusionGroupIterationStage(Stage):
             group_latency = allocation.estimated_cycles
             total_latency += group_latency
             group_latencies[i] = group_latency
-            group_columns[i] = _compute_columns(allocation)
+            group_cores[i] = len(_compute_cores(allocation))
             group_cycles[i] = allocation.estimated_cycles
             group_allocations[i] = AllocationIR.from_internal(allocation).model_dump()
             # Capture the memory-access breakdown (per core, per tensor, off-chip vs on-chip) so the
@@ -137,7 +135,7 @@ class FusionGroupIterationStage(Stage):
             roofline=roofline,
             total_latency=total_latency,
             group_latencies=group_latencies,
-            group_columns=group_columns,
+            group_cores=group_cores,
             group_cycles=group_cycles,
             group_wall_times=group_wall_times,
             group_allocations=group_allocations,
