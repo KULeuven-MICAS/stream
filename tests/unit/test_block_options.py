@@ -113,3 +113,36 @@ def test_a_kernel_generic_over_a_dimension_does_not_veto_the_block_another_offer
 
 def test_a_divisor_narrows_what_another_kernel_offers():
     assert block_options(*_attention(library(gemm_m_divisor=32))) == {M: (32, 64)}
+
+
+def test_a_group_is_offered_each_call_its_kernel_library_measures():
+    """A GEMM built at 64x64x64 is offered the library's other measured calls that divide its dims, not a call whose
+    shape the kernel cannot build."""
+    from stream.mapping.blocks import measured_calls
+
+    lib = KernelLibrary.from_dict(
+        {
+            "family": {"matmul": {"ops_per_cycle": 151.0, "mac": {"m": 8, "k": 8, "n": 8}}},
+            "kernel": {
+                "matmul_bf16_f32": {
+                    "family": "matmul",
+                    "binding": "stream.compiler.kernels.mlir_aie:mm",
+                    "dims": [{"name": "k", "divisor": 8}, {"name": "n", "divisor": 16}, {"name": "m", "divisor": 16}],
+                    "cycles": [
+                        {"m": 64, "k": 64, "n": 64, "cycles": 1620.0},
+                        {"m": 32, "k": 128, "n": 64, "cycles": 1267.0},
+                        {"m": 32, "k": 64, "n": 24, "cycles": 600.0},
+                        {"m": 32, "k": 256, "n": 32, "cycles": 1099.0},
+                    ],
+                }
+            },
+        }
+    )
+    gemm = _node("Gemm", GEMM_MAPS)
+    workload = _Workload({gemm: (M, K, N)})
+    workload.get_dimension_size = lambda d: {M: 512, K: 128, N: 512}[d]
+    mapping = _Mapping({gemm: _Entry(GemmKernel(m=64, k=64, n=64, layout="default", library=lib))})
+    group = _Group(layers=("Gemm",), intra_core_tiling=((K, 64), (N, 64), (M, 64)))
+    assert measured_calls(workload, mapping, group) == [{K: 128, N: 64, M: 32}]
+    assert mapping.get(gemm).kernel.library_name == "matmul_bf16_f32"
+    assert GemmKernel(m=64, k=64, n=64, layout="default", library=library()).library_name == "matmul_bf16_bf16"

@@ -56,3 +56,39 @@ def with_block(workload: Workload, mapping: Mapping, gi: int, group: FusedGroup,
     groups = list(mapping.fused_groups)
     groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
     return mapping.with_fused_groups(groups)
+
+
+def measured_calls(workload: Workload, mapping: Mapping, group: FusedGroup) -> list[dict[LayerDim, int]]:
+    """The call shapes the group's kernel library measures, as the tile each puts on the group's dims: those of a
+    group with one kernel that has measured calls, other than the shape it is built at, where the kernel compiles the
+    shape and its tiles divide the dims."""
+    kernels = list(_group_kernels(workload, mapping, group))
+    if len(kernels) != 1:
+        return []
+    node, entry = kernels[0]
+    spec = getattr(entry.kernel, "spec", None) if getattr(entry.kernel, "library", None) is not None else None
+    if spec is None or not spec.cycles:
+        return []
+    dims = workload.get_dims(node)
+    by_name = {call_dim.name: dims[position] for position, _, call_dim in entry.kernel.call_tile(node)}
+    current = {call_dim.name: size for _, size, call_dim in entry.kernel.call_tile(node)}
+    shapes = []
+    for measured, _ in spec.cycles:
+        if set(measured) != set(by_name) or measured == current:
+            continue
+        try:
+            spec.validate(measured)
+        except ValueError:
+            continue
+        if all(workload.get_dimension_size(by_name[name]) % size == 0 for name, size in measured.items()):
+            shapes.append({by_name[name]: size for name, size in measured.items()})
+    return shapes
+
+
+def with_call(workload: Workload, mapping: Mapping, gi: int, group: FusedGroup, call: dict[LayerDim, int]) -> Mapping:
+    """The mapping with this group's kernel compiled for the ``call`` tile on its dims, and the group's tiling taking
+    that tile."""
+    for dim, size in call.items():
+        group = mapping.fused_groups[gi]
+        mapping = with_block(workload, mapping, gi, group, dim, size)
+    return mapping

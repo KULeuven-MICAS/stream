@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from stream.hardware.ports import READ
 from stream.ir.infeasibility import InfeasibleAllocationError, save_infeasibility_report
+from stream.mapping.blocks import measured_calls, with_call
 from stream.mapping.mapping import FusedGroup, Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -48,18 +49,37 @@ class TileSearchStage(Stage):
                     new_groups = list(groups)
                     new_groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
                     seeds.append(((gi, ti), self.mapping.with_fused_groups(new_groups)))
-            staged = self._staged(group)
-            alternatives = [("staged", staged), ("order", _reordered(group))]
-            alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
-            alternatives += [(("rows", f), _rows_held(group, f)) for f in GROWTH_FACTORS]
-            if staged is not None:
-                alternatives += [(("staged rows", f), _rows_held(staged, f)) for f in GROWTH_FACTORS]
-            for key, alternative in alternatives:
-                if alternative is not None:
-                    new_groups = list(groups)
-                    new_groups[gi] = alternative
-                    seeds.append(((gi, key), self.mapping.with_fused_groups(new_groups)))
+            calls: list[tuple[object, Mapping]] = [(None, self.mapping)]
+            for call in measured_calls(self.workload, self.mapping, group):
+                try:
+                    called = with_call(self.workload, self.mapping, gi, group, call)
+                except ValueError as e:
+                    logger.info("Call %s is not buildable: %s", call, e)
+                    continue
+                key = tuple(sorted((str(d), t) for d, t in call.items()))
+                calls.append((key, called))
+                seeds.append(((gi, key), called))
+            for key, mapping in calls:
+                seeds += self._alternatives(gi, key, mapping)
         return seeds
+
+    def _alternatives(self, gi: int, call: object, mapping: Mapping) -> list[tuple[object, Mapping]]:
+        """Group ``gi`` of ``mapping`` with its staged block, the other operand held, or more output tiles held."""
+        groups = mapping.fused_groups
+        group = groups[gi]
+        staged = self._staged(group)
+        alternatives = [("staged", staged), ("order", _reordered(group))]
+        alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
+        alternatives += [(("rows", f), _rows_held(group, f)) for f in GROWTH_FACTORS]
+        if staged is not None:
+            alternatives += [(("staged rows", f), _rows_held(staged, f)) for f in GROWTH_FACTORS]
+        found = []
+        for key, alternative in alternatives:
+            if alternative is not None:
+                new_groups = list(groups)
+                new_groups[gi] = alternative
+                found.append(((gi, call, key), mapping.with_fused_groups(new_groups)))
+        return found
 
     def _staged(self, group: FusedGroup) -> FusedGroup | None:
         """``group`` with its innermost tile loop nested in a larger tile its memory tiles stage, wide enough that an
