@@ -146,3 +146,78 @@ def test_a_group_is_offered_each_call_its_kernel_library_measures():
     assert measured_calls(workload, mapping, group) == [{K: 128, N: 64, M: 32}]
     assert mapping.get(gemm).kernel.library_name == "matmul_bf16_f32"
     assert GemmKernel(m=64, k=64, n=64, layout="default", library=library()).library_name == "matmul_bf16_bf16"
+
+
+def test_a_call_is_bound_by_the_tiles_its_core_streams_in():
+    """A 32x128x64 call fetches 196608 bits of operand tiles, 3072 cycles over a 64-bit link against its 1267 of
+    compute; a 32-row call that holds four output tiles fetches the weight tile once per four calls, and needs 60 KB
+    of the core's memory: two of each operand tile, four float accumulators and its output tile."""
+    from types import SimpleNamespace
+
+    from stream.mapping.blocks import call_bound
+
+    lib = KernelLibrary.from_dict(
+        {
+            "family": {"matmul": {"ops_per_cycle": 151.0, "mac": {"m": 8, "k": 8, "n": 8}}},
+            "kernel": {
+                "matmul_bf16_f32": {
+                    "family": "matmul",
+                    "binding": "stream.compiler.kernels.mlir_aie:mm",
+                    "dims": [{"name": "k", "divisor": 8}, {"name": "n", "divisor": 16}, {"name": "m", "divisor": 16}],
+                    "cycles": [
+                        {"m": 32, "k": 128, "n": 64, "cycles": 1267.0},
+                        {"m": 32, "k": 64, "n": 64, "cycles": 815.0},
+                    ],
+                }
+            },
+        }
+    )
+
+    class _Tensor:
+        operand_type = SimpleNamespace(bitwidth=16)
+
+    x, w, y = _Tensor(), _Tensor(), _Tensor()
+    gemm = ComputationNode(type="Gemm", name="Gemm", inputs=(), outputs=(), operand_mapping=GEMM_MAPS)
+    gemm.__dict__["inputs"], gemm.__dict__["outputs"] = (x, w), (y,)
+    workload = _Workload({gemm: (M, K, N)})
+    indexed = {id(x): (M, K), id(w): (K, N), id(y): (M, N)}
+    workload.strides_for_tensor = lambda t: {d: (1,) for d in indexed[id(t)]}
+    wide = _Mapping({gemm: _Entry(GemmKernel(m=32, k=128, n=64, layout="default", library=lib))})
+    group = _Group(layers=("Gemm",), intra_core_tiling=((K, 128), (N, 64), (M, 32)))
+    assert call_bound(workload, wide, group, 64) == 3072 / (32 * 128 * 64)
+    held = _Mapping({gemm: _Entry(GemmKernel(m=32, k=64, n=64, layout="default", library=lib))})
+    group = _Group(layers=("Gemm",), intra_core_tiling=((M, 32), (K, 64), (N, 64), (M, 128)))
+    assert call_bound(workload, held, group, 64) == 815 / (32 * 64 * 64)
+    assert call_bound(workload, held, group, 64, capacity_bits=63 * 8192) == 815 / (32 * 64 * 64)
+    assert call_bound(workload, held, group, 64, capacity_bits=56 * 8192) == float("inf")
+
+
+def test_a_call_takes_the_innermost_tile_of_a_dim_and_keeps_its_larger_ones():
+    """A GEMM whose k is staged at 512 around 64-wide calls takes a 128-wide call inside the same 512 block; a call
+    that does not divide the block is not offered."""
+    from stream.mapping.blocks import with_call
+
+    gemm = _node("Gemm", GEMM_MAPS)
+    workload = _Workload({gemm: (M, K, N)})
+
+    class _Groups(_Mapping):
+        def __init__(self, entries, groups):
+            super().__init__(entries)
+            self.fused_groups = groups
+
+        def copy(self):
+            return _Groups(dict(self._entries), list(self.fused_groups))
+
+        def set(self, node, entry):
+            self._entries[node] = entry
+
+        def with_fused_groups(self, groups):
+            return _Groups(dict(self._entries), list(groups))
+
+    lib = library()
+    group = _Group(layers=("Gemm",), intra_core_tiling=((K, 64), (K, 512), (N, 64), (M, 64)))
+    mapping = _Groups({gemm: _Entry(GemmKernel(m=64, k=64, n=64, layout="default", library=lib))}, [group])
+    called = with_call(workload, mapping, 0, group, {K: 128, N: 64, M: 32})
+    assert called.fused_groups[0].intra_core_tiling == ((K, 128), (K, 512), (N, 64), (M, 32))
+    assert (called.get(gemm).kernel.k, called.get(gemm).kernel.m) == (128, 32)
+    assert with_call(workload, mapping, 0, group, {K: 96, N: 64, M: 32}) is None

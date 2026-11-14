@@ -125,6 +125,63 @@ def test_the_tile_search_offers_more_output_tiles_held_across_the_reduction():
     from stream.stages.generation.tile_search import _rows_held
 
     group = FusedGroup("g", ("Gemm",), ((K, 64), (N, 64), (M, 32)))
-    assert _rows_held(group, 4).intra_core_tiling == ((M, 32), (K, 64), (N, 64), (M, 128))
-    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 32), (M, 64))), 2) is None
-    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 1))), 2) is None
+    extent = {K: 2048, N: 2048, M: 512}.__getitem__
+    assert _rows_held(group, 4, extent).intra_core_tiling == ((M, 32), (K, 64), (N, 64), (M, 128))
+    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 32), (M, 64))), 2, extent) is None
+    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 1))), 2, extent) is None
+    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 192))), 2, extent) is None
+
+
+def _search_stage(bounds=None):
+    """A tile search over one GEMM group tiled k, n, m at 64, its call bounds by mapping where given."""
+    from stream.mapping.mapping import FusedGroup
+
+    group = FusedGroup("g", ("Gemm",), ((K, 64), (N, 64), (M, 64)))
+
+    class _Mapping:
+        def __init__(self, groups):
+            self.fused_groups = groups
+
+        def with_fused_groups(self, groups):
+            return _Mapping(list(groups))
+
+    compute = SimpleNamespace(kind="compute")
+    accelerator = SimpleNamespace(
+        network=SimpleNamespace(edges=lambda data: [(None, compute, {"cl": SimpleNamespace(bandwidth=64)})]),
+        memories={"core": compute},
+    )
+    return SimpleNamespace(
+        workload=SimpleNamespace(get_dimension_size={K: 2048, N: 2048, M: 2048}.__getitem__),
+        mapping=_Mapping([group]),
+        ctx=SimpleNamespace(get=lambda key: accelerator),
+        _staged=lambda g: None,
+    )
+
+
+def test_the_tile_search_offers_the_order_and_the_rows_held_of_a_group():
+    from stream.stages.generation.tile_search import TileSearchStage
+
+    stage = _search_stage()
+    found = TileSearchStage._alternatives(stage, 0, None, stage.mapping)
+    assert [key for key, _ in found] == [(0, None, "order"), (0, None, "rows"), (0, None, "rows")]
+    assert [m.fused_groups[0].intra_core_tiling for _, m in found] == [
+        ((K, 64), (M, 64), (N, 64)),
+        ((M, 64), (K, 64), (N, 64), (M, 128)),
+        ((M, 64), (K, 64), (N, 64), (M, 256)),
+    ]
+
+
+def test_the_tile_search_keeps_the_calls_bound_fastest_and_their_ties(monkeypatch):
+    """Of five calls, the three bound fastest and one tied with the third; not one bound slower than the seed's call,
+    nor one the cores cannot hold."""
+    from stream.stages.generation import tile_search
+    from stream.stages.generation.tile_search import TileSearchStage
+
+    stage = _search_stage()
+    called = [(name, SimpleNamespace(fused_groups=[name])) for name in "abcdefg"]
+    bounds = {"seed": 0.010, "a": 0.004, "b": 0.006, "c": 0.008, "d": 0.008, "e": 0.009, "f": 0.020, "g": float("inf")}
+    monkeypatch.setattr(tile_search, "call_bound", lambda w, m, group, width, capacity=0: bounds[group])
+    monkeypatch.setattr(tile_search, "build_hardware_facts", lambda a, c: SimpleNamespace(usable_bits=lambda m: 1))
+    stage.mapping = SimpleNamespace(fused_groups=["seed"])
+    kept = TileSearchStage._fastest_calls(stage, 0, called)
+    assert [key for key, _ in kept] == ["a", "b", "c", "d"]
