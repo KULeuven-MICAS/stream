@@ -50,8 +50,8 @@ frontend. The pipeline handles such a read like any other affine access:
 - **Halos.** A tile's footprint is its interior window, not clipped at the tensor's origin, and a transfer's copy
   holds the window of the node it reaches. Each loop that slides that window carries its halo, the window less its
   step, on its `IterationVariable`: the rows a fused loop shares between iterations, the columns cores share.
-- **Line buffer.** A sliding loop keeps its halo resident: the copy holds the window (times its buffering) and the
-  transfer moves only the step. A target core is fed by every source core whose tile its window overlaps, and the halo
+- **Line buffer.** Each sliding loop keeps its halo resident, the innermost in the window, an outer one in addition to it; the
+  transfer moves the rest. A target core is fed by every source core whose tile its window overlaps, and the halo
   it takes from a core it shares no memory with counts on the links, ports, DMA channels and off-chip traffic like any
   transfer. ZigZag costs the interior tile, which needs no border padding.
 - **Strided reads.** Where every reader of a tensor steps an axis by `s` (a 1x1 stride-2 convolution's `2*o`), the

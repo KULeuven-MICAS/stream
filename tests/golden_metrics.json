@@ -202,15 +202,15 @@
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[simba_small]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.10865464423149476,
+    "end_to_end_mac_utilization": 0.1089505939320572,
     "energy_pj": 4012303.36,
-    "group_latencies_max": 13253.0,
+    "group_latencies_max": 13217.0,
     "iteration_latency": 2338,
     "mac_spatial_utilization": 0.5,
     "mip_gap": 0.0,
-    "objective": 13253.0,
+    "objective": 13217.0,
     "solve_time_s": 0.003049,
-    "total_latency": 13253.0,
+    "total_latency": 13217.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[tpu_like_quad_core]": {
