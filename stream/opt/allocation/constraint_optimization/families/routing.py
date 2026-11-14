@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.ports import ANY_OPERAND, READ, WRITE
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import ROUTE_HOPS
 from stream.opt.allocation.constraint_optimization.families.latency import link_busy
@@ -172,10 +173,21 @@ def _same_memory_var(
 LINK_CONTENTION = ResourceKind("link_contention", "communication link over-subscribed")
 
 
+def circuits(link: CommunicationLink) -> int:
+    """Transfers a circuit-switched link carries at once: one per channel of the off-chip DMA port it leaves or enters
+    by, else one."""
+    for memory, direction in ((link.sender, READ), (link.receiver, WRITE)):
+        if memory is not None and memory.offchip:
+            port = memory.dma_port(link.ports.get(memory, ()), direction, ANY_OPERAND)
+            return port.channels if port is not None and port.channels else 1
+    return 1
+
+
 class LinkContention:
     """The transfers of a slot share each link: the slot lasts at least as long as they keep any link busy together,
     each for the part of its latency its share of the data keeps that link busy. On circuit-switched links a transfer
-    holds the link alone, so a link carries at most one transfer per slot."""
+    holds a circuit alone, so a link carries at most one transfer per slot, or one per DMA channel of the off-chip port
+    it leaves or enters by."""
 
     name: ClassVar[str] = "link_contention"
     requires: ClassVar[tuple[str, ...]] = ("transfer_latency",)
@@ -192,7 +204,7 @@ class LinkContention:
         busy = {key: terms for key, terms in link_busy(ctx).items() if not switched(key[0].cores)}
         for (link, s), vars_ in held.items():
             ctx.add_constr(
-                model.quicksum(v._raw for v in vars_) <= 1,
+                model.quicksum(v._raw for v in vars_) <= circuits(link),
                 name=f"link_usage_{resource_key(link)}_{s}",
                 resource=link,
                 kind=LINK_CONTENTION,
