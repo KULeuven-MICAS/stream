@@ -37,10 +37,11 @@ def _assert_sound_dataflow(ctx, node_count: int) -> None:
     """Every node runs on a compute core, and each group's allocation is consistent: utilizations are fractions,
     no memory holds more than it has, energy is spent, and each transfer's layout orders all dims of a tile that fits
     its tensor, read and written in runs no longer than the tile by loops that visit the whole tile."""
-    accelerator, mapping, workload = ctx.get("accelerator"), ctx.get("mapping"), ctx.get("workload")
-    nodes = [n for n in workload.nodes if isinstance(n, ComputationNode)]
+    accelerator = ctx.get("accelerator")
+    groups = zip(ctx.get("sub_workloads"), ctx.get("sub_mappings"), strict=True)
+    nodes = [(n, mapping) for workload, mapping in groups for n in workload.nodes if isinstance(n, ComputationNode)]
     assert len(nodes) == node_count
-    for node in nodes:
+    for node, mapping in nodes:
         cores = {core.id for group in mapping.get(node).resource_allocation for core in group}
         assert cores and all(accelerator.get_core(core).kind == "compute" for core in cores), node.name
 
@@ -70,32 +71,43 @@ def _caption(values: dict) -> str:
 
 
 def _record_metrics(record_metric, ctx, hparams: str) -> None:
-    """The advisory metrics the CI comment compares against ``tests/golden_metrics.json``."""
-    solution = ctx.get("allocation").solution
-    aggregate = solution.performance["aggregate"]
-    group_latencies = ctx.get("group_latencies")
+    """The advisory metrics the CI comment compares against ``tests/golden_metrics.json``, over the run's groups, which
+    run one after another: their objectives and solve times summed, the worst gap, the MAC utilizations over the
+    run's latency, and each group's iteration latency."""
+    groups = list(ctx.get("group_allocations").values())
+    aggregates = [group["performance"]["aggregate"] for group in groups]
+    latencies = [group["latency"]["total"] for group in groups]
+    utilizations = [aggregate["latency_weighted_mac_spatial_utilization"] for aggregate in aggregates]
+    peak = max(aggregate["peak_macs_per_cycle"] for aggregate in aggregates)
     record_metric("total_latency", ctx.get("total_latency"))
-    record_metric("group_latencies_max", max(group_latencies.values()))
-    record_metric("objective", solution.solve_stats.objective)
-    record_metric("mip_gap", solution.solve_stats.mip_gap)
-    record_metric("solve_time_s", solution.solve_stats.solve_time_s)
-    record_metric("mac_spatial_utilization", aggregate["latency_weighted_mac_spatial_utilization"])
-    record_metric("end_to_end_mac_utilization", aggregate["end_to_end_mac_utilization"])
-    record_metric("degenerate", aggregate["degenerate"])
+    record_metric("group_latencies_max", max(ctx.get("group_latencies").values()))
+    record_metric("objective", sum(group["solve"]["objective"] for group in groups))
+    gaps = [group["solve"]["mip_gap"] for group in groups if group["solve"]["mip_gap"] is not None]
+    record_metric("mip_gap", max(gaps, default=None))
+    record_metric("solve_time_s", sum(group["solve"]["solve_time_s"] for group in groups))
+    record_metric(
+        "mac_spatial_utilization", sum(map(math.prod, zip(utilizations, latencies, strict=True))) / sum(latencies)
+    )
+    record_metric(
+        "end_to_end_mac_utilization",
+        sum(aggregate["total_mac_ops"] for aggregate in aggregates) / (peak * sum(latencies)),
+    )
+    record_metric("degenerate", any(aggregate["degenerate"] for aggregate in aggregates))
     record_metric("workload_hparams", hparams)
-    (group,) = ctx.get("group_allocations").values()
-    record_metric("iteration_latency", group["latency"]["per_iteration"])
-    record_metric("energy_pj", group["performance"]["energy"]["total_pj"])
+    record_metric("iteration_latencies", [group["latency"]["per_iteration"] for group in groups])
+    record_metric("energy_pj", sum(group["performance"]["energy"]["total_pj"] for group in groups))
 
 
 def _assert_golden(ctx, node_id: str) -> None:
-    """The run gives the cycles and energy ``tests/golden_metrics.json`` records; after a change that moves them,
-    rerun this file and ``python scripts/analysis/render_metrics_comment.py --update-baseline``."""
-    (group,) = ctx.get("group_allocations").values()
+    """The run gives the cycles, each group's iteration latency and the energy ``tests/golden_metrics.json`` records;
+    after a change that moves them, rerun this file and ``python scripts/analysis/render_metrics_comment.py
+    --update-baseline``."""
+    groups = ctx.get("group_allocations").values()
     golden = GOLDEN[node_id]
     assert ctx.get("total_latency") == golden["total_latency"]
-    assert group["latency"]["per_iteration"] == golden["iteration_latency"]
-    assert group["performance"]["energy"]["total_pj"] == pytest.approx(golden["energy_pj"], abs=0.01)
+    assert [group["latency"]["per_iteration"] for group in groups] == golden["iteration_latencies"]
+    energy = sum(group["performance"]["energy"]["total_pj"] for group in groups)
+    assert energy == pytest.approx(golden["energy_pj"], abs=0.01)
 
 
 def _run(hardware: str, workload: str, options: SolveOptions | None = None):
