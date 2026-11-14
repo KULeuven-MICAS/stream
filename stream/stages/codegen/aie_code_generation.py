@@ -87,6 +87,17 @@ def aie_tiles(accelerator: Accelerator) -> dict[str, AIETileLocation]:
     return tiles
 
 
+def reject_strided_reads(workload: Workload) -> None:
+    """Refuse a workload with a strided read: AIE code generation has no lowering for the gather."""
+    for node in workload.get_computation_nodes():
+        for tensor in node.inputs:
+            if max(steps := [step for step, _ in workload.index_steps(tensor)]) > 1:
+                raise ValueError(
+                    f"{node.name} reads {tensor.name} at steps {steps} along its axes, a strided gather, which "
+                    "AIE code generation does not lower"
+                )
+
+
 def _location(at: Core | Memory) -> AIETileLocation:
     if isinstance(at, Memory) and at.offchip:
         return AIETileLocation(OFFCHIP, None, None)
@@ -485,6 +496,7 @@ class AIECodeGenerationStage(Stage):
                 f"{on_chip} are placed on chip, but the AIE runtime sequence brings every input in from off chip and "
                 "takes every output out: place them off chip to generate code"
             )
+        reject_strided_reads(workload)
         self.context.bindings = Bindings(self.npu)
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
             self.context.registered_kernels[kernel.unique_name] = kernel

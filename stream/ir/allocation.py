@@ -473,6 +473,7 @@ class LayoutSideIR(BaseModel):
 
     extent: list[int] = Field(description="The buffer the copy sits in, per axis: tensor off chip, tile on chip")
     strides: list[int] = Field(description="Elements between neighbours along each axis of that buffer")
+    offset: int = Field(default=0, description="The element of that buffer the DMA starts at")
     access: list[list[int]] = Field(
         description="The [size, stride] loops, outermost first, in elements, the DMA walks the tile in on this side"
     )
@@ -563,7 +564,7 @@ class AllocationPerformanceView(BaseModel):
     `compute_cores_available`, and per-node `mac_spatial_utilization` / `compute_efficiency`.
     """
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["2.1"] = "2.1"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     bottleneck: BottleneckIR = Field(description="Per-iteration compute-bound vs transfer/DMA-bound cycle split")
     aggregate: PerformanceAggregateIR = Field(description="Accelerator-wide core usage and MAC utilization")

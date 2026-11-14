@@ -791,11 +791,11 @@ def _without_descriptions(schema):
         (AcceleratorIR, "2.1", "0f52880a13485ad4"),
         (AcceleratorHardwareView, "2.1", "8c99f01169c52638"),
         (AcceleratorCompilerView, "2.1", "90a2ac03ca7c3355"),
-        (AllocationIR, "3.3", "da3f83cca73652b2"),
+        (AllocationIR, "3.3", "bc037b9570993929"),
         (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
         (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
         (AllocationCompilerView, "2.2", "74d177bdcc875b7c"),
-        (AllocationPerformanceView, "2.0", "b4c9df810d67eaaa"),
+        (AllocationPerformanceView, "2.1", "b3eb4990fac48e04"),
         (InfeasibilityReportIR, "2.0", "f916a400b3ad105e"),
     ],
 )

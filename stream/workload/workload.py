@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from itertools import combinations, pairwise, product
-from math import ceil, prod
+from math import ceil, gcd, prod
 from typing import TYPE_CHECKING, Any, cast
 
 import networkx as nx
@@ -136,6 +136,10 @@ def _window_of(entries: list[_TargetDemand], target: int, box: Box) -> list[tupl
         (min(axis[0] for axis in axes), max(axis[1] for axis in axes), axes[0][2])
         for axes in zip(*windows, strict=True)
     ]
+
+
+IndexSteps = tuple[tuple[int, int], ...]
+"""Per axis of a tensor, the (step, first) of the indices read along it: ``first + step * k``."""
 
 
 def _order_inputs_by_use(nodes: list[Node]) -> None:
@@ -573,7 +577,7 @@ class Workload(DiGraphWrapper[Node]):
         for node in self.get_iteration_space_nodes():
             for tensor, mapping in zip(node.tensors, node.operand_mapping, strict=True):
                 global_mapping = self.global_mapping(node, mapping)
-                for expr, sz in zip(global_mapping.results, tensor.shape, strict=True):
+                for expr, sz in zip(global_mapping.results, _span(tensor), strict=True):
                     result_to_shape.append((expr, sz))
 
         # Step 1: direct read for dims that appear as pure AffineDimExpr
@@ -710,10 +714,89 @@ class Workload(DiGraphWrapper[Node]):
         """The extent per axis of what ``accessor`` touches of ``tensor`` (by default its producer, or its ``readers``,
         else its other users) when each unique dim spans ``dimension_sizes``: an interior tile, its window at most the
         whole tensor, but clipped to the tensor along the axes of the dims ``at`` places at a tile index."""
+        nodes = self._accessors(tensor, accessor, readers)
+        return self._extents(tensor, nodes, dimension_sizes, at or {}, self._tile_index_steps(tensor, nodes))
+
+    def _accessors(self, tensor: Tensor, accessor: HasIterationSpace | None, readers: bool) -> list[HasIterationSpace]:
+        """``accessor``, else the producers of ``tensor`` (or its ``readers``), else its other users."""
         users = [n for n in self.get_iteration_space_nodes() if tensor in n.tensors]
         chosen = [n for n in users if tensor in (n.inputs if readers else n.outputs)]
-        nodes = [accessor] if accessor else chosen or users
-        return tuple(max(0, high - low + 1) for low, high, _ in self._bounds(tensor, nodes, dimension_sizes, at or {}))
+        return [accessor] if accessor else chosen or users
+
+    def _extents(
+        self,
+        tensor: Tensor,
+        nodes: Sequence[HasIterationSpace],
+        dimension_sizes: dict[LayerDim, int],
+        at: dict,
+        index_steps: IndexSteps,
+    ) -> tuple[int, ...]:
+        """The indices per axis ``nodes`` touch of ``tensor``, counted on ``index_steps``."""
+        return tuple(
+            max(0, high - low + 1)
+            for low, high, _ in self._bounds(tensor, nodes, dimension_sizes, at, index_steps=index_steps)
+        )
+
+    def _tile_index_steps(
+        self, tensor: Tensor, nodes: Sequence[HasIterationSpace], index_steps: IndexSteps | None = None
+    ) -> IndexSteps:
+        """The index steps a tile ``nodes`` touch is held on: every index where one of them writes ``tensor``, else
+        ``index_steps`` (by default the readers')."""
+        if any(tensor in node.outputs for node in nodes):
+            return _every_index(tensor)
+        return index_steps or self.index_steps(tensor)
+
+    def index_steps(self, tensor: Tensor) -> IndexSteps:
+        """The index steps the computation nodes reading the buffer of ``tensor`` read it on."""
+        return self._index_steps_by_buffer.get(tensor.subview.source) or _every_index(tensor)
+
+    @cached_property
+    def _index_steps_by_buffer(self) -> dict[Any, IndexSteps]:
+        return self._index_steps_of({z: self.get_dimension_size(z) for z in self.unique_dimensions()[0]})
+
+    def _index_steps_of(self, sizes: dict[LayerDim, int]) -> dict[Any, IndexSteps]:
+        """Per buffer a node reads, the index steps its computation nodes read it on, each unique dim spanning
+        ``sizes``."""
+        users: dict[Any, list[tuple[HasInputs, Tensor]]] = {}
+        for node in self.nodes:
+            if isinstance(node, HasInputs):
+                for tensor in node.inputs:
+                    users.setdefault(tensor.subview.source, []).append((node, tensor))
+        return {source: self._index_steps_for(found, sizes) for source, found in users.items()}
+
+    def _index_steps_for(self, users: list[tuple[HasInputs, Tensor]], sizes: dict[LayerDim, int]) -> IndexSteps:
+        """The index steps ``users`` of one buffer read it on: per axis the gcd of the coefficients of the dims that
+        move the index and of the differences between the readers' first indices; every index if an edge uses it."""
+        reads = [(n, t) for n, t in users if isinstance(n, ComputationNode)]
+        if not reads or any(not isinstance(n, ComputationNode | TransferNode) for n, _ in users):
+            return _every_index(users[0][1])
+        unique_dims, dim_values = self.unique_dimensions()
+        index_steps = []
+        for axis in range(len(users[0][1].subview.source.type.get_shape())):
+            step, firsts = 0, []
+            for node, t in reads:
+                index = self.global_mapping(node, node.get_mapping(t)).results[axis]
+                first, coefficients = affine_coefficients(
+                    index.replace_dims_and_symbols(dim_values, ()), len(unique_dims)
+                )
+                moving = (abs(c) for c, z in zip(coefficients, unique_dims, strict=True) if c and sizes[z] > 1)
+                step = gcd(step, *moving)
+                firsts.append(first)
+            step = gcd(step, *(first - firsts[0] for first in firsts)) or 1
+            index_steps.append((step, firsts[0] % step))
+        return tuple(index_steps)
+
+    def strided_view(self, tensor: Tensor) -> Tensor:
+        """The indices of the tile ``tensor`` its readers read, as a strided view of the same range."""
+        index_steps = self.index_steps(tensor)
+        offsets, strides = tensor.subview.static_offsets.get_values(), tensor.subview.static_strides.get_values()
+        if all(stride == step for stride, (step, _) in zip(strides, index_steps, strict=True)):
+            return tensor
+        ranges = [
+            _stepped_range(offset, offset + (n - 1) * stride, *on)
+            for offset, n, stride, on in zip(offsets, tensor.shape, strides, index_steps, strict=True)
+        ]
+        return self._tile(tensor, tuple(max(0, high - low + 1) for low, high in ranges), index_steps)
 
     def _bounds(
         self,
@@ -722,9 +805,13 @@ class Workload(DiGraphWrapper[Node]):
         dimension_sizes: dict[LayerDim, int],
         at: dict,
         origin: dict[LayerDim, int] | None = None,
+        *,
+        index_steps: IndexSteps | None = None,
     ) -> list[tuple[int, int, bool]]:
         """The inclusive index range per axis ``nodes`` touch of ``tensor`` as for the extents above, and whether the
-        axis is placed; a dim of ``origin`` starts at the index it gives, in tensor coordinates but not placed."""
+        axis is placed; a dim of ``origin`` starts at the index it gives, in tensor coordinates but not placed. The
+        range counts the indices on ``index_steps`` (by default the readers')."""
+        index_steps = index_steps or self.index_steps(tensor)
         unique_dims, dim_values = self.unique_dimensions()
         sizes = [dimension_sizes[z] for z in unique_dims]
         origin = origin or {}
@@ -744,6 +831,7 @@ class Workload(DiGraphWrapper[Node]):
                 else:
                     # A window spanning the axis is all of it; a narrower one keeps an interior tile's extent.
                     ranges.append((0, size - 1) if high - low + 1 >= size else (low, high))
+                ranges[-1] = _stepped_range(*ranges[-1], *index_steps[axis])
             bounds.append((min(r[0] for r in ranges), max(r[1] for r in ranges), placed))
         return bounds
 
@@ -788,13 +876,15 @@ class Workload(DiGraphWrapper[Node]):
         return tilings[0] if tilings else ()
 
     @staticmethod
-    def _tile(tensor: Tensor, shape: tuple[int, ...]) -> Tensor:
+    def _tile(tensor: Tensor, shape: tuple[int, ...], index_steps: IndexSteps | None = None) -> Tensor:
+        """A tile of ``shape`` of ``tensor``'s buffer, its indices on ``index_steps``."""
+        index_steps = index_steps or _every_index(tensor)
         subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
             source_type=tensor.subview.source.type,
-            offsets=[0 for _ in shape],
+            offsets=[first for _, first in index_steps],
             sizes=shape,
-            strides=[1 for _ in shape],
+            strides=[step for step, _ in index_steps],
         )
         return Tensor(name=tensor.name, operand_type=tensor.operand_type, shape=shape, subview=subview)
 
@@ -811,7 +901,7 @@ class Workload(DiGraphWrapper[Node]):
             else self._tiling(node, mapping)
         )
         shape = self.get_tensor_shape_with_tiling(read, tiling, accessor, core)
-        return tensor if shape == tensor.shape else self._tile(tensor, shape)
+        return tensor if shape == tensor.shape else self._tile(tensor, shape, self._tile_index_steps(read, [accessor]))
 
     def get_windows(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", dims: Sequence[LayerDim]
@@ -823,12 +913,13 @@ class Workload(DiGraphWrapper[Node]):
         (read, reader), (unique_dims, dim_values) = found, self.unique_dimensions()
         sizes = self._tile_sizes(self._tiling(transfer, mapping))
         shape = self.get_tensor_shape_with_dimension_sizes(read, sizes, reader)
+        index_steps = self._tile_index_steps(read, [reader])
         sliding = set(dims) & set(self.get_tensor_dimensions(reader.outputs[0]))
         windows: dict[LayerDim, tuple[int, int]] = {}
         for axis, expr in enumerate(self.global_mapping(reader, reader.get_mapping(read)).results):
             index = expr.replace_dims_and_symbols(dim_values, ())
             for z, c in zip(unique_dims, affine_coefficients(index, len(unique_dims))[1], strict=True):
-                if z in sliding and c and (halo := shape[axis] - abs(c) * sizes[z]) > 0:
+                if z in sliding and c and (halo := shape[axis] - abs(c) * sizes[z] // index_steps[axis][0]) > 0:
                     windows.setdefault(z, (axis, halo))
         return windows
 
@@ -855,7 +946,7 @@ class Workload(DiGraphWrapper[Node]):
         shape = list(self.get_tensor_shape_with_tiling(read, tiling, reader, core))
         if sliding := self.sliding_halo(tensor, transfer, mapping, ssis):
             shape[sliding[0]] -= sliding[1]
-        return self._tile(tensor, tuple(shape))
+        return self._tile(tensor, tuple(shape), self._tile_index_steps(read, self._accessors(read, reader, False)))
 
     def sliding_halo(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", ssis: SteadyStateIterationSpace | None
@@ -913,17 +1004,20 @@ class Workload(DiGraphWrapper[Node]):
                     boxes.setdefault((i, j), []).append(box)
         return boxes
 
-    @staticmethod
-    def _walked_blocks(placement: "EdgePlacement | None", tensor: Tensor) -> list[list[list[tuple[int, int]]]] | None:
+    def _walked_blocks(
+        self, placement: "EdgePlacement | None", tensor: Tensor
+    ) -> list[list[list[tuple[int, int]]]] | None:
         """Per iteration walking the split axis, the box each position of ``placement`` holds in iteration-0
         coordinates; None unless it splits ``tensor``."""
         if placement is None or placement.split is None:
             return None
-        shape, axis = tensor.subview.source.type.get_shape(), placement.split
-        extent = shape[axis]
+        shape, axis, index_steps = tensor.subview.source.type.get_shape(), placement.split, self.index_steps(tensor)
+        whole = [_stepped_range(0, n - 1, *on) for n, on in zip(shape, index_steps, strict=True)]
+        extent = whole[axis][1] + 1
         step = min(tensor.shape[axis], extent)
-        blocks = [placement.block(s, extent) for s in range(len(placement.memories))]
-        whole = [(0, n - 1) for n in shape]
+        blocks = [
+            _stepped_range(*placement.block(s, shape[axis]), *index_steps[axis]) for s in range(len(placement.memories))
+        ]
         return [
             [[*whole[:axis], (lo - k * step, hi - k * step), *whole[axis + 1 :]] for lo, hi in blocks]
             for k in range(ceil(extent / step))
@@ -1335,7 +1429,10 @@ class Workload(DiGraphWrapper[Node]):
         else:
             assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
             pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
-        return self._tile(tensor, self.get_tensor_shape_with_tiling(tensor, pred_tiling))
+        index_steps = self._tile_index_steps(tensor, self._accessors(tensor, None, False))
+        return self.strided_view(
+            self._tile(tensor, self.get_tensor_shape_with_tiling(tensor, pred_tiling), index_steps)
+        )
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
@@ -1345,36 +1442,15 @@ class Workload(DiGraphWrapper[Node]):
         global loop sizes.
         """
         # Infer the updated shape for every tensor based on the strides.
-        inferred_shapes: dict[str, tuple[int, ...]] = {}
-        original_tensors_dict: dict[str, Tensor] = {}
-        for node in self.get_computation_nodes():
-            original_tensors = node.tensors
-            for original_tensor in original_tensors:
-                tensor_name = original_tensor.name
-                original_tensors_dict[tensor_name] = original_tensor
-                new_shape_t = self.get_tensor_shape_with_dimension_sizes(original_tensor, new_sizes)
-                inferred_shapes[tensor_name] = new_shape_t
-
-        # Create new Tensor objects with the inferred shapes.
         tensor_map: dict[str, Tensor] = {}
-        for tensor_name, new_shape_t in inferred_shapes.items():
-            original_tensor = original_tensors_dict[tensor_name]
-            original_subview = original_tensor.subview
-            # Create new subview referencing original one with new sizes
-            new_subview = SubviewOp.from_static_parameters(
-                source=original_subview.source,
-                source_type=original_subview.source.type,
-                offsets=[0 for _ in new_shape_t],
-                sizes=new_shape_t,
-                strides=[1 for _ in new_shape_t],
-            )
-            new_output = Tensor(
-                name=tensor_name,
-                operand_type=original_tensor.operand_type,
-                shape=new_shape_t,
-                subview=new_subview,
-            )
-            tensor_map[tensor_name] = new_output
+        all_index_steps = self._index_steps_of(new_sizes)
+        for node in self.get_computation_nodes():
+            for original_tensor in node.tensors:
+                nodes = self._accessors(original_tensor, None, False)
+                read = all_index_steps.get(original_tensor.subview.source) or _every_index(original_tensor)
+                index_steps = self._tile_index_steps(original_tensor, nodes, read)
+                shape = self._extents(original_tensor, nodes, new_sizes, {}, index_steps)
+                tensor_map[original_tensor.name] = self._tile(original_tensor, shape, index_steps)
 
         # Recreate nodes in place, so the new workload keeps this one's node order.
         new_nodes: list[Node] = []
@@ -1759,6 +1835,22 @@ def position_of(core: int, cores: int, tiling: InterCoreTiling) -> int:
     if cores <= tiles:
         return core
     return core // (cores // tiles) if cores % tiles == 0 else core * tiles // cores
+
+
+def _every_index(tensor: Tensor) -> IndexSteps:
+    """Every index of each axis of ``tensor``."""
+    return tuple((1, 0) for _ in tensor.subview.source.type.get_shape())
+
+
+def _stepped_range(low: int, high: int, step: int, first: int) -> tuple[int, int]:
+    """The inclusive range of ``k`` for which ``first + step * k`` lies in ``low..high``."""
+    return -((first - low) // step), (high - first) // step
+
+
+def _span(tensor: Tensor) -> tuple[int, ...]:
+    """The indices per axis the tile ``tensor`` spans in its buffer, from first to last."""
+    strides = tensor.subview.static_strides.get_values()
+    return tuple((n - 1) * stride + 1 if n else 0 for n, stride in zip(tensor.shape, strides, strict=True))
 
 
 def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int], ...]]:

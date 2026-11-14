@@ -140,15 +140,43 @@ class CopyLayouts:
         bits = tensor.operand_type.bitwidth
         read, write = self._rate(tr, choice, READ), self._rate(tr, choice, WRITE)
         extents = (self.extent(tr.inputs[0], full), self.extent(tr.outputs[0], full))
-        return transfer_stream(tuple(tensor.shape), full, bits, source, target, read, write, extents)
+        index_steps = (self.index_steps(tr.inputs[0]), self.index_steps(tr.outputs[0]))
+        return transfer_stream(
+            self.block(tr), full, bits, source, target, read, write, extents, index_steps=index_steps
+        )
+
+    def block(self, tr: TransferNode) -> tuple[int, ...]:
+        """The tile ``tr`` moves per firing: the indices of its source's tile its readers read."""
+        return tuple(self.space.workload.strided_view(tr.inputs[0]).shape)
 
     def extent(self, copy: Tensor, full: tuple[int, ...]) -> tuple[int, ...]:
         """The buffer ``copy`` lives in: the whole tensor off chip, where a workload input or output is, else the tile
         it holds on chip."""
-        off_chip = isinstance(self._producer.get(copy), InEdge) or any(
+        return full if self._off_chip(copy) else tuple(self.held(copy).shape)
+
+    def held(self, copy: Tensor) -> Tensor:
+        """``copy`` as held on chip: the tile its producer computes, else only the indices its readers read."""
+        return copy if isinstance(self._producer.get(copy), ComputationNode) else self.space.workload.strided_view(copy)
+
+    def index_steps(self, copy: Tensor) -> tuple[int, ...]:
+        """Every how many indices of its buffer a transfer touches ``copy`` along each axis: 1 where the buffer holds
+        only the indices read."""
+        held = (1,) * len(copy.shape) if self._off_chip(copy) else self.held(copy).subview.static_strides.get_values()
+        index_steps = self.space.workload.index_steps(copy)
+        return tuple(step // stride for (step, _), stride in zip(index_steps, held, strict=True))
+
+    def first(self, copy: Tensor) -> tuple[int, ...]:
+        """The index along each axis of its buffer of the first element a transfer touches of ``copy``."""
+        index_steps = self.space.workload.index_steps(copy)
+        return tuple(
+            first if step > 1 else 0 for (_, first), step in zip(index_steps, self.index_steps(copy), strict=True)
+        )
+
+    def _off_chip(self, copy: Tensor) -> bool:
+        """Whether ``copy`` is a workload input or output, held whole off chip."""
+        return isinstance(self._producer.get(copy), InEdge) or any(
             isinstance(reader, OutEdge) for reader in self._readers.get(copy, [])
         )
-        return full if off_chip else tuple(copy.shape)
 
     def _rate(self, tr: TransferNode, choice: MulticastPathPlan, direction: str) -> Rate:
         """The rate of the slowest memory on one side of ``choice``."""

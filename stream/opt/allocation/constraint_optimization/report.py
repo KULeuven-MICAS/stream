@@ -186,10 +186,14 @@ def _layout_side(  # noqa: PLR0913
     measured = memory in space.shared_bandwidth
     port = None if measured else space.side_port(tr, choice, memory, direction)
     model = space.side_bandwidth(tr, choice, memory, direction)
+    strides = layout.strides(extent)
     return {
         "extent": list(extent),
-        "strides": list(layout.strides(extent)),
-        "access": [list(loop) for loop in layout.access(tuple(copy.shape), extent, walk)],
+        "strides": list(strides),
+        "offset": sum(first * stride for first, stride in zip(space.layouts.first(copy), strides, strict=True)),
+        "access": [
+            list(loop) for loop in layout.access(space.layouts.block(tr), extent, walk, space.layouts.index_steps(copy))
+        ],
         "memory": memory.name,
         "port": "measured" if measured else port.key.port if port is not None else None,
         "bits_per_cycle": _json_scalar(model.contiguous) if model is not None else None,
@@ -217,7 +221,7 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
             {
                 "transfer": tr.name,
                 "tensor": tensor.name,
-                "tile_shape": list(tensor.shape),
+                "tile_shape": list(layouts.block(tr)),
                 "full_shape": list(full),
                 "element_bits": tensor.operand_type.bitwidth,
                 "source_memories": [memory.name for memory in choice.sources],

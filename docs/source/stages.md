@@ -54,6 +54,8 @@ frontend. The pipeline handles such a read like any other affine access:
   transfer moves only the step. A target core is fed by every source core whose tile its window overlaps, and the halo
   it takes from a core it shares no memory with counts on the links, ports, DMA channels and off-chip traffic like any
   transfer. ZigZag costs the interior tile, which needs no border padding.
+- **Strided reads.** Where every reader of a tensor steps an axis by `s` (a 1x1 stride-2 convolution's `2*o`), the
+  copies hold and move only the indices read. AIE code generation refuses such a read.
 - **Boundary iterations.** A producer's first tile also covers what its reader's first window reaches ahead (conv1
   computes 9, 8, 8, 7 rows under a 3x3 conv tiled to 8 rows), and its last is shorter
   (`Workload.get_sliding_work`). The fill adds, at the interior rate per element, the most a node's work runs ahead of its
