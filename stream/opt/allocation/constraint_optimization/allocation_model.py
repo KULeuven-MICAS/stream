@@ -197,7 +197,7 @@ class AllocationModel:
             performance, capacity_slack, breakdown = solved_reports(
                 self.context, self.families, reuse_levels, latency.total, total_mac_ops
             )
-            stats = self.model.solve_stats()
+            stats = self.model.solve_stats(level="latency")
             return AllocationSolution(
                 tensor_placements=tensor_alloc,
                 transfer_routes=routing,

@@ -14,6 +14,7 @@ from stream.hardware.architecture.noc.communication_link import CommunicationLin
 from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag, HardwareResource
 from stream.opt.allocation.constraint_optimization.families import (
     LATENCY,
+    LATENCY_WITHOUT_WAIT,
     OFFCHIP_TIMED,
     SLOT_PRESSURE,
     TOTAL_LATENCY,
@@ -56,6 +57,7 @@ class Overlap:
         "shared_busy",
         "idle_latency",
         "recurrence_bound",
+        "absent_wait",
         TOTAL_LATENCY,
         OFFCHIP_TIMED,
     )
@@ -69,6 +71,7 @@ class Overlap:
         self.model = PipeliningModel(model)
         self.transfer_contention = transfer_contention
         self.offchip_contention = offchip_contention
+        self.has_absent_wait = False
 
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
@@ -78,7 +81,12 @@ class Overlap:
         for res, v in idle_lat.items():
             q.add("idle_latency", v._raw, index=res)
         self._define_overlap_var(ctx, idle_lat, latency)
-        _resident_fill(ctx, _drain(ctx.space))
+        drained = _drained(ctx.space)
+        fill = _resident_fill(ctx, max(drained.values(), default=0))
+        wait = _absent_wait(ctx, fill, drained)
+        self.has_absent_wait = wait is not None
+        q.add("absent_wait", wait if self.has_absent_wait else 0)
+        q.add("fill", fill + wait if self.has_absent_wait else fill)
         if self.offchip_contention:
             q.add(OFFCHIP_TIMED, 1)
 
@@ -91,7 +99,11 @@ class Overlap:
             == iterations * q.get("iteration").expr - (iterations - 1) * q.get("overlap").expr + q.get("fill").expr
         )
         q.add(TOTAL_LATENCY, total_latency._raw)
-        return [ObjectiveLevel(expr=total_latency._raw, priority=LATENCY, name="latency")]
+        levels = [ObjectiveLevel(expr=total_latency._raw, priority=LATENCY, name="latency")]
+        if not self.has_absent_wait:
+            return levels
+        without_wait = total_latency._raw - q.get("absent_wait").expr
+        return [*levels, ObjectiveLevel(expr=without_wait, priority=LATENCY_WITHOUT_WAIT, name="latency_without_wait")]
 
     def _define_overlap_var(
         self,
@@ -330,9 +342,9 @@ def _active_shared_latency(
     )
 
 
-def _drain(space: DecisionSpace) -> int:
-    """Cycles the last iteration's results take to leave the systolic arrays computing them, which no later tile
-    overlaps: a node reading another's results waits for them to drain, while one that does not streams into its
+def _drained(space: DecisionSpace) -> dict[object, int]:
+    """Per node, the cycles the last iteration's results take to leave the systolic arrays up to it, which no later
+    tile overlaps: a node reading another's results waits for them to drain, while one that does not streams into its
     array behind it, so the run waits for the drains along its longest chain of dependent nodes."""
     drained: dict[object, int] = {}
     for n in space.workload.dataflow_sort():
@@ -341,15 +353,14 @@ def _drain(space: DecisionSpace) -> int:
             entries = (space.cost_lut.get_cost(n, core) for core in space.cost_lut.get_cores(n))
             own = max((ceil((entry.metadata or {}).get("drain_cycles", 0)) for entry in entries), default=0)
         drained[n] = max((drained[p] for p in space.workload.predecessors(n)), default=0) + own
-    return max(drained.values(), default=0)
+    return drained
 
 
-def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:
+def _resident_fill(ctx: FormulationContext, drain: int = 0) -> Any:
     """Cycles each run waits for the off-chip windows it holds in one buffer to fill: such a window fills
     before the iteration that reads it, overlapping none. The fills share each path and shared-bandwidth memory
     as one iteration's transfers do. ``drain`` adds the cycles the last iteration's results take to leave the
     systolic arrays."""
-    q = ctx.quantities
     space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
     fill = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
     shared: dict[Memory, list[Any]] = defaultdict(list)
@@ -387,7 +398,7 @@ def _resident_fill(ctx: FormulationContext, drain: int = 0) -> None:
     for memory, terms in shared.items():
         model.add_constr(fill >= model.quicksum(terms), name=f"fill_shared_{memory.name}")
     fill_cycles = fill._raw + drain
-    q.add("fill", fill_cycles + warmup if (warmup := _warmup(ctx)) is not None else fill_cycles)
+    return fill_cycles + warmup if (warmup := _warmup(ctx)) is not None else fill_cycles
 
 
 def _warmup(ctx: FormulationContext) -> Any:
@@ -397,9 +408,7 @@ def _warmup(ctx: FormulationContext) -> Any:
     space, model = ctx.space, ctx.model
     if not space.warmup:
         return None
-    cost: dict[Any, Any] = {n: space.active_runtime(n) for n in space.ssc_nodes}
-    for (tr, _), quantity in ctx.quantities.indexed("transfer_latency").items():
-        cost[tr] = cost.get(tr, 0) + quantity.expr
+    cost = _cycles_per_iteration(ctx)
     ready = {n: model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name=f"ready_{n.name}") for n in cost}
     warmup = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="warmup")
     for node, start in ready.items():
@@ -409,3 +418,51 @@ def _warmup(ctx: FormulationContext) -> Any:
             model.add_constr(ready[reader] >= start + delay, name=f"warmup_{node.name}_{reader.name}")
         model.add_constr(warmup >= start, name=f"warmup_{node.name}")
     return warmup._raw
+
+
+def _cycles_per_iteration(ctx: FormulationContext) -> dict[Any, Any]:
+    """Cycles each node and transfer takes per iteration."""
+    cost: dict[Any, Any] = {n: ctx.space.active_runtime(n) for n in ctx.space.ssc_nodes}
+    for (tr, _), quantity in ctx.quantities.indexed("transfer_latency").items():
+        cost[tr] = cost.get(tr, 0) + quantity.expr
+    return cost
+
+
+def _absent_wait(ctx: FormulationContext, fill: Any, drained: dict[object, int]) -> Any:
+    """Cycles the run lasts beyond its iterations and ``fill`` for the whole calls along the chains through
+    :attr:`DecisionSpace.waiting_absent_nodes`, each node draining ``drained`` cycles; None where no node waits."""
+    space, model, q = ctx.space, ctx.model, ctx.quantities
+    chain = _chain(space)
+    if not chain:
+        return None
+    wait = model.add_var(vtype=SolverVarType.CONTINUOUS, name="absent_wait")
+    iterations = space.iterations
+    steady = iterations * q.get("iteration").expr - (iterations - 1) * q.get("overlap").expr + fill
+    step = _cycles_per_iteration(ctx)
+    call: dict[Any, Any] = {n: space.runtime(n) for n in space.ssc_nodes}
+    for (tr, choice), y in ctx.vars.y.items():
+        call[tr] = call.get(tr, 0) + space.transfer_latency_for_path(tr, choice) * y._raw
+    first = {n: model.add_var(vtype=SolverVarType.CONTINUOUS, name=f"first_call_{n.name}") for n in chain}
+    last = {n: model.add_var(vtype=SolverVarType.CONTINUOUS, name=f"last_call_{n.name}") for n in chain}
+    for node in chain:
+        model.add_constr(last[node] >= first[node] + iterations * step[node], name=f"calls_{node.name}")
+        for reader in (c for c in space.workload.successors(node) if c in first):
+            waited = space.calls_before_first_read(node, reader) * call[node]
+            model.add_constr(first[reader] >= first[node] + waited, name=f"first_call_{node.name}_{reader.name}")
+            model.add_constr(last[reader] >= last[node] + call[reader], name=f"last_call_{node.name}_{reader.name}")
+        model.add_constr(wait >= last[node] + drained.get(node, 0) - steady, name=f"absent_wait_{node.name}")
+    return wait._raw
+
+
+def _chain(space: DecisionSpace) -> list[Any]:
+    """The nodes and transfers upstream or downstream of a waiting absent node, in dataflow order."""
+    nodes = {*space.ssc_nodes, *space.transfer_nodes}
+    found: set[Any] = set(space.waiting_absent_nodes)
+    for neighbours in (space.workload.predecessors, space.workload.successors):
+        frontier = list(space.waiting_absent_nodes)
+        while frontier:
+            for n in neighbours(frontier.pop()):
+                if n in nodes and n not in found:
+                    found.add(n)
+                    frontier.append(n)
+    return [n for n in space.workload.topological_sort() if n in found]

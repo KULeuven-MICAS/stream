@@ -13,7 +13,7 @@
     "iteration_latency": 519,
     "mac_spatial_utilization": 0.8150482622880099,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 201851014.0,
     "solve_time_s": 0.007948,
     "total_latency": 201851014.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -26,7 +26,7 @@
     "iteration_latency": 903,
     "mac_spatial_utilization": 0.8121658955273922,
     "mip_gap": 0.0,
-    "objective": 19.0,
+    "objective": 201588870.0,
     "solve_time_s": 0.009464,
     "total_latency": 201588870.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -39,7 +39,7 @@
     "iteration_latency": 328,
     "mac_spatial_utilization": 0.8148085904808184,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 204472453.0,
     "solve_time_s": 0.023156,
     "total_latency": 204472453.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -52,7 +52,7 @@
     "iteration_latency": 29,
     "mac_spatial_utilization": 1,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 26215424.0,
     "solve_time_s": 0.007562,
     "total_latency": 26215424.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -65,7 +65,7 @@
     "iteration_latency": 417,
     "mac_spatial_utilization": 0.5056755767118272,
     "mip_gap": 0.0,
-    "objective": 12.0,
+    "objective": 201850912.0,
     "solve_time_s": 0.006078,
     "total_latency": 201850912.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -78,7 +78,7 @@
     "iteration_latency": 6191,
     "mac_spatial_utilization": 0.731622746185853,
     "mip_gap": 0.0,
-    "objective": 247.99999999999997,
+    "objective": 201588775.0,
     "solve_time_s": 0.076717,
     "total_latency": 201588775.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -91,7 +91,7 @@
     "iteration_latency": 809,
     "mac_spatial_utilization": 0.731622746185853,
     "mip_gap": 0.0,
-    "objective": 12.0,
+    "objective": 201588776.0,
     "solve_time_s": 0.010088,
     "total_latency": 201588776.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -104,7 +104,7 @@
     "iteration_latency": 787,
     "mac_spatial_utilization": 0.9674616695059626,
     "mip_gap": 0.0,
-    "objective": 19.0,
+    "objective": 201588878.0,
     "solve_time_s": 0.008062,
     "total_latency": 201588878.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -112,12 +112,12 @@
   "tests/test_hardware_combinations.py::test_hardware_swiglu[tpu_v7_ironwood]": {
     "degenerate": false,
     "end_to_end_mac_utilization": 0.031196526949148238,
-    "energy_pj": 62583815774.208,
+    "energy_pj": 62678504030.208,
     "group_latencies_max": 393890.0,
     "iteration_latency": 9,
     "mac_spatial_utilization": 0.6129032258064516,
     "mip_gap": 0.0,
-    "objective": 26.0,
+    "objective": 393890.0,
     "solve_time_s": 0.079984,
     "total_latency": 393890.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; fused tiles Gemm_Left.D1=128, Gemm_Down.D2=128, Gemm_Left.D2=32, Gemm_Left.D0=16"
@@ -130,7 +130,7 @@
     "iteration_latency": 66174,
     "mac_spatial_utilization": 0.6347070257333236,
     "mip_gap": 0.0,
-    "objective": 5.0,
+    "objective": 66174.0,
     "solve_time_s": 0.001176,
     "total_latency": 66174.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -143,7 +143,7 @@
     "iteration_latency": 38835,
     "mac_spatial_utilization": 0.6349022241598848,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 38835.0,
     "solve_time_s": 0.002032,
     "total_latency": 38835.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -156,7 +156,7 @@
     "iteration_latency": 114999,
     "mac_spatial_utilization": 0.6772569799425848,
     "mip_gap": 0.0,
-    "objective": 4.0,
+    "objective": 114999.0,
     "solve_time_s": 0.000851,
     "total_latency": 114999.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -169,7 +169,7 @@
     "iteration_latency": 2133,
     "mac_spatial_utilization": 1,
     "mip_gap": 0.0,
-    "objective": 4.0,
+    "objective": 3153.0,
     "solve_time_s": 0.000923,
     "total_latency": 3153.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -182,7 +182,7 @@
     "iteration_latency": 16110,
     "mac_spatial_utilization": 0.75,
     "mip_gap": 0.0,
-    "objective": 6.0,
+    "objective": 16110.0,
     "solve_time_s": 0.001316,
     "total_latency": 16110.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -195,7 +195,7 @@
     "iteration_latency": 1852,
     "mac_spatial_utilization": 0.603448275862069,
     "mip_gap": 0.0,
-    "objective": 417.0,
+    "objective": 12616.0,
     "solve_time_s": 0.062252,
     "total_latency": 12616.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -208,7 +208,7 @@
     "iteration_latency": 2360,
     "mac_spatial_utilization": 0.5,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 13617.0,
     "solve_time_s": 0.003049,
     "total_latency": 13617.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -221,7 +221,7 @@
     "iteration_latency": 15231,
     "mac_spatial_utilization": 0.75,
     "mip_gap": 0.0,
-    "objective": 8.0,
+    "objective": 15339.0,
     "solve_time_s": 0.001968,
     "total_latency": 15339.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"
@@ -234,7 +234,7 @@
     "iteration_latency": 72,
     "mac_spatial_utilization": 0.58125,
     "mip_gap": 0.0,
-    "objective": 28.0,
+    "objective": 796.0,
     "solve_time_s": 0.006291,
     "total_latency": 796.0,
     "workload_hparams": "batch_size=1, height=32, width=32, in_channels=8, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype=bf16, weight_dtype=bf16; generic auto-tiling"

@@ -22,7 +22,7 @@ from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
-from stream.workload.steady_state.iteration_space import IterationVariableType, Reuse
+from stream.workload.steady_state.iteration_space import IterationVariableType, LoopEffect, Reuse
 from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode
 
 if TYPE_CHECKING:
@@ -183,6 +183,30 @@ class DecisionSpace:
     def active_runtime(self, n: ComputationNode) -> float:
         """Cycles ``n`` takes per iteration: its runtime over the iterations it is not idle on an absent loop."""
         return get_active_latency(n, self.runtime(n), self.ssis)
+
+    def calls_before_first_read(self, producer: HasIterationSpace, reader: HasIterationSpace) -> int:
+        """Calls of ``producer`` the first call of ``reader`` waits for: up to its last along each loop it varies on
+        and the reader does not."""
+        loops = zip(
+            self.ssis[producer].get_temporal_variables(), self.ssis[reader].get_temporal_variables(), strict=True
+        )
+        waited, inner = 1, 1
+        for p, r in loops:
+            if p.effect is LoopEffect.VARYING and r.effect is not LoopEffect.VARYING:
+                waited += (p.size - 1) * inner
+            inner *= p.size if p.effect is LoopEffect.VARYING else 1
+        return waited
+
+    @cached_property
+    def waiting_absent_nodes(self) -> frozenset[ComputationNode]:
+        """The computation nodes absent from a fused loop that a computation node they read from or feed varies on."""
+        pairs = [(node, reader) for node in self.ssc_nodes for reader, _ in self._reads_of(node)]
+        return frozenset(n for a, b in pairs for n, other in ((a, b), (b, a)) if self._absent_where_varies(n, other))
+
+    def _absent_where_varies(self, node: ComputationNode, other: ComputationNode) -> bool:
+        """Whether ``node`` is absent from a loop ``other`` varies on."""
+        loops = zip(self.ssis[node].get_temporal_variables(), self.ssis[other].get_temporal_variables(), strict=True)
+        return any(a.effect is LoopEffect.ABSENT and b.effect is LoopEffect.VARYING for a, b in loops)
 
     def stops(self, t: Tensor) -> range:
         """The reuse stops ``t`` may take: -1 (none) up to its outermost applicable temporal loop."""

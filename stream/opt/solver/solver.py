@@ -353,11 +353,14 @@ class SolverModel(ABC):
         """Solved value of a variable, a linear expression or a constant."""
 
     @abstractmethod
-    def solve_stats(self) -> SolveStats:
+    def solve_stats(self, level: str | None = None) -> SolveStats:
         """Return structured solve statistics.
 
         Must be called after optimize(). Returns a SolveStats instance
         with fields populated for this backend; unavailable fields are None.
+        With ``level``, the objective and gap are those of the lexicographic
+        level of that name rather than of the last one optimized (Gurobi
+        exposes no gap per level of a multi-objective model: None).
         """
 
     def model_size(self) -> dict[str, int] | None:
@@ -617,6 +620,7 @@ class GurobiBackend(SolverModel):
     def __init__(self, name: str = "") -> None:
         _require_gurobipy()
         self._model = gp.Model(name)
+        self._lex_names: list[str] = []
 
     def add_var(
         self,
@@ -655,7 +659,9 @@ class GurobiBackend(SolverModel):
         if not objectives:
             raise ValueError("At least one ObjectiveLevel is required")
         self._model.ModelSense = GRB.MINIMIZE if sense == self.MINIMIZE else GRB.MAXIMIZE
-        for idx, obj in enumerate(sorted(objectives, key=lambda o: o.priority, reverse=True)):
+        ordered = sorted(objectives, key=lambda o: o.priority, reverse=True)
+        self._lex_names = [obj.name for obj in ordered]
+        for idx, obj in enumerate(ordered):
             self._model.setObjectiveN(
                 _unwrap(obj.expr),
                 index=idx,
@@ -704,16 +710,20 @@ class GurobiBackend(SolverModel):
             return None
         return abs(primal - dual) / abs(primal)
 
-    def solve_stats(self) -> SolveStats:
+    def solve_stats(self, level: str | None = None) -> SolveStats:
         has_solution = self._model.SolCount > 0
         objective: float | None = self._model.ObjVal if has_solution else None
+        mip_gap = self._mip_gap()
+        if level in self._lex_names:
+            self._model.setParam("ObjNumber", self._lex_names.index(level))
+            objective, mip_gap = (self._model.ObjNVal if has_solution else None), None
         return SolveStats(
             backend="GUROBI",
             solver="gurobi",
             status=self.get_status(),
             objective=objective,
             solve_time_s=self._model.Runtime,
-            mip_gap=self._mip_gap(),
+            mip_gap=mip_gap,
             node_count=int(self._model.NodeCount),
             iteration_count=int(self._model.IterCount),
         )
@@ -990,6 +1000,8 @@ class ORToolsBackend(SolverModel):
         # Lexicographic objective state (set by set_lexicographic_objectives)
         self._lex_objectives: list[ObjectiveLevel] | None = None
         self._lex_sense: str = self.MINIMIZE
+        self._level_results: dict[str, mathopt.SolveResult] = {}
+        self._solve_seconds = 0.0
 
     def _unique_var_name(self, name: str) -> str:
         """Return a unique variable name by appending a counter on collision."""
@@ -1051,11 +1063,13 @@ class ORToolsBackend(SolverModel):
         else:
             params = mathopt.SolveParameters(**self._params)
             self._result = mathopt.solve(self._model, self._solver_type, params=params)
+            self._solve_seconds = self._result.solve_stats.solve_time.total_seconds()
 
     def _optimize_lexicographic(self) -> None:
         assert self._lex_objectives is not None
         params = mathopt.SolveParameters(**self._params)
         feasible = None
+        self._solve_seconds = 0.0
 
         for i, obj in enumerate(self._lex_objectives):
             raw_expr = _unwrap_ort(obj.expr)
@@ -1065,6 +1079,8 @@ class ORToolsBackend(SolverModel):
                 self._model.maximize(raw_expr)
 
             result = mathopt.solve(self._model, self._solver_type, params=params)
+            if result is not None:
+                self._solve_seconds += result.solve_stats.solve_time.total_seconds()
 
             if result is None or not result.has_primal_feasible_solution():
                 _logger.warning(
@@ -1076,7 +1092,7 @@ class ORToolsBackend(SolverModel):
                 self._result = feasible if feasible is not None else result
                 return
 
-            self._result = feasible = result
+            self._result = feasible = self._level_results[obj.name] = result
 
             if i < len(self._lex_objectives) - 1:
                 opt_val = self._result.objective_value()
@@ -1110,30 +1126,27 @@ class ORToolsBackend(SolverModel):
             raise ValueError("No solution available")
         return float(mathopt.evaluate_expression(raw, self._result.variable_values()))
 
-    def _mip_gap(self) -> float | None:
+    def _mip_gap(self, result: mathopt.SolveResult | None) -> float | None:
         """Relative optimality gap, derived from MathOpt's primal/dual bounds."""
-        if self._result is None or not self._result.has_primal_feasible_solution():
+        if result is None or not result.has_primal_feasible_solution():
             return None
-        primal = self._result.objective_value()
-        dual = self._result.best_objective_bound()
+        primal = result.objective_value()
+        dual = result.best_objective_bound()
         if not (math.isfinite(primal) and math.isfinite(dual)) or primal == 0:
             return None
         return abs(primal - dual) / abs(primal)
 
-    def solve_stats(self) -> SolveStats:
+    def solve_stats(self, level: str | None = None) -> SolveStats:
         has_solution = self._result is not None and self._result.has_primal_feasible_solution()
-        objective: float | None = self._result.objective_value() if has_solution else None
-        if self._result is not None:
-            solve_time_s = self._result.solve_stats.solve_time.total_seconds()
-        else:
-            solve_time_s = 0.0
+        chosen = self._level_results.get(level, self._result) if level is not None else self._result
+        objective: float | None = chosen.objective_value() if has_solution and chosen is not None else None
         return SolveStats(
             backend=f"ORTOOLS_{self._solver_type.name}",
             solver=self._solver_type.name.lower(),
             status=self.get_status(),
             objective=objective,
-            solve_time_s=solve_time_s,
-            mip_gap=self._mip_gap(),
+            solve_time_s=self._solve_seconds,
+            mip_gap=self._mip_gap(chosen),
             node_count=None,
             iteration_count=None,
         )
