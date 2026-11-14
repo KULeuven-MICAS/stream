@@ -190,17 +190,22 @@ fused_groups:
 """
 
 
-def test_the_tiler_estimates_a_sum_the_output_buffer_holds_as_written_off_chip_once(tmp_path):
+def test_the_tiler_counts_a_sum_the_output_buffer_holds_as_written_off_chip_once(tmp_path):
     """A 128 x 512 by 512 x 64 int8 Gemm on the packed core, 32-row tiles inside a contraction tiled to 64. The result
-    buffer holds the 4 row tiles' sums across the 8 contraction tiles, so the tiler estimates, as the allocation
+    buffer holds the 4 row tiles' sums across the 8 contraction tiles, so the tiler counts, as the allocation
     moves, a, w and the output off chip once, (128 x 512 + 512 x 64 + 128 x 64) x 8 = 851968 bits, not the output
     2 x 8 - 1 = 15 times."""
     chip, gemm = _packed(tmp_path, 128, 17, "D1, D2, D3", 262144)
     accelerator, w = _parse(chip, gemm)
     (cn,) = w.get_computation_nodes()
     tiling = [{"dim": "Gemm.D0", "tile": 32}, {"dim": "Gemm.D1", "tile": 64}]
-    estimate = CapacityTiler(w, accelerator).estimate((cn,), {cn: [accelerator.get_core(0)]}, {}, set(), tiling)
-    assert estimate.offchip_bits == (128 * 512 + 512 * 64 + 128 * 64) * 8
+    tiler, cores = CapacityTiler(w, accelerator), {cn: [accelerator.get_core(0)]}
+    per_core = tiler._per_core((cn,), {}, set())
+    tiles = tiler._seed_resident((cn,), tiling, per_core)
+    args = ((cn,), cores, {}, per_core | tiles, None)
+    capacities, held, _ = tiler._transfers(*args, tiler._capacities((cn,), cores))
+    room = {memory: capacity - held[memory] for memory, capacity in capacities.items()}
+    assert tiler._moved(*args, list(tiles), room, spills=True)[None] == (128 * 512 + 512 * 64 + 128 * 64) * 8
     (tmp_path / "mapping.yaml").write_text(_ROWS_INNER)
     solved = evaluate_mapping(chip, gemm, str(tmp_path / "out"), str(tmp_path / "mapping.yaml"), SolveOptions())
     (accesses,) = solved.context.data["group_memory_accesses"].values()

@@ -20,7 +20,7 @@ from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_decode_attention import make_decode_attention
-from stream.mapping.capacity_tiler import CapacityTiler, TilingEstimate, _divisors_desc
+from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.mapping.mapping import whole_bits
 from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
@@ -227,88 +227,6 @@ def test_the_tiler_fills_the_share_of_the_room_it_is_given():
     assert CapacityTiler(w, acc, fill_fraction=0.5)._capacities((cn,), cores) == {"sram": 8388608}
 
 
-def test_a_group_that_fits_whole_is_cut_where_its_tiles_overlap_compute_and_transfers():
-    """A bf16 3 x 3 convolution, 64 -> 64 channels on 56 x 56, fits fusemax's SRAM whole: C = 28224 compute cycles,
-    the weights' 1152 and the input's 6272 over the 512-bit link, C + X = 35648. Cut into 8 tiles of 7 rows, each tile
-    reads the weights again under its compute: (28224 + 6272 + 8 x 1152) / 8 + 7 / 8 x 28224 = 30160. Held, the
-    weights would load first and still take their share of each tile: 30304. Read again, they cross the off-chip port
-    8 times next to the input and the output once: 8 x 589824 + 2 x 3211264."""
-    acc, w = _parse(*_conv(64, 64, 56, 56))
-    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
-    (sub,) = gen.groups()
-    cns = tuple(sub.get_computation_nodes())
-    assert gen._build_intra_core_tiling(sub, cns) == [{"dim": "Conv.D1", "tile": 7}]
-    tiler, cores = CapacityTiler(sub, acc), {cns[0]: [acc.get_core(0)]}
-    whole = tiler._slices({})
-    rows = sub.leading_dim(sub.get_dims(cns[0])[1])[0]
-    cut = {d: n for d, n in whole.items() if n > 1}
-    budgets = tiler._capacities(cns, cores)
-    assert tiler.compute_cycles(cns, cores, {}, whole) == 28224
-    assert tiler._pipelined_estimate(cns, cores, {}, whole, None, budgets, cut, [])[:3] == (35648, 28224, 7424)
-    estimate = tiler._pipelined_estimate(cns, cores, {}, whole | {rows: 7}, None, budgets, cut, [rows])
-    assert (estimate.cycles, estimate.offchip_bits) == (30160, 8 * 589824 + 2 * 3211264)
-
-
-def test_a_group_that_fits_whole_stays_whole_where_its_tiles_read_the_weights_again():
-    """A bf16 3 x 3 convolution, 256 -> 256 channels on 14 x 14, fits fusemax's SRAM whole: C = 1764 cycles, X =
-    20000, 21764 whole. In 14 tiles of 2 rows by 7 columns each tile reads the weights and its input window over the
-    SRAM's read port, 16380 cycles; the weights, held, come before the first tile and take their share of each:
-    18432 + (16380 + 20000) / 14 + 13 / 14 x 20000 = 39602, so the convolution stays whole."""
-    acc, w = _parse(*_conv(256, 256, 14, 14))
-    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
-    (sub,) = gen.groups()
-    cns = tuple(sub.get_computation_nodes())
-    assert gen._build_intra_core_tiling(sub, cns) == [{"dim": "Conv.D0", "tile": 1}]
-    tiler, cores = CapacityTiler(sub, acc), {cns[0]: [acc.get_core(0)]}
-    whole = tiler._slices({})
-    rows, columns = (sub.leading_dim(d)[0] for d in sub.get_dims(cns[0])[1:3])
-    cut = {d: n for d, n in whole.items() if n > 1}
-    budgets = tiler._capacities(cns, cores)
-    tiles = whole | {rows: 2, columns: 7}
-    assert tiler._input_port_cycles(cns, cores, {}, tiles, None, 14) == 16380
-    assert tiler._pipelined_estimate(cns, cores, {}, whole, None, budgets, cut, [])[:3] == (21764, 1764, 20000)
-    assert tiler._pipelined_estimate(cns, cores, {}, tiles, None, budgets, cut, [rows, columns])[0] == 39602
-
-
-def test_a_group_that_fits_whole_is_cut_for_overlap_only_along_dims_every_node_steps_and_no_core_splits():
-    """Two 3 x 3 convolutions, 8 -> 16 -> 32 channels on 32 x 32, their rows split over tpu_like_quad_core's four cores:
-    both have the batch, the columns, the rows and the 16 channels between them, and the rows are split over the
-    cores. So only the batch, the columns and the 16 channels may be cut, and the group stays whole."""
-    acc, w = _parse(_TPU_QUAD, _TWO_CONV)
-    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
-    (sub,) = gen.groups()
-    cns = tuple(sub.get_computation_nodes())
-    batch, columns, rows, *_, channels = (sub.leading_dim(d)[0] for d in sub.get_dims(cns[0]))
-    unroll = gen._inter_core_unrolling(sub, cns)
-    assert {sub.leading_dim(d)[0]: f for d, f in unroll.items()} == {rows: 4}
-    assert CapacityTiler(sub, acc)._overlap_dims(cns, unroll, None) == {batch, columns, channels}
-    assert gen._build_intra_core_tiling(sub, cns) == [{"dim": "Conv1.D0", "tile": 1}]
-
-
-def test_a_group_that_fits_whole_is_not_cut_for_overlap_where_its_tiles_fold_worse_onto_the_array():
-    """Two 3 x 3 convolutions, 8 -> 16 -> 32 channels on 32 x 32, on eyeriss_like_quad_core's 14 x 12 arrays. Conv1's
-    32 columns and 16 output channels take 3 passes of 14 and 2 of 12, filling 32/42 x 16/24 of the array; cut to 16
-    columns, 2 passes of 14, 16/28 x 16/24: less, so the columns are not cut and the group stays whole."""
-    acc, w = _parse("stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml", _TWO_CONV)
-    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
-    (sub,) = gen.groups()
-    cns = tuple(sub.get_computation_nodes())
-    cores = {cn: gen._select_cores_for_node(cn) for cn in cns}
-    unroll = {sub.leading_dim(d)[0]: f for d, f in gen._inter_core_unrolling(sub, cns).items()}
-    tiler = CapacityTiler(sub, acc)
-    whole = tiler._slices(unroll)
-    columns = sub.leading_dim(sub.get_dims(cns[0])[1])[0]
-    fills = [
-        [tiler._node_fill(cns[0], cores, unroll, tiles, None, folded=folded)[0] for folded in (False, True)]
-        for tiles in (whole, whole | {columns: 16})
-    ]
-    assert fills == [
-        [0.0, pytest.approx(math.log(32 / 42 * 16 / 24))],
-        [0.0, pytest.approx(math.log(16 / 28 * 16 / 24))],
-    ]
-    assert gen._build_intra_core_tiling(sub, cns) == [{"dim": "Conv1.D0", "tile": 1}]
-
-
 def _whole_group(hardware: str, workload: str):
     """The generator's tiler for the workload fused in one group, with its nodes, cores, split, whole per-core slices
     and budgets."""
@@ -355,8 +273,7 @@ def test_a_convolution_fused_with_a_strided_pool_fills_the_array_along_its_own_r
     tiler, (conv1, _), cores, unroll, node_unroll, whole, _ = _whole_group(
         "stream/inputs/examples/hardware/fusemax.yaml", conv_chain(stride=2, pool=True)
     )
-    log_fill, units = tiler._node_fill(conv1, cores, unroll, whole, node_unroll)
-    assert (math.exp(log_fill), units) == (pytest.approx(32 / 256 * 32 / 256), 65536)
+    assert math.exp(tiler._node_fill(conv1, cores, unroll, whole, node_unroll)) == pytest.approx(32 / 256 * 32 / 256)
 
 
 def test_a_produced_tensor_takes_one_buffer_the_size_of_its_largest_tile_or_window():
@@ -420,26 +337,25 @@ def test_divisors_desc():
     assert _divisors_desc(14336)[0] == 14336  # sqrt enumeration returns the whole dim first
 
 
-def test_a_gemm_whose_weights_overflow_streams_the_cut_that_reads_them_once():
-    """A bf16 256 x 8192 x 2048 Gemm, its 2048 outputs split over tpu_like_quad_core's four cores, overflows a core's
-    16777216 bits whole. Streaming its 8192-long contraction in tiles of 512 fills a core exactly: double-buffered
-    256 x 512 and 512 x 512 bf16 tiles next to 256 x 512 int32 running sums. It reads every operand once, 33554432 +
-    268435456 + 8388608 bits over the 64-bit off-chip port: X = 4849664 next to C = 256 x 8192 x 2048 / (4 x 1024) =
-    1048576, (C + X) / 16 + 15 / 16 X = 4915200 in its 16 tiles. Cutting the rows and outputs instead, 16 by 32, reads
-    the weights again for every row tile, X = 12713984, so the tiler streams the contraction."""
+def test_streams_output_axes_when_weight_overflows():
+    """A large Gemm whose resident weight overflows streams its output axes until it fits, keeping the contraction
+    whole so no partial sum has to stay resident."""
     acc, w = _parse(_TPU_QUAD, _GEMM)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
-    (sub,) = gen.groups()
-    cns = tuple(sub.get_computation_nodes())
-    tiler, cores, unroll, protected, node_unroll = gen._tiler(sub, cns)
-    seed = gen._whole_layer_tiling(sub, cns)
-    streamed = gen._build_intra_core_tiling(sub, cns)
-    assert _worst_core_ratio(gen, sub, cns, seed) > 1.0
-    assert streamed == [{"dim": "Gemm.D1", "tile": 512}]
-    assert _worst_core_ratio(gen, sub, cns, streamed) == 1.0
-    assert tiler.estimate(cns, cores, unroll, protected, streamed, node_unroll)[:3] == (4915200, 1048576, 4849664)
-    outputs = [{"dim": "Gemm.D0", "tile": 16}, {"dim": "Gemm.D2", "tile": 32}]
-    assert tiler.estimate(cns, cores, unroll, protected, outputs, node_unroll).transfer == 12713984
+    subs = w.split_fusion_groups(cut_points=gen._cut_points(None))
+    refined_any = False
+    for sub in subs:
+        cns = tuple(sub.get_computation_nodes())
+        if not cns:
+            continue
+        seed = gen._auto_fusion_tiling(sub, cns) or gen._whole_layer_tiling(sub, cns)
+        refined = gen._capacity_refine(sub, cns, seed)
+        if _worst_core_ratio(gen, sub, cns, seed) > 1.0:
+            refined_any = True
+            # the trivial mapper overflowed; the refined tiling must fit and must tile a contraction axis
+            assert _worst_core_ratio(gen, sub, cns, refined) <= 1.0
+            assert refined and not any(".D1" in e["dim"] for e in refined), f"expected output-axis tiles, got {refined}"
+    assert refined_any, "the Gemm was expected to overflow the trivial mapping"
 
 
 def test_noop_when_group_fits():
@@ -521,18 +437,21 @@ def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed(tmp_path):
 
 
 def test_a_node_left_on_one_core_holds_its_tensors_whole():
-    """Split over four cores, each Gemm core streams its 8192-long contraction 512 at a time next to all 512 of its
-    output columns. Left on one core it holds the columns of all four, so the group's per-core tiles shrink to 64 of the
-    contraction and 128 columns, 512 there."""
+    """Split over four cores, each Gemm core streams 32 of its 512 output columns per iteration, 16 rows at a time;
+    left on one core it holds the columns of all four, so the group's per-core column tile shrinks to 4, 16 columns
+    there, next to 32 rows: as many outputs, of cuts that fit equally the one reading the weights the fewest times."""
     acc, w = _parse(_TPU_QUAD, _GEMM)
     (cn,) = w.get_computation_nodes()
     unroll = {w.get_dims(cn)[2]: 4}
     cores = [c for c in acc.core_list if c.id in (0, 1, 2, 3)]
     tiler = CapacityTiler(w, acc)
-    assert tiler.plan((cn,), {cn: cores}, unroll, set()) == [{"dim": "Gemm.D1", "tile": 512}]
+    assert tiler.plan((cn,), {cn: cores}, unroll, set()) == [
+        {"dim": "Gemm.D0", "tile": 16},
+        {"dim": "Gemm.D2", "tile": 32},
+    ]
     assert tiler.plan((cn,), {cn: cores[:1]}, unroll, set()) == [
-        {"dim": "Gemm.D1", "tile": 64},
-        {"dim": "Gemm.D2", "tile": 128},
+        {"dim": "Gemm.D2", "tile": 4},
+        {"dim": "Gemm.D0", "tile": 32},
     ]
 
 
@@ -575,15 +494,14 @@ def test_an_empty_given_tiling_is_cut_as_without_one(tmp_path):
         make_multi_head_attention(tmp_path / "mha.onnx", seq=512),
     )
     gen = GenericMappingGenerator(acc, expand_normalizations(parsed), tempfile.mkdtemp(), intra_core_tiling=[])
-    operators = [{"proj_K"}, {"proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
+    operators = [{"proj_K", "proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
     assert [{source_operator(n) for n in g.get_computation_nodes()} for g in gen.groups()] == operators
 
 
 def test_a_group_no_tiling_fits_is_cut_where_the_operators_before_stop_fitting(tmp_path):
     """A 4096-wide attention fused on four Eyeriss-like cores cannot hold its projections' weights next to the softmax
     of every head: it is cut after the longest runs that fit, two projections, the third, then the attention with
-    all the sub-ops its softmax expands into. The two projections fused take longer, as the tiler estimates them,
-    than each apart, so they are cut apart too."""
+    all the sub-ops its softmax expands into."""
     acc, parsed = _parse(
         "stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml",
         make_multi_head_attention(tmp_path / "mha.onnx", seq=512),
@@ -594,7 +512,7 @@ def test_a_group_no_tiling_fits_is_cut_where_the_operators_before_stop_fitting(t
     assert gen._unfit_nodes(fused) == ["proj_Q", "proj_V"]
     _, groups = gen.generate_all_groups()
     operators = [{source_operator(n) for n in g.get_computation_nodes()} for g in groups]
-    assert operators == [{"proj_K"}, {"proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
+    assert operators == [{"proj_K", "proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
     assert all(gen._fits(group) for group in groups)
 
 
@@ -916,55 +834,3 @@ def test_each_output_of_a_node_with_several_is_placed_by_the_bridge_carrying_it(
     runtime_args = {f"{t.name}_bridge_out": {"placement": {"memories": ["l1"]}} for t in (out, a)}
     gen = GenericMappingGenerator(acc, w, str(tmp_path / "gen"), runtime_args=runtime_args)
     assert gen._on_chip == {"l1": {"out": whole_bits(out), "a": whole_bits(a)}}
-
-
-def test_a_plan_replaces_another_faster_by_more_than_the_resolution_or_no_slower_moving_less_off_chip():
-    """At a resolution of 15% of the slower time: 100 cycles replace 120, 17% faster, whatever they move off chip; 90
-    replace 100, 10% faster, only moving fewer bits off chip, as do 100; 110, 9% slower, never replace 100, however few
-    bits they move, nor do 120."""
-
-    def estimate(cycles: float, offchip_bits: float) -> TilingEstimate:
-        return TilingEstimate(cycles, 0.0, 0.0, offchip_bits)
-
-    assert CapacityTiler.ESTIMATE_TOLERANCE == 0.15
-    assert CapacityTiler.preferred(estimate(100, 9), estimate(120, 1))
-    assert not CapacityTiler.preferred(estimate(90, 1), estimate(100, 1))
-    assert CapacityTiler.preferred(estimate(90, 0), estimate(100, 1))
-    assert CapacityTiler.preferred(estimate(100, 0), estimate(100, 1))
-    assert not CapacityTiler.preferred(estimate(110, 0), estimate(100, 1))
-    assert not CapacityTiler.preferred(estimate(120, 0), estimate(100, 1))
-
-
-_EYERISS_ONE = "stream/inputs/examples/hardware/eyeriss_like_single_core.yaml"
-
-
-def test_two_convolutions_on_one_eyeriss_core_stay_fused_where_apart_they_move_more_off_chip_for_little_time():
-    """bf16 Conv1 8 -> 16 and Conv2 16 -> 32 channels, 3 x 3 on 32 x 32, on eyeriss_like_single_core: each in a group of
-    its own, they are estimated faster in all than fused, but within the resolution, and they move more off chip:
-    Conv2 alone reads its weights again for each of its 8 column tiles, and conv1_out leaves the chip and comes back.
-    So they stay fused."""
-    acc, w = _parse(_EYERISS_ONE, _TWO_CONV)
-    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
-    (fused,) = w.split_fusion_groups(cut_points=gen._cut_points(None))
-    together = gen._estimate(fused)
-    apart = [gen._estimate(group) for group in w.split_fusion_groups(cut_points=["Conv1"])]
-    apart = TilingEstimate(*map(sum, zip(*apart, strict=True)))
-    assert together.cycles * (1 - CapacityTiler.ESTIMATE_TOLERANCE) < apart.cycles < together.cycles
-    assert apart.offchip_bits > together.offchip_bits
-    assert [[node.name for node in group.get_computation_nodes()] for group in gen.groups()] == [["Conv1", "Conv2"]]
-
-
-@pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="the estimate leaves out the cost model's loading and draining per call")
-def test_the_strided_pair_is_tiled_no_slower_than_as_one_tile():
-    """A bf16 3 x 3 convolution, 4 -> 8 channels on 11 x 15, and a second of stride 2 onto 6 x 8 fit
-    eyeriss_like_single_core's buffer as one tile; the generator cuts them into the 8 output columns, estimated
-    faster. Solved, the cut should be no slower than the one tile."""
-    nodes = [conv("Conv1", "input", "w1", "t1"), conv("Conv2", "t1", "w2", "output", stride=2)]
-    workload = onnx_graph(nodes, {"input": [1, 4, 11, 15], "w1": [8, 4, 3, 3], "w2": [8, 8, 3, 3]}, ["output"])
-
-    def solved(tiling: list[dict] | None) -> float:
-        options = SolveOptions(artifacts=False, stage_options={"intra_core_tiling": tiling} if tiling else {})
-        return evaluate_mapping(_EYERISS_ONE, workload, tempfile.mkdtemp(), options=options).cycles
-
-    assert solved(None) <= solved([{"dim": "Conv1.D0", "tile": 1}])

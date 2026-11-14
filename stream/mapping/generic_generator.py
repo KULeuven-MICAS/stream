@@ -24,7 +24,7 @@ from xdsl.ir.affine import AffineMap
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.capacity_tiler import CapacityTiler, TilingEstimate
+from stream.mapping.capacity_tiler import CapacityTiler
 from stream.mapping.mapping import (
     EdgePlacement,
     Mapping,
@@ -620,8 +620,7 @@ class GenericMappingGenerator:
         return cuts
 
     def groups(self, cut_points: list[str] | None = None) -> list[Workload]:
-        """The fusion groups :meth:`generate_all_groups` maps; a group no given tiling entry names is cut between its
-        operators where they are preferred apart (:meth:`_cuts_where_apart_is_faster`)."""
+        """The fusion groups :meth:`generate_all_groups` maps."""
         cuts = self._cut_points(cut_points)
         sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
         if cut_points is None and (
@@ -632,32 +631,8 @@ class GenericMappingGenerator:
                 for n in self._unfit_nodes(sub)
             ]
         ):
-            cuts = [*cuts, *unfit]
-            sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
-        if cut_points is None and (
-            slower := [n for sub in sub_workloads for n in self._cuts_where_apart_is_faster(sub, cuts)]
-        ):
-            return self.workload.split_fusion_groups(cut_points=[*cuts, *slower])
+            return self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         return sub_workloads
-
-    def _cuts_where_apart_is_faster(self, sub_workload: Workload, cuts: list[str]) -> list[str]:
-        """The operators to cut a fused group after (all but the last) where, each in a group of its own, they are
-        :meth:`CapacityTiler.preferred` in all to the group fused; [] otherwise, where one does not fit alone or where a
-        given tiling names the group."""
-        cns = tuple(sub_workload.get_computation_nodes())
-        operators = list(dict.fromkeys(map(source_operator, cns)))
-        if self._given_tiling(cns) or len(operators) <= 1 or (fused := self._estimate(sub_workload)) is None:
-            return []
-        names = {cn.name for cn in cns}
-        apart = [
-            self._estimate(group)
-            for group in self.workload.split_fusion_groups(cut_points=[*cuts, *operators[:-1]])
-            if names & {cn.name for cn in group.get_computation_nodes()}
-        ]
-        if None in apart:
-            return []
-        summed = TilingEstimate(*map(sum, zip(*apart, strict=True)))
-        return operators[:-1] if CapacityTiler.preferred(summed, fused) else []
 
     def fits_grouped(self, names: set[str]) -> bool:
         """Whether each of :meth:`groups` holding one of the nodes ``names`` fits on its cores under some tiling."""
@@ -702,18 +677,6 @@ class GenericMappingGenerator:
             or self._capacity_refine(sub_workload, cns, automatic, scale_tiles=True)
             or automatic
         )
-
-    def _estimate(self, sub_workload: Workload) -> TilingEstimate | None:
-        """What the tiler estimates the group takes under the automatic tiling that fits it; None where none fits."""
-        cns = tuple(sub_workload.get_computation_nodes())
-        seed = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
-        tiling = self._capacity_refine(sub_workload, cns, seed) or self._capacity_refine(
-            sub_workload, cns, seed, scale_tiles=True
-        )
-        if tiling is None:
-            return None
-        tiler, cores_per_node, unroll, protected, node_unroll = self._tiler(sub_workload, cns)
-        return tiler.estimate(cns, cores_per_node, unroll, protected, tiling, node_unroll)
 
     def _given_tiling(self, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
         """The caller's intra-core tiling entries that name one of ``cns``; [] when none do."""
