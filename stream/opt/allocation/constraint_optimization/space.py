@@ -13,10 +13,11 @@ import numpy as np
 
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import Hop, MulticastPathPlan
+from stream.datatypes import ELEMENT_BITS
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.cost import accumulator_format, reduced_dims, running_sum_bits
+from stream.hardware.cost import partial_sum_format, reduced_dims, running_sum_bits, running_sum_format
 from stream.hardware.ports import OUTPUT, READ
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.capacity_tiler import buffer_count
@@ -135,7 +136,9 @@ class DecisionSpace:
 
         for tr in self.transfer_nodes:
             choices = _normalize_path_choices(self.mapping.get(tr).resource_allocation)
-            ratio = self.partial_sum_ratio[tr] = self.element_bits(tr.inputs[0]) / tr.inputs[0].operand_type.bitwidth
+            ratio = self.partial_sum_ratio[tr] = (
+                self.partial_sum_element_bits(tr.inputs[0]) / tr.inputs[0].operand_type.bitwidth
+            )
             self.path_choices[tr] = tuple(with_partial_sum_shares(choice, ratio) for choice in choices)
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
@@ -317,14 +320,31 @@ class DecisionSpace:
         """Each tensor a computation node writes, with that node."""
         return {t: node for node in self.ssc_nodes for t in node.outputs}
 
+    def _cuts(self, t: Tensor) -> tuple[set[LayerDim], set[LayerDim]]:
+        """The dims of ``t`` its fused loops cut, and those its producer's own split over cores cuts."""
+        fused: set[LayerDim] = set()
+        split: set[LayerDim] = set()
+        for v in self.ssis[t].variables:
+            if v.size > 1 and v.type in (IterationVariableType.TEMPORAL, IterationVariableType.SPATIAL):
+                (fused if v.type is IterationVariableType.TEMPORAL else split).add(v.dimension)
+        return fused, split
+
     def running_sum_bits(self, t: Tensor) -> int | None:
-        """Bits per element ``t`` is held in while it is a running sum: a fused loop or its producer's split over
-        cores cuts a dimension the producer reduces over. None otherwise."""
+        """Bits per element ``t`` is held in while it is a running sum: the accumulator's across a fused loop cutting
+        a dimension the producer reduces over, the partial-sum format where only its split over cores does. None
+        otherwise."""
         if (node := self.producers.get(t)) is None:
             return None
-        cut = (IterationVariableType.TEMPORAL, IterationVariableType.SPATIAL)
-        partial = {v.dimension for v in self.ssis[t].variables if v.type in cut and v.size > 1}
-        return running_sum_bits(self.workload, node, self.cores(node), partial)
+        return running_sum_bits(self.workload, node, self.cores(node), *self._cuts(t))
+
+    def partial_sum_element_bits(self, t: Tensor) -> int:
+        """Bits per element the cores of ``t``'s producer send each other their partial sums of ``t`` in: the
+        partial-sum format they declare where wider than ``t``'s type, else its type."""
+        if (node := self.producers.get(t)) is None:
+            return t.operand_type.bitwidth
+        _, split = self._cuts(t)
+        found = partial_sum_format(self.cores(node)) if split & reduced_dims(self.workload, node) else None
+        return max(ELEMENT_BITS[found] if found else 0, t.operand_type.bitwidth)
 
     def sums_on_one_core(self, t: Tensor) -> bool:
         """Whether no split over cores cuts a dimension the producer of ``t`` reduces over."""
@@ -339,21 +359,21 @@ class DecisionSpace:
         return prod(v.size for v in loops if v.dimension in reduced)
 
     def running_sum_format(self, t: Tensor) -> str | None:
-        """The accumulator format ``t`` is held in while it is a running sum, else None."""
+        """The format ``t`` is held in while it is a running sum, else None."""
         node = self.producers.get(t)
-        return accumulator_format(node, self.cores(node)) if node and self.running_sum_bits(t) else None
+        return running_sum_format(self.workload, node, self.cores(node), *self._cuts(t)) if node else None
 
     def element_bits(self, t: Tensor) -> int:
-        """Bits per element ``t`` is held and moved at: a running sum's accumulator precision, else its type's."""
+        """Bits per element ``t`` is held at: a running sum's width (:meth:`running_sum_bits`), else its type's."""
         return self.running_sum_bits(t) or t.operand_type.bitwidth
 
     def moved_element_bits(self, tr: TransferNode, choice: MulticastPathPlan) -> int:
-        """Bits per element ``tr`` moves at on ``choice``: the accumulator precision where it carries partial sums to be
-        added up on chip, else its type's."""
+        """Bits per element ``tr`` moves at on ``choice``: the partial-sum format of its source's cores
+        (:meth:`partial_sum_element_bits`) where it carries them to be added up on chip, else its type's."""
         tensor = tr.inputs[0]
         hops = zip(choice.hops, choice.hop_demand, strict=True)
         partial = any(item.reduce for (_, v, _), demand in hops if not v.offchip for item in demand)
-        return self.element_bits(tensor) if partial else tensor.operand_type.bitwidth
+        return self.partial_sum_element_bits(tensor) if partial else tensor.operand_type.bitwidth
 
     def held_bits(self, t: Tensor, tile: Tensor) -> int:
         """Bits of ``tile`` of ``t`` held, at :meth:`element_bits`."""
@@ -363,7 +383,7 @@ class DecisionSpace:
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, leaving: bool, copies: CopySet | None = None
     ) -> float:
         """The factor on the bits ``memory`` sends (``leaving``) or receives of ``tr`` on ``choice`` for the partial
-        sums among them, moved at the accumulator precision."""
+        sums among them, moved at the partial-sum format."""
         if (ratio := self.partial_sum_ratio.get(tr, 1.0)) == 1:
             return 1.0
         hops = _hop_elements(choice, ratio, copies)
@@ -375,7 +395,7 @@ class DecisionSpace:
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, leaving: bool, copies: CopySet | None = None
     ) -> float:
         """The share of the delivered bits of ``tr``, or of those delivered to exactly ``copies``, ``memory`` sends or
-        receives on ``choice``, its partial sums at the accumulator precision, with the reads and writes of the partial
+        receives on ``choice``, its partial sums at the partial-sum format, with the reads and writes of the partial
         sums added into it."""
         share = choice.memory_share(memory, leaving, copies) * self.partial_sum_factor(
             tr, choice, memory, leaving, copies
@@ -473,7 +493,7 @@ class DecisionSpace:
         self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet
     ) -> dict[CommunicationLink, float]:
         """Per link of ``path``, the bits one firing carries over it of what it delivers to exactly ``copies``, partial
-        sums at the accumulator precision."""
+        sums at the partial-sum format."""
         ratio = self.partial_sum_ratio.get(tr, 1.0)
         carried: dict[CommunicationLink, dict[tuple[int | None, bool], list[Box]]] = {}
         for (_, v, link), demand in zip(path.hops, path.hop_demand, strict=True):
@@ -696,7 +716,7 @@ class DecisionSpace:
 
     def sent_bits(self, tr: TransferNode, choice: MulticastPathPlan, copies: CopySet | None = None) -> float:
         """:meth:`moved_bits` of ``choice``, or of what it delivers to exactly ``copies``, with the partial sums added
-        up on chip at the accumulator precision."""
+        up on chip at their :meth:`partial_sum_element_bits`."""
         items = [item for item in choice.delivered_items if copies in (None, item.copies)]
         ratio = self.partial_sum_ratio.get(tr, 1.0)
         partial = [item for item in items if item.reduce and not choice.targets[item.target].offchip]

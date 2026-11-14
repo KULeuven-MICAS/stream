@@ -266,15 +266,16 @@ def _at_ports(
 
 def _running_sum_traffic(ctx: FormulationContext, node: ComputationNode) -> list[tuple[str, str, float]]:
     """What a firing of ``node`` moves of each running sum beyond what its cost backend counts: the extra bits of
-    its writes at the accumulator precision, and the read-back of the sum on every firing but the first."""
+    its writes at the format the sum is stored or sent in, and the read-back of the sum on every firing but the
+    first."""
     space = ctx.space
     found: list[tuple[str, str, float]] = []
     for t in node.outputs:
         elements = space.workload.get_tensor_single_core(t, node, space.mapping).size_elements()
-        sums = space.reduction_trips(t)
-        if (bits := space.running_sum_bits(t)) is not None:
-            partial = sums - 1 if space.sums_on_one_core(t) else sums
-            found.append((OUTPUT, WRITE_BY_DATAPATH, elements * (bits - t.operand_type.bitwidth) * partial / sums))
+        sums, width = space.reduction_trips(t), t.operand_type.bitwidth
+        last = width if space.sums_on_one_core(t) else space.partial_sum_element_bits(t)
+        if extra := (space.element_bits(t) - width) * (sums - 1) + last - width:
+            found.append((OUTPUT, WRITE_BY_DATAPATH, elements * extra / sums))
         if sums > 1:
             found.append((OUTPUT, READ_BY_DATAPATH, elements * space.element_bits(t) * (sums - 1) / sums))
     return found

@@ -75,10 +75,11 @@ def test_a_code_generator_that_cannot_add_partial_sums_keeps_the_contraction_who
 
 def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_link(tmp_path):
     """Each TensorCore completes a quarter of the output: half of it crosses the chip boundary each way as partial
-    sums at the MXU's fp32 accumulator, twice its bf16 bits, once after the last of the 14 iterations:
-    ceil(256 x 4096 x 32 / 2 / 364) = 46092 cycles; each quarter is then written to HBM in bf16,
+    sums at bf16, the output's type, as the MXUs declare no partial-sum format, once after the last of the 14
+    iterations: ceil(256 x 4096 x 16 / 2 / 364) = 23046 cycles; each quarter is then written to HBM in bf16,
     ceil(256 x 4096 x 16 / (4 x 13400)) = 314 cycles. Both fire once in the run: they are its epilogue. The weights'
-    stream from HBM bounds the iterations."""
+    stream from HBM bounds the iterations. The solve proves its latency optimal rather than stopping at the time
+    limit."""
     estimate = evaluate_mapping(
         TPU_V7,
         SWIGLU,
@@ -87,19 +88,20 @@ def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_l
         SolveOptions(artifacts=False),
     )
     solution = estimate.context.get("allocation").solution
+    assert solution.solve_stats.mip_gap == 0
     tr, reduction = next(
         (tr, plan) for tr, plan in solution.transfer_routes.items() if ICI & {str(link) for link in plan.links_used}
     )
     assert sorted(m.name for m in reduction.targets) == ["vmem_0", "vmem_1", "vmem_2", "vmem_3"]
     assert {str(link): round(share, 2) for link, share in reduction.link_shares if str(link) in ICI} == dict.fromkeys(
-        ICI, 0.5 * 32 / 16
+        ICI, 0.5
     )
     (group,) = estimate.context.data["group_allocations"].values()
     detail = next(n for n in group["steady_state"]["tiled_graph"]["nodes"] if n["name"] == tr.name)
-    firing = math.ceil(256 * 4096 * 32 / 2 / 364)
+    firing = math.ceil(256 * 4096 * 16 / 2 / 364)
     write = math.ceil(256 * 4096 * 16 / (4 * 13400))
     assert (detail["copy_moved_bits"], detail["reuse_factor"], detail["route_cycles"]) == (
-        [256 * 4096 * 32],
+        [256 * 4096 * 16],
         14,
         firing,
     )
@@ -128,12 +130,14 @@ AllocationModel.solve = write_then_solve
 estimate = evaluate_mapping(*sys.argv[1:3], tempfile.mkdtemp(), sys.argv[3], SolveOptions(artifacts=False))
 written = [open(os.path.join(models, name)).read() for name in sorted(os.listdir(models))]
 result = AllocationIR.from_internal(estimate.context.get("allocation")).model_dump(exclude={"solve"})
+assert estimate.context.get("allocation").solution.solve_stats.mip_gap == 0, "the latency level did not close"
 print(hashlib.sha256(json.dumps([written, result], sort_keys=True).encode()).hexdigest())
 """
 
 
 def test_the_model_and_its_solution_do_not_depend_on_the_hash_seed():
-    """The fused SwiGLU builds the same variables and constraints, in the same order, and solves to the same result."""
+    """The fused SwiGLU builds the same variables and constraints, in the same order, and solves to the same result,
+    its latency proven optimal."""
     mapping = "stream/inputs/examples/mapping/swiglu_tpu_v7_fused.yaml"
     solved = {
         subprocess.run(
@@ -329,10 +333,11 @@ def _route(allocation, name: str):
 
 
 def test_each_vmem_writes_every_partial_sum_it_receives_and_reads_those_it_adds_and_sends(tensor_parallel_swiglu):
-    """The VMEMs link as a path 0-1-3-2 and each gathers a quarter of the 16 x 128 sum, 512 fp32 partial sums of
-    16384 bits. Each VMEM adds its two TensorCores' partial sums per quarter, 65536 bits read and written. vmem_0
-    receives one quarter (16384 written, 16384 read to add it) and sends three (49152 read): 81920 written, 131072
-    read. vmem_1 receives five and sends three on: 147456 written, 196608 read. The ports and the estimate agree."""
+    """The VMEMs link as a path 0-1-3-2 and each gathers a quarter of the 16 x 128 sum, 512 partial sums sent at
+    bf16, the output's type, as the MXUs declare no partial-sum format: 8192 bits. Each VMEM adds its two TensorCores'
+    partial sums per quarter, 32768 bits read and written. vmem_0 receives one quarter (8192 written, 8192 read to add
+    it) and sends three (24576 read): 40960 written, 65536 read. vmem_1 receives five and sends three on: 73728
+    written, 98304 read. The ports and the estimate agree."""
     space = tensor_parallel_swiglu.space
     tr, route = _route(tensor_parallel_swiglu, "Transfer(output_1)")
     moved = space.moved_bits(tr, route)
@@ -341,10 +346,10 @@ def test_each_vmem_writes_every_partial_sum_it_receives_and_reads_those_it_adds_
         key = (side.port.key.memory, side.direction)
         charged[key] = charged.get(key, 0.0) + side.share * moved
     expected = {
-        "vmem_0": (81920, 131072),
-        "vmem_1": (147456, 196608),
-        "vmem_2": (81920, 131072),
-        "vmem_3": (147456, 196608),
+        "vmem_0": (40960, 65536),
+        "vmem_1": (73728, 98304),
+        "vmem_2": (40960, 65536),
+        "vmem_3": (73728, 98304),
     }
     for memory in dict.fromkeys(route.targets):
         estimated = tuple(space.memory_share(tr, route, memory, leaving) * moved for leaving in (False, True))

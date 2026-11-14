@@ -63,9 +63,9 @@ fused_groups:
 
 def test_a_reduction_over_cores_reports_each_cores_partial_sum():
     """Y = X W with the 64-long contraction split over cores 0 and 1: each sends its partial sum of Y, 16*32 = 512
-    elements, and Y is delivered once, 8192 bits. Each core sends the other the half it completes at the 32-bit
-    accumulator, 256*32 = 8192 bits, then its finished half off chip at bf16, 4096 bits: 24576 bits on the 128-bit
-    bus, 192 cycles."""
+    elements, and Y is delivered once, 8192 bits. Each core sends the other the half it completes at bf16, the
+    output's type, as the cores declare no partial-sum format, 256*16 = 4096 bits, then its finished half off chip at
+    bf16, 4096 bits: 16384 bits on the 128-bit bus, 128 cycles."""
     gemm = helper.make_node("MatMul", ["X", "W"], ["Y"], name="Gemm")
     workload = onnx_graph([gemm], {"X": [16, 64], "W": [64, 32]}, ["Y"])
     transfer = _transfer(workload, CONTRACTION_SPLIT, "Transfer(Y_1)")
@@ -74,7 +74,7 @@ def test_a_reduction_over_cores_reports_each_cores_partial_sum():
         (_core(1), "offchip", "partial_sum"): 512,
     }
     assert transfer["moved_bits"] == 8192
-    assert transfer["link_bits"] == [24576] and transfer["route_cycles"] == 192
+    assert transfer["link_bits"] == [16384] and transfer["route_cycles"] == 128
 
 
 HEAD_MAPPING = """layers:

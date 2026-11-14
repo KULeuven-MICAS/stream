@@ -214,7 +214,10 @@ class SteadyStateTensorIR(BaseModel):
 
     name: str
     shape: list[int] = Field(description="Its tile; for a transfer's copy, the window its reader holds on one core")
-    bits: int = Field(description="The bits of that tile, a running sum at the accumulator precision")
+    bits: int = Field(
+        description="The bits of that tile, a running sum at the accumulator precision, a partial sum of a split "
+        "reduction at the partial-sum format"
+    )
     loops: list[SteadyStateIterationIR] = Field(description="Its solved loop nest, outermost first")
     placement: list[str] = Field(description="The memory it sits in at each position")
     reuse_level: int | None = Field(description="The temporal loop it is reused up to")
@@ -238,7 +241,7 @@ class SteadyStateIR(BaseModel):
             "over links, 'in_place' from a source in or sharing the target's memory, 'local_copy' from a larger "
             "copy in that memory, or 'partial_sum', a source's partial sum of a split reduction), the bits one "
             "firing moves, those each of its links "
-            "carries ('link_bits', partial sums at the accumulator precision), route cycles and reuse factor (the "
+            "carries ('link_bits', partial sums at the cores' partial-sum format), route cycles and reuse factor (the "
             "iterations one firing serves; 'copy_moved_bits' and "
             "'copy_reuse_factors' give both per copy). Where a window slides, both "
             "also carry their work per fused tile and how far they run ahead"

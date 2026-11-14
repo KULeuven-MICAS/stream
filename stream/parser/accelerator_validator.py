@@ -429,8 +429,8 @@ class AcceleratorValidator:
             self.errors.extend(core_validator.errors)
 
         precision = extension_fields.get("operand_precision") or {}
-        if not isinstance(precision, dict) or not set(precision) <= {"input", "accumulator"}:
-            self.invalidate(f"Core {label}: `operand_precision` takes only `input` and `accumulator`.")
+        if not isinstance(precision, dict) or not set(precision) <= {"input", "accumulator", "partial_sum"}:
+            self.invalidate(f"Core {label}: `operand_precision` takes only `input`, `accumulator` and `partial_sum`.")
         elif unknown := {str(v) for v in precision.values()} - ELEMENT_BITS.keys():
             self.invalidate(f"Core {label}: unknown element types {sorted(unknown)} in `operand_precision`.")
 

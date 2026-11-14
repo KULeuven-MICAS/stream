@@ -12,6 +12,7 @@ import pytest
 import yaml
 from conv_windows import conv, onnx_graph
 from onnx import TensorProto, helper
+from tpu_quad import tpu_quad
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.cost import running_sum_bits
@@ -129,11 +130,16 @@ def test_a_reader_of_a_finished_sum_holds_it_at_its_type(tmp_path):
     assert held == {f"tpu_like_{i}": 622592 for i in range(4)}
 
 
-@pytest.mark.parametrize(("conv2_split", "bits"), [("D6", None), ("D5", 32)], ids=["output-channels", "input-channels"])
-def test_the_tiler_and_the_allocation_agree_on_a_running_sum(tmp_path, conv2_split, bits):
+@pytest.mark.parametrize(
+    ("conv2_split", "reduction", "bits"),
+    [("D6", "int32", None), ("D5", None, None), ("D5", "int32", 32)],
+    ids=["output-channels", "input-channels", "input-channels-int32-reduction"],
+)
+def test_the_tiler_and_the_allocation_agree_on_a_running_sum(tmp_path, conv2_split, reduction, bits):
     """Two bf16 3x3 convolutions over four cores: the second split on its output channels (D6) finishes a quarter on
-    each core, no running sum; split on its input channels (D5), each core holds a partial sum at int32."""
-    hardware = _TPU_QUAD
+    each core, no running sum; split on its input channels (D5), each core holds a partial sum at the format the cores
+    send it to each other at: the bf16 type, or a declared int32 reduction."""
+    hardware = tpu_quad(tmp_path, reduction)
     config = TwoConvWorkloadConfig(1, 8, 8, 8, 16, 16, 3, "bf16", "bf16")
     workload = make_2_conv_workload(config, str(tmp_path))
     acc, w = _parse(hardware, workload)
@@ -147,9 +153,10 @@ def test_the_tiler_and_the_allocation_agree_on_a_running_sum(tmp_path, conv2_spl
     unroll = dict.fromkeys(split.values(), 4)
     resident = {d: n // unroll.get(d, 1) for d, n in full.items()}
     node_unroll = {cn: {dim: 4} for cn, dim in split.items()}
-    sizes = CapacityTiler(w, acc)._node_sizes(conv2, dict.fromkeys(split, cores), unroll, resident, node_unroll)
-    partial = {d for d, size in sizes.items() if size < full[d]}
-    assert running_sum_bits(w, conv2, cores, partial) == bits
+    tiler = CapacityTiler(w, acc)
+    sizes = tiler._node_sizes(conv2, dict.fromkeys(split, cores), unroll, resident, node_unroll)
+    assert {d for d, size in sizes.items() if size < full[d]} == {split[conv2]}
+    assert running_sum_bits(w, conv2, cores, set(), {split[conv2]}) == bits
     layers = [
         {"name": name, "core_allocation": [[0, 1, 2, 3]], "inter_core_tiling": [[{"dim": dim, "split": 4}]]}
         for name, dim in (("Conv1", "D6"), ("Conv2", conv2_split))
@@ -162,6 +169,25 @@ def test_the_tiler_and_the_allocation_agree_on_a_running_sum(tmp_path, conv2_spl
     space = allocation.context.get("allocation").space
     (solved,) = (n for n in space.ssc_nodes if n.name == "Conv2")
     assert space.running_sum_bits(solved.outputs[0]) == bits
+
+
+@pytest.mark.parametrize(("reduction", "bits"), [(None, 16), ("int32", 32)])
+def test_the_tiler_holds_a_split_reduction_s_partial_sum_at_the_partial_sum_format(tmp_path, reduction, bits):
+    """Y = X W, X (16,64), W (64,32), bf16, the contraction split over tpu_like_quad_core's cores 0 and 1, nothing
+    tiled: each core holds X's 16 x 32 and W's 32 x 32, 8192 and 16384 bits, and its partial Y, 16 x 32 at the format
+    the cores send each other it at, the bf16 type (8192 bits) or a declared int32 reduction (16384 bits), not at the
+    int32 accumulator it sums in within the firing."""
+    workload = onnx_graph(
+        [helper.make_node("MatMul", ["X", "W"], ["Y"], name="Gemm")], {"X": [16, 64], "W": [64, 32]}, ["Y"]
+    )
+    acc, w = _parse(tpu_quad(tmp_path, reduction), workload)
+    (cn,) = w.get_computation_nodes()
+    contraction = w.leading_dim(w.get_dims(cn)[2])[0]
+    full = {d: w.get_dimension_size(d) for d in w.unique_dimensions()[0]}
+    resident = full | {contraction: 32}
+    cores = {cn: [acc.get_core(0), acc.get_core(1)]}
+    held = CapacityTiler(w, acc).memory_bits((cn,), cores, {contraction: 2}, resident)
+    assert held == dict.fromkeys(("tpu_like_0", "tpu_like_1"), 8192 + 16384 + 16 * 32 * bits)
 
 
 def _conv(c: int, k: int, h: int, w: int) -> tuple[str, str]:

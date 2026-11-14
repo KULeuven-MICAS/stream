@@ -11,6 +11,7 @@ import onnx
 import pytest
 from conv_windows import onnx_graph
 from onnx import TensorProto, helper, numpy_helper
+from tpu_quad import tpu_quad
 from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
@@ -275,34 +276,42 @@ fused_groups:
 - {name: G, layers: [Gemm1, Gemm2], intra_core_tiling: [{dim: Gemm1.D0, tile: 16}]}
 """
 
+REDUCTION = [(None, 16), ("int32", 32)]
+"""tpu_like_quad_core's int32 accumulators exchanging partial sums at the bf16 outputs' type, or declaring an int32
+reduction: the bits per partial sum."""
 
-def test_a_core_holds_its_share_of_a_split_reduction_at_the_accumulator_precision(tmp_path):
+
+@pytest.mark.parametrize(("reduction", "bits"), REDUCTION)
+def test_a_core_holds_its_share_of_a_split_reduction_at_the_partial_sum_format(tmp_path, reduction, bits):
     """Gemm2 split over 4 cores on its contraction, fused on tokens (tile 16): each core holds its partial
-    Y_1[16,128] at the int32 accumulator, double-buffered: 2 x 16 x 128 x 32 bits."""
-    ir = _solved_mlp(TPU_QUAD, _SPLIT_REDUCTION, tmp_path)
+    Y_1[16,128] at the format the cores send each other it at, double-buffered: 2 x 16 x 128 x 16 bits at bf16, twice
+    that at a declared int32 reduction."""
+    ir = _solved_mlp(tpu_quad(tmp_path, reduction), _SPLIT_REDUCTION, tmp_path)
     resident = {
         m["memory"]: t["bits"]
         for m in ir["performance"]["memory_occupancy"]
         for t in m["tensors"]
         if t["tensor"] == "Y_1"
     }
-    assert resident == {f"tpu_like_{core}": 2 * 16 * 128 * 32 for core in range(4)}
+    assert resident == {f"tpu_like_{core}": 2 * 16 * 128 * bits for core in range(4)}
 
 
-def test_partial_sums_cross_cores_at_the_accumulator_precision(tmp_path):
+@pytest.mark.parametrize(("reduction", "bits"), REDUCTION)
+def test_partial_sums_cross_cores_at_the_partial_sum_format(tmp_path, reduction, bits):
     """Summing the 4 cores' partial Y_1[16,128] of the split above moves 3 x 16 x 128 = 6144 partial sums between
-    cores per iteration at the int32 accumulator, beyond the finished sum the off-chip port takes."""
-    ir = _solved_mlp(TPU_QUAD, _SPLIT_REDUCTION, tmp_path)
+    cores per iteration: 98304 bits on the links and the bus beyond what the off-chip port takes at the bf16 output
+    type, 196608 at a declared int32 reduction."""
+    ir = _solved_mlp(tpu_quad(tmp_path, reduction), _SPLIT_REDUCTION, tmp_path)
     ports = {a["resource"]: a["bits_per_iteration"] for a in ir["performance"]["memory_ports"]}
     links = sum(bits for resource, bits in ports.items() if "->" in resource or resource.startswith("bus "))
-    assert links - ports["offchip.rw_port_1"] == 3 * 16 * 128 * 32
+    assert links - ports["offchip.rw_port_1"] == 3 * 16 * 128 * bits
 
 
-def test_the_cores_read_the_partial_sums_they_send_and_add_at_the_accumulator_precision(tmp_path):
-    """Of the split above, the four cores send 3 x 16 x 128 = 6144 partial sums to be added up at the int32
-    accumulator and write the 16 x 128 = 2048 finished sums off chip at bf16, (6144 x 32 + 2048 x 16) / (2048 x 16)
-    = 7 times the bits the reduction delivers. The cores receiving the 6144 write them, 6144 x 32 / (2048 x 16) = 6
-    times, and read as many to add each into the sum they hold, 6 times more: their read ports pass 13 times."""
+def test_the_cores_read_the_partial_sums_they_send_and_add_at_the_output_type(tmp_path):
+    """Of the split above, the four cores send 3 x 16 x 128 = 6144 partial sums to be added up at bf16, the
+    output's type, and write the 16 x 128 = 2048 finished sums off chip at bf16, (6144 + 2048) / 2048 = 4 times the
+    bits the reduction delivers. The cores receiving the 6144 write them, 3 times, and read as many to add each into
+    the sum they hold, 3 times more: their read ports pass 7 times."""
     allocation = _estimated_mlp(TPU_QUAD, _SPLIT_REDUCTION, tmp_path).context.get("allocation")
     (tr, route) = next((tr, r) for tr, r in allocation.solution.transfer_routes.items() if tr.name == "Transfer(Y_1)")
     cores = [memory for memory in route.sources if not memory.offchip]
@@ -310,7 +319,7 @@ def test_the_cores_read_the_partial_sums_they_send_and_add_at_the_accumulator_pr
         sum(sum(allocation.space.side_ports(tr, route, memory, direction).values()) for memory in cores)
         for direction in (READ, WRITE)
     )
-    assert (read, written) == (pytest.approx(13), pytest.approx(6))
+    assert (read, written) == (pytest.approx(7), pytest.approx(3))
 
 
 def _output_traffic(hardware, tmp_path):
@@ -337,6 +346,28 @@ def test_a_running_sum_is_written_and_read_back_at_the_accumulator_precision(tmp
     assert moved == {WRITE_BY_DATAPATH: 64 * 128 * 28, READ_BY_DATAPATH: 64 * 128 * 32 * 3 / 4}
 
 
+_FUSED_AND_SPLIT = """
+layers:
+- {name: Gemm1, core_allocation: [[0, 1, 2, 3]], inter_core_tiling: [[{dim: D2, split: 4}]]}
+- {name: Gemm2, core_allocation: [[0, 1, 2, 3]], inter_core_tiling: [[{dim: D1, split: 4}]]}
+fused_groups:
+- {name: G, layers: [Gemm1, Gemm2], intra_core_tiling: [{dim: Gemm1.D2, tile: 32}]}
+"""
+
+
+@pytest.mark.parametrize(("reduction", "written"), [(None, 16 / 2), ("int32", 32 / 2)])
+def test_a_running_sum_split_over_cores_is_written_last_at_the_partial_sum_format(tmp_path, reduction, written):
+    """The hidden dim split over tpu_like_quad_core's 4 cores and fused in tiles of 32 a core (2 firings): each core
+    sums its partial Y[64,128], 8192 elements, over the 2 firings in its int32 accumulator, writing it, beyond its
+    cost backend's bf16 write, 16 more bits an element on the first firing and, to send it, as many more as the
+    partial-sum format is wider than bf16 on the last: 8192 x 16 / 2 a firing at the bf16 type, 8192 x 32 / 2 at a
+    declared int32 reduction. It reads the int32 sum back on 1 of the 2 firings, 8192 x 32 / 2."""
+    space = _estimated_mlp(tpu_quad(tmp_path, reduction), _FUSED_AND_SPLIT, tmp_path).context.get("allocation").space
+    (gemm2,) = (n for n in space.ssc_nodes if n.name == "Gemm2")
+    moved = {d: bits for _, d, bits in _running_sum_traffic(SimpleNamespace(space=space), gemm2)}
+    assert moved == {WRITE_BY_DATAPATH: 8192 * written, READ_BY_DATAPATH: 8192 * 32 / 2}
+
+
 def test_a_running_sum_no_wider_than_its_type_is_read_back_at_its_type(tmp_path):
     """On eyeriss_like_single_core, whose int16 accumulator is no wider than bf16, Gemm2 reads its 64 x 128 sum back
     at bf16 on 3 of its 4 firings."""
@@ -358,17 +389,17 @@ def test_a_running_sum_s_extra_writes_and_read_back_cost_their_port_energy(tmp_p
     assert ir["performance"]["energy"]["node_pj_per_iteration"] == pytest.approx(own + 64 * 128 * 48 * 3 / 4)
 
 
-def test_partial_sums_added_up_on_chip_are_laid_out_at_the_accumulator_precision(tmp_path):
-    """Of the split reduction over four cores, the transfer adding up the partial Y_1 between cores lays out the int32
-    accumulator's 32-bit elements."""
+def test_partial_sums_added_up_on_chip_are_laid_out_at_the_output_type(tmp_path):
+    """Of the split reduction over four cores, the transfer adding up the partial Y_1 between cores lays out the bf16
+    elements the cores send each other."""
     ir = _solved_mlp(TPU_QUAD, _SPLIT_REDUCTION, tmp_path)
     (bits,) = (row["element_bits"] for row in ir["performance"]["layouts"] if row["transfer"] == "Transfer(Y_1)")
-    assert bits == 32
+    assert bits == 16
 
 
-def test_a_memory_of_measured_bandwidth_passes_the_partial_sums_it_sends_at_the_accumulator_precision(tmp_path):
+def test_a_memory_of_measured_bandwidth_passes_the_partial_sums_it_sends_at_the_output_type(tmp_path):
     """Y = X W with the contraction split over cores 0 and 1, core 1's memory given a measured bandwidth: it receives
-    its halves of X and W, 8192 and 16384 bits, and sends core 0 its partial Y, 16 x 32 at the int32 accumulator."""
+    its halves of X and W, 8192 and 16384 bits, and sends core 0 its partial Y, 16 x 32 at bf16, the output's type."""
     hardware = Path(TPU_QUAD).read_text() + "\nbandwidth:\n  tpu_like_1: {ceiling: 64, contiguous: 64}\n"
     (tmp_path / "chip.yaml").write_text(hardware)
     (tmp_path / "cores").symlink_to(Path(TPU_QUAD).parent.resolve() / "cores")
@@ -388,4 +419,4 @@ fused_groups:
     )
     rows = AllocationIR.from_internal(estimate.context.get("allocation")).performance.memory_ports
     (row,) = (row for row in rows if row.kind == "shared_bandwidth")
-    assert (row.resource, row.bits_per_iteration) == ("tpu_like_1", 8192 + 16384 + 16 * 32 * 32)
+    assert (row.resource, row.bits_per_iteration) == ("tpu_like_1", 8192 + 16384 + 16 * 32 * 16)
