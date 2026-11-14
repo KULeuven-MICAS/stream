@@ -185,3 +185,103 @@ def test_the_tile_search_keeps_the_calls_bound_fastest_and_their_ties(monkeypatc
     stage.mapping = SimpleNamespace(fused_groups=["seed"])
     kept = TileSearchStage._fastest_calls(stage, 0, called)
     assert [key for key, _ in kept] == ["a", "b", "c", "d"]
+
+
+def _visited(dims):
+    """The addresses a walk, outer first, visits in order."""
+    from itertools import product
+
+    return [
+        sum(i * stride for i, (_, stride) in zip(index, dims, strict=True))
+        for index in product(*(range(s) for s, _ in dims))
+    ]
+
+
+def _scattered(outer: tuple, object_shape: list[int], local: list | None = None):
+    """A memory tile holding 16 k tiles of a 64x32 activation tile within the ``outer`` loops, the widened run off chip
+    scattered into its object: the module, its device, its fifo and the convert pass. ``local`` lists the held loops
+    innermost first, None for the k tiles; by default the k tiles, then ``outer`` inside out."""
+    import pytest
+
+    convert = pytest.importorskip("stream.compiler.transforms.aie_convert_ofs", reason="the AIE dialects")
+    from xdsl.dialects.builtin import ModuleOp, StringAttr, bf16
+    from xdsl.ir import Block, Region
+    from xdsl_aie.dialects.aie import DeviceOp, ObjectFifoOp, RuntimeSequenceOp, TileOp
+
+    from stream.compiler.dialects.stream import StrensorSpace, StrensorType, StrensorVar, StrensorVarType
+
+    k_in = StrensorVar(StrensorVarType.TEMPORAL, 16, K)
+    rows, columns = StrensorVar(StrensorVarType.KERNEL, 64, M), StrensorVar(StrensorVarType.KERNEL, 32, K)
+    space = StrensorSpace((*outer, k_in, rows, columns))
+    memory = StrensorType(bf16, space, [StringAttr("tile_0_1")], reuse_index=len(space.vars))
+    shim, mem = TileOp(0, 0), TileOp(0, 1)
+    fifo = ObjectFifoOp.from_referenced_type(shim, [mem], "staged", 1, bf16, object_shape)
+    sequence = RuntimeSequenceOp(Region(Block()))
+    device = DeviceOp(0, [shim, mem, fifo, sequence])
+    module = ModuleOp([device])
+    held = [k_in if var is None else var for var in (local or [None, *reversed(outer)])]
+    convert._scatter_into_tiles(sequence, [StringAttr("staged")], memory, k_in, held)
+    return module, device, fifo, convert
+
+
+def _walk(fifo) -> list[tuple[int, int]]:
+    return [tuple(dim) for dim in fifo.dimensionsFromStreamPerConsumer.data[0]]
+
+
+def test_a_block_held_with_two_more_loops_is_written_by_a_walk_a_memory_tile_steps():
+    """Within 2 k blocks and 2 row blocks, the five-dim walk that scatters the widened run into the tiles folds the two
+    outer blocks into one dim, visiting the same addresses in the same order."""
+    from stream.compiler.dialects.stream import StrensorVar, StrensorVarType
+
+    k_blocks, m_blocks = StrensorVar(StrensorVarType.TEMPORAL, 2, K), StrensorVar(StrensorVarType.TEMPORAL, 2, M)
+    module, _, fifo, convert = _scattered((m_blocks, k_blocks), [2, 2, 16, 64, 32])
+    scattered = _walk(fifo)
+    assert scattered == [(2, 65536), (2, 32768), (64, 32), (16, 2048), (32, 1)]
+    convert.fit_memory_tile_walks(module)
+    assert len(_walk(fifo)) <= convert.MEMORY_TILE_DIMS
+    assert _visited(_walk(fifo)) == _visited(scattered)
+
+
+def test_a_distributed_block_keeps_its_slot_dim_for_the_link_to_take_off():
+    """Sent to 4 cores, 2 row blocks each: the walk steps from slot to slot on its outer dim, which the link takes off
+    before the walk is fitted, so the 4 dims left within a slot stand unfolded."""
+    from xdsl.dialects.builtin import StringAttr
+
+    from stream.compiler.dialects.stream import StrensorVar, StrensorVarType
+
+    cores, m_blocks = StrensorVar(StrensorVarType.TEMPORAL, 4, M), StrensorVar(StrensorVarType.TEMPORAL, 2, M)
+    module, device, fifo, convert = _scattered((cores, m_blocks), [4, 2, 16, 64, 32], [None, m_blocks])
+    slot = 2 * 16 * 64 * 32
+    assert _walk(fifo)[0] == (4, slot)
+    within = _walk(fifo)[1:]
+    convert.RealizeLinks.fill_slot_by_slot(device, StringAttr("staged"), 4)
+    convert.fit_memory_tile_walks(module)
+    assert _walk(fifo) == within
+
+
+def test_a_walk_no_fold_brings_to_four_dims_is_refused():
+    """A memory tile written by five dims of which none continues the one inside it is refused, not handed to
+    mlir-aie."""
+    import pytest
+
+    convert = pytest.importorskip("stream.compiler.transforms.aie_convert_ofs", reason="the AIE dialects")
+    from xdsl.dialects.builtin import ModuleOp, bf16
+    from xdsl_aie.dialects.aie import (
+        BDDimLayout,
+        BDDimLayoutArray,
+        BDDimLayoutArrayArray,
+        BDDimLayoutArrayArrayAttr,
+        DeviceOp,
+        ObjectFifoOp,
+        TileOp,
+    )
+
+    walk = ((2, 3), (3, 7), (5, 23), (7, 131), (11, 1))
+    shim, mem = TileOp(0, 0), TileOp(0, 1)
+    fifo = ObjectFifoOp.from_referenced_type(shim, [mem], "staged", 1, bf16, [2 * 3 * 5 * 7 * 11])
+    fifo.dimensionsFromStreamPerConsumer = BDDimLayoutArrayArrayAttr(
+        BDDimLayoutArrayArray((BDDimLayoutArray(tuple(map(BDDimLayout, walk))),))
+    )
+    module = ModuleOp([DeviceOp(0, [shim, mem, fifo])])
+    with pytest.raises(NotImplementedError, match="walk of 5 dimensions"):
+        convert.fit_memory_tile_walks(module)

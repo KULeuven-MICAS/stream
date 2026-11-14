@@ -73,6 +73,8 @@ from stream.datatypes import LayerDim
 SPLIT_PARTS = 2
 # The first row of the array holding compute tiles; below it are the shim and memory rows.
 COMPUTE_ROW = 2
+# The row of memory tiles.
+MEMORY_ROW = 1
 
 
 def _splittable(var: StrensorVar, dim: LayerDim) -> bool:
@@ -228,7 +230,7 @@ class StrideSet:
             if not new_strides:
                 new_strides.append(var)
             # check for possible squash
-            elif var.stride == new_strides[-1].size * new_strides[-1].stride:
+            elif _continues(new_strides[-1].size, new_strides[-1].stride, var.stride):
                 new_strides[-1] = Stride(
                     var.size * new_strides[-1].size,
                     new_strides[-1].stride,
@@ -324,6 +326,8 @@ SHIM_STEP_WORDS = 1 << 20
 WORD_BITS = 32
 TILE_AXES = 2
 """The axes of a kernel tile a memory tile scatters a widened run into: its rows and columns."""
+MEMORY_TILE_DIMS = 4
+"""The dimensions a memory tile's BD steps and wraps."""
 # The buffer descriptors a fifo's runtime transfers ping pong between.
 PING_PONG = 2
 
@@ -1508,6 +1512,48 @@ def _widened_run(
     return along if along is not None and not split and dim_strides.get(kernel[0].dim) == 1 else None
 
 
+def _continues(inner_size: int, inner_stride: int, stride: int) -> bool:
+    """Whether a dimension stepping by ``stride`` steps by the whole extent of the one inside it, so the two walk as
+    one."""
+    return stride == inner_size * inner_stride
+
+
+def _folded(walk: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The same walk, outer first, without its dimensions of one and with each dimension that continues the one
+    inside it folded into that one."""
+    folded: list[tuple[int, int]] = []
+    for size, stride in reversed(walk):
+        if size == 1:
+            continue
+        if folded and _continues(*folded[-1], stride):
+            folded[-1] = (size * folded[-1][0], folded[-1][1])
+        else:
+            folded.append((size, stride))
+    return folded[::-1] or [(1, 1)]
+
+
+def fit_memory_tile_walks(module: ModuleOp) -> None:
+    """Fold each walk a memory tile writes a fifo's objects with to the dimensions its BD steps, once the links have
+    taken off a distribute's slot dimension; refuse a walk that still has more."""
+    for fifo in module.walk():
+        if not isinstance(fifo, ObjectFifoOp) or not any(
+            isinstance(t.owner, TileOp) and t.owner.row.value.data == MEMORY_ROW for t in fifo.consumerTiles
+        ):
+            continue
+        walks = [[tuple(dim) for dim in walk] for walk in fifo.dimensionsFromStreamPerConsumer.data]
+        if all(len(walk) <= MEMORY_TILE_DIMS for walk in walks):
+            continue
+        fitted = [walk if len(walk) <= MEMORY_TILE_DIMS else _folded(walk) for walk in walks]
+        if over := next((walk for walk in fitted if len(walk) > MEMORY_TILE_DIMS), None):
+            raise NotImplementedError(
+                f"@{fifo.sym_name.data}: a memory tile writes its objects by a walk of {len(over)} dimensions, more "
+                f"than the {MEMORY_TILE_DIMS} its BD steps: {over}"
+            )
+        fifo.dimensionsFromStreamPerConsumer = BDDimLayoutArrayArrayAttr(
+            BDDimLayoutArrayArray(tuple(BDDimLayoutArray(tuple(BDDimLayout(d) for d in walk)) for walk in fitted))
+        )
+
+
 def _scatter_into_tiles(
     runtime_sequence: RuntimeSequenceOp,
     names: Sequence[StringAttr],
@@ -2004,6 +2050,7 @@ class AIEConvertOfs(ModulePass):
         PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(RealizeLinks()).rewrite_module(op)
+        fit_memory_tile_walks(op)
         PatternRewriteWalker(TransferToObjectFIFOPattern()).rewrite_module(op)
         PatternRewriteWalker(RemoveChannels()).rewrite_module(op)
         PatternRewriteWalker(RemoveEmptyCores()).rewrite_module(op)
