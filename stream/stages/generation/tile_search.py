@@ -48,10 +48,14 @@ class TileSearchStage(Stage):
                     new_groups = list(groups)
                     new_groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
                     seeds.append(((gi, ti), self.mapping.with_fused_groups(new_groups)))
-            if (staged := self._staged(group)) is not None:
-                new_groups = list(groups)
-                new_groups[gi] = staged
-                seeds.append(((gi, "staged"), self.mapping.with_fused_groups(new_groups)))
+            staged = self._staged(group)
+            alternatives = [("staged", staged), ("order", _reordered(group))]
+            alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
+            for key, alternative in alternatives:
+                if alternative is not None:
+                    new_groups = list(groups)
+                    new_groups[gi] = alternative
+                    seeds.append(((gi, key), self.mapping.with_fused_groups(new_groups)))
         return seeds
 
     def _staged(self, group: FusedGroup) -> FusedGroup | None:
@@ -184,6 +188,17 @@ class TileSearchStage(Stage):
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
         return ctxs, ctxs[0].get("allocation").estimated_cycles
+
+
+def _reordered(group: FusedGroup) -> FusedGroup | None:
+    """``group`` with the two tile loops just outside its innermost dim's loops swapped: a memory tile then holds across
+    the inner of the two the operand the other loop indexes. None where no two loops over other dims follow."""
+    tiling = group.intra_core_tiling
+    first = next((i for i, (dim, _) in enumerate(tiling) if dim != tiling[0][0]), len(tiling))
+    if first + 1 >= len(tiling) or tiling[first + 1][0] in (tiling[0][0], tiling[first][0]):
+        return None
+    swapped = (*tiling[:first], tiling[first + 1], tiling[first], *tiling[first + 2 :])
+    return replace(group, intra_core_tiling=swapped)
 
 
 def _unpriced(timed_out: bool) -> RuntimeError:

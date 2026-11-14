@@ -81,3 +81,19 @@ def test_a_block_of_k_tiles_is_read_across_them():
     assert convert._widened_run(memory, pairs, {K: 1, M: 8192}, staged=True) is k_in
     assert convert._widened_run(memory, pairs, {K: 8192, M: 1}, staged=True) is None
     assert convert._widened_run(memory, pairs, {K: 1, M: 8192}, staged=False) is None
+
+
+def test_the_tile_search_offers_the_other_operand_held_across_the_inner_loop():
+    """A GEMM tiled k, then n, then m holds the activation across n and reads the weight once per m block; swapping n
+    and m holds the weight across m and streams the activation, at either k tiling."""
+    from stream.mapping.mapping import FusedGroup
+    from stream.stages.generation.tile_search import _reordered
+
+    assert _reordered(FusedGroup("g", ("Gemm",), ((K, 64), (N, 64), (M, 64)))).intra_core_tiling == (
+        (K, 64),
+        (M, 64),
+        (N, 64),
+    )
+    staged = FusedGroup("g", ("Gemm",), ((K, 64), (K, 512), (N, 64), (M, 64)))
+    assert _reordered(staged).intra_core_tiling == ((K, 64), (K, 512), (M, 64), (N, 64))
+    assert _reordered(FusedGroup("g", ("Silu",), ((N, 64), (M, 1)))) is None
