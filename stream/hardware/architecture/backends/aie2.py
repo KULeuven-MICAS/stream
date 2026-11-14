@@ -64,6 +64,10 @@ class AIE2CoreBackend:
             raise ValueError(f"an AIE2 tile's one memory is `memory`, not `{instance}`")
         return self.memory_capacity_bits
 
+    def output_buffers(self, elements: int, cme: object = None) -> tuple[()]:
+        """A tile holds its outputs in its one memory: it has no output buffer."""
+        return ()
+
     def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
         """Memory bandwidth in bits/cycle."""
         return self.bandwidth_max

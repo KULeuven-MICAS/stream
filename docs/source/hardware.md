@@ -242,6 +242,9 @@ result is written out at its output tensor's type. A core without an `accumulato
 `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
 `int8`, `uint8`, `int16`, `int24`, `bf16`, `fp16`, `int32` and `fp32`.
 
+An output buffer (a memory level below a core's top level that holds only outputs, such as an output register file) keeps a running sum across the fused loops of a dimension the node reduces over, where each instance holds outputs of its own and one
+instance fits the sums at the accumulator precision. The sum then reaches the top memory once, complete, with no read-back per call.
+
 ### Memory banks
 
 A memory level can declare how it is banked, for the layout report to place each tile's bytes in banks: in a ZigZag
