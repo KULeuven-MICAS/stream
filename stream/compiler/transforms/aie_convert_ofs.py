@@ -1048,6 +1048,8 @@ class RealizeLinks(RewritePattern):
             pulls, pushes = self.widen_relay(device_op, pull, push, pulls, pushes, rewriter)
 
         self.match_link_objects(device_op, pulls, pushes)
+        if len(pulls) == 1 and len(pushes) > 1:
+            self.fill_slot_by_slot(device_op, pulls[0], len(pushes))
 
         def offsets(names: Sequence[StringAttr], across: Sequence[StringAttr]) -> Sequence[int]:
             # A side with one fifo carries no offsets: the dialect reads a non-empty pair of
@@ -1192,6 +1194,23 @@ class RealizeLinks(RewritePattern):
     @classmethod
     def object_elements(cls, device: DeviceOp, name: StringAttr) -> int:
         return prod(cast(ObjectFIFO[Attribute], cls.fifo(device, name).elemType).buffer.get_shape())
+
+    @classmethod
+    def fill_slot_by_slot(cls, device: DeviceOp, name: StringAttr, slots: int) -> None:
+        """Make the walk filling ``name``'s distributed object cover one of its ``slots``: mlir-aie fills the slots one
+        after the other with that walk. A walk over the whole object steps from slot to slot on its outermost
+        dimension, which goes."""
+        fifo = cls.fifo(device, name)
+        slot = cls.object_elements(device, name) // slots
+        walks: list[BDDimLayoutArray] = []
+        for walk in fifo.dimensionsFromStreamPerConsumer.data:
+            if sum(stride * (size - 1) for size, stride in walk) < slot:
+                walks.append(walk)
+            elif walk[0] == (slots, slot):
+                walks.append(BDDimLayoutArray(walk[1:]))
+            else:
+                raise NotImplementedError(f"@{name.data} fills the {slots} slots it distributes by one walk")
+        fifo.dimensionsFromStreamPerConsumer = BDDimLayoutArrayArrayAttr(BDDimLayoutArrayArray(tuple(walks)))
 
     @classmethod
     def match_link_objects(cls, device: DeviceOp, pulls: Sequence[StringAttr], pushes: Sequence[StringAttr]) -> None:
