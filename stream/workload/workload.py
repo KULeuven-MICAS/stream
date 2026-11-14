@@ -31,7 +31,7 @@ from stream.workload.node import (
     OutEdge,
     TransferNode,
 )
-from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
 from stream.workload.tensor import Tensor
 from stream.workload.utils import affine_bounds, affine_coefficients, sympy_to_xdsl
 
@@ -64,12 +64,17 @@ class _TargetDemand:
 
 @dataclass(frozen=True)
 class _FiringNest:
-    """The fused loop over ``dim``, whose ``trips`` trips are the firings of a transfer whose copies slide together: per
-    node reading a copy, the range of ``dim`` it computes at each firing."""
+    """The fused loops over ``dims`` (innermost first, ``trips`` trips each) whose trips are the firings of a transfer
+    whose copies slide together: per node reading a copy and per dim, the range of the dim it computes at each trip."""
 
-    dim: LayerDim
-    trips: int
-    spans: dict["HasIterationSpace", list[tuple[int, int]]]
+    dims: tuple[LayerDim, ...]
+    trips: tuple[int, ...]
+    spans: dict["HasIterationSpace", dict[LayerDim, list[tuple[int, int]]]]
+
+    @cached_property
+    def trip_indices(self) -> list[tuple[int, ...]]:
+        """Each firing's trip per dim, innermost first, the innermost dim fastest."""
+        return [tuple(reversed(p)) for p in product(*(range(n) for n in reversed(self.trips)))]
 
 
 _Firing = tuple[_FiringNest, int]
@@ -895,13 +900,14 @@ class Workload(DiGraphWrapper[Node]):
         copy holds the window of the computation node it reaches, under that node's split where it feeds the node
         directly, under the transfer's own where it is staged for another transfer."""
         read, accessor = self._reader(tensor, node) or (tensor, cast(HasIterationSpace, node))
-        tiling = (
-            self.get_unique_dims_inter_core_tiling(accessor, mapping)
-            if isinstance(accessor, ComputationNode) and accessor in self.successors(node)
-            else self._tiling(node, mapping)
-        )
-        shape = self.get_tensor_shape_with_tiling(read, tiling, accessor, core)
+        shape = self.get_tensor_shape_with_tiling(read, self._window_tiling(node, accessor, mapping), accessor, core)
         return tensor if shape == tensor.shape else self._tile(tensor, shape, self._tile_index_steps(read, [accessor]))
+
+    def _window_tiling(self, node: Node, accessor: HasIterationSpace, mapping: "Mapping") -> InterCoreTiling:
+        """The split of ``accessor`` where it reads its tile from ``node`` directly, else ``node``'s own."""
+        if isinstance(accessor, ComputationNode) and accessor in self.successors(node):
+            return self.get_unique_dims_inter_core_tiling(accessor, mapping)
+        return self._tiling(node, mapping)
 
     def get_windows(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", dims: Sequence[LayerDim]
@@ -932,7 +938,7 @@ class Workload(DiGraphWrapper[Node]):
         ssis: SteadyStateIterationSpace | None = None,
     ) -> Tensor:
         """What ``transfer`` moves of ``tensor`` to one core per firing, interior or at position ``core``: the window
-        of the node it reaches, less the halo the innermost sliding loop of ``ssis`` keeps resident."""
+        of the node it reaches, less the halo each sliding loop of ``ssis`` keeps resident."""
         succ = next(n for n in self.successors(transfer) if tensor in n.inputs)
         if isinstance(succ, OutEdge):
             tiling = tuple()
@@ -944,19 +950,48 @@ class Workload(DiGraphWrapper[Node]):
             raise TypeError(f"Unexpected successor type {type(succ)} for transfer node {transfer.name}")
         read, reader = self._reader(tensor, transfer) or (tensor, None)
         shape = list(self.get_tensor_shape_with_tiling(read, tiling, reader, core))
-        if sliding := self.sliding_halo(tensor, transfer, mapping, ssis):
-            shape[sliding[0]] -= sliding[1]
+        for axis, halo in self.sliding_halos(tensor, transfer, mapping, ssis).values():
+            shape[axis] -= halo
         return self._tile(tensor, tuple(shape), self._tile_index_steps(read, self._accessors(read, reader, False)))
 
-    def sliding_halo(
+    def sliding_halos(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", ssis: SteadyStateIterationSpace | None
-    ) -> tuple[int, int] | None:
-        """The axis the innermost sliding loop of ``ssis`` slides the window of a transfer's copy along, and the halo
-        it keeps resident there; None where no loop slides it, or the copy's reader reads it with no window."""
-        temporal = ssis.get_temporal_variables() if ssis else []
-        if sliding := next((v for v in temporal if v.relevant and v.halo and v.size > 1), None):
-            return self.get_windows(tensor, transfer, mapping, [sliding.dimension]).get(sliding.dimension)
-        return None
+    ) -> dict[LayerDim, tuple[int, int]]:
+        """Per dim of a loop of ``ssis`` that slides the window of a transfer's copy, the axis it slides and the halo
+        it keeps resident there."""
+        sliding = [v.dimension for v in _sliding_loops(ssis.get_temporal_variables() if ssis else [])]
+        return self.get_windows(tensor, transfer, mapping, sliding) if sliding else {}
+
+    def kept_halos(
+        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", ssis: SteadyStateIterationSpace | None
+    ) -> dict[int, int]:
+        """Per reuse stop of a transfer's copy, the elements of halo it holds on one core in addition to its resident
+        windows: each sliding loop outside the stop keeps its halo across the trips of the loops inside it, less what
+        the resident windows already hold."""
+        if ssis is None or (found := self._reader(tensor, transfer)) is None:
+            return {}
+        read, reader = found
+        halos = self.sliding_halos(tensor, transfer, mapping, ssis)
+        sizes = self._tile_sizes(self._window_tiling(transfer, reader, mapping))
+        loops = ssis.get_applicable_temporal_variables()
+
+        def slab(loop: IterationVariable, inner: list[IterationVariable]) -> int:
+            swept = dict(sizes)
+            for v in inner:
+                if v.relevant and v.dimension != loop.dimension:
+                    swept[v.dimension] *= v.size
+            shape = self.get_tensor_shape_with_dimension_sizes(read, swept, reader)
+            axis, halo = halos[loop.dimension]
+            return prod(shape) // shape[axis] * min(halo, shape[axis])
+
+        kept: dict[int, int] = {}
+        for i, loop in enumerate(loops):
+            if loop.dimension not in halos or not _sliding_loops([loop]):
+                continue
+            for stop in range(-1, i):
+                if extra := slab(loop, loops[:i]) - slab(loop, loops[: stop + 1]):
+                    kept[stop] = kept.get(stop, 0) + extra
+        return kept
 
     def get_transfer_overlaps(
         self, transfer: TransferNode, mapping: "Mapping", ssis: SteadyStateIterationSpace | None = None
@@ -1100,7 +1135,7 @@ class Workload(DiGraphWrapper[Node]):
                 contained if allow_local_copy else None,
                 firing=firing,
             )
-            for firing in ([None] if nest is None else [(nest, s) for s in range(nest.trips)])
+            for firing in ([None] if nest is None else [(nest, s) for s in range(len(nest.trip_indices))])
         ]
         dims = [d for d, _ in tiling]
         spread = {c for c, copy in enumerate(transfer.outputs) if not self.get_windows(copy, transfer, mapping, dims)}
@@ -1164,26 +1199,41 @@ class Workload(DiGraphWrapper[Node]):
         ssis: Callable[[Node | Tensor], SteadyStateIterationSpace | None],
         fusion_splits: dict[LayerDim, int],
     ) -> _FiringNest | None:
-        """The firings of the innermost fused loop no split places, where ``transfer`` has several copies whose readers
-        all compute along it; None otherwise, one firing then standing for all."""
-        if len(transfer.outputs) <= 1 or (space := ssis(transfer)) is None:
+        """The fused loops of ``transfer`` no split places, where it has several copies or its copy slides: the
+        innermost and each outer one a copy slides along, with each reader's sliding work. None otherwise, one firing
+        then standing for all."""
+        if (space := ssis(transfer)) is None:
             return None
         readers = [
             next(n for n in self.successors(transfer) if isinstance(n, HasInputs) and copy in n.inputs)
             for copy in transfer.outputs
         ]
-        loop = next(
-            (v for v in space.get_temporal_variables() if v.relevant and fusion_splits.get(v.dimension, 1) > 1),
-            None,
-        )
-        if loop is None or loop.dimension in placed:
+        if not all(isinstance(reader, ComputationNode) for reader in readers):
             return None
-        trips = fusion_splits[loop.dimension]
-        work = self.get_sliding_work(loop.dimension, trips)
-        if not all(isinstance(reader, ComputationNode) and reader in work for reader in readers):
+        spaces = [copy_space for copy in transfer.outputs if (copy_space := ssis(copy))]
+        relevant = {v.dimension for one in (space, *spaces) for v in one.get_temporal_variables() if v.relevant}
+        loops = [
+            v.dimension
+            for v in space.get_temporal_variables()
+            if v.dimension in relevant and fusion_splits.get(v.dimension, 1) > 1
+        ]
+        sliding = {v.dimension for copy_space in spaces for v in copy_space.get_temporal_variables() if v.halo}
+        if len(transfer.outputs) == 1 and not sliding.intersection(loops):
             return None
-        spans = {reader: self._spans(reader, loop.dimension, work[reader]) for reader in readers}
-        return _FiringNest(loop.dimension, trips, cast(dict[HasIterationSpace, list[tuple[int, int]]], spans))
+        dims: list[LayerDim] = []
+        spans: dict[HasIterationSpace, dict[LayerDim, list[tuple[int, int]]]] = {r: {} for r in readers}
+        for k, dim in enumerate(dict.fromkeys(loops)):
+            if dim in placed or (k and dim not in sliding):
+                continue
+            work = self.get_sliding_work(dim, fusion_splits[dim])
+            if not all(reader in work for reader in readers):
+                continue
+            dims.append(dim)
+            for reader in readers:
+                spans[reader][dim] = self._spans(reader, dim, work[reader])
+        if not dims:
+            return None
+        return _FiringNest(tuple(dims), tuple(fusion_splits[dim] for dim in dims), spans)
 
     def _spans(self, node: HasIterationSpace, dim: LayerDim, work: tuple[int, ...]) -> list[tuple[int, int]]:
         """The range of ``dim`` ``node`` computes at each step of its sliding ``work`` along its output."""
@@ -1289,14 +1339,17 @@ class Workload(DiGraphWrapper[Node]):
         """:meth:`_demand_box` of ``read``; at ``firing`` of the nest, with each of its dims spanning, in tensor
         coordinates, what the reading node computes at that firing, None if it computes nothing then."""
         tensor, node, split, core, cores = read
-        if firing is None or node not in (spans := firing[0].spans):
+        if firing is None or not (spans := firing[0].spans.get(cast(HasIterationSpace, node))):
             return self._demand_box(tensor, node, split, core, cores, placed)
-        lo, hi = spans[node][firing[1]]
-        if hi < lo:
+        nest, s = firing
+        trips = nest.trip_indices[s]
+        ranges = {dim: spans[dim][trips[k]] for k, dim in enumerate(nest.dims) if dim in spans}
+        if any(hi < lo for lo, hi in ranges.values()):
             return None
         at = dict.fromkeys(placed | {d for d, _ in split}, 0) | self._position(split, position_of(core, cores, split))
-        sizes = self._tile_sizes(split) | {firing[0].dim: hi - lo + 1}
-        return self._bounds(tensor, [cast(HasIterationSpace, node)], sizes, at, {firing[0].dim: lo})
+        sizes = self._tile_sizes(split) | {dim: hi - lo + 1 for dim, (lo, hi) in ranges.items()}
+        origin = {dim: lo for dim, (lo, _) in ranges.items()}
+        return self._bounds(tensor, [cast(HasIterationSpace, node)], sizes, at, origin)
 
     def _copy_windows(  # noqa: PLR0913
         self,
@@ -1337,34 +1390,23 @@ class Workload(DiGraphWrapper[Node]):
         placed: set[LayerDim],
         firing: _Firing | None,
     ) -> list[Box]:
-        """The part of its window ``want`` that ``copy`` does not hold yet: at a firing of the nest, the window less the
-        one before, which the copy keeps; else ``want`` less the halo its innermost sliding loop keeps."""
-        space = ssis(copy)
-        slides = next((v for v in (space.get_temporal_variables() if space else []) if v.relevant and v.halo), None)
-        if firing is None or slides is None or slides.dimension != firing[0].dim:
-            return [self._unheld(copy, transfer, mapping, space, want)]
-        nest, s = firing
-        before = self._firing_box(read, placed, (nest, s - 1)) if s else None
-        return less(_plain(want), [_plain(before)]) if before is not None else [_plain(want)]
-
-    def _unheld(
-        self,
-        copy: Tensor,
-        transfer: TransferNode,
-        mapping: "Mapping",
-        ssis: SteadyStateIterationSpace | None,
-        want: list[tuple[int, int, bool]],
-    ) -> Box:
-        """``want`` less the halo the innermost sliding loop keeps of ``copy`` from the previous firing, along an axis
-        no split places (a placed axis takes its halo from the neighbouring core)."""
-        box = _plain(want)
-        if (sliding := self.sliding_halo(copy, transfer, mapping, ssis)) is None:
-            return box
-        axis, halo = sliding
-        lo, hi, axis_placed = want[axis]
-        if axis_placed or hi - lo + 1 <= halo:
-            return box
-        return (*box[:axis], (lo + halo, hi), *box[axis + 1 :])
+        """The part of its window ``want`` that ``copy`` does not hold yet: less what it keeps from the previous trip of
+        each loop that slides it, the window then at a firing of the nest over that loop, else the halo along an axis no
+        split places."""
+        halos = self.sliding_halos(copy, transfer, mapping, ssis(copy))
+        nest, s = firing or (None, 0)
+        dims = nest.dims if nest else ()
+        box = list(_plain(want))
+        for dim, (axis, halo) in halos.items():
+            lo, hi = box[axis]
+            if dim not in dims and not want[axis][2] and hi - lo + 1 > halo:
+                box[axis] = (lo + halo, hi)
+        before = [
+            self._firing_box(read, placed, (nest, s - prod(nest.trips[:k])))
+            for k, dim in enumerate(dims)
+            if dim in halos and nest.trip_indices[s][k]
+        ]
+        return less(tuple(box), [_plain(window) for window in before if window is not None])
 
     def splits_reduction(self, node: HasIterationSpace, tiling: InterCoreTiling) -> bool:
         """Whether ``tiling`` splits a dimension ``node`` reduces over, leaving each core a partial sum."""
@@ -1892,6 +1934,11 @@ def _shifted(items: list[DemandItem]) -> tuple:
             key=repr,
         )
     )
+
+
+def _sliding_loops(loops: Sequence[IterationVariable]) -> list[IterationVariable]:
+    """The ``loops`` that slide a window: relevant to it, keeping a halo and taking more than one trip."""
+    return [v for v in loops if v.relevant and v.halo and v.size > 1]
 
 
 def _plain(box: list[tuple[int, int, bool]]) -> Box:

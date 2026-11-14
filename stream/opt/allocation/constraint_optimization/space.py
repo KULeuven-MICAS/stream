@@ -349,6 +349,20 @@ class DecisionSpace:
         tiles = self.tiles_needed_levels[(t, stop)]
         return max(tiles, 2) if self.rotation_levels.get((t, stop)) and not single else tiles
 
+    def halo_bits(self, t: Tensor, stop: int) -> int:
+        """Bits of halo the copy ``t`` holds on one core in addition to its resident tiles at reuse stop ``stop``."""
+        return self._kept_halos.get(t, {}).get(stop, 0) * self.element_bits(t)
+
+    @cached_property
+    def _kept_halos(self) -> dict[Tensor, dict[int, int]]:
+        """:meth:`Workload.kept_halos` of each transfer's copy that has any."""
+        return {
+            copy: kept
+            for tr in self.transfer_nodes
+            for copy in tr.outputs
+            if (kept := self.workload.kept_halos(copy, tr, self.mapping, self.ssis.get(copy)))
+        }
+
     def memory_capacity_bits(self, memory: Memory) -> int:
         """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims in it."""
         return memory.capacity_bits - self.hardware.reserved_memory_bits(memory)

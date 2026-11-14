@@ -156,7 +156,7 @@ def test_a_dilated_strided_window_keeps_its_halo_on_the_index_steps(tmp_path):
     tr, route = _transfer(allocation, "Transfer(input)")
     copy = tr.outputs[0]
     ssis = allocation.space.ssis.get(copy)
-    assert allocation.problem.workload.sliding_halo(copy, tr, allocation.mapping, ssis) == (3, 2)
+    assert list(allocation.problem.workload.sliding_halos(copy, tr, allocation.mapping, ssis).values()) == [(3, 2)]
     assert allocation.space.moved_bits(tr, route) == prod((8, 16, 4)) * BF16
 
 

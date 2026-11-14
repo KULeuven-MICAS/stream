@@ -155,9 +155,10 @@ class MemoryCapacity:
                     name = f"{t.name}_{resource_key(memory)}" + ("" if whole else f"_x{copies}")
                     min_req: int | None = None
                     for stop in space.stops(t):
-                        req_size = copies * ceil(space.resident_tiles(t, stop) * tensor_size)
+                        halo = space.halo_bits(t, stop)
+                        req_size = copies * (ceil(space.resident_tiles(t, stop) * tensor_size) + halo)
                         single = (t, stop) in z_single
-                        least = copies * ceil(space.resident_tiles(t, stop, single) * tensor_size)
+                        least = copies * (ceil(space.resident_tiles(t, stop, single) * tensor_size) + halo)
                         min_req = least if min_req is None else min(min_req, least)
                         uz = ctx.binary_product(
                             a=u,
@@ -286,7 +287,8 @@ def _holdings(ctx: FormulationContext, t: Tensor) -> list[tuple[Memory, int, Sol
 def _min_resident_bits(space: DecisionSpace, t: Tensor, tensor_size: int) -> int:
     """The least this tensor can keep resident under any reuse-stop and buffering choice."""
     return min(
-        ceil(space.resident_tiles(t, stop, space.may_single_buffer(t, stop)) * tensor_size) for stop in space.stops(t)
+        ceil(space.resident_tiles(t, stop, space.may_single_buffer(t, stop)) * tensor_size) + space.halo_bits(t, stop)
+        for stop in space.stops(t)
     )
 
 
