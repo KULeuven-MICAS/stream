@@ -117,9 +117,13 @@ class Memory:
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Memory) and self._order == other._order
 
+    @cached_property
+    def _hash(self) -> int:
+        return hash((self.offchip, tuple(core_id for core_id, _ in self._order[1])))
+
     def __hash__(self) -> int:
         """By its cores, so neither the run nor the memory's name changes how sets of memories iterate."""
-        return hash((self.offchip, tuple(core_id for core_id, _ in self._order[1])))
+        return self._hash
 
     def __lt__(self, other: Memory) -> bool:
         """Off-chip last, the others by the cores viewing them, as cores order by id; the name parts only memories no

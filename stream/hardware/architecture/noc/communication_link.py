@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import cached_property
+
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 
@@ -71,8 +73,12 @@ class CommunicationLink:
     def __repr__(self) -> str:
         return str(self)
 
-    def __hash__(self) -> int:
+    @cached_property
+    def _hash(self) -> int:
         return hash(self._key)
+
+    def __hash__(self) -> int:
+        return self._hash
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, CommunicationLink) and self._key == other._key
