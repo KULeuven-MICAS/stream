@@ -78,7 +78,7 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 | Field | Required | Meaning |
 |-------|:---:|---------|
 | `name` | yes | Node name or operator type to match (see above). |
-| `core_allocation` | yes | A list of **candidate core-id groups**. `[[0,1,2,3]]` is one group of four cores; the MILP allocator chooses the actual placement within that candidate set. A single-core role is just `[[4]]`. |
+| `core_allocation` | yes | A list of **candidate core-id groups**. `[[0,1,2,3]]` is one group of four cores; the MILP allocator chooses the actual placement within that candidate set. A single-core role is just `[[4]]`. An empty list `[]` asks Stream to place the layer on the accelerator's core grid; a layer still without cores after that, or with an empty group `[[]]`, is refused by name. |
 | `inter_core_tiling` | no | How to split the operator **across** cores. Each inner entry is `{dim: D<n>, split: k}` - split loop dimension `D<n>` (0-indexed in the node's loop nest) by factor `k`. |
 | `kernel` | no | Kernel used by the AIE codegen path: `{name: <kernel>, kwargs: {<field>: <value>}}`, described by the accelerator's [kernel library](kernel_library.md). Ignored by the non-AIE CO pipeline. |
 
