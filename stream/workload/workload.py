@@ -877,7 +877,8 @@ class Workload(DiGraphWrapper[Node]):
             _stepped_range(offset, offset + (n - 1) * stride, *on)
             for offset, n, stride, on in zip(offsets, tensor.shape, strides, index_steps, strict=True)
         ]
-        return self._tile(tensor, tuple(max(0, high - low + 1) for low, high in ranges), index_steps)
+        shape = tuple(max(0, high - low + 1) for low, high in ranges)
+        return self._tile(tensor, shape, index_steps, tuple(low for low, _ in ranges))
 
     def _bounds(
         self,
@@ -965,13 +966,19 @@ class Workload(DiGraphWrapper[Node]):
         return tilings[0] if tilings else ()
 
     @staticmethod
-    def _tile(tensor: Tensor, shape: tuple[int, ...], index_steps: IndexSteps | None = None) -> Tensor:
-        """A tile of ``shape`` of ``tensor``'s buffer, its indices on ``index_steps``."""
+    def _tile(
+        tensor: Tensor,
+        shape: tuple[int, ...],
+        index_steps: IndexSteps | None = None,
+        start: tuple[int, ...] | None = None,
+    ) -> Tensor:
+        """A tile of ``shape`` of ``tensor``'s buffer, its indices on ``index_steps`` from point ``start`` of it."""
         index_steps = index_steps or _every_index(tensor)
+        start = start or (0,) * len(index_steps)
         subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
             source_type=tensor.subview.source.type,
-            offsets=[first for _, first in index_steps],
+            offsets=[first + step * k for (step, first), k in zip(index_steps, start, strict=True)],
             sizes=shape,
             strides=[step for step, _ in index_steps],
         )
@@ -1646,8 +1653,10 @@ class Workload(DiGraphWrapper[Node]):
         return work
 
     def get_tensor_of_transfer_from_single_core(
-        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
+        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping", core: int | None = None
     ) -> Tensor:
+        """What ``transfer`` takes of ``tensor`` from one source core per firing: the source's tile, an interior one or
+        the one at position ``core``, only the indices of it the readers read (:meth:`strided_view`)."""
         pred_idx = transfer.inputs.index(tensor)
         pred = list(self.predecessors(transfer))[pred_idx]
         if isinstance(pred, InEdge):
@@ -1658,10 +1667,13 @@ class Workload(DiGraphWrapper[Node]):
         else:
             assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
             pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
-        index_steps = self._tile_index_steps(tensor, self._accessors(tensor, None, False))
-        return self.strided_view(
-            self._tile(tensor, self.get_tensor_shape_with_tiling(tensor, pred_tiling), index_steps)
-        )
+        nodes = self._accessors(tensor, None, False)
+        index_steps = self._tile_index_steps(tensor, nodes)
+        at = self._position(pred_tiling, core)
+        bounds = self._bounds(tensor, nodes, self._tile_sizes(pred_tiling), at, index_steps=index_steps)
+        shape = tuple(max(0, high - low + 1) for low, high, _ in bounds)
+        start = tuple(low if placed else 0 for low, _, placed in bounds)
+        return self.strided_view(self._tile(tensor, shape, index_steps, start))
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new

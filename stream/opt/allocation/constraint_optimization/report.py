@@ -191,6 +191,7 @@ def _layout_side(  # noqa: PLR0913
         "extent": list(extent),
         "strides": list(strides),
         "offset": sum(first * stride for first, stride in zip(space.layouts.first(copy), strides, strict=True)),
+        "index_steps": list(space.layouts.index_steps(copy)),
         "access": [
             list(loop) for loop in layout.access(space.layouts.block(tr), extent, walk, space.layouts.index_steps(copy))
         ],
@@ -505,7 +506,7 @@ def slot_latency_breakdown(
         breakdown[space.slot_of[tr]]["transfer_contributors"].append(
             {
                 "transfer": tr.name,
-                "tensor_bits": int(tr.inputs[0].size_bits()) if tr.inputs else None,
+                "tensor_bits": int(space.workload.strided_view(tr.inputs[0]).size_bits()) if tr.inputs else None,
                 "min_link_bandwidth_bits_per_cycle": (
                     int(min(link.bandwidth for link in choice.links_used)) if choice.links_used else None
                 ),
