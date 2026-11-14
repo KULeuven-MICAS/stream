@@ -11,6 +11,7 @@ from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
     DenseArrayBase,
+    FixedBitwidthType,
     IndexType,
     IntegerAttr,
     IntegerType,
@@ -236,7 +237,9 @@ class StrideSet:
                 new_strides.append(var)
         return type(self)(tuple(new_strides))
 
-    def legalize(self) -> Self:  # noqa: PLR0912
+    def legalize(self, max_step: int) -> Self:  # noqa: PLR0912
+        """Fit the strides to a shim BD: its wraps, and steps of at most ``max_step`` elements. The dimensions from
+        the first a BD cannot step on become separate transfers, each with its offset in the base address."""
         if any(s.spatial for s in self.strides):
             raise RuntimeError("cannot legalize strideset with spatial strides")
         new_strides: list[Stride] = []
@@ -283,7 +286,7 @@ class StrideSet:
                         tiling_stride,
                         *self.strides[i + 1 :],
                     )
-                ).legalize()
+                ).legalize(max_step)
         changed = False
         min_nonzero_strides = 3
         min_total_strides = 4
@@ -298,12 +301,26 @@ class StrideSet:
             new_strides.append(Stride(1, 0, self.strides[-1].iteration_t))
         new = type(self)(tuple(new_strides))
         if changed:
-            return new.legalize()
-        else:
-            return new
+            return new.legalize(max_step)
+        for i, var in enumerate(new.strides[: len(bound_limits)]):
+            if var.size > 1 and var.stride > max_step:
+                if i == 0:
+                    raise RuntimeError(f"a shim BD cannot step its innermost dimension by {var.stride} elements")
+                inner = type(self)(new.strides[:i]).legalize(max_step)
+                return type(self)((*inner.strides, *new.strides[i:]))
+        return new
+
+
+def _max_step(element: Attribute) -> int:
+    """The longest step a shim BD takes, in elements of ``element``."""
+    assert isinstance(element, FixedBitwidthType)
+    return SHIM_STEP_WORDS * WORD_BITS // element.bitwidth
 
 
 NB_COLUMNS = 8
+SHIM_STEP_WORDS = 1 << 20
+"""The largest step of a shim BD dimension, in 32-bit words: a 20-bit field holds the step minus one."""
+WORD_BITS = 32
 TILE_AXES = 2
 """The axes of a kernel tile a memory tile scatters a widened run into: its rows and columns."""
 # The buffer descriptors a fifo's runtime transfers ping pong between.
@@ -1358,7 +1375,8 @@ class TransferToRuntimeSequence(RewritePattern):
         ofs = op.attributes.get("of")
         assert isa(ofs, StringAttr) or isa(ofs, ArrayAttr[StringAttr])
         names = [ofs] if isinstance(ofs, StringAttr) else list(ofs.data)
-        groups = [(x, y.canonicalize().legalize()) for x, y in StrideSet(tuple(strides)).split(len(names))]
+        max_step = _max_step(constant_strensor.get_element_type())
+        groups = [(x, y.canonicalize().legalize(max_step)) for x, y in StrideSet(tuple(strides)).split(len(names))]
         if widened is not None:
             _scatter_into_tiles(runtime_sequence, names, mem_strensor, widened)
 
@@ -1701,7 +1719,8 @@ class StrensorToMemref(RewritePattern):
 class ChainRereads(RewritePattern):
     """Turn a loop of re-reading shim tasks that differ by one constant offset step into one task: a chain of a
     descriptor per re-read, each stepping the loop on its iteration dimension. A fifo keeps its tasks where the
-    chain needs more descriptors than its shim tile has, or the loop more steps than a descriptor iterates."""
+    chain needs more descriptors than its shim tile has, or the loop more steps than a descriptor iterates or a
+    longer step than it takes."""
 
     descriptors: int
     iterations: int
@@ -1735,7 +1754,9 @@ class ChainRereads(RewritePattern):
             if loop is None:
                 continue
             rereads, step = loop
-            if len(fifo_tasks) > self.iterations:
+            buffer = cast(DMABDOp, fifo_tasks[0].body.block.first_op).buffer.type
+            assert isinstance(buffer, MemRefType)
+            if len(fifo_tasks) > self.iterations or step > _max_step(buffer.get_element_type()):
                 continue
             column = shim_of[name]
             after = taken[column] - min(PING_PONG, len(fifo_tasks)) + rereads
