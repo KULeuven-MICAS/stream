@@ -622,10 +622,13 @@ class GenericMappingGenerator:
         """The fusion groups :meth:`generate_all_groups` maps."""
         cuts = self._cut_points(cut_points)
         sub_workloads = self.workload.split_fusion_groups(cut_points=cuts)
-        if (
-            cut_points is None
-            and self.intra_core_tiling is None
-            and (unfit := [n for sub in sub_workloads for n in self._unfit_nodes(sub)])
+        if cut_points is None and (
+            unfit := [
+                n
+                for sub in sub_workloads
+                if not self._given_tiling(tuple(sub.get_computation_nodes()))
+                for n in self._unfit_nodes(sub)
+            ]
         ):
             return self.workload.split_fusion_groups(cut_points=[*cuts, *unfit])
         return sub_workloads
@@ -665,16 +668,19 @@ class GenericMappingGenerator:
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
         """Intra-core (layer-fusion) tiling: caller-supplied, else automatic fusion tiling, else whole-layer."""
-        if self.intra_core_tiling is not None:
-            names = {cn.name for cn in cns}
-            selected = [dict(e) for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in names]
-            return selected or self._whole_layer_tiling(sub_workload, cns)
+        if selected := self._given_tiling(cns):
+            return selected
         automatic = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
         return (
             self._capacity_refine(sub_workload, cns, automatic)
             or self._capacity_refine(sub_workload, cns, automatic, scale_tiles=True)
             or automatic
         )
+
+    def _given_tiling(self, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
+        """The caller's intra-core tiling entries that name one of ``cns``; [] when none do."""
+        names = {cn.name for cn in cns}
+        return [dict(e) for e in self.intra_core_tiling or () if str(e["dim"]).split(".")[0] in names]
 
     def _capacity_refine(
         self,
