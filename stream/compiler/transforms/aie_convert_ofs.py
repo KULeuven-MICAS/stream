@@ -1399,7 +1399,13 @@ class TransferToRuntimeSequence(RewritePattern):
         max_step = _max_step(constant_strensor.get_element_type())
         groups = [(x, y.canonicalize().legalize(max_step)) for x, y in StrideSet(tuple(strides)).split(len(names))]
         if widened is not None:
-            _scatter_into_tiles(runtime_sequence, names, mem_strensor, widened)
+            window = mem_strensor.reuse_index.data
+            local = [
+                cvar
+                for i, (_, cvar) in enumerate(iter_strensors())
+                if cvar.type == StrensorVarType.TEMPORAL and i < window and cvar.dim in dim_strides
+            ]
+            _scatter_into_tiles(runtime_sequence, names, mem_strensor, widened, local)
 
         for of, (spatial_offset, stride_set) in zip(names, groups, strict=True):
             hardware_strides = stride_set.strides[:4]
@@ -1458,28 +1464,41 @@ def _widened_run(
     dim_strides: Mapping[LayerDim, int],
     staged: bool,
 ) -> StrensorVar | None:
-    """The memory tile's innermost loop where it continues the off-chip tensor's contiguous kernel axis: a block of
-    several tiles along that axis, which a read off chip into the memory tile (``staged``) then takes in runs across
-    all of them."""
+    """The memory tile's local loop that continues the off-chip tensor's contiguous kernel axis: a block of several
+    tiles along that axis, which a read off chip into the memory tile (``staged``) then takes in runs across all of
+    them. None where cores split that axis too, as their tiles then interleave with the block's."""
     kernel = [cvar for _, cvar in pairs if cvar.type == StrensorVarType.KERNEL]
     window = memory.reuse_index.data
     local = [cvar for i, (_, cvar) in enumerate(pairs) if cvar.type == StrensorVarType.TEMPORAL and i < window]
     if not (staged and local and len(kernel) == len(memory.get_kernel_shape()) == TILE_AXES):
         return None
-    return local[0] if local[0].dim == kernel[0].dim and dim_strides.get(kernel[0].dim) == 1 else None
+    along = next((cvar for cvar in local if cvar.dim == kernel[0].dim), None)
+    spatial = StrensorVarType.SPATIAL
+    split = any(spatial in (mvar.type, cvar.type) and cvar.dim == kernel[0].dim for mvar, cvar in pairs)
+    return along if along is not None and not split and dim_strides.get(kernel[0].dim) == 1 else None
 
 
 def _scatter_into_tiles(
-    runtime_sequence: RuntimeSequenceOp, names: Sequence[StringAttr], memory: StrensorType, widened: StrensorVar
+    runtime_sequence: RuntimeSequenceOp,
+    names: Sequence[StringAttr],
+    memory: StrensorType,
+    widened: StrensorVar,
+    local: Sequence[StrensorVar],
 ) -> None:
     """Have each memory tile write the rows a widened run streams back into its tile-major object: a row of every tile
-    in turn, tile by tile within the row."""
+    in turn, tile by tile within the row, and the object's other ``local`` loops, innermost first, around the rows as
+    the run streams them."""
     rows, columns = memory.get_kernel_shape()
     tile = rows * columns
     whole = prod(memory.get_local_shape()) * tile
-    walk = [(rows, columns), (widened.size, tile), (columns, 1)]
-    if whole > widened.size * tile:
-        walk.insert(0, (whole // (widened.size * tile), widened.size * tile))
+    step, steps = tile, {}
+    for var in local:
+        steps[id(var)] = step
+        step *= var.size
+    others = [(var.size, steps[id(var)]) for var in reversed(local) if var is not widened]
+    walk = [*others, (rows, columns), (widened.size, steps[id(widened)]), (columns, 1)]
+    if whole > step:
+        walk.insert(0, (whole // step, step))
     device = runtime_sequence.parent_op()
     assert isinstance(device, DeviceOp)
     layout = BDDimLayoutArrayArrayAttr(BDDimLayoutArrayArray((BDDimLayoutArray(tuple(BDDimLayout(d) for d in walk)),)))
