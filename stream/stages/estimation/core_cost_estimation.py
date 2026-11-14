@@ -10,7 +10,7 @@ from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
-from stream.mapping.work_share import interchangeable, split_steps
+from stream.mapping.work_share import interchangeable
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_backends import (
     COST_BACKEND,
@@ -127,7 +127,7 @@ class CoreCostEstimationStage(Stage):
                     node,
                     equal_core,
                     core,
-                    split_steps(self.workload, self.mapping, node, self.fusion_splits),
+                    self.fusion_splits,
                 ):
                     equal_core = None
                 equal_mapping = self.check_equal_mapping(node, equal_node) if equal_node else None

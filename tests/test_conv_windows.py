@@ -293,7 +293,9 @@ def test_the_first_tiles_lengthen_the_fill(scenario: str, hardware: str, monkeyp
     ],
 )
 def test_a_producer_keeps_its_own_extent_under_an_unpadded_reader(graph: str, node: str, extents: list[int]):
-    """An unpadded 3x3 reader of a 30-row tensor spans 28 rows: the producer's axis stays its own, sized by itself."""
+    """An unpadded 3x3 reader of a 30-row tensor spans 28 rows, within a window of the producer's: the two share the
+    axis, sized by the reader, and the producer's whole tile still spans its own 30 rows; a padded reader beside an
+    unpadded one shares it too and makes its own 32."""
     weights = {"w1": [16, 8, 3, 3], "w2": [32, 16, 3, 3], "w3": [32, 16, 3, 3]}
     nodes = {
         "valid": [conv("Conv1", "input", "w1", "m", pads=0), conv("Conv2", "m", "w2", "y", pads=0)],
@@ -304,8 +306,9 @@ def test_a_producer_keeps_its_own_extent_under_an_unpadded_reader(graph: str, no
         ],
     }[graph]
     workload = load_workload(onnx_graph(nodes, {"input": [1, 8, 32, 32]} | weights, ["y", "z"][: len(nodes) - 1]))
-    found = workload.get_node_by_name(node)
-    assert [workload.get_dimension_size(d) for d in workload.get_dims(found)][1:3] == extents
+    found, reader = workload.get_node_by_name(node), workload.get_node_by_name(f"Conv{len(nodes)}")
+    assert workload.get_dims(found)[1:3] == workload.get_dims(reader)[1:3]
+    assert list(workload.get_tensor_shape_with_tiling(found.outputs[0], (), found)[2:]) == extents
 
 
 def test_a_transfer_to_two_windowed_readers_hands_each_core_their_widest_window():

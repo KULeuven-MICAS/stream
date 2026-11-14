@@ -150,6 +150,7 @@ class ZigZagBackend:
             temporal_mapping_type=context.temporal_mapping_type,
             loma_lpf_limit=context.loma_lpf_limit,
             nb_spatial_mappings_generated=context.nb_spatial_mappings_generated,
+            fusion_splits=context.fusion_splits,
             **self.options(context.core_cost_options.get(self.name, {})),
         )
 

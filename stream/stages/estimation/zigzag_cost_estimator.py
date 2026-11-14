@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import copy
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from math import ceil
+from functools import reduce
+from itertools import product
+from math import ceil, prod
+from operator import add
+from typing import Any
 
 import zigzag.mapping.spatial_mapping as zigzag_spatial_mapping
 import zigzag.mapping.temporal_mapping as zigzag_temporal_mapping
@@ -33,6 +37,7 @@ from stream.datatypes import ELEMENT_BITS, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
+from stream.mapping.work_share import last_tile_shares
 from stream.workload.normalization import expanded_work
 from stream.workload.utils import affine_bounds, is_mac_operator_type, operand_inputs
 from stream.workload.workload import ComputationNode, Workload
@@ -86,6 +91,46 @@ REDUCE_STAGES = {
     MappingObjective.EDP: MinimalEDPStage,
 }
 
+_AVERAGED = (
+    "mac_energy",
+    "mem_energy",
+    "energy_total",
+    "data_onloading_cycle",
+    "data_offloading_cycle",
+    "systolic_drain_cycle",
+    "ideal_cycle",
+    "ideal_temporal_cycle",
+    "latency_total0",
+    "latency_total1",
+    "latency_total2",
+)
+_AVERAGED_PER_LEVEL = ("mem_energy_breakdown", "mem_energy_breakdown_further", "memory_word_access")
+
+
+def weighted_average(weighted: list[tuple[CostModelEvaluation, float]]) -> CostModelEvaluation:
+    """The average of evaluations weighted by their shares, with the mapping of the largest share."""
+    if len(weighted) == 1:
+        return weighted[0][0]
+    shares = [share for _, share in weighted]
+    result = copy.copy(max(weighted, key=lambda pair: pair[1])[0])
+    for name in _AVERAGED:
+        setattr(result, name, _weighted_sum([getattr(cme, name) for cme, _ in weighted], shares))
+    for name in _AVERAGED_PER_LEVEL:
+        per_op = {
+            op: zip(*(getattr(cme, name)[op] for cme, _ in weighted), strict=True) for op in getattr(result, name)
+        }
+        setattr(result, name, {op: [_weighted_sum(list(at), shares) for at in levels] for op, levels in per_op.items()})
+    result.mac_spatial_utilization = result.ideal_cycle / result.ideal_temporal_cycle
+    result.mac_utilization0 = result.ideal_cycle / result.latency_total0
+    result.mac_utilization1 = result.ideal_cycle / result.latency_total1
+    result.mac_utilization2 = result.ideal_cycle / result.latency_total2
+    return result
+
+
+def _weighted_sum(values: list[Any], shares: list[float]) -> Any:
+    """The sum of ``values`` each times its share."""
+    return reduce(add, (value * share for value, share in zip(values, shares, strict=True)))
+
 
 @dataclass
 class ZigZagCostEstimator:
@@ -97,6 +142,7 @@ class ZigZagCostEstimator:
     loma_lpf_limit: int = 8
     mapping_objective: MappingObjective = MappingObjective.LATENCY
     spatial_mapping_search: SpatialMappingSearch = SpatialMappingSearch.SHORTLIST
+    fusion_splits: dict[LayerDim, int] = field(default_factory=dict)
 
     input_operand_names = ["A", "B", "C", "D", "E", "F", "G", "H"]
     loma_show_progress_bar = False
@@ -142,7 +188,7 @@ class ZigZagCostEstimator:
         return dims, coefficients
 
     def create_equation_and_dimension_relations_and_pr_sizes(
-        self, node: ComputationNode
+        self, node: ComputationNode, sizes: ZigZagLayerDimSizes | None = None
     ) -> tuple[ZigZagLayerEquation, list[ZigZagLayerDimRelation], ZigZagLayerDimSizes]:
         """Create the ZigZag equation, e.g. O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][ix][iy].
         If a node has a AffineBinaryOpExpr as one of its dims, it is replaced with a generic dim name,
@@ -152,7 +198,8 @@ class ZigZagCostEstimator:
         dimension_relations: list[ZigZagLayerDimRelation] = []
         pr_sizes: dict[ZigZagLayerDim, int] = {}
         per_core_dim_sizes = self._per_core_sizes(node)
-        sizes = self.create_layer_dim_sizes(node)
+        interior = self.create_layer_dim_sizes(node)
+        sizes = sizes or interior
         tensors = (node.outputs[0],) + operand_inputs(node)
         operand_names = ["O"] + self.input_operand_names[: len(tensors) - 1]
         equation_str = ""
@@ -192,6 +239,10 @@ class ZigZagCostEstimator:
                         )
                         # Set pr dim sizes
                         pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
+                        if sizes.data != interior.data:
+                            pairs = zip(dims_in_expr, coefficients, strict=True)
+                            span = 1 + sum(abs(c) * (sizes[d] - 1) for d, c in pairs)
+                            pr_sizes[dim] = min(span, tensor.subview.source.type.get_shape()[i])
                 elif isinstance(expr, AffineConstantExpr):
                     continue  # one fixed index along this axis, which no loop walks
                 else:
@@ -238,6 +289,25 @@ class ZigZagCostEstimator:
         bounds = (affine_bounds(dim, sizes) for dim in self.workload.get_dims(node))
         return ZigZagLayerDimSizes({ZigZagLayerDim(f"D{i}"): high - low + 1 for i, (low, high) in enumerate(bounds)})
 
+    def blocks(self, node: ComputationNode, core: Core) -> list[tuple[ZigZagLayerDimSizes, float]]:
+        """Each size of the node's dims ``core`` makes a tile at and the share of its tiles at it: the interior tile,
+        and the last tile along each dim whose output ends past or short of it."""
+        interior = self.create_layer_dim_sizes(node)
+        options: list[list[tuple[int, float]]] = [[(0, 1.0)] for _ in interior.data]
+        for position, (edge, share) in last_tile_shares(
+            self.workload, self.mapping, node, core, self.fusion_splits
+        ).items():
+            options[position] = [(extra, w) for extra, w in ((0, 1.0 - share), (edge, share)) if w > 0]
+        return [
+            (
+                ZigZagLayerDimSizes(
+                    {dim: n + extra for (dim, n), (extra, _) in zip(interior.items(), combo, strict=True)}
+                ),
+                prod(w for _, w in combo),
+            )
+            for combo in product(*options)
+        ]
+
     def create_operand_precision(self, node: ComputationNode, core: Core | None = None) -> ZigZagLayerOperandPrecision:
         """Each operand at its tensor's element type; a matmul's or convolution's partial sums at the accumulator
         precision its core declares, cast to the output's type as they are written out."""
@@ -270,10 +340,12 @@ class ZigZagCostEstimator:
             operand_source[ZigZagLayerOperand(self.input_operand_names[i])] = 0
         return operand_source
 
-    def get_layer_node_attributes(self, node: ComputationNode, core: Core | None = None) -> ZigZagLayerNodeAttributes:
+    def get_layer_node_attributes(
+        self, node: ComputationNode, core: Core | None = None, sizes: ZigZagLayerDimSizes | None = None
+    ) -> ZigZagLayerNodeAttributes:
         layer_type: str = node.type
-        equation, dimension_relations, pr_sizes = self.create_equation_and_dimension_relations_and_pr_sizes(node)
-        layer_dim_sizes = self.create_layer_dim_sizes(node)
+        equation, dimension_relations, pr_sizes = self.create_equation_and_dimension_relations_and_pr_sizes(node, sizes)
+        layer_dim_sizes = sizes or self.create_layer_dim_sizes(node)
         operand_precision = self.create_operand_precision(node, core)
         constant_operands = self.create_constant_operands(node)
         input_operand_source = self.create_operand_source(node)
@@ -326,8 +398,10 @@ class ZigZagCostEstimator:
             temporal_ordering=temporal_ordering,
         )
 
-    def get_layer_node(self, node: ComputationNode, core: Core) -> ZigZagLayerNode:
-        node_attr = self.get_layer_node_attributes(node, core)
+    def get_layer_node(
+        self, node: ComputationNode, core: Core, sizes: ZigZagLayerDimSizes | None = None
+    ) -> ZigZagLayerNode:
+        node_attr = self.get_layer_node_attributes(node, core, sizes)
         mapping_attr = self.get_mapping_attributes(node, core)
         return ZigZagLayerNode(
             layer_id=0,
@@ -337,10 +411,17 @@ class ZigZagCostEstimator:
         )
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
+        blocks = self.blocks(node, core)
         try:
-            layer_node = self.get_layer_node(node, core)
-            cme = self.run_zigzag(layer_node, core)
-            cme = self.increase_cc_per_op(cme, node)
+            cme = weighted_average(
+                [
+                    (
+                        self.increase_cc_per_op(self.run_zigzag(self.get_layer_node(node, core, sizes), core), node),
+                        share,
+                    )
+                    for sizes, share in blocks
+                ]
+            )
             return CoreCostEntry(
                 energy_total=getattr(cme, "energy_total", 0),
                 latency_total=self.steady_latency(cme),
@@ -363,10 +444,7 @@ class ZigZagCostEstimator:
                 type(exc).__name__,
                 exc,
             )
-            from functools import reduce  # noqa: PLC0415
-
-            dim_sizes = self.get_layer_node_attributes(node).layer_dim_sizes
-            total_ops = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
+            total_ops = float(sum(prod(sizes.data.values()) * share for sizes, share in blocks))
             # Spread the work over the operational array and charge the op's real cycle cost. The
             # getattr default guards an aie2 tile, whose Core.__getattr__ raises instead of returning None.
             array = getattr(core, "operational_array", None)

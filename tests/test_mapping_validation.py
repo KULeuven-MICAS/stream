@@ -33,12 +33,6 @@ def _evaluate(workload: str, mapping: str, tile_search: bool = False) -> None:
         evaluate_mapping(HARDWARE.format("simba_small"), workload, out, f"{out}/m.yaml", options)
 
 
-def _odd_rows() -> str:
-    """input (1,4,11,15) -> Conv1 (8, 3x3, pad 1) -> (1,8,11,15) -> Conv2 (8, 3x3, stride 2, pad 1) -> (1,8,6,8)."""
-    nodes = [conv("Conv1", "input", "w1", "t1"), conv("Conv2", "t1", "w2", "out", stride=2)]
-    return onnx_graph(nodes, {"input": [1, 4, 11, 15], "w1": [8, 4, 3, 3], "w2": [8, 8, 3, 3]}, ["out"])
-
-
 def _rows(height: int, stride: int) -> str:
     """input (1,8,height,12) -> Conv1 (8, 3x3, pad 1) -> Conv2 (8, 3x3, ``stride``, pad 1)."""
     nodes = [conv("Conv1", "input", "w1", "t1"), conv("Conv2", "t1", "w2", "out", stride=stride)]
@@ -60,7 +54,7 @@ def _identity_skip(softmax: bool = False) -> str:
 @pytest.mark.parametrize(
     ("workload", "cores", "split", "factor", "axis", "extent"),
     [
-        (_odd_rows, [0, 1], "D2", 2, "D2", 11),
+        (lambda: _rows(11, 1), [0, 1], "D2", 2, "D2", 11),
         (lambda: conv_chain(1), [0, 1, 2], "D6", 3, "D6", 16),
         (lambda: _rows(12, 2), [0, 1, 2, 3], "D2", 4, "D2 \\(extent 12, stride 2\\)", 6),
     ],

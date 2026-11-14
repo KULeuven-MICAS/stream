@@ -44,9 +44,11 @@ frontend. The pipeline handles such a read like any other affine access:
 
 - **Couplings.** A reader that indexes a producer's axis as `s*o + windows + c` merges the producer's dim into its
   own `o`, with a remainder dim of size `s` when `s > 1`, so fused convolutions and pools share their row and column
-  axes; the window and the constant stay in the access maps. Only where the producer's extent is `s` times the
-  reader's: an unpadded reader leaves its producer's axis its own, as an unfused one. A mapping naming the producer's
-  dim `s*z + r` tiles or splits `z`, so its tile is a multiple of `s`, and entries naming one fused axis cut it alike.
+  axes; the window and the constant stay in the access maps. The producer's extent may differ from `s` times the
+  reader's by up to a window (an unpadded reader, a stride that does not divide it): its last tile is then larger or
+  smaller. Beyond that the producer keeps its own axis, and a fused group cutting it is refused. A mapping naming the
+  producer's dim `s*z + r` tiles or splits `z`, so its tile is a multiple of `s`, and entries naming one fused axis cut
+  it alike.
 - **Halos.** A tile's footprint is its interior window, not clipped at the tensor's origin, and a transfer's copy
   holds the window of the node it reaches. Each loop that slides that window carries its halo, the window less its
   step, on its `IterationVariable`: the rows a fused loop shares between iterations, the columns cores share.
