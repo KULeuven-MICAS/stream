@@ -2,6 +2,7 @@
 
 import logging
 import math
+from collections.abc import Sequence
 from itertools import permutations
 from typing import Any
 
@@ -10,10 +11,13 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.cost import running_sum_bits
+from stream.hardware.ports import READ
 from stream.mapping.mapping import placement_split_bits, role_of, whole_bits
+from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import ComputationNode, edge_tensor
+from stream.workload.steady_state.iteration_space import IterationVariable, IterationVariableType, LoopEffect
 from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
 
@@ -37,9 +41,9 @@ def _divisors_desc(n: int) -> list[int]:
 
 
 class CapacityTiler:
-    """Choose per-core tiles that fit each core's operand buffer within ``fill_fraction``, less what ``on_chip`` keeps
-    there. Prefer tiles that walk the fewest placed bits and fill the arrays most, then cut them into at least
-    ``PIPELINE_TILES`` without emptying the arrays."""
+    """Choose per-core tiles that fit ``fill_fraction`` of each core's operand buffer, less what the toolchain reserves
+    and ``on_chip`` keeps there. Prefer tiles that walk the fewest placed bits and fill the arrays most, then cut them
+    into at least ``PIPELINE_TILES`` without emptying the arrays."""
 
     MAX_STEADY_STATE_TILES = 1024
     """Steady-state tiles a group may be cut into, or, with ``scale_tiles``, per budget its whole per-core slices fill:
@@ -55,7 +59,7 @@ class CapacityTiler:
         self,
         sub_workload: Workload,
         accelerator: Accelerator,
-        fill_fraction: float = 0.9,
+        fill_fraction: float = 1.0,
         split_axes: dict[str, int] | None = None,
         nb_cols: int | None = None,
         on_chip: dict[str, dict[str, float]] | None = None,
@@ -66,9 +70,10 @@ class CapacityTiler:
         self.split_axes = split_axes or {}
         self.accelerator = accelerator
         self.fill_fraction = fill_fraction
+        self.hardware = build_hardware_facts(accelerator, self.nb_cols)
         self._shapes: dict[tuple, tuple[int, ...]] = {}
 
-    def plan(  # noqa: PLR0913
+    def plan(  # noqa: PLR0913, PLR0915
         self,
         cns: tuple[ComputationNode, ...],
         cores_per_node: dict[ComputationNode, list[Core]],
@@ -87,7 +92,7 @@ class CapacityTiler:
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         protected = {lead(d)[0] for d in protected}
-        budgets = {m: int(cap * self.fill_fraction) for m, cap in self._capacities(cns, cores_per_node).items()}
+        budgets = self._capacities(cns, cores_per_node)
 
         # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
         per_core: dict[LayerDim, int] = {}
@@ -99,6 +104,7 @@ class CapacityTiler:
                 divisors[dim] = _divisors_desc(size)
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
         resident: dict[LayerDim, int] = {dim: seeded.get(dim, per_core[dim]) for dim in per_core}
+        args = (cns, cores_per_node, unroll, resident, node_unroll)
 
         def overflow() -> float:
             """Largest amount by which any memory exceeds its budget (0 means the whole group fits). Never negative, so
@@ -108,6 +114,9 @@ class CapacityTiler:
 
         def fill() -> float:
             return self.array_fill(cns, cores_per_node, unroll, resident, node_unroll)
+
+        def folded() -> float:
+            return self.array_fill(*args, folded=True)
 
         aligned = self._aligned(cns, cores_per_node, unroll, resident, node_unroll, per_core)
         placed = self._placed(cns)
@@ -130,6 +139,42 @@ class CapacityTiler:
             for dims in [self.sub_workload.get_dims(cn)]
         }
         reductions = set().union(*reduced_by.values())
+        indexed = self._indexed(cns, per_core)
+        feeding = [reduced_by[cn] for cn in cns if any(set(cn.outputs) & set(c.inputs) for c in cns)]
+
+        def accumulating(order: list[LayerDim]) -> bool:
+            """Whether, looped in ``order``, a tiled reduction around tiled output dims keeps resident, while they
+            accumulate, the outputs of every tile inside it, and the group then does not fit."""
+            outer = max((i for i, d in enumerate(order) if d in reductions), default=0)
+            inside = frozenset(d for d in order[:outer] if d not in reductions)
+            accumulators = tuple(cn for cn in cns if inside and order[outer] in reduced_by[cn])
+            held = self.memory_bits(*args, accumulators, inside) if accumulators else {}
+            return any(bits > budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
+
+        def default_order() -> list[LayerDim]:
+            return sorted((d for d in per_core if resident[d] < per_core[d]), key=lambda d: indexed.get(d, 0.0))
+
+        def loop_orders() -> list[list[LayerDim]]:
+            order = default_order()
+            if accumulating(order):
+                order.sort(key=lambda d: d not in reductions)
+            return [order] + [
+                list(o)
+                for o in (permutations(order) if len(order) <= self.MAX_ORDERED_LOOPS else ())
+                if list(o) != order
+                and not accumulating(list(o))
+                and all(o.index(d) < o.index(e) for r in feeding for d in r & set(o) for e in o if e not in r)
+            ]
+
+        def offchip() -> float:
+            """Bits the group moves off chip, looped in the order moving the fewest."""
+            held = self.memory_bits(*args)
+            room = {m: budget - held.get(m, 0) for m, budget in budgets.items()}
+            return min(self._moved(*args, order, room, spills=True)[None] for order in loop_orders())
+
+        def pipelined() -> tuple[float, float, float]:
+            return self._pipelined_estimate(*args, budgets, per_core, self._order(*args, budgets, loop_orders()))
+
         max_tiles = (
             self._tile_limit(self.memory_bits(cns, cores_per_node, unroll, per_core, node_unroll), budgets)
             if scale_tiles
@@ -142,6 +187,7 @@ class CapacityTiler:
             and not any(placed.get(d) for d in per_core if seed[d] < per_core[d])
         ):
             fitted.append((fill(), dict(seed)))
+        fits_whole = bool(fitted)
 
         search = {
             "resident": resident,
@@ -153,7 +199,7 @@ class CapacityTiler:
             "placed": placed,
         }
         fitted = fitted or self._fit(
-            (seed, per_core), [d for d in per_core if d not in reductions], max_tiles, **search
+            (seed, per_core), [d for d in per_core if d not in reductions], max_tiles, offchip, **search
         )
         if not fitted:
             return None
@@ -162,7 +208,38 @@ class CapacityTiler:
             fill, tiles = fit
             return -sum(placed.get(d, 0) for d in per_core if tiles[d] < per_core[d]), fill
 
-        indexed = {
+        self._settle(fitted, rank, indexed, reductions, **search)
+        if fits_whole and (streams := self._overlap_dims(cns, unroll, node_unroll) - reductions):
+            # A group that fits whole and computes longer than it transfers is cut if that takes less time.
+            before, compute, transfer = pipelined()
+            if compute > transfer and math.prod(per_core[d] // resident[d] for d in per_core) < self.PIPELINE_TILES:
+                uncut = dict(resident)
+                cuts = {d: sizes if d in streams else [] for d, sizes in divisors.items()}
+                self._pipeline(resident, per_core, cuts, indexed, reductions, overflow, folded, lambda _: True, placed)
+                if pipelined()[0] >= before:
+                    resident.update(uncut)
+        if resident == seed:
+            return []
+        if accumulating(default_order()) and (
+            refitted := self._fit((per_core,), [d for d in reductions if d in per_core], max_tiles, offchip, **search)
+        ):
+            self._settle(refitted, rank, indexed, reductions, **search)
+        return self._emit(cns, self._order(*args, budgets, loop_orders()), resident)
+
+    def _overlap_dims(
+        self,
+        cns: tuple[ComputationNode, ...],
+        unroll: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
+    ) -> set[LayerDim]:
+        """The dims every node of the group has and no node splits over cores."""
+        lead = self.sub_workload.leading_dim
+        split = {lead(d)[0] for f in [unroll, *(node_unroll or {}).values()] for d, n in f.items() if n > 1}
+        return set.intersection(*(self._node_dims(cn) for cn in cns)) - split
+
+    def _indexed(self, cns: tuple[ComputationNode, ...], per_core: dict[LayerDim, int]) -> dict[LayerDim, float]:
+        """Per dim, the bits of the group's tensors it indexes."""
+        return {
             dim: sum(
                 math.prod(t.shape) * t.operand_type.bitwidth
                 for cn in cns
@@ -172,48 +249,12 @@ class CapacityTiler:
             for dim in per_core
         }
 
-        self._settle(fitted, rank, indexed, reductions, **search)
-        if resident == seed:
-            return []
-
-        def accumulating(order: list[LayerDim]) -> bool:
-            """Whether, looped in ``order``, a tiled reduction around tiled output dims keeps resident, while they
-            accumulate, the outputs of every tile inside it, and those alone do not fit."""
-            outer = max((i for i, d in enumerate(order) if d in reductions), default=0)
-            inside = frozenset(d for d in order[:outer] if d not in reductions)
-            accumulators = tuple(cn for cn in cns if inside and order[outer] in reduced_by[cn])
-            held = (
-                self.memory_bits(accumulators, cores_per_node, unroll, resident, node_unroll, inside)
-                if accumulators
-                else {}
-            )
-            return any(bits > budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
-
-        order = sorted((d for d in per_core if resident[d] < per_core[d]), key=lambda d: indexed.get(d, 0.0))
-        if accumulating(order) and (
-            refitted := self._fit((per_core,), [d for d in reductions if d in per_core], max_tiles, **search)
-        ):
-            self._settle(refitted, rank, indexed, reductions, **search)
-            order = sorted((d for d in per_core if resident[d] < per_core[d]), key=lambda d: indexed.get(d, 0.0))
-        if accumulating(order):
-            order.sort(key=lambda d: d not in reductions)
-        feeding = [reduced_by[cn] for cn in cns if any(set(cn.outputs) & set(c.inputs) for c in cns)]
-        orders = [order] + [
-            list(o)
-            for o in (permutations(order) if len(order) <= self.MAX_ORDERED_LOOPS else ())
-            if list(o) != order
-            and not accumulating(list(o))
-            and all(o.index(d) < o.index(e) for r in feeding for d in r & set(o) for e in o if e not in r)
-        ]
-        return self._emit(
-            cns, self._order(cns, cores_per_node, unroll, resident, node_unroll, budgets, orders), resident
-        )
-
     def _fit(  # noqa: PLR0913
         self,
         starts: tuple[dict[LayerDim, int], ...],
         first: list[LayerDim],
         max_tiles: int,
+        offchip: Any,
         *,
         resident: dict[LayerDim, int],
         per_core: dict[LayerDim, int],
@@ -231,7 +272,7 @@ class CapacityTiler:
                 resident.update(start)
                 while overflow() > 0 and (
                     step := self._shrink(
-                        candidates, resident, per_core, divisors, overflow, fill, aligned, placed, max_tiles
+                        candidates, resident, per_core, divisors, overflow, fill, aligned, placed, offchip, max_tiles
                     )
                 ):
                     resident[step[0]] = step[1]
@@ -260,14 +301,65 @@ class CapacityTiler:
         resident.update(max(fits, key=rank)[1])
         self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned, placed)
 
-    def _order(  # noqa: PLR0913
-        self, cns, cores_per_node, unroll, resident, node_unroll, budgets, orders
-    ) -> list[LayerDim]:
-        """The first of ``orders``, unless another moves fewer bits off chip in less time and no more bits into a memory
-        with no link from off chip. Time is the largest bits per cycle of incoming links over all memories. The first
-        is kept when the staging tiles alone overflow a budget."""
-        if len(orders) == 1:
-            return orders[0]
+    def _pipelined_estimate(  # noqa: PLR0913
+        self,
+        cns: tuple[ComputationNode, ...],
+        cores_per_node: dict[ComputationNode, list[Core]],
+        unroll: dict[LayerDim, int],
+        resident: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
+        budgets: dict[str, float],
+        per_core: dict[LayerDim, int],
+        order: list[LayerDim],
+    ) -> tuple[float, float, float]:
+        """Estimated cycles of the group in the n tiles of ``resident``, with its compute cycles C and its transfer
+        cycles: X0 for what no tile loop indexes, moved once, then C and the rest X overlapping but for one tile,
+        X0 + (C + X) / n + (n - 1) / n * max(C, X)."""
+        n = math.prod(per_core[d] // resident[d] for d in per_core)
+        args = (cns, cores_per_node, unroll, resident, node_unroll)
+        capacities, tiles, rates = self._transfers(*args, budgets)
+        room = {m: c - tiles[m] for m, c in capacities.items()}
+        moved = self._moved(*args, order, room, spills=True)
+        fixed = {t for cn, t in self._crossing(cns) if not self._indexing(cn, t) & set(order)}
+        once = self._moved(*args, [], room, spills=True, tensors=fixed)
+        alone = self._link_cycles(once, rates)
+        transfer = self._link_cycles({m: bits - once.get(m, 0) for m, bits in moved.items()}, rates)
+        compute = max(self.compute_cycles(*args), self._input_port_cycles(*args, n))
+        return alone + (compute + transfer) / n + (n - 1) / n * max(compute, transfer), compute, alone + transfer
+
+    def _input_port_cycles(  # noqa: PLR0913
+        self,
+        cns: tuple[ComputationNode, ...],
+        cores_per_node: dict[ComputationNode, list[Core]],
+        unroll: dict[LayerDim, int],
+        resident: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
+        tiles: int,
+    ) -> float:
+        """Cycles the busiest port a core reads its inputs from takes to read each input tile once per
+        each of ``tiles`` tiles."""
+        reads: dict[Any, float] = {}
+        for cn in cns:
+            sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
+            for t in dict.fromkeys(cn.inputs):
+                for core in cores_per_node.get(cn, []):
+                    role = role_of(cn, t)
+                    port = self.accelerator.ports.port_for(core, READ, role, self.accelerator.memory_of(core, role))
+                    if port is not None:
+                        reads[port] = reads.get(port, 0.0) + tiles * self._bits(cn, t, sizes) / port.bits_per_cycle
+        return max(reads.values(), default=0.0)
+
+    def _transfers(  # noqa: PLR0913
+        self,
+        cns: tuple[ComputationNode, ...],
+        cores_per_node: dict[ComputationNode, list[Core]],
+        unroll: dict[LayerDim, int],
+        resident: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
+        budgets: dict[str, float],
+    ) -> tuple[dict[str, float], dict[str, float], dict[str | None, float]]:
+        """The budget of each memory the tiles pass through, the bits of tiles it holds, and the bits per cycle of its
+        links from off chip or a staging memory (None: off chip's own read rate)."""
         held = self.memory_bits(cns, cores_per_node, unroll, resident, node_unroll)
         cores = {core for group in cores_per_node.values() for core in group}
         staging = [
@@ -276,17 +368,12 @@ class CapacityTiler:
             if m.name not in budgets and self.accelerator.reaches(m, cores)
         ]
         staged = sum(
-            2 * self._bits(cn, t, self._node_sizes(cn, cores_per_node, unroll, resident, {}))
+            buffer_count(1, True) * self._bits(cn, t, self._node_sizes(cn, cores_per_node, unroll, resident, {}))
             for cn, t in self._crossing(cns)
             if not self._is_on_chip(t)
         )
-        capacities = self._capacities(cns, cores_per_node) | {m.name: self._room(m) for m in staging}
+        capacities = budgets | {m.name: self._budget(m) for m in staging}
         tiles = {m: held.get(m, 0) for m in capacities} | {m.name: staged for m in staging}
-        room = {m: budgets.get(m, int(c * self.fill_fraction)) - tiles[m] for m, c in capacities.items()}
-        if any(free < 0 for free in room.values()):
-            return orders[0]
-        loose = {m: c - tiles[m] / 2 for m, c in capacities.items()}
-        args = (cns, cores_per_node, unroll, resident, node_unroll)
         sources = {*self.accelerator.offchip_memories, *staging}
         rates: dict[str | None, float] = {
             m: sum(
@@ -299,18 +386,41 @@ class CapacityTiler:
             for memory in [self.accelerator.memories[m]]
         }
         rates[None] = sum(self.accelerator.offchip_rate(m, "read") for m in self.accelerator.offchip_memories)
+        return capacities, tiles, rates
 
-        def time(moved: dict[str | None, float]) -> float:
-            return max((bits / rates[m] for m, bits in moved.items() if rates.get(m)), default=0)
+    @staticmethod
+    def _link_cycles(moved: dict[str | None, float], rates: dict[str | None, float]) -> float:
+        """Cycles the busiest incoming links take to carry ``moved``, at ``rates``."""
+        return max((bits / rates[m] for m, bits in moved.items() if rates.get(m)), default=0)
 
+    def _order(  # noqa: PLR0913
+        self, cns, cores_per_node, unroll, resident, node_unroll, budgets, orders
+    ) -> list[LayerDim]:
+        """The first of ``orders``, unless another that fits moves fewer bits off chip in less time and no more bits
+        into a memory with no link from off chip. Time is the largest bits per cycle of incoming links over all
+        memories. The first is kept when the staging tiles alone overflow a budget."""
+        if len(orders) == 1:
+            return orders[0]
+        args = (cns, cores_per_node, unroll, resident, node_unroll)
+
+        def fits(order: list[LayerDim]) -> bool:
+            held = self.memory_bits(*args, order=order)
+            return all(bits <= budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
+
+        capacities, tiles, rates = self._transfers(*args, budgets)
+        room = {m: c - tiles[m] for m, c in capacities.items()}
+        if any(free < 0 for free in room.values()):
+            return orders[0]
+        loose = {m: c - tiles[m] / 2 for m, c in capacities.items()}
         first = self._moved(*args, orders[0], loose, buffers=1, spills=True)
         better = [
-            (time(moved), o)
+            (self._link_cycles(moved, rates), o)
             for o in orders[1:]
-            if (moved := self._moved(*args, o, room)) is not None
+            if fits(o)
+            and (moved := self._moved(*args, o, room)) is not None
             and moved[None] < first[None]
             and all(bits <= first.get(m, 0) for m, bits in moved.items() if not rates.get(m))
-            and time(moved) < time(first)
+            and self._link_cycles(moved, rates) < self._link_cycles(first, rates)
         ]
         return min(better, key=lambda pair: pair[0])[1] if better else orders[0]
 
@@ -338,11 +448,12 @@ class CapacityTiler:
         *,
         buffers: int = 2,
         spills: bool = False,
+        tensors: set[Tensor] | None = None,
     ) -> dict[str | None, float] | None:
-        """Bits moved into each memory (None is off chip) with the tiled dims looped in ``order``, innermost first. A
-        tensor moves again on each iteration of an outer loop that does not index it, unless holding it fits ``room``.
-        None if partial sums would leave the cores and ``spills`` is false."""
-        operands = self._crossing(cns)
+        """Bits moved into each memory (None is off chip) with the tiled dims looped in ``order``, innermost first, of
+        ``tensors`` (all where None). A tensor moves again on each iteration of an outer loop that does not index it,
+        unless holding it fits ``room``. None if partial sums would leave the cores and ``spills`` is false."""
+        operands = [o for o in self._crossing(cns) if tensors is None or o[1] in tensors]
         read = {t for cn in cns for t in cn.inputs}
         made = [(cn, t) for cn in cns for t in cn.outputs if t in read]
         whole = self._slices(unroll)
@@ -438,7 +549,7 @@ class CapacityTiler:
             *_, dim, smaller = max(steps, key=lambda step: step[:4])
             resident[dim] = smaller
 
-    def _tile_limit(self, whole: dict[str, float], budgets: dict[str, int]) -> int:
+    def _tile_limit(self, whole: dict[str, float], budgets: dict[str, float]) -> int:
         """The most steady-state tiles a group may be cut into, its memories holding ``whole`` at whole slices."""
         filled = (math.ceil(bits / budgets[m]) for m, bits in whole.items() if budgets[m] > 0)
         return self.MAX_STEADY_STATE_TILES * max(1, *filled)
@@ -458,24 +569,41 @@ class CapacityTiler:
         return self.array_fill(cns, cores_per_node, unroll, dict(per_core), node_unroll)
 
     def _shrink(  # noqa: PLR0913
-        self, candidates, resident, per_core, divisors, overflow, fill, aligned, placed, max_tiles
+        self, candidates, resident, per_core, divisors, overflow, fill, aligned, placed, offchip, max_tiles
     ) -> tuple[LayerDim, int] | None:
-        """The dim and smaller tile that walk the fewest ``placed`` bits, fill the arrays most, map whole where one can,
-        then save the most overflow per doubling of the tiles, within ``max_tiles``; None when none saves any. Walking a
-        split axis makes each iteration wait on one memory, which costs more than a less filled array."""
-        base = overflow()
-        best, best_key = None, (-math.inf, -math.inf, False, 0.0)
+        """The dim and smaller tile that walk the fewest ``placed`` bits, map whole where one can, then save the most
+        overflow per doubling of the tiles and of the compute time (through the ``fill`` lost), within ``max_tiles``;
+        of ties that each make the group fit, the one moving the fewest bits off chip. None when none saves any."""
+        base, full = overflow(), fill()
+        best: list[tuple[LayerDim, int]] = []
+        best_key, fitting = (-math.inf, False, 0.0), False
         for dim in candidates:
             keep = resident[dim]
             for smaller in (d for d in divisors[dim] if d < keep):
                 resident[dim] = smaller
                 if math.prod(per_core[d] / resident[d] for d in per_core) > max_tiles:
                     break
-                rate = (base - overflow()) / math.log2(keep / smaller)
-                if rate > 0 and (key := (-placed.get(dim, 0), fill(), aligned({dim}), rate)) > best_key:
-                    best, best_key = (dim, smaller), key
+                left = overflow()
+                rate = (base - left) / (math.log2(keep / smaller) + (full - fill()) / math.log(2))
+                key = (-placed.get(dim, 0), aligned({dim}), rate)
+                if rate > 0 and key > best_key:
+                    best, best_key, fitting = [(dim, smaller)], key, left <= 0
+                elif rate > 0 and key == best_key and fitting and left <= 0:
+                    best.append((dim, smaller))
             resident[dim] = keep
-        return best
+        if not best:
+            return None
+        if len(best) == 1:
+            return best[0]
+
+        def moved(step: tuple[LayerDim, int]) -> float:
+            keep = resident[step[0]]
+            resident[step[0]] = step[1]
+            bits = offchip()
+            resident[step[0]] = keep
+            return bits
+
+        return min(best, key=moved)
 
     def _aligned(self, cns, cores_per_node, unroll, resident, node_unroll, per_core):  # noqa: PLR0913
         """A check that each node's extents in ``resident`` along the given dims are whole (``per_core``) or a multiple
@@ -505,21 +633,56 @@ class CapacityTiler:
         unroll: dict[LayerDim, int],
         resident: dict[LayerDim, int],
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
+        *,
+        folded: bool = False,
     ) -> float:
-        """How much of their arrays the nodes can keep busy with these tiles, as the sum of each node's log fill: a
-        node's tiles laid along its core's array dims, the largest along the largest, filling each up to its size."""
+        """How much of their arrays the nodes can keep busy with these tiles, as the sum of each node's log fill."""
+        fills = (self._node_fill(cn, cores_per_node, unroll, resident, node_unroll, folded=folded) for cn in cns)
+        return sum(found[0] for found in fills if found)
+
+    def compute_cycles(
+        self,
+        cns: tuple[ComputationNode, ...],
+        cores_per_node: dict[ComputationNode, list[Core]],
+        unroll: dict[LayerDim, int],
+        resident: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
+    ) -> float:
+        """Cycles the nodes' arrays take for the whole group with these tiles: each node's MACs over its cores, its
+        array's units and its fill."""
         total = 0.0
         for cn in cns:
-            array = next(
-                (a for core in cores_per_node.get(cn, []) if (a := getattr(core, "operational_array", None))), None
-            )
-            widths = sorted((w for w in array.dimension_sizes.values() if w > 1), reverse=True) if array else []
-            if not widths:
-                continue
-            sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
-            tiles = sorted((sizes[d] for d in self._node_dims(cn)), reverse=True) + [1] * len(widths)
-            total += sum(math.log(min(tile, width) / width) for tile, width in zip(tiles, widths, strict=False))
+            if found := self._node_fill(cn, cores_per_node, unroll, resident, node_unroll):
+                log_fill, units = found
+                macs = math.prod(self.sub_workload.get_dimension_size(d) for d in self.sub_workload.get_dims(cn))
+                total += macs / (len(cores_per_node[cn]) * units * math.exp(log_fill))
         return total
+
+    def _node_fill(
+        self,
+        cn: ComputationNode,
+        cores_per_node: dict[ComputationNode, list[Core]],
+        unroll: dict[LayerDim, int],
+        resident: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
+        *,
+        folded: bool = False,
+    ) -> tuple[float, int] | None:
+        """The log fill of ``cn``'s array and the array's units (None: no array): a node's tiles laid along its core's
+        array dims, the largest along the largest, filling each up to its size or, ``folded``, in passes of its size."""
+        array = next(
+            (a for core in cores_per_node.get(cn, []) if (a := getattr(core, "operational_array", None))), None
+        )
+        widths = sorted((w for w in array.dimension_sizes.values() if w > 1), reverse=True) if array else []
+        if not widths:
+            return None
+        sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
+        tiles = sorted((sizes[d] for d in self._node_dims(cn)), reverse=True) + [1] * len(widths)
+        fill = sum(
+            math.log(tile / (math.ceil(tile / width) * width) if folded else min(tile, width) / width)
+            for tile, width in zip(tiles, widths, strict=False)
+        )
+        return fill, math.prod(widths)
 
     def _node_sizes(
         self,
@@ -535,16 +698,25 @@ class CapacityTiler:
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         full = self._slices({})
-        if node_unroll is not None:
-            own = {lead(d)[0]: f for d, f in node_unroll.get(cn, {}).items()}
-        else:
-            own = (
-                {d: f for d, f in unroll.items() if d in self._node_dims(cn)}
-                if len(cores_per_node.get(cn, [])) > 1
-                else {}
-            )
+        own = self._own_split(cn, cores_per_node, unroll, node_unroll)
         tiles = self._slices(unroll) | resident
         return {d: min(full[d], r * unroll.get(d, 1) // own.get(d, 1)) for d, r in tiles.items()}
+
+    def _own_split(
+        self,
+        cn: ComputationNode,
+        cores_per_node: dict[ComputationNode, list[Core]],
+        unroll: dict[LayerDim, int],
+        node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None,
+    ) -> dict[LayerDim, int]:
+        """The split of each unique dim over the cores running ``cn``: its own (``node_unroll``), else the group's
+        ``unroll`` on a multi-core node."""
+        lead = self.sub_workload.leading_dim
+        if node_unroll is not None:
+            return {lead(d)[0]: f for d, f in node_unroll.get(cn, {}).items()}
+        unroll = {lead(d)[0]: f for d, f in unroll.items()}
+        multi = len(cores_per_node.get(cn, [])) > 1
+        return {d: f for d, f in unroll.items() if d in self._node_dims(cn)} if multi else {}
 
     def _slices(self, unroll: dict[LayerDim, int]) -> dict[LayerDim, int]:
         """Each unique dim's extent on one core under the group's split ``unroll``; whole where it does not divide."""
@@ -559,41 +731,89 @@ class CapacityTiler:
         unroll: dict[LayerDim, int],
         resident: dict[LayerDim, int],
         node_unroll: dict[ComputationNode, dict[LayerDim, int]] | None = None,
+        accumulating: tuple[ComputationNode, ...] = (),
         accumulated_over: frozenset[LayerDim] = frozenset(),
+        order: Sequence[LayerDim] | None = None,
     ) -> dict[str, float]:
-        """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: each node's operand
-        tiles under its split, windows included, an outside input once per reader, twice where a loop steps it; cores
-        sharing a memory fill it together. With ``accumulated_over``, only the outputs, whole along those dims."""
+        """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: an outside input once
+        per reader, a produced tensor once at the largest of its producer's tile and its readers' windows, twice where a
+        loop steps it, plus the halo the tile loops keep (looped in ``order``); cores sharing a memory fill it together.
+        Outputs of ``accumulating`` are whole along ``accumulated_over``."""
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         unique, _ = self.sub_workload.unique_dimensions()
         full = {z: self.sub_workload.get_dimension_size(z) for z in unique}
+        loops = self._loops(cns, unroll, resident, order)
         held: dict[str, dict[tuple, float]] = {}
         tensors: dict[str, Tensor] = {}
         produced = {t for cn in cns for t in cn.outputs}
-        sums: set[tuple] = set()
         for cn in cns:
             cores = cores_per_node.get(cn, [])
             sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
             running = running_sum_bits(self.sub_workload, cn, cores, {d for d, n in sizes.items() if n < full[d]})
             stepped = {d for d, r in resident.items() if r * unroll.get(d, 1) < full[d]}
-            if whole := {d: full[d] // unroll.get(d, 1) for d in accumulated_over}:
-                sizes = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll)
-            for t in dict.fromkeys(cn.outputs if whole else cn.tensors):
-                shape = self._shape(cn, t, sizes)
+            whole = {d: full[d] // unroll.get(d, 1) for d in accumulated_over} if cn in accumulating else {}
+            spanned = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll) if whole else sizes
+            for t in dict.fromkeys(cn.tensors):
+                kept = bool(whole) and t in cn.outputs
+                shape = self._shape(cn, t, spanned if kept else sizes)
                 stepping = bool(self._indexing(cn, t) & stepped)
-                buffers = 2 if stepping and not whole else 1  # an accumulating output stays put
-                tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
+                buffers = buffer_count(1, stepping and not kept)
+                tile = (t.name,) if t in produced else (t.name, cn.name, shape)
                 tensors[t.name] = t
                 is_running_sum = bool(running) and t in cn.outputs
-                bits = buffers * math.prod(shape) * (running if is_running_sum else t.operand_type.bitwidth)
+                width = running if is_running_sum else t.operand_type.bitwidth
+                bits = buffers * math.prod(shape) * width
+                if t in cn.inputs and not kept:
+                    split = self._own_split(cn, cores_per_node, unroll, node_unroll)
+                    bits += self._kept_halo(cn, t, sizes, split, loops) * width
                 for core in cores:
                     tiles = held.setdefault(self.accelerator.memory_of(core, role_of(cn, t)).name, {})
                     key = (core.id, tile)
-                    if is_running_sum:
-                        sums.add(key)
-                    tiles[key] = max(bits, tiles[key]) if key in sums and key in tiles else bits
+                    tiles[key] = max(tiles.get(key, 0.0), bits)
         return {memory: self._beyond_placed(memory, tiles, tensors) for memory, tiles in held.items()}
+
+    def _loops(
+        self,
+        cns: tuple[ComputationNode, ...],
+        unroll: dict[LayerDim, int],
+        resident: dict[LayerDim, int],
+        order: Sequence[LayerDim] | None,
+    ) -> list[tuple[LayerDim, int]]:
+        """The group's tile loops, innermost first, each with its trips: ``order``, else the dims indexing the fewest
+        bits innermost, as :meth:`plan` loops them by default."""
+        slices = self._slices(unroll)
+        cut = {d: slices[d] // r for d, r in resident.items() if r < slices[d]}
+        if order is None:
+            indexed = self._indexed(cns, cut)
+            order = sorted(cut, key=lambda d: indexed.get(d, 0.0))
+        return [(d, cut[d]) for d in order if d in cut]
+
+    def _kept_halo(  # noqa: PLR0913
+        self,
+        cn: ComputationNode,
+        t: Tensor,
+        sizes: dict[LayerDim, int],
+        split: dict[LayerDim, int],
+        loops: list[tuple[LayerDim, int]],
+    ) -> int:
+        """Elements of halo ``cn`` keeps of ``t`` in addition to its window while the tile ``loops`` slide it, as the
+        allocation counts them."""
+        dims = set(self.sub_workload.get_tensor_dimensions(t))
+        windows = self.sub_workload.windows_for_sizes(t, cn, sizes, [d for d, _ in loops if d in dims], split)
+        if not windows:
+            return 0
+        variables = [
+            IterationVariable(
+                dimension=d,
+                size=trips,
+                effect=LoopEffect.VARYING if d in dims else LoopEffect.INVARIANT,
+                type=IterationVariableType.TEMPORAL,
+                halo=windows[d][1] if d in windows else 0,
+            )
+            for d, trips in loops
+        ]
+        return self.sub_workload.kept_halos_for_sizes(t, cn, windows, sizes, variables).get(-1, 0)
 
     def _beyond_placed(self, memory: str, tiles: dict[tuple, float], tensors: dict[str, Tensor]) -> float:
         """The bits ``tiles`` take in ``memory``, each tensor only beyond the block of it placed there."""
@@ -629,18 +849,23 @@ class CapacityTiler:
 
     def _capacities(
         self, cns: tuple[ComputationNode, ...], cores_per_node: dict[ComputationNode, list[Core]]
-    ) -> dict[str, int]:
-        """Each memory the group's cores use, with the room it has (:meth:`_room`)."""
+    ) -> dict[str, float]:
+        """Each memory the group's cores use, with the budget its tiles may fill (:meth:`_budget`)."""
         return {
-            memory.name: self._room(memory)
+            memory.name: self._budget(memory)
             for cn in cns
             for core in cores_per_node.get(cn, [])
             for memory in self.accelerator.memories_of(core)
         }
 
+    def _budget(self, memory: Memory) -> float:
+        """The ``fill_fraction`` of :meth:`_room` the tiles may fill."""
+        return self.fill_fraction * self._room(memory)
+
     def _room(self, memory: Memory) -> float:
-        """The capacity of ``memory`` less the workload inputs and outputs placed in it for the whole run."""
-        return memory.capacity_bits - sum(self.on_chip.get(memory.name, {}).values())
+        """The capacity of ``memory`` less what the toolchain reserves and the workload inputs and outputs placed in it
+        for the whole run."""
+        return self.hardware.usable_bits(memory) - sum(self.on_chip.get(memory.name, {}).values())
 
     def _is_on_chip(self, t: Tensor) -> bool:
         """Whether ``t`` is placed in an on-chip memory for the whole run, so it moves no data off chip."""
@@ -689,3 +914,9 @@ class CapacityTiler:
                 stride, name, idx = min(steps, key=lambda step: step[0])
                 entries.append({"dim": f"{name}.D{idx}", "tile": tile * stride})
         return entries
+
+
+def buffer_count(tiles: int, double_buffered: bool) -> int:
+    """Buffers a memory keeps for ``tiles`` tiles of a tensor: at least two where it is double-buffered, so the next
+    tile lands while the last is read."""
+    return max(tiles, 2) if double_buffered else tiles

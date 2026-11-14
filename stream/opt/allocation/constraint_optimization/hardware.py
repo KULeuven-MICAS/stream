@@ -149,6 +149,10 @@ class HardwareFacts:
             ns.reserved_memory_bits(core) for core in memory.cores for ns in self.namespaces if ns.applies_to(core)
         )
 
+    def usable_bits(self, memory: Memory) -> int:
+        """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims in it."""
+        return memory.capacity_bits - self.reserved_memory_bits(memory)
+
     def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
         """Configuration cycles one dispatch pays, summed over the namespaces."""
         return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespaces)
@@ -196,7 +200,7 @@ def namespaces_for(accelerator: Accelerator, config: NamespaceConfig) -> list[Ha
     return built
 
 
-def build_hardware_facts(accelerator: Accelerator, nb_cols_to_use: int) -> HardwareFacts:
+def build_hardware_facts(accelerator: Accelerator, nb_cols_to_use: int | None) -> HardwareFacts:
     """The facts of ``accelerator`` for a solve on its first ``nb_cols_to_use`` columns. Tensors may be staged in
     the staging memories (:attr:`Memory.staging`) within those columns."""
     return HardwareFacts(
