@@ -52,16 +52,17 @@ def test_a_sum_written_off_chip_once_takes_the_ports_time_after_the_last_iterati
 def test_a_reduction_over_cores_fired_once_is_the_runs_epilogue():
     """Y = X W with X (16,64), W (64,32), the contraction split over cores 0 and 1 and each core's 32 walked in two
     tiles of 16: two iterations, each core's partial sum of all of Y held over both. It is reduce-scattered once,
-    after the last iteration's Gemm: 2*8192 + 2*4096 = 24576 bits on the 128-bit bus, 192 cycles. Its slot holds
-    nothing of it, and the run ends 192 cycles after the last iteration and its drain."""
+    after the last iteration's Gemm, each core sending the other half at bf16 and its finished half off chip:
+    4*4096 = 16384 bits on the 128-bit bus, 128 cycles. Its slot holds nothing of it, and the run ends 128 cycles
+    after the last iteration and its drain."""
     estimate = _solve({"X": [16, 64], "W": [64, 32]}, CONTRACTION_TILED)
     solution = estimate.context.get("allocation").solution
     breakdown = solution.slot_latency_breakdown
     (slot,) = (s for s in breakdown["slots"] for c in s["transfer_contributors"] if c["transfer"] == "Transfer(Y_1)")
     (reduction,) = slot["transfer_contributors"]
-    assert (reduction["path_cycles"], reduction["reuse_factor"]) == (192, 2)
+    assert (reduction["path_cycles"], reduction["reuse_factor"]) == (128, 2)
     assert slot["slot_latency_cycles"] == reduction["latency_contribution_cycles"] == 0
-    assert breakdown["totals"]["epilogue_cycles"] == 192
+    assert breakdown["totals"]["epilogue_cycles"] == 128
     latency = solution.latency
     assert latency.total == 2 * latency.per_iteration - latency.overlap + latency.fill
-    assert latency.fill >= 192
+    assert latency.fill >= 128

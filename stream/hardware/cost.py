@@ -31,7 +31,9 @@ __all__ = [
     "check_budget",
     "evaluate_bundle_cost",
     "reduced_dims",
+    "partial_sum_format",
     "running_sum_bits",
+    "running_sum_format",
 ]
 
 HARDWARE_COST_MODEL_GROUP = "stream.hardware_cost_model"
@@ -63,6 +65,7 @@ class ComputeCost:
     nb_units: int
     input_format: str
     accumulator_format: str
+    partial_sum_format: str
     precision_declared: bool
     gate_equivalents: float
     area_mm2: float
@@ -296,6 +299,7 @@ def _compute_cost(core_id: int, core_name: str, core: dict[str, Any], density: _
             nb_units=0,
             input_format="",
             accumulator_format="",
+            partial_sum_format="",
             precision_declared=False,
             gate_equivalents=0.0,
             area_mm2=0.0,
@@ -317,6 +321,7 @@ def _compute_cost(core_id: int, core_name: str, core: dict[str, Any], density: _
         nb_units=nb_units,
         input_format=str(precision.get("input", "")),
         accumulator_format=str(precision.get("accumulator", "")),
+        partial_sum_format=str(precision.get("partial_sum", "")),
         precision_declared=bool(precision),
         gate_equivalents=0.0,
         area_mm2=nb_units * density.mac_um2 / 1e6,
@@ -410,15 +415,32 @@ def accumulator_format(node: ComputationNode, cores: Iterable[Core]) -> str | No
     return max((f["accumulator"] for f in formats if "accumulator" in f), key=ELEMENT_BITS.get, default=None)
 
 
+def partial_sum_format(cores: Iterable[Core]) -> str | None:
+    """The widest ``operand_precision`` ``partial_sum`` format ``cores`` declare, in which they send each other partial
+    sums; None where none declares one."""
+    formats = (getattr(core, "operand_precision", None) or {} for core in cores)
+    return max((f["partial_sum"] for f in formats if "partial_sum" in f), key=ELEMENT_BITS.get, default=None)
+
+
+def running_sum_format(
+    workload: Workload, node: ComputationNode, cores: Iterable[Core], fused: set[LayerDim], split: set[LayerDim]
+) -> str | None:
+    """The format ``cores`` store an incomplete sum of ``node`` in, if wider than the output's type: the accumulator's
+    for a running sum (a ``fused`` dim is one ``node`` reduces over), else the :func:`partial_sum_format` for a partial
+    sum (a ``split`` dim is)."""
+    cores, reduced = tuple(cores), reduced_dims(workload, node)
+    found = (
+        accumulator_format(node, cores) if reduced & fused else partial_sum_format(cores) if reduced & split else None
+    )
+    return found if found is not None and ELEMENT_BITS[found] > node.outputs[0].operand_type.bitwidth else None
+
+
 def running_sum_bits(
-    workload: Workload, node: ComputationNode, cores: Iterable[Core], partial: set[LayerDim]
+    workload: Workload, node: ComputationNode, cores: Iterable[Core], fused: set[LayerDim], split: set[LayerDim]
 ) -> int | None:
-    """Bits per element ``cores`` hold ``node``'s output in while it is a running sum: the accumulator's, if wider
-    than the output's type, where one firing covers only part of a dim in ``partial`` that ``node`` reduces over."""
-    found = accumulator_format(node, cores)
-    if found is None or ELEMENT_BITS[found] <= node.outputs[0].operand_type.bitwidth:
-        return None
-    return ELEMENT_BITS[found] if reduced_dims(workload, node) & partial else None
+    """Bits per element of :func:`running_sum_format`; None where it gives none."""
+    found = running_sum_format(workload, node, cores, fused, split)
+    return None if found is None else ELEMENT_BITS[found]
 
 
 def reduced_dims(workload: Workload, node: ComputationNode) -> set[LayerDim]:

@@ -234,10 +234,12 @@ A compute core can declare the element types it computes in:
 operand_precision:
   input: bf16
   accumulator: fp32
+  partial_sum: bf16
 ```
 
 The `accumulator` sets the precision of a matmul's or convolution's running sum while the core accumulates it; the
-result is written out at its output tensor's type. A core without an `accumulator` keeps running sums at the output's type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
+result is written out at its output tensor's type. A core without an `accumulator` keeps running sums at the output's type. `partial_sum` sets the type in which cores send each other the partial sums of a reduction that a split over cores (`inter_core_tiling`) cuts: by default the output's type, and the widest where the cores declare different ones.
+`input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
 `int8`, `uint8`, `int16`, `int24`, `bf16`, `fp16`, `int32` and `fp32`.
 
 ### Memory banks

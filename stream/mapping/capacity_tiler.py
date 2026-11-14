@@ -750,8 +750,9 @@ class CapacityTiler:
         for cn in cns:
             cores = cores_per_node.get(cn, [])
             sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
-            running = running_sum_bits(self.sub_workload, cn, cores, {d for d, n in sizes.items() if n < full[d]})
             stepped = {d for d, r in resident.items() if r * unroll.get(d, 1) < full[d]}
+            split = {d for d, f in self._own_split(cn, cores_per_node, unroll, node_unroll).items() if f > 1}
+            running = running_sum_bits(self.sub_workload, cn, cores, stepped, split)
             whole = {d: full[d] // unroll.get(d, 1) for d in accumulated_over} if cn in accumulating else {}
             spanned = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll) if whole else sizes
             for t in dict.fromkeys(cn.tensors):
