@@ -243,12 +243,20 @@ class _DemandBuilder:
         """A box split over the sources target ``j`` pairs with by spatial index, ``j``, ``j + m``, ..."""
         narrow = min(self.n_sources, self.n_targets)
         feeding = [s for s in range(self.n_sources) if s % narrow == entry.target % narrow]
-        parts = zip(feeding, _split(list(entry.box), len(feeding)), strict=True)
+        parts = zip(feeding, _split(list(entry.box), len(feeding), self._axis_split_over(feeding)), strict=True)
         return [
             DemandItem(entry.target, (s,), part, False, entry.copies)
             for s, part in parts
             if all(lo <= hi for lo, hi in part)
         ]
+
+    def _axis_split_over(self, feeding: list[int]) -> int | None:
+        """The axis the tiles of the ``feeding`` sources lie along, the one their first tiles differ on; None where
+        they differ on none or on several."""
+        first = [self.source_tiles[s][0] for s in feeding if self.source_tiles[s]]
+        pairs = [zip(one, other, strict=True) for one, other in pairwise(first)]
+        axes = {axis for pair in pairs for axis, (here, there) in enumerate(pair) if here != there}
+        return axes.pop() if len(axes) == 1 else None
 
     def _sources_holding(self, entry: _TargetDemand, held_blocks: list | None) -> dict[Box, list[int]]:
         """Each part of the box the sources hold, with the sources holding it: their tiles across the window, or the
@@ -2130,9 +2138,10 @@ def _span(tensor: Tensor) -> tuple[int, ...]:
     return tuple((n - 1) * stride + 1 if n else 0 for n, stride in zip(tensor.shape, strides, strict=True))
 
 
-def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int], ...]]:
-    """``box`` cut into ``parts`` near-equal boxes along its longest axis."""
-    axis = max(range(len(box)), key=lambda a: box[a][1] - box[a][0])
+def _split(box: list[tuple[int, int]], parts: int, axis: int | None = None) -> list[tuple[tuple[int, int], ...]]:
+    """``box`` cut into ``parts`` near-equal boxes along ``axis``, by default its longest."""
+    if axis is None:
+        axis = max(range(len(box)), key=lambda a: box[a][1] - box[a][0])
     lo, hi = box[axis]
     edges = [lo + (hi - lo + 1) * k // parts for k in range(parts + 1)]
     return [tuple(box[:axis] + [(edges[k], edges[k + 1] - 1)] + box[axis + 1 :]) for k in range(parts)]

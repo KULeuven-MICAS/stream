@@ -163,12 +163,31 @@ def test_the_tile_search_offers_the_order_and_the_rows_held_of_a_group():
 
     stage = _search_stage()
     found = TileSearchStage._alternatives(stage, 0, None, stage.mapping)
-    assert [key for key, _ in found] == [(0, None, "order"), (0, None, "rows"), (0, None, "rows")]
+    assert [key for key, _ in found] == [
+        (0, None, "order"),
+        (0, None, "rows"),
+        (0, None, "rows"),
+        (0, None, "rows order"),
+        (0, None, "rows order"),
+    ]
     assert [m.fused_groups[0].intra_core_tiling for _, m in found] == [
         ((K, 64), (M, 64), (N, 64)),
         ((M, 64), (K, 64), (N, 64), (M, 128)),
         ((M, 64), (K, 64), (N, 64), (M, 256)),
+        ((M, 64), (K, 64), (M, 128), (N, 64)),
+        ((M, 64), (K, 64), (M, 256), (N, 64)),
     ]
+
+
+def test_with_output_tiles_held_the_weight_is_also_held_across_the_rest_of_m():
+    """Holding four 32-row output tiles leaves an m loop outermost, so the weight is read once per trip of it; swapping
+    that loop with n, past the held rows and the k loops, holds the weight across all of m."""
+    from stream.mapping.mapping import FusedGroup
+    from stream.stages.generation.tile_search import _reordered
+
+    held = FusedGroup("g", ("Gemm",), ((M, 32), (K, 64), (K, 512), (N, 64), (M, 128)))
+    assert _reordered(held, 1).intra_core_tiling == ((M, 32), (K, 64), (K, 512), (M, 128), (N, 64))
+    assert _reordered(held) is None
 
 
 def test_the_tile_search_keeps_the_calls_bound_fastest_and_their_ties(monkeypatch):

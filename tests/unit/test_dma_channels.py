@@ -169,6 +169,7 @@ def _space(namespace, broadcast: bool = False) -> DecisionSpace:
     """A bare decision space carrying only what the shared-memory latency check reads. ``transfer_is_broadcast`` and
     ``overlaps`` inspect real tensors, so they are stubbed -- the plan and the transfer type drive everything else."""
     space = DecisionSpace.__new__(DecisionSpace)
+    space._firing_cycles = {}
     space.hardware = HardwareFacts(accelerator=None, mem_memories=[], namespaces=(namespace,))
     space.transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
     space.overlaps = lambda _tr: {}  # type: ignore[method-assign]

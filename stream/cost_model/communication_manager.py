@@ -53,6 +53,14 @@ class MulticastPathPlan:
     placement: "EdgePlacement | None" = None
     _shares: dict[tuple, float] = field(default_factory=dict, init=False, compare=False, repr=False)
     _sent: dict[Memory, Sent] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _hash: list[int] = field(default_factory=list, init=False, compare=False, repr=False)
+
+    def __hash__(self) -> int:
+        """The hash of the fields compared, computed once: a route keys most of what a model builds per route."""
+        if not self._hash:
+            compared = (self.sources, self.targets, self.total_hops_objective, self.links_used, self.pairs)
+            self._hash.append(hash((*compared, self.hop_demand, self.placement)))
+        return self._hash[0]
 
     def links_at(self, memory: Memory, leaving: bool) -> tuple["CommunicationLink", ...]:
         """The links of the route's hops that leave ``memory`` (``leaving``) or enter it."""

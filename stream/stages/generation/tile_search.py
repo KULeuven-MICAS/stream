@@ -21,13 +21,15 @@ CALLS_KEPT = 3
 
 
 class TileSearchStage(Stage):
-    """Let the optimizer choose each fused group's intra-core tile size."""
+    """Let the optimizer choose each fused group's intra-core tile size. It hands on its choice as ``tile_choice``, the
+    placement and the candidate it took; given the ``tile_choices`` of an earlier run of the same mapping by group, it
+    prices only that one."""
 
     reads = ("workload", "mapping", "output_path", "accelerator")
-    optional_reads = ("tile_search",)
+    optional_reads = ("tile_search", "tile_choices", "group_index")
     writes = ("mapping", "output_path", "placement_alternatives", "placement_reserves")
     result_reads = ("allocation",)
-    result_writes = ("output_path",)
+    result_writes = ("output_path", "tile_choice")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
@@ -35,6 +37,7 @@ class TileSearchStage(Stage):
         self.mapping: Mapping = self.ctx.get("mapping")
         self.output_path: str = self.ctx.get("output_path")
         self.enabled: bool = bool(self.ctx.get("tile_search", False))
+        self.choice: tuple[int, int] | None = (self.ctx.get("tile_choices") or {}).get(self.ctx.get("group_index"))
 
     def _candidates(self) -> list[tuple[object, Mapping]]:
         seeds: list[tuple[object, Mapping]] = [(None, self.mapping)]
@@ -90,16 +93,20 @@ class TileSearchStage(Stage):
         return [candidate for bound, candidate in faster if bound <= last and bound < float("inf")]
 
     def _alternatives(self, gi: int, call: object, mapping: Mapping) -> list[tuple[object, Mapping]]:
-        """Group ``gi`` of ``mapping`` with its staged block, the other operand held, or more output tiles held."""
+        """Group ``gi`` of ``mapping`` with its staged block, the other operand held, more output tiles held, or both of
+        the last two."""
         groups = mapping.fused_groups
         group = groups[gi]
         staged = self._staged(group)
         alternatives = [("staged", staged), ("order", _reordered(group))]
         alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
         extent = self.workload.get_dimension_size
-        alternatives += [("rows", _rows_held(group, f, extent)) for f in GROWTH_FACTORS]
-        if staged is not None:
-            alternatives += [("staged rows", _rows_held(staged, f, extent)) for f in GROWTH_FACTORS]
+        for key, base in (("rows", group), ("staged rows", staged)):
+            if base is None:
+                continue
+            held = [(f, _rows_held(base, f, extent)) for f in GROWTH_FACTORS]
+            alternatives += [(key, rows) for _, rows in held]
+            alternatives += [(f"{key} order", _reordered(rows, 1) if rows else None) for _, rows in held]
         found = []
         for key, alternative in alternatives:
             if alternative is not None:
@@ -146,6 +153,8 @@ class TileSearchStage(Stage):
         for a, mapping in enumerate(attempts + reserves):
             if best is not None and a >= len(attempts):
                 break
+            if self.choice is not None and a != self.choice[0]:
+                continue
             self._attempt = a
             self.ctx.data = dict(entry)
             self.ctx.set(mapping=mapping)
@@ -158,7 +167,7 @@ class TileSearchStage(Stage):
                 continue
             logger.info("Placement %d prices at %s", a, found[2])
             if best is None or found[2] < best[2]:
-                best = found
+                best = (*found, a)
                 if a >= len(attempts):
                     break
         if best is None:
@@ -175,7 +184,7 @@ class TileSearchStage(Stage):
         seed_latency, timed_out = float("inf"), False
         dead_dims: set[object] = set()
         for i, (grown_dim, mapping) in enumerate(candidates):
-            if grown_dim in dead_dims:
+            if grown_dim in dead_dims or (self.choice is not None and i != self.choice[1]):
                 continue
             tiling = {str(d): t for g in mapping.fused_groups for d, t in g.intra_core_tiling}
             prefix = f"p{self._attempt}_" if self._attempt else ""
@@ -218,11 +227,11 @@ class TileSearchStage(Stage):
             raise _unpriced(timed_out) from seed_error
         return best_context, best_index, best_latency, len(candidates)
 
-    def _finish(self, best_context, best_index, best_latency, n):
+    def _finish(self, best_context, best_index, best_latency, n, attempt):  # noqa: PLR0913
         """Hand on the chosen candidate's context, its files copied into the group's own folder."""
         logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, n, best_latency)
         shutil.copytree(best_context.get("output_path"), self.output_path, dirs_exist_ok=True)
-        best_context.set(output_path=self.output_path)
+        best_context.set(output_path=self.output_path, tile_choice=(attempt, best_index))
         self.ctx = best_context
         return best_context
 
@@ -240,12 +249,16 @@ class TileSearchStage(Stage):
         return ctxs, ctxs[0].get("allocation").estimated_cycles
 
 
-def _reordered(group: FusedGroup) -> FusedGroup | None:
-    """``group`` with the two tile loops just outside its innermost dim's loops swapped: a memory tile then holds across
-    the inner of the two the operand the other loop indexes. None where no two loops over other dims follow."""
+def _reordered(group: FusedGroup, held: int = 0) -> FusedGroup | None:
+    """``group`` with the two tile loops just outside its innermost dim's loops swapped, the ``held`` innermost loops
+    (the output tiles a core holds) left where they are: a memory tile then holds across the inner of the two the
+    operand the other loop indexes. None where no two loops over other dims follow."""
     tiling = group.intra_core_tiling
-    first = next((i for i, (dim, _) in enumerate(tiling) if dim != tiling[0][0]), len(tiling))
-    if first + 1 >= len(tiling) or tiling[first + 1][0] in (tiling[0][0], tiling[first][0]):
+    if held >= len(tiling):
+        return None
+    inner = tiling[held][0]
+    first = next((i for i, (dim, _) in enumerate(tiling) if i > held and dim != inner), len(tiling))
+    if first + 1 >= len(tiling) or tiling[first + 1][0] in (inner, tiling[first][0]):
         return None
     swapped = (*tiling[:first], tiling[first + 1], tiling[first], *tiling[first + 2 :])
     return replace(group, intra_core_tiling=swapped)

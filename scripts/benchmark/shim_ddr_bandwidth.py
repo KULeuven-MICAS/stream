@@ -3,10 +3,12 @@
 Each design connects ``columns`` shims to their mem tiles on ``per_column`` channels. The mem tile side loops on one
 buffer, so only the shim side paces the transfer. A channel walks its own 4 MB region in column slabs of ``run``
 bytes at an 8 KB pitch: every run starts a new row, so no two consecutive runs are contiguous. ``adjacent`` gives the
-channels neighbouring slabs of the same rows instead, as a transfer split over columns does. A ``run`` of 8192 reads
-or writes the region linearly. The rate is the bytes of 16 passes over the time of one call, the fastest of 11.
+channels neighbouring slabs of the same rows instead, as a transfer split over columns does; ``slabs`` of them per row,
+all the row holds where not given, so that with one the channels read a column block of each row and skip the rest, as
+a GEMM's column block of a row-major operand is read. A ``run`` of 8192 reads or writes the region linearly. The rate
+is the bytes of 16 passes over the time of one call, the fastest of 11.
 
-    python scripts/benchmark/shim_ddr_bandwidth.py out.jsonl read:8:2:128 both:4:1:8192 adjacent-read:8:1:128 ...
+    python scripts/benchmark/shim_ddr_bandwidth.py out.jsonl read:8:2:128 both:4:1:8192 adjacent-read:8:1:128:1 ...
     python scripts/benchmark/shim_ddr_bandwidth.py out.jsonl --derive
 
 Needs mlir-aie (``aiecc``) and XRT's ``pyxrt``; run one at a time on an idle device.
@@ -48,6 +50,7 @@ class Case:
     per_column: int
     run: int
     adjacent: bool = False
+    slabs: int = 0
 
     @property
     def channels(self) -> int:
@@ -55,13 +58,16 @@ class Case:
 
     @property
     def moved_bytes(self) -> int:
-        return PASSES * REGION * 4 * self.channels * len(SIDES[self.mode])
+        share = self.slabs * self.channels * self.run / PITCH if self.slabs else 1
+        return int(PASSES * REGION * 4 * self.channels * len(SIDES[self.mode]) * share)
 
     @classmethod
     def parse(cls, text: str) -> Case:
-        mode, columns, per_column, run = text.split(":")
+        mode, columns, per_column, run, *slabs = text.split(":")
         adjacent = mode.startswith("adjacent-")
-        return cls(mode.removeprefix("adjacent-"), int(columns), int(per_column), int(run), adjacent)
+        if slabs and not adjacent:
+            raise ValueError("slabs per row apply to adjacent runs")
+        return cls(mode.removeprefix("adjacent-"), int(columns), int(per_column), int(run), adjacent, *map(int, slabs))
 
 
 def access_pattern(case: Case, channel: int) -> tuple[int, list[int], list[int]]:
@@ -71,7 +77,7 @@ def access_pattern(case: Case, channel: int) -> tuple[int, list[int], list[int]]
     if case.adjacent:
         if case.channels * case.run > PITCH:
             raise ValueError("the channels' slabs do not fit in one row")
-        slabs = PITCH // (case.channels * case.run)
+        slabs = case.slabs or PITCH // (case.channels * case.run)
         return channel * words, [case.channels, slabs, ROWS, words], [REGION, case.channels * words, PITCH // 4, 1]
     if case.run >= PITCH:
         return (
@@ -174,9 +180,9 @@ def bits_per_cycle(gb_per_s: float) -> float:
 
 
 def derive(records: list[dict]) -> dict:
-    """``bandwidth.dram`` from a sweep: per direction, the best of 8 and 16 channels walking runs apart, and the same
-    for adjacent runs; the ceiling, the median of linear reads and writes together on 4 or more channels each
-    way."""
+    """``bandwidth.dram`` from a sweep: per direction, the best of 8 and 16 channels walking runs apart, and for
+    adjacent runs the best of one channel per column reading or writing one column block of each row; the ceiling,
+    the median of linear reads and writes together on 4 or more channels each way."""
     best, adjacent = (_best(records, kind) for kind in (False, True))
     both = [
         r["gb_per_s"]
@@ -203,8 +209,15 @@ def derive(records: list[dict]) -> dict:
 
 
 def _best(records: list[dict], adjacent: bool) -> dict[tuple[str, int], float]:
-    """Per direction and run, the fastest of the whole array's records walking runs apart or adjacent ones."""
-    walked = [r for r in records if r["adjacent"] == adjacent and r["columns"] == WHOLE_ARRAY_COLUMNS]
+    """Per direction and run, the fastest of the whole array's records walking runs apart, or of its records moving
+    one column block of each row on one channel per column."""
+    walked = [
+        r
+        for r in records
+        if r["adjacent"] == adjacent
+        and r["columns"] == WHOLE_ARRAY_COLUMNS
+        and (r.get("slabs") == 1 and r["per_column"] == 1 if adjacent else not r.get("slabs"))
+    ]
     return {
         (r["mode"], r["run"]): max(s["gb_per_s"] for s in walked if (s["mode"], s["run"]) == (r["mode"], r["run"]))
         for r in walked

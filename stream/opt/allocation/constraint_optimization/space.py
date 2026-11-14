@@ -96,6 +96,8 @@ class DecisionSpace:
         self._init_option_sets()
         self._fixed = frozenset(self.tensor_fixed)
         self._candidates: dict[Tensor, set[Memory]] = {}
+        self._firing_cycles: dict[tuple[TransferNode, MulticastPathPlan, CopySet | None], int] = {}
+        self._side_ports: dict[tuple[object, ...], dict[Port, float]] = {}
         self._broadcast: dict[TransferNode, bool] = {}
         self._one_memory: dict[TransferNode, bool] = {}
         self._overlaps: dict[TransferNode, dict[tuple[int, int], float]] = {}
@@ -590,6 +592,13 @@ class DecisionSpace:
     ) -> int:
         """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse; with ``copies``, the
         cycles of what it delivers to exactly those copies."""
+        key = (tr, path, copies)
+        if key not in self._firing_cycles:
+            self._firing_cycles[key] = self._cycles_of_firing(tr, path, copies)
+        return self._firing_cycles[key]
+
+    def _cycles_of_firing(self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet | None) -> int:
+        """:meth:`transfer_latency_for_path`, computed."""
         if self.choice_shares_memory(tr, path):
             return 0
         if copies is None:
@@ -687,7 +696,16 @@ class DecisionSpace:
         """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
         share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`), with the reads and writes of the
         partial sums added into it. Empty when the route moves no bits through a port of ``memory``. A target passing
-        data on reads it in the role it holds it in."""
+        data on reads it in the role it holds it in. Callers do not change the dict, which is shared."""
+        key = (tr, choice, memory, direction, copies)
+        if key not in self._side_ports:
+            self._side_ports[key] = self._ports_of_side(tr, choice, memory, direction, copies)
+        return self._side_ports[key]
+
+    def _ports_of_side(
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str, copies: CopySet | None
+    ) -> dict[Port, float]:
+        """:meth:`side_ports`, computed."""
         leaving = direction == READ
         role = self.operand_role(tr, read_side=leaving and memory in choice.sources)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))

@@ -175,16 +175,21 @@ def select_mapping(
     return min(estimates, key=lambda estimate: estimate.cycles)
 
 
-def generate_code(
+def generate_code(  # noqa: PLR0913
     hardware: str | Accelerator,
     workload: Any,
     output_path: str,
     mapping: str | None = None,
     options: SolveOptions | None = None,
+    estimate: MappingEstimate | None = None,
 ) -> MappingEstimate:
     """:func:`evaluate_mapping`, with the code generation backend that claims the accelerator writing
-    each fused group's design under ``output_path/group_<index>``."""
-    return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=True)
+    each fused group's design under ``output_path/group_<index>``. Given the ``estimate`` of the same hardware,
+    workload, mapping and options, each group takes the tile candidate the estimate chose instead of searching again."""
+    if estimate is not None and estimate.mapping != mapping:
+        raise ValueError(f"The estimate prices mapping {estimate.mapping!r}, not {mapping!r}.")
+    choices = estimate.context.get("group_tile_choices") if estimate is not None else None
+    return _solve(hardware, workload, output_path, mapping, options or SolveOptions(), codegen=True, choices=choices)
 
 
 def _maps_layers(mapping: str) -> bool:
@@ -199,6 +204,7 @@ def _solve(
     mapping: str | None,
     options: SolveOptions,
     codegen: bool,
+    choices: dict[int, tuple[int, int]] | None = None,
 ) -> MappingEstimate:
     observers = build_instrumentation("generate_code" if codegen else "evaluate_mapping", options.instrumentation)
     try:
@@ -231,6 +237,7 @@ def _solve(
             families=families,
             kernel_library=options.kernel_library,
             tile_search=options.tile_search,
+            tile_choices=choices,
             time_limit_s=options.time_limit_s,
             solver_log=options.solver_log,
             artifacts=options.artifacts,
