@@ -429,11 +429,13 @@ class _Lowering:
 
     def add_halos(self, tensor: Tensor, transfer: TransferNode, ssis: SteadyStateIterationSpace) -> None:
         """Give each loop that slides the window of a transfer's copy the halo its consecutive tiles share."""
-        sliding = (IterationVariableType.TEMPORAL, IterationVariableType.SPATIAL)
-        loops = [v for v in ssis if v.relevant and v.type in sliding]
-        windows = self.ssw.get_windows(tensor, transfer, self.mapping, [v.dimension for v in loops])
-        for loop in loops:
-            loop.halo = windows[loop.dimension][1] if loop.dimension in windows else 0
+        for kind in (IterationVariableType.TEMPORAL, IterationVariableType.SPATIAL):
+            loops = [v for v in ssis if v.relevant and v.type is kind]
+            dims = [v.dimension for v in loops]
+            temporal = kind is IterationVariableType.TEMPORAL
+            windows = self.ssw.get_windows(tensor, transfer, self.mapping, dims, temporal=temporal)
+            for loop in loops:
+                loop.halo = windows[loop.dimension][1] if loop.dimension in windows else 0
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_dst_allocs = self.determine_possible_memory_allocations(node, src, dsts)
