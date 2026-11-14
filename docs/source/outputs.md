@@ -76,9 +76,9 @@ The outcome of the allocation solve, on every backend, and the size of its model
 | `search.simplex_iterations` | simplex iterations | count |
 | `solution` | what the solver found | |
 | `solution.objective_value` | the objective of the best solution; for Stream's lexicographic objective, its highest level, the latency | objective |
-| `solution.mip_gap` | the relative gap between that objective and the best bound | ratio |
+| `solution.mip_gap` | the relative gap between that objective and the best bound; null with Gurobi, whose multi-objective solve defines none per level | ratio |
 | `effort` | what the solve cost | |
-| `effort.runtime_s` | the solver's runtime | s |
+| `effort.runtime_s` | the solver's runtime over every level of the objective | s |
 | `model` | the size of the model | |
 | `model.variables` | its variables | |
 | `model.variables.total` | all variables | count |
@@ -122,6 +122,8 @@ Where the latency of one steady-state iteration goes: its totals, each resource'
 | `totals.overlap_cycles` | how much of an iteration the next one overlaps | cycles |
 | `totals.initiation_interval_cycles` | the time between the starts of two iterations, the iteration latency less the overlap | cycles |
 | `totals.total_latency_cycles` | the latency of every iteration together, fill included | cycles |
+| `totals.fill_cycles` | what the run adds to its overlapped iterations | cycles |
+| `totals.absent_wait_cycles` | of the fill, the wait for computation nodes absent from a fused loop that a neighbour varies on | cycles |
 | `totals.shared_busy_cycles` | per memory with a measured bandwidth, the time it spends on one iteration's transfers | |
 | `totals.shared_busy_cycles.<memory>` | that time for the memory of this name; it bounds the initiation interval from below | cycles |
 | `resource_slack` | per core and link, least first, its idle time within one iteration; the overlap is at most the least of them | |

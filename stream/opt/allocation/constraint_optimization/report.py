@@ -520,6 +520,8 @@ def slot_latency_breakdown(
             "overlap_cycles": overlap,
             "initiation_interval_cycles": per_iteration - overlap,
             "total_latency_cycles": round(value(q.get("total_latency").expr)),
+            "fill_cycles": round(value(q.get("fill").expr)),
+            "absent_wait_cycles": round(value(q.get("absent_wait").expr)) if "absent_wait" in q else 0,
             "shared_busy_cycles": {memory.name: _json_scalar(value(busy.expr)) for memory, busy in shared.items()},
         },
         "resource_slack": slack,

@@ -27,7 +27,7 @@ class LatencyInfo(BaseModel):
     )
     fill: int = Field(
         default=0,
-        description="Cycles each run waits before its first iteration for the tensors it holds in one buffer",
+        description="Cycles the run adds to its overlapped iterations: fills, drains and the wait for absent nodes",
     )
 
 
@@ -54,10 +54,11 @@ class SolveStatsIR(BaseModel):
     status: str = Field(description="Solve status, e.g. 'OPTIMAL', 'TIME_LIMIT'")
     solver: str = Field(description="Underlying solver, e.g. 'gurobi', 'gscip', 'highs'")
     mip_gap: float | None = Field(
-        default=None, description="Relative optimality gap; None = the backend defines none, i.e. floor unknown"
+        default=None,
+        description="Relative optimality gap at the latency level; None = the backend defines none, i.e. floor unknown",
     )
-    objective: float | None = Field(default=None, description="Objective value of the best solution found")
-    solve_time_s: float | None = Field(default=None, description="Wall-clock solve time in seconds")
+    objective: float | None = Field(default=None, description="Latency-level objective of the best solution found")
+    solve_time_s: float | None = Field(default=None, description="Solve time in seconds, over every objective level")
     node_count: int | None = Field(default=None, description="Branch-and-bound nodes explored")
     iteration_count: int | None = Field(default=None, description="Simplex iterations")
 

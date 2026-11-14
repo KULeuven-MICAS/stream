@@ -20,10 +20,18 @@ TOTAL_LATENCY = "total_latency"
 FamilySpec = str | Mapping[str, Any]
 Build = Callable[["FormulationContext"], None]
 
-LATENCY, OFFCHIP_FOOTPRINT, OFFCHIP_TRAFFIC, DMA_PEAKS, BUFFERING, ROUTE_HOPS = 6, 5, 4, 3, 2, 1
+LATENCY, OFFCHIP_FOOTPRINT, OFFCHIP_TRAFFIC, DMA_PEAKS, BUFFERING, ROUTE_HOPS, LATENCY_WITHOUT_WAIT = (
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0,
+)
 """The priorities of Stream's objective levels: the latency decides first, then the off-chip footprint of the inputs
 whose placement the allocation chooses, the off-chip traffic, the DMA channel peaks, the buffering depth and the route
-length each break the ties of the level above."""
+length each break the ties of the level above; last, where absent nodes wait, the latency less that wait."""
 
 OFFCHIP_TIMED = "offchip_timed"
 """Registered by a family whose latency already pays for the time the off-chip links take."""
