@@ -1007,9 +1007,21 @@ class Workload(DiGraphWrapper[Node]):
         ``temporal`` loop steps one core by the tile times the split of its dim."""
         if (found := self._reader(tensor, transfer)) is None:
             return {}
-        (read, reader), (unique_dims, dim_values) = found, self.unique_dimensions()
+        read, reader = found
         tiling = self._tiling(transfer, mapping)
-        sizes, factors = self._tile_sizes(tiling), dict(tiling) if temporal else {}
+        return self.windows_for_sizes(read, reader, self._tile_sizes(tiling), dims, dict(tiling) if temporal else {})
+
+    def windows_for_sizes(
+        self,
+        read: Tensor,
+        reader: HasIterationSpace,
+        sizes: dict[LayerDim, int],
+        dims: Sequence[LayerDim],
+        factors: dict[LayerDim, int] | None = None,
+    ) -> dict[LayerDim, tuple[int, int]]:
+        """:meth:`get_windows` for ``reader`` reading ``read`` in tiles of the given ``sizes``."""
+        unique_dims, dim_values = self.unique_dimensions()
+        factors = factors or {}
         shape = self.get_tensor_shape_with_dimension_sizes(read, sizes, reader)
         index_steps = self._tile_index_steps(read, [reader])
         sliding = set(dims) & set(self.get_tensor_dimensions(reader.outputs[0]))
@@ -1066,7 +1078,18 @@ class Workload(DiGraphWrapper[Node]):
         read, reader = found
         halos = self.sliding_halos(tensor, transfer, mapping, ssis)
         sizes = self._tile_sizes(self._window_tiling(transfer, reader, mapping))
-        loops = ssis.get_applicable_temporal_variables()
+        return self.kept_halos_for_sizes(read, reader, halos, sizes, ssis.get_applicable_temporal_variables())
+
+    def kept_halos_for_sizes(
+        self,
+        read: Tensor,
+        reader: HasIterationSpace,
+        halos: dict[LayerDim, tuple[int, int]],
+        sizes: dict[LayerDim, int],
+        loops: Sequence[IterationVariable],
+    ) -> dict[int, int]:
+        """:meth:`kept_halos` for ``reader`` reading ``read`` in tiles of the given ``sizes``."""
+        loops = list(loops)
 
         def slab(loop: IterationVariable, inner: list[IterationVariable]) -> int:
             swept = dict(sizes)

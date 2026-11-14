@@ -19,6 +19,7 @@ from stream.hardware.architecture.noc.communication_link import CommunicationLin
 from stream.hardware.cost import accumulator_format, reduced_dims, running_sum_bits
 from stream.hardware.ports import OUTPUT, READ
 from stream.ir.infeasibility import InfeasibleAllocationError
+from stream.mapping.capacity_tiler import buffer_count
 from stream.mapping.mapping import placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
@@ -356,8 +357,9 @@ class DecisionSpace:
     def resident_tiles(self, t: Tensor, stop: int, single: bool = False) -> int:
         """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``, held in one
         buffer where ``single``."""
-        tiles = self.tiles_needed_levels[(t, stop)]
-        return max(tiles, 2) if self.rotation_levels.get((t, stop)) and not single else tiles
+        return buffer_count(
+            self.tiles_needed_levels[(t, stop)], bool(self.rotation_levels.get((t, stop))) and not single
+        )
 
     def halo_bits(self, t: Tensor, stop: int) -> int:
         """Bits of halo the copy ``t`` holds on one core in addition to its resident tiles at reuse stop ``stop``."""
@@ -375,7 +377,7 @@ class DecisionSpace:
 
     def memory_capacity_bits(self, memory: Memory) -> int:
         """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims in it."""
-        return memory.capacity_bits - self.hardware.reserved_memory_bits(memory)
+        return self.hardware.usable_bits(memory)
 
     def is_const_i(self, tr: TransferNode) -> bool:
         return is_const_input(self.workload, tr)
