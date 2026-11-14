@@ -1,4 +1,4 @@
-"""Partial sums carried at the accumulator precision through each copy set a route delivers to."""
+"""Partial sums carried at their own format through each copy set a route delivers to."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def _space(tr: _Transfer) -> DecisionSpace:
     return space
 
 
-def test_a_copy_set_carries_its_partial_sums_over_a_link_at_the_accumulator_precision():
+def test_a_copy_set_carries_its_partial_sums_over_a_link_at_their_format():
     """Copy 0's 2048 partial sums cross the link at fp32, 2048 x 32 = 65536 bits, twice the 32768 bits it is
     delivered; copy 1's finished box crosses at bf16, 2048 x 16 = 32768 bits."""
     tr = _Transfer()

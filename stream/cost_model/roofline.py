@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.families.traffic import link_cores, link_name, port_name
 from stream.opt.allocation.constraint_optimization.report import compute_units, runs_macs
+from stream.opt.allocation.constraint_optimization.utils import active_fraction
+from stream.workload.node import ComputationNode
 
 if TYPE_CHECKING:
     from stream.allocation.allocation import Allocation
@@ -75,6 +77,21 @@ def hardware_roofline(accelerator: Accelerator) -> dict[str, Any]:
     }
 
 
+def _elementwise_operations(allocation: Allocation) -> float:
+    """The operations of the whole run: each node's loop nest over one tile, times the iterations it runs in."""
+    problem = allocation.problem
+    workload = problem.source_workload
+    steady = {n.name: n for n in problem.ssis if isinstance(n, ComputationNode)}
+    return float(
+        sum(
+            prod(workload.get_dimension_size(d) for d in workload.get_dims(cn))
+            * problem.iterations
+            * active_fraction(steady[cn.name], problem.ssis)
+            for cn in workload.get_computation_nodes()
+        )
+    )
+
+
 def group_point(allocation: Allocation, hardware: dict[str, Any]) -> dict[str, Any]:
     """Where the solved group ``allocation`` sits on ``hardware``'s roofline, at the latency its solve models, with
     what holds it down."""
@@ -82,9 +99,8 @@ def group_point(allocation: Allocation, hardware: dict[str, Any]) -> dict[str, A
     aggregate = performance.get("aggregate") or {}
     latency = allocation.solution.latency.total
     macs = float(aggregate.get("total_mac_ops") or 0)
-    workload = allocation.problem.source_workload
-    nodes = workload.get_computation_nodes()
-    operations = macs or float(sum(prod(workload.get_dimension_size(d) for d in workload.get_dims(cn)) for cn in nodes))
+    nodes = allocation.problem.source_workload.get_computation_nodes()
+    operations = macs or _elementwise_operations(allocation)
     roof = _roof(hardware, allocation, macs)
     traffic = _traffic(performance.get("memory_ports") or [], hardware, allocation.problem.iterations)
     peak = roof["ops_per_cycle"] if roof else 0

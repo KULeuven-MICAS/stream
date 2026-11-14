@@ -1,5 +1,6 @@
 """The roofline of the example accelerators, and where the groups of a run sit on it."""
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,14 @@ import pytest
 from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, default_families, evaluate_mapping
-from stream.cost_model.roofline import COMPUTE, LEVELS, _diagnosis, hardware_roofline, run_roofline
+from stream.cost_model.roofline import (
+    COMPUTE,
+    LEVELS,
+    _diagnosis,
+    _elementwise_operations,
+    hardware_roofline,
+    run_roofline,
+)
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.stages.parsing.accelerator_parser import parse_accelerator
@@ -167,6 +175,34 @@ def test_a_point_above_a_ceiling_names_the_resource_the_solve_did_not_hold_to_it
     (point,) = _roofline(tmp_path, enforce_ports=False)["points"]
     (above,) = [d for d in point["diagnosis"] if d["code"] == "exceeds_ceiling"]
     assert above["level"] == "off-chip memory" and above["utilization"] > 1
+
+
+def test_a_group_without_macs_counts_the_operations_of_the_whole_run(tmp_path):
+    """The 3 x 3 max pool over 16 x 32 x 32 in 4 tiles of 8 rows takes 16 x 32 x 32 x 9 = 147456 operations, not one
+    tile's 36864."""
+    pool = helper.make_node("MaxPool", ["x"], ["y"], name="Pool", kernel_shape=[3, 3], pads=[1] * 4)
+    workload = _onnx(tmp_path / "pool.onnx", [pool], {"x": [1, 16, 32, 32]}, "y", [1, 16, 32, 32])
+    accelerator = HARDWARE.format("fusemax")
+    stage_options = {"intra_core_tiling": [{"dim": "Pool.D2", "tile": 8}]}
+    options = SolveOptions(artifacts=False, families=default_families(accelerator), stage_options=stage_options)
+    estimate = evaluate_mapping(accelerator, workload, str(tmp_path), options=options)
+    (group,) = estimate.context.get("group_allocations").values()
+    assert math.prod(group["fusion_splits"].values()) == 4
+    assert estimate.context.get("roofline")["points"][0]["operations"] == 16 * 32 * 32 * 9
+
+
+def test_elementwise_operations_count_a_node_once_per_iteration_it_is_not_idle(tmp_path: Path):
+    """Two fused 64 x 64 matmuls cut into 8 iterations, the second's contraction among the cuts: the first runs in
+    half of them, so its 64 x 32 x 32 tile counts 4 times, as does the second's 32 x 64 x 32: 2 x 262144, the MACs
+    the solve reports."""
+    accelerator = HARDWARE.format("tpu_like_quad_core")
+    estimate = evaluate_mapping(
+        accelerator, _blocks(tmp_path / "blocks.onnx"), str(tmp_path), options=SolveOptions(artifacts=False)
+    )
+    allocation = estimate.context.get("allocation")
+    (group,) = estimate.context.get("group_allocations").values()
+    assert (allocation.problem.iterations, _elementwise_operations(allocation)) == (8, 2 * 64**3)
+    assert group["performance"]["aggregate"]["total_mac_ops"] == 2 * 64**3
 
 
 def test_a_group_without_macs_on_the_vector_unit_sits_under_the_vector_roof(tmp_path: Path):
