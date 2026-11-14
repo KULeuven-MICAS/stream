@@ -45,7 +45,7 @@ class FusionGroupIterationStage(Stage):
     groups after it read them there."""
 
     reads = ("accelerator", "output_path", "sub_workloads", "sub_mappings")
-    optional_reads = ("memory_accesses",)
+    optional_reads = ("memory_accesses", "tile_choice")
     writes = ("workload", "mapping", "output_path", "group_index", "held")
     result_reads = ("allocation",)
     result_writes = (
@@ -56,6 +56,7 @@ class FusionGroupIterationStage(Stage):
         "group_wall_times",
         "group_allocations",
         "group_memory_accesses",
+        "group_tile_choices",
         "roofline",
     )
 
@@ -75,6 +76,7 @@ class FusionGroupIterationStage(Stage):
         group_wall_times: dict[int, float] = {}
         group_allocations: dict[int, dict | None] = {}
         group_memory_accesses: dict[int, dict | None] = {}
+        group_tile_choices: dict[int, tuple[int, int]] = {}
         final_ctx = None
 
         assert len(sub_workloads) == len(self.sub_mappings), (
@@ -116,6 +118,8 @@ class FusionGroupIterationStage(Stage):
             group_latencies[i] = group_latency
             group_cores[i] = len(_compute_cores(allocation))
             group_cycles[i] = allocation.estimated_cycles
+            if (choice := ctx.get("tile_choice")) is not None:
+                group_tile_choices[i] = choice
             group_allocations[i] = AllocationIR.from_internal(allocation).model_dump()
             # Capture the memory-access breakdown (per core, per tensor, off-chip vs on-chip) so the
             # exploration result can show where the traffic goes -- the memory-wall view.
@@ -140,6 +144,7 @@ class FusionGroupIterationStage(Stage):
             group_wall_times=group_wall_times,
             group_allocations=group_allocations,
             group_memory_accesses=group_memory_accesses,
+            group_tile_choices=group_tile_choices,
         )
         logger.info(f"Total latency across all groups: {total_latency}")
         logger.info(f"Per-group latencies: {group_latencies}")
