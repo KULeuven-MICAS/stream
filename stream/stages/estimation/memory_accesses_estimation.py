@@ -62,6 +62,7 @@ class MemoryAccessesEstimationStage(Stage):
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
         self.ssis = self.ctx.get("allocation").ssis
+        self.space = self.ctx.get("allocation").space
 
         self.core_memory_accesses: CoreMemoryAccesses = CoreMemoryAccesses(self.accelerator)
 
@@ -201,13 +202,16 @@ class MemoryAccessesEstimationStage(Stage):
         if not route.delivered_items:
             # Where its readers read all of it in place, what they read there.
             moved = item_bits(route.demand, bitwidth)
-            return [(memory, moved * route.memory_share(memory, leaving), nb_fires) for memory in memories]
+            return [
+                (memory, moved * self.space.memory_share(tn, route, memory, leaving), nb_fires) for memory in memories
+            ]
         found = []
         for copies in copy_sets(route.delivered_items):
             moved = moved_elements(item for item in route.delivered_items if item.copies == copies) * bitwidth
             fires = max(nb_fires * self._firing_share(tn, c) for c in copies)
             found += [
-                (memory, moved * route.memory_share(memory, leaving, copies), round(fires)) for memory in memories
+                (memory, moved * self.space.memory_share(tn, route, memory, leaving, copies), round(fires))
+                for memory in memories
             ]
         return found
 

@@ -97,7 +97,7 @@ describe element types rather than computations, and Stream folds them the way a
 
 A conversion with nothing to fold into, such as quantizing the model's fp32 input or dequantizing its output, stays in
 the graph as a `Cast` node and is costed like any element-wise op, on a core whose `operator_types` include `Cast`.
-Partial sums are kept at the accumulator precision of the core computing them (see
+Running sums are kept at the accumulator precision of the core computing them (see
 [Hardware](hardware.md#operand-precision)).
 
 ### Weights are not needed — clear them

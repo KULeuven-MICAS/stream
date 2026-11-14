@@ -506,6 +506,7 @@ def test_a_copy_set_counts_on_a_link_the_same_box_from_each_source_it_crosses_fr
     path = SimpleNamespace(
         hops=(("m0", "t", link), ("m1", "t", link)), hop_demand=((sent[0],), (sent[1],)), demand=sent
     )
-    tr = SimpleNamespace(inputs=[SimpleNamespace(operand_type=SimpleNamespace(bitwidth=8))])
+    tr = type("Transfer", (), {"inputs": [SimpleNamespace(operand_type=SimpleNamespace(bitwidth=8))]})()
     space = object.__new__(DecisionSpace)
+    space.partial_sum_ratio = {}
     assert space.copy_set_link_bits(tr, path, (0, 1)) == {link: 64}  # type: ignore[arg-type]

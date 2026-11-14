@@ -9,6 +9,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.cost import running_sum_bits
 from stream.mapping.mapping import placement_split_bits, role_of, whole_bits
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import IteratorType, derive_iterator_types
@@ -141,17 +142,19 @@ class CapacityTiler:
             and not any(placed.get(d) for d in per_core if seed[d] < per_core[d])
         ):
             fitted.append((fill(), dict(seed)))
-        for start in dict.fromkeys((tuple(seed.items()), tuple(per_core.items()))) if not fitted else ():
-            for candidates in ([d for d in per_core if d not in reductions], list(per_core)):
-                resident.update(start)
-                while overflow() > 0 and (
-                    step := self._shrink(
-                        candidates, resident, per_core, divisors, overflow, fill, aligned, placed, max_tiles
-                    )
-                ):
-                    resident[step[0]] = step[1]
-                if overflow() <= 0:
-                    fitted.append((fill(), dict(resident)))
+
+        search = {
+            "resident": resident,
+            "per_core": per_core,
+            "divisors": divisors,
+            "overflow": overflow,
+            "fill": fill,
+            "aligned": aligned,
+            "placed": placed,
+        }
+        fitted = fitted or self._fit(
+            (seed, per_core), [d for d in per_core if d not in reductions], max_tiles, **search
+        )
         if not fitted:
             return None
 
@@ -159,7 +162,6 @@ class CapacityTiler:
             fill, tiles = fit
             return -sum(placed.get(d, 0) for d in per_core if tiles[d] < per_core[d]), fill
 
-        resident.update(max(fitted, key=rank)[1])
         indexed = {
             dim: sum(
                 math.prod(t.shape) * t.operand_type.bitwidth
@@ -169,7 +171,8 @@ class CapacityTiler:
             )
             for dim in per_core
         }
-        self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned, placed)
+
+        self._settle(fitted, rank, indexed, reductions, **search)
         if resident == seed:
             return []
 
@@ -187,6 +190,11 @@ class CapacityTiler:
             return any(bits > budgets[m] for m, bits in held.items() if budgets.get(m, 0) > 0)
 
         order = sorted((d for d in per_core if resident[d] < per_core[d]), key=lambda d: indexed.get(d, 0.0))
+        if accumulating(order) and (
+            refitted := self._fit((per_core,), [d for d in reductions if d in per_core], max_tiles, **search)
+        ):
+            self._settle(refitted, rank, indexed, reductions, **search)
+            order = sorted((d for d in per_core if resident[d] < per_core[d]), key=lambda d: indexed.get(d, 0.0))
         if accumulating(order):
             order.sort(key=lambda d: d not in reductions)
         feeding = [reduced_by[cn] for cn in cns if any(set(cn.outputs) & set(c.inputs) for c in cns)]
@@ -200,6 +208,57 @@ class CapacityTiler:
         return self._emit(
             cns, self._order(cns, cores_per_node, unroll, resident, node_unroll, budgets, orders), resident
         )
+
+    def _fit(  # noqa: PLR0913
+        self,
+        starts: tuple[dict[LayerDim, int], ...],
+        first: list[LayerDim],
+        max_tiles: int,
+        *,
+        resident: dict[LayerDim, int],
+        per_core: dict[LayerDim, int],
+        divisors: dict[LayerDim, list[int]],
+        overflow: Any,
+        fill: Any,
+        aligned: Any,
+        placed: dict[LayerDim, int],
+    ) -> list[tuple[float, dict[LayerDim, int]]]:
+        """The tilings that fit, with their array fill, that shrinking ``resident`` from each of ``starts`` reaches,
+        cutting the dims ``first`` alone before all of them."""
+        before, found = dict(resident), []
+        for start in dict.fromkeys(tuple(start.items()) for start in starts):
+            for candidates in (first, list(per_core)):
+                resident.update(start)
+                while overflow() > 0 and (
+                    step := self._shrink(
+                        candidates, resident, per_core, divisors, overflow, fill, aligned, placed, max_tiles
+                    )
+                ):
+                    resident[step[0]] = step[1]
+                if overflow() <= 0:
+                    found.append((fill(), dict(resident)))
+        if not found:
+            resident.update(before)
+        return found
+
+    def _settle(  # noqa: PLR0913
+        self,
+        fits: list[tuple[float, dict[LayerDim, int]]],
+        rank: Any,
+        indexed: dict[LayerDim, float],
+        reductions: set[LayerDim],
+        *,
+        resident: dict[LayerDim, int],
+        per_core: dict[LayerDim, int],
+        divisors: dict[LayerDim, list[int]],
+        overflow: Any,
+        fill: Any,
+        aligned: Any,
+        placed: dict[LayerDim, int],
+    ) -> None:
+        """Set ``resident`` to the best of ``fits`` by ``rank``, cut into tiles enough to pipeline."""
+        resident.update(max(fits, key=rank)[1])
+        self._pipeline(resident, per_core, divisors, indexed, reductions, overflow, fill, aligned, placed)
 
     def _order(  # noqa: PLR0913
         self, cns, cores_per_node, unroll, resident, node_unroll, budgets, orders
@@ -512,9 +571,11 @@ class CapacityTiler:
         held: dict[str, dict[tuple, float]] = {}
         tensors: dict[str, Tensor] = {}
         produced = {t for cn in cns for t in cn.outputs}
+        sums: set[tuple] = set()
         for cn in cns:
             cores = cores_per_node.get(cn, [])
             sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
+            running = running_sum_bits(self.sub_workload, cn, cores, {d for d, n in sizes.items() if n < full[d]})
             stepped = {d for d, r in resident.items() if r * unroll.get(d, 1) < full[d]}
             if whole := {d: full[d] // unroll.get(d, 1) for d in accumulated_over}:
                 sizes = self._node_sizes(cn, cores_per_node, unroll, resident | whole, node_unroll)
@@ -524,9 +585,14 @@ class CapacityTiler:
                 buffers = 2 if stepping and not whole else 1  # an accumulating output stays put
                 tile = (t.name, shape) if t in produced else (t.name, cn.name, shape)
                 tensors[t.name] = t
+                is_running_sum = bool(running) and t in cn.outputs
+                bits = buffers * math.prod(shape) * (running if is_running_sum else t.operand_type.bitwidth)
                 for core in cores:
-                    memory = self.accelerator.memory_of(core, role_of(cn, t)).name
-                    held.setdefault(memory, {})[(core.id, tile)] = buffers * math.prod(shape) * t.operand_type.bitwidth
+                    tiles = held.setdefault(self.accelerator.memory_of(core, role_of(cn, t)).name, {})
+                    key = (core.id, tile)
+                    if is_running_sum:
+                        sums.add(key)
+                    tiles[key] = max(bits, tiles[key]) if key in sums and key in tiles else bits
         return {memory: self._beyond_placed(memory, tiles, tensors) for memory, tiles in held.items()}
 
     def _beyond_placed(self, memory: str, tiles: dict[tuple, float], tensors: dict[str, Tensor]) -> float:

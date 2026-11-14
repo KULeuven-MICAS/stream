@@ -39,7 +39,7 @@ def steady_state_detail(allocation: Allocation, space: DecisionSpace) -> dict[st
     return {
         "iterations": allocation.problem.iterations,
         "axes": _axes(allocation, sliding),
-        "tensors": _tensors(allocation),
+        "tensors": _tensors(allocation, space),
         "nodes": {name: found for name, found in nodes.items() if found is not None},
     }
 
@@ -57,7 +57,7 @@ def _axes(allocation: Allocation, sliding: set[LayerDim]) -> list[dict[str, Any]
     ]
 
 
-def _tensors(allocation: Allocation) -> list[dict[str, Any]]:
+def _tensors(allocation: Allocation, space: DecisionSpace) -> list[dict[str, Any]]:
     """Each tensor as the solution placed and buffered it, a transfer's copy at the window its reader holds."""
     solution, workload, mapping = allocation.solution, allocation.problem.workload, allocation.problem.mapping
     writers = {copy: tn for tn in workload.get_transfer_nodes() for copy in tn.outputs}
@@ -66,7 +66,7 @@ def _tensors(allocation: Allocation) -> list[dict[str, Any]]:
         {
             "name": t.name,
             "shape": _shape(held.get(t, t)),
-            "bits": int(held.get(t, t).size_bits()),
+            "bits": space.held_bits(t, held.get(t, t)),
             "loops": _loops(ssis),
             "placement": [memory.name for memory in solution.tensor_placements.get(t, ())],
             "reuse_level": solution.reuse_levels.get(t),
@@ -182,7 +182,7 @@ class _NodeDetail:
         if not space.choice_shares_memory(tn, route):
             for copies in space.copy_sets(tn, route):
                 first = min(copies, key=lambda c: reuse[c])
-                moved[first] += space.moved_bits(tn, route, copies=copies)
+                moved[first] += space.sent_bits(tn, route, copies)
         top = min((r for r, bits in zip(reuse, moved, strict=True) if bits), default=reuse[0])
         return {
             "moved_bits": sum(bits * top / r for bits, r in zip(moved, reuse, strict=True)),

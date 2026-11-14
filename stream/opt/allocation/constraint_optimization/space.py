@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections import defaultdict
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from functools import cached_property, reduce
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -10,17 +12,27 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 import numpy as np
 
 from stream.cost_model.bandwidth import BandwidthModel
-from stream.cost_model.communication_manager import MulticastPathPlan
+from stream.cost_model.communication_manager import Hop, MulticastPathPlan
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.hardware.cost import accumulator_format, reduced_dims, running_sum_bits
 from stream.hardware.ports import OUTPUT, READ
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
-from stream.workload.demand import Box, DemandItem, box_bits, copy_sets, firing_count, item_bits, moved_elements
+from stream.workload.demand import (
+    Box,
+    DemandItem,
+    box_bits,
+    copy_sets,
+    covered,
+    firing_count,
+    item_bits,
+    moved_elements,
+)
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType, LoopEffect, Reuse
@@ -65,6 +77,7 @@ class DecisionSpace:
         self.tensor_var: list[Tensor] = []
         self.tensor_choices: dict[Tensor, tuple[Placement, ...]] = {}
         self.path_choices: dict[TransferNode, tuple[MulticastPathPlan, ...]] = {}
+        self.partial_sum_ratio: dict[TransferNode, float] = {}
         self._init_option_sets()
         self._fixed = frozenset(self.tensor_fixed)
         self._candidates: dict[Tensor, set[Memory]] = {}
@@ -115,7 +128,9 @@ class DecisionSpace:
                     self.tensor_var.append(tensor)
 
         for tr in self.transfer_nodes:
-            self.path_choices[tr] = _normalize_path_choices(self.mapping.get(tr).resource_allocation)
+            choices = _normalize_path_choices(self.mapping.get(tr).resource_allocation)
+            ratio = self.partial_sum_ratio[tr] = self.element_bits(tr.inputs[0]) / tr.inputs[0].operand_type.bitwidth
+            self.path_choices[tr] = tuple(with_partial_sum_shares(choice, ratio) for choice in choices)
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first = self.transfer_nodes[0]
@@ -244,6 +259,74 @@ class DecisionSpace:
         return self._compute_cores[tr]
 
     @cached_property
+    def producers(self) -> dict[Tensor, ComputationNode]:
+        """Each tensor a computation node writes, with that node."""
+        return {t: node for node in self.ssc_nodes for t in node.outputs}
+
+    def running_sum_bits(self, t: Tensor) -> int | None:
+        """Bits per element ``t`` is held in while it is a running sum: a fused loop or its producer's split over
+        cores cuts a dimension the producer reduces over. None otherwise."""
+        if (node := self.producers.get(t)) is None:
+            return None
+        cut = (IterationVariableType.TEMPORAL, IterationVariableType.SPATIAL)
+        partial = {v.dimension for v in self.ssis[t].variables if v.type in cut and v.size > 1}
+        return running_sum_bits(self.workload, node, self.cores(node), partial)
+
+    def sums_on_one_core(self, t: Tensor) -> bool:
+        """Whether no split over cores cuts a dimension the producer of ``t`` reduces over."""
+        reduced = reduced_dims(self.workload, self.producers[t])
+        split = {v.dimension for v in self.ssis[t].variables if v.type is IterationVariableType.SPATIAL and v.size > 1}
+        return not split & reduced
+
+    def reduction_trips(self, t: Tensor) -> int:
+        """The trips of the fused loops over the dimensions the producer of ``t`` reduces."""
+        reduced = reduced_dims(self.workload, self.producers[t])
+        loops = self.ssis[t].get_temporal_variables()
+        return prod(v.size for v in loops if v.dimension in reduced)
+
+    def running_sum_format(self, t: Tensor) -> str | None:
+        """The accumulator format ``t`` is held in while it is a running sum, else None."""
+        node = self.producers.get(t)
+        return accumulator_format(node, self.cores(node)) if node and self.running_sum_bits(t) else None
+
+    def element_bits(self, t: Tensor) -> int:
+        """Bits per element ``t`` is held and moved at: a running sum's accumulator precision, else its type's."""
+        return self.running_sum_bits(t) or t.operand_type.bitwidth
+
+    def moved_element_bits(self, tr: TransferNode, choice: MulticastPathPlan) -> int:
+        """Bits per element ``tr`` moves at on ``choice``: the accumulator precision where it carries partial sums to be
+        added up on chip, else its type's."""
+        tensor = tr.inputs[0]
+        hops = zip(choice.hops, choice.hop_demand, strict=True)
+        partial = any(item.reduce for (_, v, _), demand in hops if not v.offchip for item in demand)
+        return self.element_bits(tensor) if partial else tensor.operand_type.bitwidth
+
+    def held_bits(self, t: Tensor, tile: Tensor) -> int:
+        """Bits of ``tile`` of ``t`` held, at :meth:`element_bits`."""
+        return tile.size_elements() * self.element_bits(t)
+
+    def partial_sum_factor(
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, leaving: bool, copies: CopySet | None = None
+    ) -> float:
+        """The factor on the bits ``memory`` sends (``leaving``) or receives of ``tr`` on ``choice`` for the partial
+        sums among them, moved at the accumulator precision."""
+        if (ratio := self.partial_sum_ratio.get(tr, 1.0)) == 1:
+            return 1.0
+        hops = _hop_elements(choice, ratio, copies)
+        own = [(n, w) for (u, v, _), n, w in hops if (u if leaving else v) is memory]
+        elements = sum(n for n, _ in own)
+        return sum(w for _, w in own) / elements if elements else 1.0
+
+    def memory_share(
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, leaving: bool, copies: CopySet | None = None
+    ) -> float:
+        """The share of the delivered bits of ``tr``, or of those delivered to exactly ``copies``, ``memory`` sends or
+        receives on ``choice``, its partial sums at the accumulator precision."""
+        return choice.memory_share(memory, leaving, copies) * self.partial_sum_factor(
+            tr, choice, memory, leaving, copies
+        )
+
+    @cached_property
     def sole_outputs(self) -> set[Tensor]:
         """The tensors a transfer moves to a single reader."""
         return {tr.outputs[0] for tr in self.transfer_nodes if len(set(self.workload.successors(tr))) == 1}
@@ -311,15 +394,20 @@ class DecisionSpace:
     def copy_set_link_bits(
         self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet
     ) -> dict[CommunicationLink, float]:
-        """Per link of ``path``, the bits one firing carries over it of what it delivers to exactly ``copies``."""
-        carried: dict[CommunicationLink, dict[int | None, list[Box]]] = {}
-        for (_, _, link), demand in zip(path.hops, path.hop_demand, strict=True):
+        """Per link of ``path``, the bits one firing carries over it of what it delivers to exactly ``copies``, partial
+        sums at the accumulator precision."""
+        ratio = self.partial_sum_ratio.get(tr, 1.0)
+        carried: dict[CommunicationLink, dict[tuple[int | None, bool], list[Box]]] = {}
+        for (_, v, link), demand in zip(path.hops, path.hop_demand, strict=True):
             for item in demand:
                 if item.copies == copies:
-                    sent = carried.setdefault(link, {}).setdefault(None if item.reduce else item.sources[0], [])
-                    sent.append(item.box)
+                    key = (None if item.reduce else item.sources[0], ratio != 1 and item.reduce and not v.offchip)
+                    carried.setdefault(link, {}).setdefault(key, []).append(item.box)
         bitwidth = tr.inputs[0].operand_type.bitwidth / firing_count(path.demand)
-        return {link: sum(box_bits(boxes, bitwidth) for boxes in sent.values()) for link, sent in carried.items()}
+        return {
+            link: sum(box_bits(boxes, bitwidth * (ratio if partial else 1.0)) for (_, partial), boxes in sent.items())
+            for link, sent in carried.items()
+        }
 
     def link_shares(
         self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet | None = None
@@ -349,7 +437,7 @@ class DecisionSpace:
         if direction is None:
             return 0
         span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
-        bits = self.moved_bits(tr, path, copies=copies) * path.memory_share(memory, direction == READ, copies)
+        bits = self.moved_bits(tr, path, copies=copies) * self.memory_share(tr, path, memory, direction == READ, copies)
         return ceil(bits / (rate * self.shared_bandwidth[memory].efficiency(span, direction)))
 
     @cached_property
@@ -374,8 +462,9 @@ class DecisionSpace:
         leaving = direction == READ
         role = self.operand_role(tr, read_side=leaving and memory in choice.sources)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))
+        widening = self.partial_sum_factor(tr, choice, memory, leaving, copies)
         shares = {port: choice.share_at(memory, leaving, port_links, copies) for port, port_links in by_port.items()}
-        return {port: share for port, share in shares.items() if share}
+        return {port: share * widening for port, share in shares.items() if share}
 
     def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
         """Of :meth:`side_ports`, the one carrying the most of the side's bits; None where none is."""
@@ -388,7 +477,7 @@ class DecisionSpace:
         """What bounds ``memory``'s side of ``tr`` on route ``choice``: its measured shared bandwidth over its share of
         the bits, else the port needing longest for its share (ports work in parallel), else None."""
         if memory in self.shared_bandwidth:
-            share = choice.memory_share(memory, leaving=direction == READ)
+            share = self.memory_share(tr, choice, memory, leaving=direction == READ)
             return self.shared_bandwidth[memory].scaled(1.0 / share) if share else None
         ports = self.side_ports(tr, choice, memory, direction)
         if not ports:
@@ -514,6 +603,15 @@ class DecisionSpace:
         ]
         return moved_elements(items) * tr.inputs[0].operand_type.bitwidth
 
+    def sent_bits(self, tr: TransferNode, choice: MulticastPathPlan, copies: CopySet | None = None) -> float:
+        """:meth:`moved_bits` of ``choice``, or of what it delivers to exactly ``copies``, with the partial sums added
+        up on chip at the accumulator precision."""
+        items = [item for item in choice.delivered_items if copies in (None, item.copies)]
+        ratio = self.partial_sum_ratio.get(tr, 1.0)
+        partial = [item for item in items if item.reduce and not choice.targets[item.target].offchip]
+        extra = (ratio - 1) * moved_elements(partial) * firing_count(partial) / firing_count(items) if partial else 0.0
+        return (moved_elements(items) + extra) * tr.inputs[0].operand_type.bitwidth
+
     def copy_sets(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[CopySet, ...]:
         """The copy sets ``choice`` delivers some box to: each a copy alone, or several reading the same box."""
         return copy_sets(choice.delivered_items)
@@ -634,6 +732,37 @@ def is_const_input(workload: Workload, tr: TransferNode) -> bool:
 def is_const_output(workload: Workload, tr: TransferNode) -> bool:
     """Whether ``tr`` moves a tensor the workload puts out."""
     return isinstance(next(iter(workload.successors(tr))), OutEdge)
+
+
+def with_partial_sum_shares(choice: MulticastPathPlan, ratio: float) -> MulticastPathPlan:
+    """``choice`` with each link's share of the delivered bits ``ratio`` times as large for the partial sums it carries
+    to be added up on chip."""
+    if ratio == 1 or not choice.link_shares:
+        return choice
+    carried: dict[CommunicationLink, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for (_, _, link), elements, widened in _hop_elements(choice, ratio):
+        carried[link][0] += elements
+        carried[link][1] += widened
+    shares = []
+    for link, share in choice.link_shares:
+        elements, widened = carried[link]
+        shares.append((link, share * widened / elements if elements else share))
+    return replace(choice, link_shares=tuple(shares))
+
+
+def _hop_elements(
+    choice: MulticastPathPlan, ratio: float, copies: CopySet | None = None
+) -> Iterator[tuple[Hop, float, float]]:
+    """Per hop of ``choice``, the elements it carries (to exactly ``copies``, if given), and those with its partial
+    sums ``ratio`` times over, except on a hop into off-chip memory."""
+    for hop, carried in zip(choice.hops, choice.hop_demand, strict=True):
+        sent: dict[int | None, list[Box]] = {}
+        for item in carried:
+            if copies in (None, item.copies):
+                sent.setdefault(None if item.reduce else item.sources[0], []).append(item.box)
+        elements = sum(covered(boxes) for boxes in sent.values())
+        partial = covered(sent.get(None, [])) if not hop[1].offchip else 0
+        yield hop, elements, elements + (ratio - 1) * partial
 
 
 def unique_tensors(tensors: Iterable[Any]) -> list[Tensor]:

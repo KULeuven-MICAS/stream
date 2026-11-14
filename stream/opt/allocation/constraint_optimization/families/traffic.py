@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.communication_manager import MulticastPathPlan
-from stream.hardware.ports import READ, WRITE, Port, PortKey
+from stream.hardware.ports import OUTPUT, READ, READ_BY_DATAPATH, WRITE, WRITE_BY_DATAPATH, Port, PortKey
 from stream.opt.allocation.constraint_optimization.families.latency import copy_latencies, reuse_selectors
 from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import discover_backends, entry_backend, port_traffic
@@ -14,6 +14,8 @@ from stream.workload.demand import item_bits
 from stream.workload.workload import ComputationNode, InEdge, TransferNode
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
@@ -47,6 +49,8 @@ class DmaStream:
     sides: tuple[PortShare, ...]
     energy_sides: tuple[PortShare, ...]
     link_shares: tuple[tuple[CommunicationLink, float], ...] = ()
+    transfer: TransferNode | None = None
+    copies: CopySet | None = None
 
 
 @dataclass(frozen=True)
@@ -121,7 +125,18 @@ def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
             energy_sides = tuple(_walk_sides(ctx, tr, choice, sides))
             shares = space.link_shares(tr, choice, copies)
             streams.append(
-                DmaStream(choice, active, bits / latency, latency, space.slot_of[tr], sides, energy_sides, shares)
+                DmaStream(
+                    choice,
+                    active,
+                    bits / latency,
+                    latency,
+                    space.slot_of[tr],
+                    sides,
+                    energy_sides,
+                    shares,
+                    transfer=tr,
+                    copies=copies,
+                )
             )
     return streams + local_copies(ctx)
 
@@ -149,6 +164,8 @@ def local_copies(ctx: FormulationContext) -> list[DmaStream]:
                     space.slot_of[tr],
                     sides,
                     sides,
+                    transfer=tr,
+                    copies=item.copies,
                 )
             )
     return streams
@@ -187,20 +204,52 @@ def placed_cores(ctx: FormulationContext, node: ComputationNode) -> list[Core]:
 
 
 def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
-    """The top-level port traffic of each node from its cost backend, on each core it runs on, at a port of the
-    memory that core holds the operand in."""
+    """The top-level port traffic of each node from its cost backend and of its running sums, on each core it runs
+    on, at a port of the memory that core holds the operand in."""
     traffic: list[NodeTraffic] = []
     backends = discover_backends()
-    accelerator = ctx.space.accelerator
     for node in ctx.space.ssc_nodes:
         fraction = active_fraction(node, ctx.space.ssis)
         for core in placed_cores(ctx, node):
             entry = ctx.space.cost_lut.get_cost(node, core)
-            for operand, direction, bits in port_traffic(entry_backend(entry, core, backends), entry):
-                port = accelerator.ports.port_for(core, direction, operand, accelerator.memory_holding(core, operand))
-                if port is not None:
-                    traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))
+            charged = port_traffic(entry_backend(entry, core, backends), entry)
+            for port, _, bits in [*_at_ports(ctx, core, charged), *running_sum_ports(ctx, node, core)]:
+                traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))
     return traffic
+
+
+def running_sum_ports(ctx: FormulationContext, node: ComputationNode, core: Core) -> list[tuple[Port, str, float]]:
+    """Each port of ``core`` a firing of ``node`` passes its running sums through, with the direction and the bits."""
+    return _at_ports(ctx, core, _running_sum_traffic(ctx, node))
+
+
+def _at_ports(
+    ctx: FormulationContext, core: Core, charged: Iterable[tuple[str, str, float]]
+) -> list[tuple[Port, str, float]]:
+    """Each operand's ``(operand, direction, bits)`` of ``charged`` at the port of the memory ``core`` holds it in."""
+    accelerator = ctx.space.accelerator
+    found = []
+    for operand, direction, bits in charged:
+        port = accelerator.ports.port_for(core, direction, operand, accelerator.memory_holding(core, operand))
+        if port is not None:
+            found.append((port, direction, bits))
+    return found
+
+
+def _running_sum_traffic(ctx: FormulationContext, node: ComputationNode) -> list[tuple[str, str, float]]:
+    """What a firing of ``node`` moves of each running sum beyond what its cost backend counts: the extra bits of
+    its writes at the accumulator precision, and the read-back of the sum on every firing but the first."""
+    space = ctx.space
+    found: list[tuple[str, str, float]] = []
+    for t in node.outputs:
+        elements = space.workload.get_tensor_single_core(t, node, space.mapping).size_elements()
+        sums = space.reduction_trips(t)
+        if (bits := space.running_sum_bits(t)) is not None:
+            partial = sums - 1 if space.sums_on_one_core(t) else sums
+            found.append((OUTPUT, WRITE_BY_DATAPATH, elements * (bits - t.operand_type.bitwidth) * partial / sums))
+        if sums > 1:
+            found.append((OUTPUT, READ_BY_DATAPATH, elements * space.element_bits(t) * (sums - 1) / sums))
+    return found
 
 
 def port_name(key: PortKey) -> str:

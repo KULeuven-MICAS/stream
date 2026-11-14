@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from stream.datatypes import ELEMENT_BITS, LayerDim
 from stream.hardware.bundle import HardwareBundle
 from stream.parser.accelerator_validator import memory_levels
 from stream.plugins import load_group
+from stream.workload.iterator_type import IteratorType, derive_iterator_types
+from stream.workload.utils import is_mac_operator_type
+
+if TYPE_CHECKING:
+    from stream.hardware.architecture.core import Core
+    from stream.workload.node import ComputationNode
+    from stream.workload.workload import Workload
 
 __all__ = [
     "BudgetVerdict",
@@ -17,9 +26,12 @@ __all__ = [
     "HardwareBudgetExceededError",
     "HardwareCostReport",
     "MemoryCost",
+    "accumulator_format",
     "assert_within_budget",
     "check_budget",
     "evaluate_bundle_cost",
+    "reduced_dims",
+    "running_sum_bits",
 ]
 
 HARDWARE_COST_MODEL_GROUP = "stream.hardware_cost_model"
@@ -388,3 +400,28 @@ def assert_within_budget(
     if not verdict.ok:
         raise HardwareBudgetExceededError(f"Hardware bundle '{bundle.name}' vs budget '{budget.label}': {verdict}")
     return verdict.report
+
+
+def accumulator_format(node: ComputationNode, cores: Iterable[Core]) -> str | None:
+    """The widest accumulator format ``cores`` declare, for a matmul or convolution ``node``; None otherwise."""
+    if not is_mac_operator_type(node.type):
+        return None
+    formats = (getattr(core, "operand_precision", None) or {} for core in cores)
+    return max((f["accumulator"] for f in formats if "accumulator" in f), key=ELEMENT_BITS.get, default=None)
+
+
+def running_sum_bits(
+    workload: Workload, node: ComputationNode, cores: Iterable[Core], partial: set[LayerDim]
+) -> int | None:
+    """Bits per element ``cores`` hold ``node``'s output in while it is a running sum: the accumulator's, if wider
+    than the output's type, where one firing covers only part of a dim in ``partial`` that ``node`` reduces over."""
+    found = accumulator_format(node, cores)
+    if found is None or ELEMENT_BITS[found] <= node.outputs[0].operand_type.bitwidth:
+        return None
+    return ELEMENT_BITS[found] if reduced_dims(workload, node) & partial else None
+
+
+def reduced_dims(workload: Workload, node: ComputationNode) -> set[LayerDim]:
+    """The unique dims ``node`` reduces over, each the one it steps along fastest."""
+    dims, types = workload.get_dims(node), derive_iterator_types(node)
+    return {workload.leading_dim(dims[p])[0] for p, kind in types.items() if kind is IteratorType.REDUCTION}
