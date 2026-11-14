@@ -1,6 +1,8 @@
 import tempfile
 
+import onnx
 import pytest
+from onnx import TensorProto, helper
 from zigzag.utils import open_yaml
 
 from stream.api import SolveOptions, evaluate_mapping
@@ -97,3 +99,28 @@ def test_a_handover_between_cores_sharing_a_memory_stays_in_it():
         if name in copies and float(indicator.X) > 0.5:
             beyond[name] += bits
     assert all(bits <= 0 for bits in beyond.values())
+
+
+def test_a_copy_each_core_sharing_a_memory_reads_apart_is_held_once(tmp_path, solved_model):
+    """On fusemax a bf16 3 x 3 convolution of x, 16 -> 16 channels on 32 x 32, runs on the array, the residual add of
+    x on the vector core, columns cut to 8. Transfer(x) lands in the shared SRAM at one position per core, but each of
+    its copies has one reader on one core: the convolution's copy holds two 10-column windows of 16 x 32, 163840 bits,
+    the add's two 8-column tiles, 131072 bits, each once."""
+    nodes = [
+        helper.make_node("Conv", ["x", "w"], ["y"], name="Conv", kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+        helper.make_node("Add", ["y", "x"], ["z"], name="Add"),
+    ]
+    shapes = {"x": [1, 16, 32, 32], "w": [16, 16, 3, 3], "z": [1, 16, 32, 32]}
+    info = {name: helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape) for name, shape in shapes.items()}
+    graph = helper.make_graph(nodes, "g", [info["x"], info["w"]], [info["z"]])
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "residual.onnx")
+    options = SolveOptions(artifacts=False, stage_options={"intra_core_tiling": [{"dim": "Conv.D1", "tile": 8}]})
+    alloc = solved_model(FUSEMAX, str(tmp_path / "residual.onnx"), str(tmp_path), options=options)
+    sram = alloc.space.accelerator.memories["sram"]
+    (transfer,) = [tr for tr in alloc.space.transfer_nodes if tr.name == "Transfer(x)"]
+    assert [alloc.space.tensor_choices[copy] for copy in transfer.outputs] == [((sram,),), ((sram,),)]
+    held = dict.fromkeys((copy.name for copy in transfer.outputs), 0)
+    for indicator, bits, name in alloc.context.ledger.memory[sram]:
+        if name in held and float(indicator.X) > 0.5:
+            held[name] += bits
+    assert list(held.values()) == [163840, 131072]

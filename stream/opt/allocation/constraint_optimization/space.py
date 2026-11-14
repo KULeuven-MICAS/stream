@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from functools import cached_property, reduce
@@ -282,13 +282,16 @@ class DecisionSpace:
         return range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
 
     def _reader_placements(self, tr: TransferNode, t: Tensor, choices: tuple[Placement, ...]) -> tuple[Placement, ...]:
-        """Narrow a transfer's placements to the memories its reading computation node reads the copy in. A copy read
-        by another transfer or an edge, or one no placement lands in those memories, keeps all placements."""
+        """Narrow a transfer's placements to the positions its reading computation node reads the copy at: in each
+        memory, as many as the reader's cores read it there. A copy read by another transfer or an edge, or one no
+        placement lands in those memories, keeps all placements."""
         reader = next(n for n in self.workload.successors(tr) if t in n.inputs)
         if not isinstance(reader, ComputationNode):
             return choices
-        memories = {memory for choice in self.placements(reader, t) for memory in choice}
-        narrowed = (tuple(memory for memory in choice if memory in memories) for choice in choices)
+        most: Counter[Memory] = Counter()
+        for choice in self.placements(reader, t):
+            most |= Counter(choice)
+        narrowed = (tuple(m for i, m in enumerate(choice) if choice[:i].count(m) < most[m]) for choice in choices)
         return tuple(dict.fromkeys(choice for choice in narrowed if choice)) or choices
 
     def placements(self, node: Node, tensor: Tensor) -> tuple[Placement, ...]:

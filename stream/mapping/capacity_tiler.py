@@ -736,9 +736,9 @@ class CapacityTiler:
         order: Sequence[LayerDim] | None = None,
     ) -> dict[str, float]:
         """Bits each memory holds when every unique dim of ``resident`` spans that tile on a core: an outside input once
-        per reader, a produced tensor once at the largest of its producer's tile and its readers' windows, twice where a
-        loop steps it, plus the halo the tile loops keep (looped in ``order``); cores sharing a memory fill it together.
-        Outputs of ``accumulating`` are whole along ``accumulated_over``."""
+        per reader, a produced tensor at its producer's tiles in the memory and each reader's windows there beyond them,
+        twice where a loop steps it, plus the halo the tile loops keep (looped in ``order``); cores sharing a memory
+        fill it together. Outputs of ``accumulating`` are whole along ``accumulated_over``."""
         lead = self.sub_workload.leading_dim
         unroll = {lead(d)[0]: f for d, f in unroll.items()}
         unique, _ = self.sub_workload.unique_dimensions()
@@ -746,7 +746,7 @@ class CapacityTiler:
         loops = self._loops(cns, unroll, resident, order)
         held: dict[str, dict[tuple, float]] = {}
         tensors: dict[str, Tensor] = {}
-        produced = {t for cn in cns for t in cn.outputs}
+        producers = {t: cn for cn in cns for t in cn.outputs}
         for cn in cns:
             cores = cores_per_node.get(cn, [])
             sizes = self._node_sizes(cn, cores_per_node, unroll, resident, node_unroll)
@@ -758,20 +758,23 @@ class CapacityTiler:
                 kept = bool(whole) and t in cn.outputs
                 shape = self._shape(cn, t, spanned if kept else sizes)
                 stepping = bool(self._indexing(cn, t) & stepped)
-                buffers = buffer_count(1, stepping and not kept)
-                tile = (t.name,) if t in produced else (t.name, cn.name, shape)
+                from_producer = t in cn.inputs and producers.get(t, cn) is not cn
+                stop = self._held_stop(cn, t, producers[t], loops) if from_producer else -1
+                buffers = (
+                    self._held_windows(cn, t, loops, stop) if stop >= 0 else buffer_count(1, stepping and not kept)
+                )
                 tensors[t.name] = t
                 is_running_sum = bool(running) and t in cn.outputs
                 width = running if is_running_sum else t.operand_type.bitwidth
                 bits = buffers * math.prod(shape) * width
                 if t in cn.inputs and not kept:
                     split = self._own_split(cn, cores_per_node, unroll, node_unroll)
-                    bits += self._kept_halo(cn, t, sizes, split, loops) * width
+                    bits += self._kept_halo(cn, t, sizes, split, loops, stop) * width
                 for core in cores:
                     tiles = held.setdefault(self.accelerator.memory_of(core, role_of(cn, t)).name, {})
-                    key = (core.id, tile)
-                    tiles[key] = max(tiles.get(key, 0.0), bits)
-        return {memory: self._beyond_placed(memory, tiles, tensors) for memory, tiles in held.items()}
+                    tiles[(t.name, cn.name)] = tiles.get((t.name, cn.name), 0.0) + bits
+        made = {t.name: cn.name for t, cn in producers.items()}
+        return {memory: self._beyond_placed(memory, tiles, tensors, made) for memory, tiles in held.items()}
 
     def _loops(
         self,
@@ -789,6 +792,21 @@ class CapacityTiler:
             order = sorted(cut, key=lambda d: indexed.get(d, 0.0))
         return [(d, cut[d]) for d in order if d in cut]
 
+    def _held_stop(
+        self, cn: ComputationNode, t: Tensor, producer: ComputationNode, loops: list[tuple[LayerDim, int]]
+    ) -> int:
+        """The outermost of ``loops`` (innermost first) across which ``cn`` keeps its copy of ``t``, as ``producer``
+        does not make a new tile there; -1 for none."""
+        moves = self._indexing(producer, t)
+        stepped = self._node_dims(cn) | self._node_dims(producer)
+        return max((i for i, (d, _) in enumerate(loops) if d in stepped and d not in moves), default=-1)
+
+    def _held_windows(self, cn: ComputationNode, t: Tensor, loops: list[tuple[LayerDim, int]], stop: int) -> int:
+        """Windows of ``t`` ``cn`` keeps across ``loops`` up to ``stop``, doubled where an outer loop moves them."""
+        moving = self._indexing(cn, t)
+        windows = math.prod(trips for d, trips in loops[: stop + 1] if d in moving)
+        return buffer_count(windows, any(d in moving for d, _ in loops[stop + 1 :]))
+
     def _kept_halo(  # noqa: PLR0913
         self,
         cn: ComputationNode,
@@ -796,9 +814,10 @@ class CapacityTiler:
         sizes: dict[LayerDim, int],
         split: dict[LayerDim, int],
         loops: list[tuple[LayerDim, int]],
+        stop: int = -1,
     ) -> int:
-        """Elements of halo ``cn`` keeps of ``t`` in addition to its window while the tile ``loops`` slide it, as the
-        allocation counts them."""
+        """Elements of halo ``cn`` keeps of ``t`` in addition to its windows at reuse stop ``stop`` while the tile
+        ``loops`` slide it, as the allocation counts them."""
         dims = set(self.sub_workload.get_tensor_dimensions(t))
         windows = self.sub_workload.windows_for_sizes(t, cn, sizes, [d for d, _ in loops if d in dims], split)
         if not windows:
@@ -813,13 +832,17 @@ class CapacityTiler:
             )
             for d, trips in loops
         ]
-        return self.sub_workload.kept_halos_for_sizes(t, cn, windows, sizes, variables).get(-1, 0)
+        return self.sub_workload.kept_halos_for_sizes(t, cn, windows, sizes, variables).get(stop, 0)
 
-    def _beyond_placed(self, memory: str, tiles: dict[tuple, float], tensors: dict[str, Tensor]) -> float:
-        """The bits ``tiles`` take in ``memory``, each tensor only beyond the block of it placed there."""
+    def _beyond_placed(
+        self, memory: str, tiles: dict[tuple[str, str], float], tensors: dict[str, Tensor], made: dict[str, str]
+    ) -> float:
+        """The bits ``tiles`` take in ``memory``: a tensor's tile at the node that ``made`` it, each reader's copy only
+        beyond that, and each tensor only beyond the block of it placed there."""
         per_tensor: dict[str, float] = {}
-        for (_, (name, *_)), bits in tiles.items():
-            per_tensor[name] = per_tensor.get(name, 0) + bits
+        for (name, node), bits in tiles.items():
+            source = tiles.get((name, made[name]), 0.0) if name in made else 0.0
+            per_tensor[name] = per_tensor.get(name, 0.0) + (bits if node == made.get(name) else max(0.0, bits - source))
         return sum(
             0 if (share := self._placed_share(memory, tensors[name])) == math.inf else max(0, bits - share)
             for name, bits in per_tensor.items()
