@@ -1,5 +1,6 @@
+from bisect import bisect_left
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import cached_property
 from itertools import combinations, pairwise, product
 from math import ceil, prod
@@ -17,6 +18,7 @@ from stream.hardware.architecture.memory import Memory
 from stream.workload._svg import write_svg as _write_svg
 from stream.workload.affine_access import footprint, map_dim_positions
 from stream.workload.affine_transform import AffineTransform
+from stream.workload.demand import Box, DemandItem, box_bits, less, meet, within
 from stream.workload.iterator_type import IteratorType, derive_iterator_types, is_state_operand, sequential_dims
 from stream.workload.node import (
     ComputationNode,
@@ -34,13 +36,106 @@ from stream.workload.tensor import Tensor
 from stream.workload.utils import affine_bounds, affine_coefficients, sympy_to_xdsl
 
 if TYPE_CHECKING:
-    from stream.cost_model.communication_manager import DemandItem, MulticastPathPlan
+    from stream.cost_model.communication_manager import MulticastPathPlan
     from stream.hardware.architecture.core import Core
     from stream.mapping.mapping import EdgePlacement, Mapping
 
 
 _SharedAxis = tuple[Node, int]
 """An axis of a tensor several nodes read: its producer, and the axis."""
+
+_Read = tuple[Tensor, "Node", InterCoreTiling, int, int]
+"""A copy's read at one target: the tensor read, the node reading it, that node's split, its core position and
+the number of positions."""
+
+
+@dataclass(frozen=True)
+class _TargetDemand:
+    """A box the ``copies`` read at ``target`` per firing, inside their ``window`` (each axis with whether a split
+    places it); ``local_copy`` where the larger copy ``copied_from`` in the target's memory holds it."""
+
+    target: int
+    box: Box
+    window: list[tuple[int, int, bool]]
+    copies: tuple[int, ...]
+    local_copy: bool
+    copied_from: int | None = None
+
+
+@dataclass(frozen=True)
+class _FiringNest:
+    """The fused loop over ``dim``, whose ``trips`` trips are the firings of a transfer whose copies slide together: per
+    node reading a copy, the range of ``dim`` it computes at each firing."""
+
+    dim: LayerDim
+    trips: int
+    spans: dict["HasIterationSpace", list[tuple[int, int]]]
+
+
+_Firing = tuple[_FiringNest, int]
+"""A firing: its nest and its index."""
+
+
+def _disjoint_boxes(entries: list[_TargetDemand]) -> list[_TargetDemand]:
+    """``entries`` recut into disjoint boxes, each with all the copies reading it, so that a part several copies read
+    is one box, moved once for all of them."""
+    if not entries:
+        return []
+    edges = [
+        sorted({e for entry in entries for e in (entry.box[a][0], entry.box[a][1] + 1)})
+        for a in range(len(entries[0].box))
+    ]
+    readers: dict[tuple[int, ...], tuple[set[int], set[int]]] = {}
+    for entry in entries:
+        ranges = [
+            range(bisect_left(axis_edges, lo), bisect_left(axis_edges, hi + 1))
+            for axis_edges, (lo, hi) in zip(edges, entry.box, strict=True)
+        ]
+        for cell in product(*ranges):
+            copies, targets = readers.setdefault(cell, (set(), set()))
+            copies.update(entry.copies)
+            targets.add(entry.target)
+    regions = {
+        tuple((edges[a][k], edges[a][k + 1] - 1) for a, k in enumerate(cell)): (tuple(sorted(c)), tuple(sorted(t)))
+        for cell, (c, t) in readers.items()
+    }
+    for axis in reversed(range(len(edges))):
+        regions = _merged_along(regions, axis)
+    return [
+        _TargetDemand(target, box, _window_of(entries, target, box), copies, False)
+        for box, (copies, targets) in regions.items()
+        for target in targets
+    ]
+
+
+def _merged_along(
+    regions: dict[Box, tuple[tuple[int, ...], tuple[int, ...]]], axis: int
+) -> dict[Box, tuple[tuple[int, ...], tuple[int, ...]]]:
+    """``regions`` with boxes of the same copies and targets that touch along ``axis`` merged into one."""
+    rows: dict[tuple, list[Box]] = {}
+    for box, key in regions.items():
+        rows.setdefault((key, box[:axis], box[axis + 1 :]), []).append(box)
+    merged: dict[Box, tuple[tuple[int, ...], tuple[int, ...]]] = {}
+    for (key, _, _), boxes in rows.items():
+        boxes.sort(key=lambda box: box[axis][0])
+        run = boxes[0]
+        for box in boxes[1:]:
+            if box[axis][0] == run[axis][1] + 1:
+                run = (*run[:axis], (run[axis][0], box[axis][1]), *run[axis + 1 :])
+            else:
+                merged[run] = key
+                run = box
+        merged[run] = key
+    return merged
+
+
+def _window_of(entries: list[_TargetDemand], target: int, box: Box) -> list[tuple[int, int, bool]]:
+    """The window ``box`` lies in at ``target``: the hull of the windows of the entries there it overlaps."""
+    windows = [entry.window for entry in entries if entry.target == target and meet(box, entry.box) is not None]
+    return [
+        (min(axis[0] for axis in axes), max(axis[1] for axis in axes), axes[0][2])
+        for axes in zip(*windows, strict=True)
+    ]
 
 
 def _order_inputs_by_use(nodes: list[Node]) -> None:
@@ -621,13 +716,19 @@ class Workload(DiGraphWrapper[Node]):
         return tuple(max(0, high - low + 1) for low, high, _ in self._bounds(tensor, nodes, dimension_sizes, at or {}))
 
     def _bounds(
-        self, tensor: Tensor, nodes: Sequence[HasIterationSpace], dimension_sizes: dict[LayerDim, int], at: dict
+        self,
+        tensor: Tensor,
+        nodes: Sequence[HasIterationSpace],
+        dimension_sizes: dict[LayerDim, int],
+        at: dict,
+        origin: dict[LayerDim, int] | None = None,
     ) -> list[tuple[int, int, bool]]:
         """The inclusive index range per axis ``nodes`` touch of ``tensor`` as for the extents above, and whether the
-        axis is placed."""
+        axis is placed; a dim of ``origin`` starts at the index it gives, in tensor coordinates but not placed."""
         unique_dims, dim_values = self.unique_dimensions()
         sizes = [dimension_sizes[z] for z in unique_dims]
-        offset = [at.get(z, 0) * n for z, n in zip(unique_dims, sizes, strict=True)]
+        origin = origin or {}
+        offset = [origin.get(z, at.get(z, 0) * n) for z, n in zip(unique_dims, sizes, strict=True)]
         bounds = []
         for axis, size in enumerate(tensor.subview.source.type.get_shape()):
             ranges, placed = [], False
@@ -635,9 +736,10 @@ class Workload(DiGraphWrapper[Node]):
                 index = self.global_mapping(node, node.get_mapping(tensor)).results[axis]
                 index = index.replace_dims_and_symbols(dim_values, ())
                 low, high = affine_bounds(index, sizes)
-                coefficients = affine_coefficients(index, len(sizes))[1] if at else [0] * len(sizes)
-                if any(c and z in at for c, z in zip(coefficients, unique_dims, strict=True)):
-                    placed, shift = True, sum(c * o for c, o in zip(coefficients, offset, strict=True))
+                coefficients = affine_coefficients(index, len(sizes))[1] if at or origin else [0] * len(sizes)
+                if any(c and (z in at or z in origin) for c, z in zip(coefficients, unique_dims, strict=True)):
+                    placed = placed or any(c and z in at for c, z in zip(coefficients, unique_dims, strict=True))
+                    shift = sum(c * o for c, o in zip(coefficients, offset, strict=True))
                     ranges.append((max(low + shift, 0), min(high + shift, size - 1)))
                 else:
                     # A window spanning the axis is all of it; a narrower one keeps an interior tile's extent.
@@ -832,8 +934,6 @@ class Workload(DiGraphWrapper[Node]):
     ) -> dict[Memory, float] | None:
         """The share of ``boxes`` each memory of ``placement`` serves over the walk of its split axis; None unless it
         splits ``tensor``."""
-        from stream.cost_model.communication_manager import box_bits, meet  # noqa: PLC0415
-
         if placement is None or not (walk := self._walked_blocks(placement, tensor)):
             return None
         covered = [
@@ -857,95 +957,320 @@ class Workload(DiGraphWrapper[Node]):
         by_spatial_index: bool,
         targets: Sequence[Memory],
         reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]],
-        cost: Callable[[Sequence["DemandItem"]], tuple[float, ...]],
-    ) -> tuple["DemandItem", ...]:
-        """What each of the ``n_targets`` targets of ``transfer`` reads from which ``n_sources``: by ``tiling``, or as
-        readers in ``targets`` read (``reads_in``), a walked split placement at its busiest (``cost``).
-        ``by_spatial_index`` pairs target ``j`` with sources ``j``, ``j + m``, ..., as code generation does."""
-        from stream.cost_model.communication_manager import DemandItem  # noqa: PLC0415
-
+        cost: Callable[[Sequence[DemandItem]], tuple[float, ...]],
+        *,
+        ssis: Callable[[Node | Tensor], SteadyStateIterationSpace | None],
+        fusion_splits: dict[LayerDim, int],
+        allow_local_copy: bool,
+        shares_memory: Callable[[int, int], bool],
+    ) -> tuple[DemandItem, ...]:
+        """What each of the ``n_targets`` targets of ``transfer`` reads per firing from which of the ``n_sources``:
+        each copy's window less what its sliding loop keeps, a box several copies read once. With ``allow_local_copy``,
+        a copy may be a local copy from a larger copy in the same memory. A walked split placement is taken at its
+        busiest (``cost``). ``by_spatial_index`` pairs target ``j`` with sources ``j``, ``j + m``, ..., as code
+        generation does."""
         source, src = transfer.inputs[0], next(self.predecessors(transfer))
-        readers = [] if by_spatial_index else self._readers_on(transfer, mapping, targets, reads_in)
-        if not readers and (windows := self._window_boxes(transfer, mapping, tiling)):
-            return tuple(
-                DemandItem(j, (i,), tuple(tuple(axis) for axis in box))
-                for (i, j), found in sorted(windows.items())
-                for box in found
-                if all(lo <= hi for lo, hi in box)
-            )
-        found = next((f for t in transfer.outputs if (f := self._reader(t, transfer))), None)
         src_tiling = self._tiling(src, mapping) if isinstance(src, ComputationNode | TransferNode) else ()
         placed = {d for d, _ in (*tiling, *src_tiling)}
-
-        def box(tensor: Tensor, node: Node, split: InterCoreTiling, core: int, cores: int) -> list[tuple[int, int]]:
-            if not isinstance(node, HasIterationSpace):
-                return [(0, n - 1) for n in tensor.shape]
-            at = dict.fromkeys(placed | {d for d, _ in split}, 0) | self._position(
-                split, position_of(core, cores, split)
-            )
-            return [(lo, hi) for lo, hi, _ in self._bounds(tensor, [node], self._tile_sizes(split), at)]
-
-        read, reader = found or (source, src)
-        held = (source, src) if isinstance(src, ComputationNode) else (read, reader)
-        partial = isinstance(src, ComputationNode) and self.splits_reduction(src, src_tiling)
-        wants = [
-            [
-                box(r_read, r_node, r_split, p, len(r_memories))
-                for r_read, r_node, r_split, r_memories in readers
-                for p, memory in enumerate(r_memories)
-                if memory == targets[t]
-            ]
-            or [box(read, reader, tiling, t, n_targets)]
-            for t in range(n_targets)
+        held = (
+            [(source, src)]
+            if isinstance(src, ComputationNode)
+            else [found for t in transfer.outputs if (found := self._reader(t, transfer))] or [(source, src)]
+        )
+        haves = [
+            _hull([_plain(self._demand_box(*read, src_tiling, s, n_sources, placed)) for read in held])
+            for s in range(n_sources)
         ]
-        haves = [box(held[0], held[1], src_tiling, s, n_sources) for s in range(n_sources)]
+        partial = isinstance(src, ComputationNode) and self.splits_reduction(src, src_tiling)
 
-        def demand(held_blocks: list | None, target_blocks: list | None) -> list[DemandItem]:
-            items: list[DemandItem] = []
-            for t in range(n_targets):
-                for want in [target_blocks[t]] if target_blocks else wants[t]:
-                    if by_spatial_index:
-                        narrow = min(n_sources, n_targets)
-                        feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
-                        parts = zip(feeding, _split(want, len(feeding)), strict=True)
-                        items += [DemandItem(t, (s,), part) for s, part in parts if all(lo <= hi for lo, hi in part)]
-                        continue
-                    holders: dict[tuple[tuple[int, int], ...], list[int]] = {}
-                    for s, have in enumerate(held_blocks or haves):
-                        part = tuple((max(h[0], w[0]), min(h[1], w[1])) for h, w in zip(have, want, strict=True))
-                        if all(lo <= hi for lo, hi in part):
-                            holders.setdefault(part, []).append(s)
-                    items += [DemandItem(t, tuple(sources), part, partial) for part, sources in holders.items()]
-            return items
+        def contained(smaller: _Read, larger: _Read) -> bool:
+            return self._always_within(smaller, larger, fusion_splits, placed)
 
         out = next((n for n in self.successors(transfer) if isinstance(n, OutEdge)), None)
-        held, target = mapping.placement_of(src), mapping.placement_of(out) if out else None
-        held_walk, target_walk = self._walked_blocks(held, source), self._walked_blocks(target, source)
-        if held_walk and target_walk and held and target and held.split == target.split:
+        held_at, target = mapping.placement_of(src), mapping.placement_of(out) if out else None
+        held_walk, target_walk = self._walked_blocks(held_at, source), self._walked_blocks(target, source)
+        nest = (
+            None
+            if by_spatial_index or held_walk or target_walk
+            else self._firing_nest(transfer, placed, ssis, fusion_splits)
+        )
+        wanted = [
+            self._target_demand(
+                transfer,
+                mapping,
+                tiling,
+                placed,
+                targets,
+                None if by_spatial_index else reads_in,
+                ssis,
+                contained if allow_local_copy else None,
+                firing=firing,
+            )
+            for firing in ([None] if nest is None else [(nest, s) for s in range(nest.trips)])
+        ]
+        dims = [d for d, _ in tiling]
+        spread = {c for c, copy in enumerate(transfer.outputs) if not self.get_windows(copy, transfer, mapping, dims)}
+
+        def firing(entries: list[_TargetDemand], held_blocks: list | None) -> list[DemandItem]:
+            items: list[DemandItem] = []
+
+            def holders(t: int, box: Box, want: list[tuple[int, int, bool]]) -> dict[Box, list[int]]:
+                found: dict[Box, list[int]] = {}
+                for s, have in enumerate(held_blocks or haves):
+                    held = tuple(map(tuple, have)) if held_blocks else _source_part_of_window(have, want)
+                    if (part := meet(box, held)) is not None:
+                        found.setdefault(part, []).append(s)
+                return found
+
+            for t, box, want, copies, local_copy, copied_from in (
+                (e.target, e.box, e.window, e.copies, e.local_copy, e.copied_from) for e in entries
+            ):
+                if local_copy:
+                    here = {} if partial else holders(t, box, want)
+                    in_place = {
+                        part: s for part, found in here.items() if (s := [s for s in found if shares_memory(s, t)])
+                    }
+                    items += [DemandItem(t, tuple(s), part, False, copies) for part, s in in_place.items()]
+                    items += [DemandItem(t, (), rest, False, copies, copied_from) for rest in less(box, in_place)]
+                elif by_spatial_index and spread.issuperset(copies):
+                    narrow = min(n_sources, n_targets)
+                    feeding = [s for s in range(n_sources) if s % narrow == t % narrow]
+                    parts = zip(feeding, _split(list(box), len(feeding)), strict=True)
+                    items += [
+                        DemandItem(t, (s,), part, False, copies)
+                        for s, part in parts
+                        if all(lo <= hi for lo, hi in part)
+                    ]
+                else:
+                    items += [
+                        DemandItem(t, tuple(sources), part, partial, copies)
+                        for part, sources in holders(t, box, want).items()
+                    ]
+            return items
+
+        def demand(held_blocks: list | None, target_blocks: list | None) -> list[DemandItem]:
+            if target_blocks:
+                entries = [
+                    _TargetDemand(t, tuple(block), [(lo, hi, True) for lo, hi in block], (0,), False)
+                    for t, block in enumerate(target_blocks)
+                ]
+                return firing(entries, held_blocks)
+            return _over_firings([firing(entries, held_blocks) for entries in wanted])
+
+        if held_walk and target_walk and held_at and target and held_at.split == target.split:
             walks = zip(held_walk, target_walk, strict=True)
         else:
             walks = product(held_walk or [None], target_walk or [None])
         return tuple(_busiest([demand(held, target) for held, target in walks], cost))
 
-    def _readers_on(
+    def _firing_nest(
+        self,
+        transfer: TransferNode,
+        placed: set[LayerDim],
+        ssis: Callable[[Node | Tensor], SteadyStateIterationSpace | None],
+        fusion_splits: dict[LayerDim, int],
+    ) -> _FiringNest | None:
+        """The firings of the innermost fused loop no split places, where ``transfer`` has several copies whose readers
+        all compute along it; None otherwise, one firing then standing for all."""
+        if len(transfer.outputs) <= 1 or (space := ssis(transfer)) is None:
+            return None
+        readers = [
+            next(n for n in self.successors(transfer) if isinstance(n, HasInputs) and copy in n.inputs)
+            for copy in transfer.outputs
+        ]
+        loop = next(
+            (v for v in space.get_temporal_variables() if v.relevant and fusion_splits.get(v.dimension, 1) > 1),
+            None,
+        )
+        if loop is None or loop.dimension in placed:
+            return None
+        trips = fusion_splits[loop.dimension]
+        work = self.get_sliding_work(loop.dimension, trips)
+        if not all(isinstance(reader, ComputationNode) and reader in work for reader in readers):
+            return None
+        spans = {reader: self._spans(reader, loop.dimension, work[reader]) for reader in readers}
+        return _FiringNest(loop.dimension, trips, cast(dict[HasIterationSpace, list[tuple[int, int]]], spans))
+
+    def _spans(self, node: HasIterationSpace, dim: LayerDim, work: tuple[int, ...]) -> list[tuple[int, int]]:
+        """The range of ``dim`` ``node`` computes at each step of its sliding ``work`` along its output."""
+        unique_dims, dim_values = self.unique_dimensions()
+        z = unique_dims.index(dim)
+        exprs = [dim_values[g] for g in self.global_idxs[node]]
+        rate = next(
+            c
+            for r in node.get_mapping(node.outputs[0]).results
+            if isinstance(r, AffineDimExpr) and (c := affine_coefficients(exprs[r.position], len(unique_dims))[1][z])
+        )
+        marks = [-1, *(int(end) - 1 for end in np.cumsum(work))]
+        return [(ceil((before + 1) / rate), last // rate) for before, last in pairwise(marks)]
+
+    def _target_demand(  # noqa: PLR0913
         self,
         transfer: TransferNode,
         mapping: "Mapping",
+        tiling: InterCoreTiling,
+        placed: set[LayerDim],
         targets: Sequence[Memory],
-        reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]],
-    ) -> list[tuple[Tensor, ComputationNode, InterCoreTiling, tuple[Memory, ...]]]:
-        """Each computation node reading a copy of ``transfer`` directly, with the copy, its split and the memory each
-        of its cores reads it in. Empty unless all those memories are among ``targets``."""
-        readers = []
-        for tensor in transfer.outputs:
-            node = next(n for n in self.successors(transfer) if isinstance(n, HasInputs) and tensor in n.inputs)
-            if not isinstance(node, ComputationNode) or not mapping.get(node).resource_allocation:
-                return []
-            memories = reads_in(node, tensor)
-            if not set(memories) <= set(targets):
-                return []
-            readers.append((tensor, node, self._tiling(node, mapping), memories))
-        return readers
+        reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]] | None,
+        ssis: Callable[[Node | Tensor], SteadyStateIterationSpace | None],
+        can_copy_from: Callable[[_Read, _Read], bool] | None,
+        *,
+        firing: _Firing | None = None,
+    ) -> list[_TargetDemand]:
+        """Per target, each box the copies read there in a firing (at ``firing`` of the nest), with every copy reading
+        it; a box a larger copy in the same memory holds by then (``can_copy_from``) is a local copy from that copy."""
+        reads = sorted(
+            (
+                (c, j, want, read)
+                for c, copy in enumerate(transfer.outputs)
+                for j, want, read in self._copy_windows(
+                    copy, transfer, mapping, tiling, placed, targets, reads_in, firing
+                )
+            ),
+            key=lambda entry: -prod(hi - lo + 1 for lo, hi, _ in entry[2]),
+        )
+        found: dict[tuple[int, Box], _TargetDemand] = {}
+        local_copies: list[_TargetDemand] = []
+        for k, (c, j, want, read) in enumerate(reads):
+            copied_from = next(
+                (
+                    other
+                    for other, i, _, larger in reads[:k]
+                    if can_copy_from is not None
+                    and other != c
+                    and targets[i] is targets[j]
+                    and (firing is None or not less(_plain(want), self._read_so_far(larger, placed, firing)))
+                    and can_copy_from(read, larger)
+                ),
+                None,
+            )
+            for box in self._new_part(transfer.outputs[c], transfer, mapping, ssis, want, read, placed, firing):
+                if copied_from is not None:
+                    local_copies.append(_TargetDemand(j, box, want, (c,), True, copied_from))
+                    continue
+                entry = found.get((j, box), _TargetDemand(j, box, want, (), False))
+                found[(j, box)] = replace(entry, copies=(*entry.copies, c))
+        return _disjoint_boxes(list(found.values())) + local_copies
+
+    def _read_so_far(self, read: _Read, placed: set[LayerDim], firing: _Firing) -> list[Box]:
+        """The windows ``read`` covers at ``firing`` of the nest and at every firing before it."""
+        nest, s = firing
+        return [_plain(box) for k in range(s + 1) if (box := self._firing_box(read, placed, (nest, k))) is not None]
+
+    def _always_within(
+        self, smaller: _Read, larger: _Read, fusion_splits: dict[LayerDim, int], placed: set[LayerDim]
+    ) -> bool:
+        """Whether the ``larger`` read's window holds the ``smaller`` one's at every trip of the ``fusion_splits``."""
+        for steps in product(*(range(n) for n in fusion_splits.values())):
+            at = dict(zip(fusion_splits, steps, strict=True))
+            if not within(self._read_box(smaller, placed, at), self._read_box(larger, placed, at)):
+                return False
+        return True
+
+    def _read_box(self, read: _Read, placed: set[LayerDim], steps: dict[LayerDim, int]) -> Box:
+        """The box ``read`` covers at the given steps of the fused loops: a step spans a core's tile times the cores
+        a split of the same dim spreads it over."""
+        tensor, node, split, core, cores = read
+        if not isinstance(node, HasIterationSpace):
+            return tuple((0, n - 1) for n in tensor.shape)
+        at = dict.fromkeys(placed | {d for d, _ in split}, 0) | self._position(split, position_of(core, cores, split))
+        factors = dict(split)
+        for dim, step in steps.items():
+            at[dim] = at.get(dim, 0) + step * factors.get(dim, 1)
+        return _plain(self._bounds(tensor, [node], self._tile_sizes(split), at))
+
+    def _demand_box(
+        self, tensor: Tensor, node: Node, split: InterCoreTiling, core: int, cores: int, placed: set[LayerDim]
+    ) -> list[tuple[int, int, bool]]:
+        """The inclusive range per axis of ``tensor`` that ``node`` touches on core ``core`` of ``cores`` under
+        ``split``, the dims of ``placed`` at their first tile, and whether a split places the axis."""
+        if not isinstance(node, HasIterationSpace):
+            return [(0, n - 1, True) for n in tensor.shape]
+        at = dict.fromkeys(placed | {d for d, _ in split}, 0) | self._position(split, position_of(core, cores, split))
+        return self._bounds(tensor, [node], self._tile_sizes(split), at)
+
+    def _firing_box(
+        self, read: _Read, placed: set[LayerDim], firing: _Firing | None
+    ) -> list[tuple[int, int, bool]] | None:
+        """:meth:`_demand_box` of ``read``; at ``firing`` of the nest, with each of its dims spanning, in tensor
+        coordinates, what the reading node computes at that firing, None if it computes nothing then."""
+        tensor, node, split, core, cores = read
+        if firing is None or node not in (spans := firing[0].spans):
+            return self._demand_box(tensor, node, split, core, cores, placed)
+        lo, hi = spans[node][firing[1]]
+        if hi < lo:
+            return None
+        at = dict.fromkeys(placed | {d for d, _ in split}, 0) | self._position(split, position_of(core, cores, split))
+        sizes = self._tile_sizes(split) | {firing[0].dim: hi - lo + 1}
+        return self._bounds(tensor, [cast(HasIterationSpace, node)], sizes, at, {firing[0].dim: lo})
+
+    def _copy_windows(  # noqa: PLR0913
+        self,
+        copy: Tensor,
+        transfer: TransferNode,
+        mapping: "Mapping",
+        tiling: InterCoreTiling,
+        placed: set[LayerDim],
+        targets: Sequence[Memory],
+        reads_in: Callable[[ComputationNode, Tensor], tuple[Memory, ...]] | None,
+        firing: _Firing | None = None,
+    ) -> list[tuple[int, list[tuple[int, int, bool]], _Read]]:
+        """Each target position of ``copy`` with the window read there (at ``firing`` of the nest) and the read: per
+        core of its reader in the memory it reads in (``reads_in``), else per target under the transfer's split."""
+        reader = next(n for n in self.successors(transfer) if isinstance(n, HasInputs) and copy in n.inputs)
+        if reads_in is not None and isinstance(reader, ComputationNode) and mapping.get(reader).resource_allocation:
+            split, memories = self._tiling(reader, mapping), reads_in(reader, copy)
+            reads = [
+                (j, (copy, reader, split, p, len(memories)))
+                for p, memory in enumerate(memories)
+                if (j := next((j for j, target in enumerate(targets) if target is memory), None)) is not None
+            ]
+        else:
+            read, node = self._reader(copy, transfer) or (transfer.inputs[0], next(iter(self.predecessors(transfer))))
+            reads = [(j, (read, node, tiling, j, len(targets))) for j in range(len(targets))]
+        return [
+            (j, window, read) for j, read in reads if (window := self._firing_box(read, placed, firing)) is not None
+        ]
+
+    def _new_part(  # noqa: PLR0913
+        self,
+        copy: Tensor,
+        transfer: TransferNode,
+        mapping: "Mapping",
+        ssis: Callable[[Node | Tensor], SteadyStateIterationSpace | None],
+        want: list[tuple[int, int, bool]],
+        read: _Read,
+        placed: set[LayerDim],
+        firing: _Firing | None,
+    ) -> list[Box]:
+        """The part of its window ``want`` that ``copy`` does not hold yet: at a firing of the nest, the window less the
+        one before, which the copy keeps; else ``want`` less the halo its innermost sliding loop keeps."""
+        space = ssis(copy)
+        slides = next((v for v in (space.get_temporal_variables() if space else []) if v.relevant and v.halo), None)
+        if firing is None or slides is None or slides.dimension != firing[0].dim:
+            return [self._unheld(copy, transfer, mapping, space, want)]
+        nest, s = firing
+        before = self._firing_box(read, placed, (nest, s - 1)) if s else None
+        return less(_plain(want), [_plain(before)]) if before is not None else [_plain(want)]
+
+    def _unheld(
+        self,
+        copy: Tensor,
+        transfer: TransferNode,
+        mapping: "Mapping",
+        ssis: SteadyStateIterationSpace | None,
+        want: list[tuple[int, int, bool]],
+    ) -> Box:
+        """``want`` less the halo the innermost sliding loop keeps of ``copy`` from the previous firing, along an axis
+        no split places (a placed axis takes its halo from the neighbouring core)."""
+        box = _plain(want)
+        if (sliding := self.sliding_halo(copy, transfer, mapping, ssis)) is None:
+            return box
+        axis, halo = sliding
+        lo, hi, axis_placed = want[axis]
+        if axis_placed or hi - lo + 1 <= halo:
+            return box
+        return (*box[:axis], (lo + halo, hi), *box[axis + 1 :])
 
     def splits_reduction(self, node: HasIterationSpace, tiling: InterCoreTiling) -> bool:
         """Whether ``tiling`` splits a dimension ``node`` reduces over, leaving each core a partial sum."""
@@ -1442,6 +1767,55 @@ def _split(box: list[tuple[int, int]], parts: int) -> list[tuple[tuple[int, int]
     lo, hi = box[axis]
     edges = [lo + (hi - lo + 1) * k // parts for k in range(parts + 1)]
     return [tuple(box[:axis] + [(edges[k], edges[k + 1] - 1)] + box[axis + 1 :]) for k in range(parts)]
+
+
+def _over_firings(per_firing: list[list[DemandItem]]) -> list[DemandItem]:
+    """The demand of a nest's firings over all of them: firings alike up to a shift are kept once, with the range of
+    firings they span as their boxes' first axis; if all are alike, one firing stands for all."""
+    classes: dict[tuple, list[int]] = {}
+    for s, items in enumerate(per_firing):
+        classes.setdefault(_shifted(items), []).append(s)
+    if len(classes) == 1:
+        return per_firing[0]
+    found: list[DemandItem] = []
+    start = 0
+    for steps in classes.values():
+        span = (start, start + len(steps) - 1)
+        found += [replace(item, box=(span, *item.box), firings=len(per_firing)) for item in per_firing[steps[0]]]
+        start += len(steps)
+    return found
+
+
+def _shifted(items: list[DemandItem]) -> tuple:
+    """``items`` with their boxes moved to start at the origin together, in a fixed order."""
+    if not items:
+        return ()
+    origin = [min(item.box[a][0] for item in items) for a in range(len(items[0].box))]
+    return tuple(
+        sorted(
+            (
+                replace(item, box=tuple((lo - o, hi - o) for (lo, hi), o in zip(item.box, origin, strict=True)))
+                for item in items
+            ),
+            key=repr,
+        )
+    )
+
+
+def _plain(box: list[tuple[int, int, bool]]) -> Box:
+    """The ranges of ``box`` without whether each axis is placed."""
+    return tuple((lo, hi) for lo, hi, *_ in box)
+
+
+def _hull(boxes: list[Box]) -> Box:
+    """The smallest box holding all of ``boxes``."""
+    return tuple((min(lo for lo, _ in axis), max(hi for _, hi in axis)) for axis in zip(*boxes, strict=True))
+
+
+def _source_part_of_window(have: Box, want: list[tuple[int, int, bool]]) -> Box:
+    """What a source holds of ``want`` along the axes a split places; along the others it serves all a window
+    reads, producing it over the loop that slides there."""
+    return tuple(h if placed else (lo, hi) for h, (lo, hi, placed) in zip(have, want, strict=True))
 
 
 def _busiest[T](options: list[T], cost: Callable[[T], Any]) -> T:

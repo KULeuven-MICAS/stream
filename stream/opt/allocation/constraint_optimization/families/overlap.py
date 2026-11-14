@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Sequence
+from dataclasses import replace
 from enum import Enum
 from math import ceil, prod
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -19,10 +21,14 @@ from stream.opt.allocation.constraint_optimization.families import (
     SLOT_PRESSURE,
     TOTAL_LATENCY,
 )
-from stream.opt.allocation.constraint_optimization.families.latency import reuse_selectors
+from stream.opt.allocation.constraint_optimization.families.latency import (
+    link_busy,
+    per_copy_terms,
+)
 from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
-from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
+from stream.opt.solver import LinExpr, ObjectiveLevel, SolverVar, SolverVarType
+from stream.workload.demand import DemandItem, firing_count, moved_elements
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import ComputationNode
 
@@ -49,7 +55,7 @@ class Overlap:
     after its use (``span``); ``transfer_contention`` and ``offchip_contention`` let busy links bound the overlap."""
 
     name: ClassVar[str] = "overlap"
-    requires: ClassVar[tuple[str, ...]] = ("transfer_latency", "reuse_factor", SLOT_PRESSURE)
+    requires: ClassVar[tuple[str, ...]] = ("transfer_latency", "copy_reuse_factor", SLOT_PRESSURE)
     provides: ClassVar[tuple[str, ...]] = (
         "overlap",
         "iteration",
@@ -118,9 +124,8 @@ class Overlap:
         q.add("overlap", overlap._raw)
         q.add("iteration", iteration)
         busy_terms: dict[CommunicationLink, list[Any]] = defaultdict(list)
-        for key in ctx.vars.y:
-            for link, share in space.link_load(*key).items():
-                busy_terms[link].append(share * latency[key])
+        for (link, _), terms in link_busy(ctx).items():
+            busy_terms[link] += terms
         for res, v in idle_lat.items():
             if not self._bounds_overlap(space, res):
                 continue
@@ -327,19 +332,19 @@ def _shared_bandwidth_bounds(ctx: FormulationContext, overlap: SolverVar, iterat
 
 def _active_shared_latency(
     ctx: FormulationContext, memory: Memory, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
-) -> SolverVar:
+) -> SolverVar | LinExpr:
     """Cycles this transfer holds a shared-bandwidth memory per iteration, at its read and write ceiling."""
-    q = ctx.quantities
     space = ctx.space
-    constant = float(space.shared_cycles(memory, tr, choice, space.shared_bandwidth[memory].ceiling))
-    return ctx.binary_times_const_over_linexpr(
-        binary_var=y,
-        numerator=get_active_latency(tr, constant, space.ssis),
-        denominator_expr=q.get("reuse_factor", tr).expr,
-        denominator_lb=1.0,
-        base_name=f"shared_latency_{memory.name}_{tr}",
-        selectors=reuse_selectors(ctx, tr.outputs[0]),
+    ceiling = space.shared_bandwidth[memory].ceiling
+    terms = per_copy_terms(
+        ctx,
+        tr,
+        choice,
+        y,
+        lambda copies: float(space.shared_cycles(memory, tr, choice, ceiling, copies)),
+        f"shared_latency_{memory.name}_{tr}",
     )
+    return next(iter(terms.values())) if len(terms) == 1 else ctx.model.quicksum(terms.values())
 
 
 def _drained(space: DecisionSpace) -> dict[object, int]:
@@ -409,15 +414,46 @@ def _warmup(ctx: FormulationContext) -> Any:
     if not space.warmup:
         return None
     cost = _cycles_per_iteration(ctx)
+    ahead = _transfer_run_ahead(ctx)
     ready = {n: model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name=f"ready_{n.name}") for n in cost}
     warmup = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="warmup")
     for node, start in ready.items():
         waits = not isinstance(node, ComputationNode) or space.is_waited_on(node)
-        delay = space.warmup.get(node, 0.0) * cost[node] if waits else 0
+        delay = ahead.get(node, space.warmup.get(node, 0.0) * cost[node]) if waits else 0
         for reader in (c for c in space.workload.successors(node) if c in ready):
             model.add_constr(ready[reader] >= start + delay, name=f"warmup_{node.name}_{reader.name}")
         model.add_constr(warmup >= start, name=f"warmup_{node.name}")
     return warmup._raw
+
+
+def _transfer_run_ahead(ctx: FormulationContext) -> dict[TransferNode, Any]:
+    """Cycles each transfer runs ahead of its steady pace at most: the sliding work's lookahead at the average
+    firing's cost, or where the route counts each firing, the most its first firings take beyond the average."""
+    space = ctx.space
+    ahead: dict[TransferNode, Any] = {}
+    for (tr, choice), quantity in ctx.quantities.indexed("transfer_latency").items():
+        excess = _first_firings_excess(choice.delivered_items)
+        share = space.warmup.get(tr, 0.0) if excess is None else excess
+        ahead[tr] = ahead.get(tr, 0) + share * quantity.expr
+    return ahead
+
+
+def _first_firings_excess(items: Sequence[DemandItem]) -> float | None:
+    """The most the first firings carry beyond as many average firings, in average firings; None where one firing
+    stands for all."""
+    if firing_count(items) <= 1:
+        return None
+    average = moved_elements(items)
+    if not average:
+        return 0.0
+    spans: dict[tuple[int, int], list[DemandItem]] = {}
+    for item in items:
+        spans.setdefault(item.box[0], []).append(replace(item, box=item.box[1:], firings=1))
+    running, most = 0.0, 0.0
+    for (lo, hi), group in sorted(spans.items()):
+        running += (hi - lo + 1) * (moved_elements(group) - average)
+        most = max(most, running)
+    return most / average
 
 
 def _cycles_per_iteration(ctx: FormulationContext) -> dict[Any, Any]:

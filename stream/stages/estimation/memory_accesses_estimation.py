@@ -9,6 +9,7 @@ from stream.hardware.ports import READ, WRITE
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.demand import copy_sets, item_bits, moved_elements
 from stream.workload.node import InEdge, OutEdge, TransferNode, TransferType
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.tensor import Tensor
@@ -105,8 +106,8 @@ class MemoryAccessesEstimationStage(Stage):
                 self._add_on_chip(tn, src, t_core, READ, nb_fires)
                 continue
             if isinstance(src, InEdge):
-                for memory, bits in self._edge_bits(tn, src, t_core, READ):
-                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, READ)) * nb_fires
+                for memory, bits, fires in self._edge_bits(tn, src, t_core, READ, nb_fires):
+                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, READ)) * fires
                     self.core_memory_accesses.add_offchip_read(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(src).resource_allocation)
@@ -160,8 +161,8 @@ class MemoryAccessesEstimationStage(Stage):
                 self._add_on_chip(tn, dst, t_core, WRITE, nb_fires)
                 continue
             if isinstance(dst, OutEdge):
-                for memory, bits in self._edge_bits(tn, dst, t_core, WRITE):
-                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, WRITE)) * nb_fires
+                for memory, bits, fires in self._edge_bits(tn, dst, t_core, WRITE, nb_fires):
+                    accesses = ceil(bits / self.accelerator.offchip_rate(memory, WRITE)) * fires
                     self.core_memory_accesses.add_offchip_write(memory, t_core, accesses)
                 continue
             cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
@@ -178,26 +179,43 @@ class MemoryAccessesEstimationStage(Stage):
         """The reads (or writes) of ``tensor`` in each on-chip memory ``edge`` is placed in, its share
         (:meth:`_edge_bits`), charged to the memory cores viewing it, else to the cores computing from it."""
         add = self.core_memory_accesses.add_read if direction == READ else self.core_memory_accesses.add_write
-        for memory, bits in self._edge_bits(tn, edge, tensor, direction):
+        for memory, bits, fires in self._edge_bits(tn, edge, tensor, direction, nb_fires):
             for core in _memory_tile_cores(((memory,),)) or memory.cores:
-                add(core, tensor, ceil(bits / core.get_max_memory_bandwidth(type=direction)) * nb_fires)
+                add(core, tensor, ceil(bits / core.get_max_memory_bandwidth(type=direction)) * fires)
 
     def _edge_bits(
-        self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str
-    ) -> list[tuple[Memory, float]]:
+        self, tn: TransferNode, edge: InEdge | OutEdge, tensor: Tensor, direction: str, nb_fires: int
+    ) -> list[tuple[Memory, float, int]]:
         """Each memory ``tn`` reads (or writes) ``tensor`` of ``edge`` in, off chip or placed on chip, with the bits it
-        moves per firing: a split placement's share of what the route delivers over the walk, else its share of the
-        route's data (:meth:`MulticastPathPlan.memory_share`)."""
+        moves per firing and the firings of the ``nb_fires`` that move them: a split placement's share of what the route
+        delivers over the walk, else, per copy set the route delivers to, its share of their bits
+        (:meth:`MulticastPathPlan.memory_share`) as often as the most often firing of them fires."""
         placement = self.mapping.placement_of(edge)
         on_chip = placement is not None and placement.on_chip
         route, leaving = self.mapping.get(tn).resource_allocation[0], direction == READ
         if (shares := self.workload.placement_shares(placement, tn.inputs[0], route.delivered)) is not None:
-            return [(memory, tensor.size_bits() * share) for memory, share in shares.items()]
-        side = route.sources if leaving else route.targets
-        return [
-            (memory, tensor.size_bits() * route.memory_share(memory, leaving))
-            for memory in dict.fromkeys(memory for memory in side if memory.offchip != on_chip)
-        ]
+            return [(memory, tensor.size_bits() * share, nb_fires) for memory, share in shares.items()]
+        side = dict.fromkeys(route.sources if leaving else route.targets)
+        memories = [memory for memory in side if memory.offchip != on_chip]
+        bitwidth = tensor.operand_type.bitwidth
+        if not route.delivered_items:
+            # Where its readers read all of it in place, what they read there.
+            moved = item_bits(route.demand, bitwidth)
+            return [(memory, moved * route.memory_share(memory, leaving), nb_fires) for memory in memories]
+        found = []
+        for copies in copy_sets(route.delivered_items):
+            moved = moved_elements(item for item in route.delivered_items if item.copies == copies) * bitwidth
+            fires = max(nb_fires * self._firing_share(tn, c) for c in copies)
+            found += [
+                (memory, moved * route.memory_share(memory, leaving, copies), round(fires)) for memory in memories
+            ]
+        return found
+
+    def _firing_share(self, tn: TransferNode, copy: int) -> float:
+        """The share of ``tn``'s firings at which its copy at index ``copy`` fires: the transfer's reuse over the
+        copy's."""
+        own = self.ssis.get(tn.outputs[copy])
+        return self.ssis[tn].reuse_factor() / own.reuse_factor() if own is not None else 1.0
 
     def is_leaf(self):
         return True

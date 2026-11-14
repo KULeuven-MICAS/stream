@@ -234,7 +234,8 @@ class SteadyStateIR(BaseModel):
             "memories and links, its copies' names ('copy_names'), the copy each target holds ('target_copies'), "
             "that copy's window and moved tile, each copy's halos, "
             "the demand each source serves at each target, the bits one firing moves, route cycles and reuse factor "
-            "(the iterations one firing serves). Where a window slides, both "
+            "(the iterations one firing serves; 'copy_moved_bits' and "
+            "'copy_reuse_factors' give both per copy). Where a window slides, both "
             "also carry their work per fused tile and how far they run ahead"
         )
     )

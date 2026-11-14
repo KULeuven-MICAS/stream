@@ -10,12 +10,13 @@ from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.diagnosis import StructuralRule
 from stream.opt.solver import SolverVarType
 from stream.workload.node import TransferType
-from stream.workload.steady_state.iteration_space import IterationVariableType
+from stream.workload.steady_state.iteration_space import IterationVariableType, LoopEffect
 
 if TYPE_CHECKING:
+    from stream.datatypes import LayerDim
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.solver import LinExpr, SolverVar
-    from stream.workload.workload import Tensor
+    from stream.workload.workload import Tensor, TransferNode
 
 
 @dataclass(frozen=True)
@@ -42,11 +43,12 @@ def replay_unexpressible_levels(relevancies: list[bool], read_levels: int) -> li
 
 
 class ReuseRates:
-    """The reuse factor of each transfer: how many iterations one firing serves, from its tensor's reuse stop."""
+    """The reuse factor of each copy a transfer lands, how many iterations one of its firings serves, from the copy's
+    reuse stop; a transfer's own is its first copy's."""
 
     name: ClassVar[str] = "reuse_rates"
     requires: ClassVar[tuple[str, ...]] = ()
-    provides: ClassVar[tuple[str, ...]] = ("reuse_factor",)
+    provides: ClassVar[tuple[str, ...]] = ("reuse_factor", "copy_reuse_factor")
 
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
@@ -56,14 +58,17 @@ class ReuseRates:
                 f"Only single-input transfers are supported for fire rate constraints, "
                 f"but {tr.name} has inputs {tr.inputs}."
             )
-            t = tr.outputs[0]
-            reuse_factor = model.add_var(vtype=SolverVarType.INTEGER, name=f"reuse_factor_{tr.name}")
-            model.add_constr(
-                reuse_factor
-                == model.quicksum(space.reuse_levels[(t, s)] * z_stop[(t, s)]._raw for s in space.stops(t)),
-                name=f"reuse_factor_def_{tr.name}",
-            )
-            q.add("reuse_factor", reuse_factor._raw, index=tr)
+            for k, t in enumerate(tr.outputs):
+                name = tr.name if k == 0 else f"{tr.name}_{t.name}"
+                reuse_factor = model.add_var(vtype=SolverVarType.INTEGER, name=f"reuse_factor_{name}")
+                model.add_constr(
+                    reuse_factor
+                    == model.quicksum(space.reuse_levels[(t, s)] * z_stop[(t, s)]._raw for s in space.stops(t)),
+                    name=f"reuse_factor_def_{name}",
+                )
+                q.add("copy_reuse_factor", reuse_factor._raw, index=t)
+                if k == 0:
+                    q.add("reuse_factor", reuse_factor._raw, index=tr)
 
 
 FUSED_INTERMEDIATE = StructuralRule(
@@ -90,13 +95,16 @@ def _held_from(
 
 
 class ReuseLevels:
-    """A tensor handed from core to core is held up to its outermost irrelevant loop."""
+    """A tensor sent from core to core is held up to its outermost irrelevant loop.
+    A route with a local copy needs the larger copy kept (:func:`_local_copy_sources_held`)."""
 
     name: ClassVar[str] = "reuse_levels"
     requires: ClassVar[tuple[str, ...]] = ()
     provides: ClassVar[tuple[str, ...]] = ()
 
     def build(self, ctx: FormulationContext) -> None:
+        for tr in ctx.space.transfer_nodes:
+            _local_copy_sources_held(ctx, tr)
         for tr in ctx.space.transfer_nodes:
             if tr.transfer_type not in (TransferType.COMPUTE_TO_COMPUTE):
                 continue
@@ -109,6 +117,38 @@ class ReuseLevels:
                 if last_irrelevant >= 0:
                     name = f"force_intermediate_reuse_{tr.name}"
                     _held_from(ctx, t, last_irrelevant, len(relevancies), name, FUSED_INTERMEDIATE)
+
+
+def _local_copy_sources_held(ctx: FormulationContext, tr: TransferNode) -> None:
+    """A route of ``tr`` with a local copy is chosen only if the larger copy is kept at least from the outermost loop
+    its reader skips and the smaller copy's reader runs."""
+    space, z_stop = ctx.space, ctx.vars.z_stop
+    for k, choice in enumerate(space.path_choices[tr]):
+        local_copies = {(item.copied_from, item.copies[0]) for item in choice.demand if item.copied_from is not None}
+        for larger, smaller in sorted(local_copies):
+            held = tr.outputs[larger]
+            skipped = _skipped_loops(ctx, tr, larger, smaller)
+            loops = space.ssis[held].get_applicable_temporal_variables()
+            if (level := max((i for i, v in enumerate(loops) if v.dimension in skipped), default=-1)) < 0:
+                continue
+            ctx.add_constr(
+                ctx.vars.y[(tr, choice)]
+                <= ctx.model.quicksum(z_stop[(held, s)]._raw for s in range(level, len(loops))),
+                name=f"local_copy_source_held_{tr.name}_{k}_{larger}_{smaller}",
+            )
+
+
+def _skipped_loops(ctx: FormulationContext, tr: TransferNode, larger: int, smaller: int) -> set[LayerDim]:
+    """The temporal loops the reader of copy ``larger`` skips while that of copy ``smaller`` runs on them."""
+    space = ctx.space
+    ssis = [
+        space.ssis.get(next(n for n in space.workload.successors(tr) if tr.outputs[c] in n.inputs))
+        for c in (larger, smaller)
+    ]
+    if ssis[0] is None or ssis[1] is None:
+        return set()
+    absent = {v.dimension for v in ssis[0].get_temporal_variables() if v.effect is LoopEffect.ABSENT}
+    return {v.dimension for v in ssis[1].get_temporal_variables() if v.effect is not LoopEffect.ABSENT} & absent
 
 
 class OutputReuse:

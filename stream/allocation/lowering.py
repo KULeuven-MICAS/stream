@@ -135,6 +135,8 @@ class _Lowering:
         with span("iteration_spaces"):
             self.ssis = self.generate_ssis()
             self.iterations = self.calculate_iterations()
+        with span("routes"):
+            self.route_transfers()
         with span("timeslots"):
             timeslots = self.ssw.get_timeslots(self.mapping)
         return AllocationProblem(
@@ -325,13 +327,26 @@ class _Lowering:
         for node in self.ssw.get_computation_nodes():
             unique_dims_tiling = (self.ssw.get_unique_dims_inter_core_tiling(node, self.mapping),)
             self.mapping.update_inter_core_tiling(node, unique_dims_tiling)
-        # Add transfer node mappings
+        # Add transfer node mappings; their routes follow once the iteration spaces give each copy's halos.
         for node in self.ssw.get_transfer_nodes():
             assert len(node.inputs) == 1, "Transfer node must have exactly one input tensor."
             src = cast(HasOutputs, list(self.ssw.predecessors(node))[0])
             dsts = tuple(cast(HasInputs, n) for n in self.ssw.successors(node))
             self.update_mapping_for_transfer(node, src, dsts)
         return self.mapping.with_updated_workload(self.ssw, self.workload)  # updates FusedGroups
+
+    def route_transfers(self) -> None:
+        """Give each transfer the routes of each of its placements, moving what each copy reads per firing."""
+        for node in self.ssw.get_transfer_nodes():
+            src = cast(HasOutputs, next(iter(self.ssw.predecessors(node))))
+            node_mapping = self.mapping.get(node)
+            dst_allocs, tilings = node_mapping.memory_allocation, node_mapping.inter_core_tiling
+            self.mapping.set_for_node(
+                node,
+                resource_allocation=self.determine_possible_transfer_plans(node, src, dst_allocs, tilings),
+                inter_core_tiling=tilings,
+                memory_allocation=dst_allocs,
+            )
 
     def _fresh(self, name: str) -> str:
         """``name``, suffixed until no tensor of the workload has it, so a copy cannot be taken for another tensor."""
@@ -426,15 +441,6 @@ class _Lowering:
         self.mapping.set_for_node(
             node,
             resource_allocation=(),
-            inter_core_tiling=possible_inter_core_tiling,
-            memory_allocation=possible_dst_allocs,
-        )
-        possible_allocations = self.determine_possible_transfer_plans(
-            node, src, possible_dst_allocs, possible_inter_core_tiling
-        )
-        self.mapping.set_for_node(
-            node,
-            resource_allocation=possible_allocations,
             inter_core_tiling=possible_inter_core_tiling,
             memory_allocation=possible_dst_allocs,
         )
@@ -561,30 +567,47 @@ class _Lowering:
         possible_tilings: tuple[InterCoreTiling, ...],
     ) -> tuple[MulticastPathPlan, ...]:
         """The route of each placement of ``node``, moving what each target reads from the sources that hold it, of
-        each placement the allocation may choose for the input it moves (:func:`placement_options`)."""
-        all_possible_resource_plans = []
+        each placement the allocation may choose for the input it moves (:func:`placement_options`), with and without
+        a local copy from a larger copy in a target's memory."""
+        all_possible_resource_plans: dict[MulticastPathPlan, None] = {}
         bitwidth = node.inputs[0].operand_type.bitwidth
         for placement, src_allocs in self._held_options(src):
             mapping = self.mapping if placement is None else self.mapping.with_edge_placements({src.name: placement})
             for dst_allocs, tiling in zip(possible_dst_allocs, possible_tilings, strict=True):
-                demand = self.ssw.get_transfer_demand(
-                    node,
-                    mapping,
-                    tiling,
-                    len(src_allocs),
-                    len(dst_allocs),
-                    self.hardware.pairs_by_spatial_index((*src_allocs, *dst_allocs)),
-                    dst_allocs,
-                    self._reads_in,
-                    partial(self._iteration_cost, src_allocs, dst_allocs, bitwidth),
-                )
-                possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
-                    src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
-                )
-                if placement is not None:
-                    possible_resource_plans = [replace(plan, placement=placement) for plan in possible_resource_plans]
-                all_possible_resource_plans.extend(possible_resource_plans)
+                by_spatial_index = self.hardware.pairs_by_spatial_index((*src_allocs, *dst_allocs))
+                demands = {
+                    self.ssw.get_transfer_demand(
+                        node,
+                        mapping,
+                        tiling,
+                        len(src_allocs),
+                        len(dst_allocs),
+                        by_spatial_index,
+                        dst_allocs,
+                        self._reads_in,
+                        partial(self._iteration_cost, src_allocs, dst_allocs, bitwidth),
+                        ssis=self.ssis.get,
+                        fusion_splits=self.fusion_splits,
+                        allow_local_copy=allow_local_copy,
+                        shares_memory=partial(self._shares_memory, src_allocs, dst_allocs),
+                    ): None
+                    # Code generation pairing by spatial index moves every copy by its own transfer.
+                    for allow_local_copy in ((False,) if by_spatial_index else (False, True))
+                }
+                for demand in demands:
+                    possible_resource_plans = self.accelerator.communication_manager.get_possible_transfer_plan(
+                        src_allocs, dst_allocs, demand, bitwidth, self.hardware.shares_memory, self.route_alternatives
+                    )
+                    if placement is not None:
+                        possible_resource_plans = [
+                            replace(plan, placement=placement) for plan in possible_resource_plans
+                        ]
+                    all_possible_resource_plans.update(dict.fromkeys(possible_resource_plans))
         return tuple(all_possible_resource_plans)
+
+    def _shares_memory(self, sources: Sequence[Memory], targets: Sequence[Memory], source: int, target: int) -> bool:
+        """Whether the source at position ``source`` and the target at position ``target`` share a memory."""
+        return self.hardware.shares_memory(sources[source], targets[target])
 
     def calculate_iterations(self) -> int:
         """Calculate the amount of steady state iterations based on all nodes' SSIS."""
@@ -659,7 +682,7 @@ class _Lowering:
         times the links they cross from the nearest source holding them."""
         held: dict[tuple[Memory, str], list[Box]] = defaultdict(list)
         carried = 0.0
-        for item in items:
+        for item in (item for item in items if item.sources):
             target = targets[item.target]
             source = min((sources[s] for s in item.sources), key=lambda memory: self.accelerator.hops(memory, target))
             for memory, direction in ((source, READ), (target, WRITE)):

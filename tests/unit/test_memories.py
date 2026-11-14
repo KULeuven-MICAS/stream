@@ -898,16 +898,31 @@ class _Stub:
 
 
 def test_the_bits_a_position_moves_are_its_own_where_cores_share_a_memory():
-    """Per-position bits of cores sharing a memory sum to the total, not to twice it."""
-    a, b = _Stub(name="l1_a"), _Stub(name="l1_b")
+    """Per-position bits of cores sharing a memory sum to the total, not to twice it: source 0 sends 3 elements to
+    target 0, source 1 sends 5 to target 0 and 7 to target 1: 15 elements of 8 bits."""
     space = object.__new__(DecisionSpace)
-    space.hardware = _Stub(shares_memory=lambda one, other: one is other)
-    space.overlaps = lambda tr: {(0, 0): 3, (1, 0): 5, (1, 1): 7}  # type: ignore[method-assign]
+    row = lambda lo, hi: ((0, 0), (lo, hi))  # noqa: E731
+    items = (DemandItem(0, (0,), row(0, 2)), DemandItem(0, (1,), row(3, 7)), DemandItem(1, (1,), row(8, 14)))
     tr = _Stub(inputs=[_Stub(operand_type=_Stub(bitwidth=8))], outputs=[None])
-    choice = _Stub(sources=(a, a), targets=(b, b))
+    choice = _Stub(delivered_items=items)
     assert space.moved_bits(tr, choice) == 15 * 8
     assert [space.moved_bits(tr, choice, source_at=i) for i in range(2)] == [3 * 8, 12 * 8]
     assert [space.moved_bits(tr, choice, target_at=j) for j in range(2)] == [8 * 8, 7 * 8]
+
+
+def test_what_a_source_sends_moves_once_and_a_partial_sum_once():
+    """A source sends elements 0-5 to two targets and 4-7 to a third: its tree carries 0-7 once, 8 elements; a
+    5-element partial sum two sources hold moves once: 13 elements."""
+    space = object.__new__(DecisionSpace)
+    row = lambda lo, hi: ((0, 0), (lo, hi))  # noqa: E731
+    items = (
+        DemandItem(0, (0,), row(0, 5)),
+        DemandItem(1, (0,), row(0, 5)),
+        DemandItem(2, (0,), row(4, 7)),
+        DemandItem(0, (1, 2), row(9, 13), reduce=True),
+    )
+    tr = _Stub(inputs=[_Stub(operand_type=_Stub(bitwidth=1))], outputs=[None])
+    assert space.moved_bits(tr, _Stub(delivered_items=items)) == 13
 
 
 def test_a_core_reads_a_copy_in_one_memory():

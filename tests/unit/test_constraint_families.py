@@ -183,7 +183,7 @@ def test_a_declaring_family_runs_its_declare_before_the_overlap_and_its_build_af
 
 
 def test_a_requirement_no_family_provides_is_rejected() -> None:
-    with pytest.raises(ValueError, match="'slot_latency' requires 'reuse_factor'"):
+    with pytest.raises(ValueError, match="'slot_latency' requires 'copy_reuse_factor'"):
         load_families([f for f in DEFAULT_FAMILIES if f != "reuse_rates"])
 
 

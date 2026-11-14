@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar
 from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.diagnosis import ResourceKind
 from stream.opt.allocation.constraint_optimization.families import ROUTE_HOPS
+from stream.opt.allocation.constraint_optimization.families.latency import link_busy
 from stream.opt.allocation.constraint_optimization.utils import resource_key
 from stream.opt.solver import ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.workload import Tensor
@@ -183,16 +184,12 @@ class LinkContention:
     def build(self, ctx: FormulationContext) -> None:
         space, model = ctx.space, ctx.model
         held: dict[tuple[CommunicationLink, int], list[SolverVar]] = defaultdict(list)
-        busy: dict[tuple[CommunicationLink, int], list] = defaultdict(list)
         for (tr, choice), y in ctx.vars.y.items():
-            s = space.slot_of[tr]
-            latency = ctx.quantities.get("transfer_latency", (tr, choice)).expr
             for link in space.links_in_choice[(tr, choice)]:
                 if space.hardware.circuit_switched(link.cores):
-                    held[(link, s)].append(y)
-            for link, share in space.link_load(tr, choice).items():
-                if not space.hardware.circuit_switched(link.cores):
-                    busy[(link, s)].append(share * latency)
+                    held[(link, space.slot_of[tr])].append(y)
+        switched = space.hardware.circuit_switched
+        busy = {key: terms for key, terms in link_busy(ctx).items() if not switched(key[0].cores)}
         for (link, s), vars_ in held.items():
             ctx.add_constr(
                 model.quicksum(v._raw for v in vars_) <= 1,

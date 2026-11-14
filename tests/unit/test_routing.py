@@ -131,16 +131,16 @@ def test_overlapping_boxes_count_their_common_part_once():
 
 def test_each_target_is_served_by_the_copy_in_its_own_cluster(accelerator):
     """Hubs 2 and 5 both hold the tensor; each cluster reads its own hub's copy, so nothing crosses the hub bus and
-    each cluster bus carries the whole tensor, the two at once."""
+    each cluster bus carries the whole tensor, the two at once: each half of what the two hubs send."""
     demand = [DemandItem(t, (0, 1), WHOLE) for t in range(4)]
     plan = route(accelerator, (2, 5), (0, 1, 3, 4), demand)
     assert plan.pairs == ((0, 0), (0, 1), (1, 2), (1, 3))
-    assert shares(plan) == {"Bus(m0,m1,m2, bw=1000)": 1.0, "Bus(m3,m4,m5, bw=1000)": 1.0}
+    assert shares(plan) == {"Bus(m0,m1,m2, bw=1000)": 0.5, "Bus(m3,m4,m5, bw=1000)": 0.5}
 
 
 def test_a_link_is_charged_only_the_part_that_is_not_already_in_its_target(tmp_path):
     """Two cores sharing a memory read twelve rows, eight held there and four by a core across a link: the link
-    carries those four, a third of what the transfer delivers."""
+    carries those four, all the transfer delivers, the eight already in place moving nothing."""
     path = _hardware(
         tmp_path / "local.yaml",
         "local",
@@ -152,7 +152,7 @@ def test_a_link_is_charged_only_the_part_that_is_not_already_in_its_target(tmp_p
     quarter = ((0, 3), (0, 15))
     demand = [DemandItem(0, (0,), HALF_A), DemandItem(1, (0,), ((8, 11), (0, 15))), DemandItem(1, (1,), quarter)]
     plan = route(parse_accelerator(path), (0, 2), (0, 1), demand)
-    assert shares(plan) == {"CL(m2, l1, bw=64)": round(64 / 192, 3)}
+    assert shares(plan) == {"CL(m2, l1, bw=64)": 1.0}
 
 
 def test_a_broadcast_crosses_each_link_once(accelerator):

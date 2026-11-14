@@ -172,7 +172,7 @@ def test_a_target_passing_data_on_reads_it_unless_its_switch_copies_it(switched,
     ctx = MagicMock()
     ctx.space.layouts.runs.return_value = (None, None)
     ctx.space.hardware.circuit_switched.return_value = switched
-    ctx.space.side_ports.side_effect = lambda tr, choice, memory, direction: {MagicMock(tag=memory.tag): 1.0}
+    ctx.space.side_ports.side_effect = lambda tr, choice, memory, direction, copies: {MagicMock(tag=memory.tag): 1.0}
     sides = traffic._sides(ctx, MagicMock(), choice)
     assert sorted(side.port.tag for side in sides if side.direction == "read") == readers
 
