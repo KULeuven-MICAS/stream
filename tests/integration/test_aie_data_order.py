@@ -85,6 +85,25 @@ def _fifo(design: str, name: str) -> tuple[list[tuple[int, int]], tuple[int, ...
 
 
 @pytest.mark.slow
+def test_a_memory_tile_stages_each_held_row_tile_where_its_core_row_reads_it(design):
+    """The first object row ``r``'s memory tile holds is, k tile by k tile, the four 32-row tiles that row of cores
+    calls on, at their rows of the activation."""
+    for r in range(ROWS):
+        walk, shape = _fifo(design, f"of_0_mem_{r}")
+        offset, sizes, strides = _shim_bds(design, f"of_0_mem_{r}")[0]
+        assert sizes[-1] == shape[0] * shape[-1], "the shim reads a row of the staged block in one run"
+        stream = _walk(offset, sizes, strides)[: prod(shape)]
+        held = np.empty(prod(shape), dtype=np.int64)
+        held[_walk(0, [s for s, _ in walk], [t for _, t in walk]) if walk else np.arange(prod(shape))] = stream
+        k_tiles, tiles, rows, columns = shape
+        held = held.reshape(shape)
+        for kt, j in product(range(k_tiles), range(tiles)):
+            first = (j * CALL_ROWS * ROWS + r * CALL_ROWS) * K + kt * columns
+            expected = first + np.add.outer(np.arange(rows) * K, np.arange(columns))
+            assert (held[kt, j] == expected).all(), (r, kt, j)
+
+
+@pytest.mark.slow
 def test_a_memory_tile_gathers_one_round_of_its_cores_output_tiles_at_a_time(design):
     """Each object the memory tile gathers holds one output tile of each core row, so the row-major run it writes off
     chip puts tile ``j`` of core row ``r`` at rows ``j * 128 + r * 32`` on."""

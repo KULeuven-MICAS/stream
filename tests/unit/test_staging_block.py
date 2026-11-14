@@ -97,3 +97,22 @@ def test_the_tile_search_offers_the_other_operand_held_across_the_inner_loop():
     staged = FusedGroup("g", ("Gemm",), ((K, 64), (K, 512), (N, 64), (M, 64)))
     assert _reordered(staged).intra_core_tiling == ((K, 64), (K, 512), (M, 64), (N, 64))
     assert _reordered(FusedGroup("g", ("Silu",), ((N, 64), (M, 1)))) is None
+
+
+def test_a_block_split_between_cores_is_not_read_across_its_tiles():
+    """Where the cores split the contiguous axis too, each one's tiles of the block interleave with the others', so the
+    read takes each tile on its own."""
+    import pytest
+
+    convert = pytest.importorskip("stream.compiler.transforms.aie_convert_ofs", reason="the AIE dialects")
+    from xdsl.dialects.builtin import StringAttr, bf16
+
+    from stream.compiler.dialects.stream import StrensorSpace, StrensorType, StrensorVar, StrensorVarType
+
+    n_in = StrensorVar(StrensorVarType.TEMPORAL, 4, N)
+    rows, columns = StrensorVar(StrensorVarType.KERNEL, 64, K), StrensorVar(StrensorVarType.KERNEL, 64, N)
+    cores = StrensorVar(StrensorVarType.SPATIAL, 8, N)
+    space = StrensorSpace((n_in, cores, rows, columns))
+    memory = StrensorType(bf16, space, [StringAttr("tile_0_1")], reuse_index=4)
+    pairs = [(v, v) for v in reversed(space.vars)]
+    assert convert._widened_run(memory, pairs, {N: 1, K: 8192}, staged=True) is None
