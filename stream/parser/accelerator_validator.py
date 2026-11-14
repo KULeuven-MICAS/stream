@@ -520,17 +520,19 @@ class AcceleratorValidator:
         self.data["bandwidth"] = parsed
 
     def _validate_bandwidth_model(self, key: object, model: object) -> None:
-        """A bandwidth model: positive ``ceiling`` and ``contiguous`` rates, measured ``strided`` rates per direction,
-        and a positive whole number of bytes per access as ``burst``, which a direction's measured rates override."""
+        """A bandwidth model: positive ``ceiling`` and ``contiguous`` rates, measured ``strided`` and ``adjacent`` rates
+        per direction, and a positive whole number of bytes per access as ``burst``, which a direction's measured rates
+        override."""
         if not isinstance(model, dict):
             self.invalidate(f"`bandwidth.{key}` must be a mapping.")
             return
         for rate in ("ceiling", "contiguous"):
             if not isinstance(model.get(rate), int | float) or model[rate] <= 0:
                 self.invalidate(f"`bandwidth.{key}.{rate}` must be a positive number.")
-        for direction, table in (model.get("strided") or {}).items():
-            if direction not in ("read", "write") or not isinstance(table, dict):
-                self.invalidate(f"`bandwidth.{key}.strided` maps `read` and `write` to rates per span in bytes.")
+        for name in ("strided", "adjacent"):
+            for direction, table in (model.get(name) or {}).items():
+                if direction not in ("read", "write") or not isinstance(table, dict):
+                    self.invalidate(f"`bandwidth.{key}.{name}` maps `read` and `write` to rates per span in bytes.")
         if "burst" in model and (type(model["burst"]) is not int or model["burst"] <= 0):
             self.invalidate(f"`bandwidth.{key}.burst` must be a positive whole number of bytes.")
 

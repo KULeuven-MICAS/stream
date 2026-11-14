@@ -83,14 +83,18 @@ core_coordinates:
   45: [7, 3]
   46: [7, 4]
   47: [7, 5]
-bandwidth:  # bits per cycle at 1.8 GHz, from scripts/benchmark/shim_ddr_bandwidth.py --derive
+bandwidth:  # bits per cycle at 1.8 GHz, scripts/benchmark/shim_ddr_bandwidth.py --derive of measurements/strix_shim_ddr.jsonl
   dram:
-    ceiling: 260.1  # reads and writes together, long runs, the median over 4 to 32 channels
-    contiguous: 177.7  # one direction, long runs on 8 or more channels; 1 KB runs and longer reach it
+    ceiling: 336.6  # reads and writes together, long runs, the median over 4 to 16 channels
+    contiguous: 252.5  # one direction, long runs on 8 or more channels; 1 KB runs and longer reach it
     strided:
       # runs apart at an 8 KB pitch, the faster of 8 and 16 channels
-      read: {32: 14.0, 64: 28.8, 128: 56.4, 256: 69.8, 512: 135.2}
-      write: {32: 14.6, 64: 29.0, 128: 53.9, 256: 59.1, 512: 116.1}
+      read: {32: 19.4, 64: 39.6, 128: 66.0, 256: 69.6, 512: 138.6}
+      write: {32: 19.8, 64: 39.1, 128: 60.3, 256: 61.7, 512: 125.6}
+    adjacent:
+      # adjacent runs: neighbouring channels move neighbouring runs of the same rows, the faster of 8 and 16 channels
+      read: {32: 83.9, 64: 172.7, 128: 246.3, 256: 252.4, 512: 251.5}
+      write: {32: 44.3, 64: 83.3, 128: 147.5, 256: 213.1, 512: 252.8}
 reconfiguration:  # fit to measurements/strix_group_runs.json by tests/unit/test_hardware_described_costs.py
   cycles_per_core: 18683
   cycles_per_group: 54934

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.hardware.ports import READ, WRITE
 from stream.opt.allocation.constraint_optimization.diagnosis import ConstraintTag, HardwareResource
 from stream.opt.allocation.constraint_optimization.families import (
     LATENCY,
@@ -322,41 +323,56 @@ def _recurrence_bound(space: DecisionSpace) -> int:
 
 
 def _shared_bandwidth_bounds(ctx: FormulationContext, overlap: SolverVar, iteration: Any) -> None:
-    """Bound the step by the time each shared-bandwidth memory spends on one iteration's transfers."""
+    """Bound the step by the time each shared-bandwidth memory spends on one iteration's transfers: all of them at its
+    read and write ceiling, and those of each direction at its one-way rate."""
     q = ctx.quantities
     space, model = ctx.space, ctx.model
-    for memory in space.shared_bandwidth:
-        terms = [
-            _active_shared_latency(ctx, memory, tr, choice, y)._raw
+    for memory, bandwidth in space.shared_bandwidth.items():
+        moving = [
+            (tr, choice, y)
             for (tr, choice), y in ctx.vars.y.items()
             if space.direction(memory, choice) is not None and not space.choice_shares_memory(tr, choice)
         ]
-        if not terms:
+        if not moving:
             continue
+        terms = [_active_shared_latency(ctx, memory, tr, choice, y)._raw for tr, choice, y in moving]
         busy = model.add_var(vtype=SolverVarType.CONTINUOUS, name=f"shared_busy_{memory.name}")
         model.add_constr(busy == model.quicksum(terms), name=f"shared_busy_{memory.name}_def")
         model.add_constr(overlap <= iteration - busy, name=f"shared_bound_{memory.name}")
         q.add("shared_busy", busy._raw, index=memory)
+        for direction in (READ, WRITE):
+            one_way = [
+                _active_shared_latency(ctx, memory, tr, choice, y, bandwidth.contiguous)._raw
+                for tr, choice, y in moving
+                if space.direction(memory, choice) == direction
+            ]
+            if one_way:
+                name = f"shared_{direction}_bound_{memory.name}"
+                model.add_constr(overlap <= iteration - model.quicksum(one_way), name=name)
 
 
-def _active_shared_latency(
-    ctx: FormulationContext, memory: Memory, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
+def _active_shared_latency(  # noqa: PLR0913
+    ctx: FormulationContext,
+    memory: Memory,
+    tr: TransferNode,
+    choice: MulticastPathPlan,
+    y: SolverVar,
+    rate: float | None = None,
 ) -> SolverVar | LinExpr:
-    """Cycles this transfer holds a shared-bandwidth memory per iteration, at its read and write ceiling."""
+    """Cycles this transfer holds a shared-bandwidth memory per iteration, at ``rate``, by default its read and write
+    ceiling."""
     space = ctx.space
-    ceiling = space.shared_bandwidth[memory].ceiling
+    rate = rate or space.shared_bandwidth[memory].ceiling
     terms = per_copy_terms(
         ctx,
         tr,
         choice,
         y,
-        lambda copies: float(space.shared_cycles(memory, tr, choice, ceiling, copies)),
+        lambda copies: float(space.shared_cycles(memory, tr, choice, rate, copies)),
         f"shared_latency_{memory.name}_{tr}",
     )
     if None in terms and space.once_per_run_stops(tr, single_copy(ctx, tr, choice)):
-        return steady_state_cycles(
-            ctx, tr, choice, terms[None], float(space.shared_cycles(memory, tr, choice, ceiling))
-        )
+        return steady_state_cycles(ctx, tr, choice, terms[None], float(space.shared_cycles(memory, tr, choice, rate)))
     return next(iter(terms.values())) if len(terms) == 1 else ctx.model.quicksum(terms.values())
 
 

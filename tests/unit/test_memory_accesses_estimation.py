@@ -18,7 +18,7 @@ def test_an_edge_access_moves_what_the_allocation_models_the_off_chip_memory_at(
     """Off-chip accesses use Strix's measured one-way DRAM rate, or whole_array's widest shim port."""
     strix = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
     dram = strix.offchip_memory
-    assert strix.offchip_rate(dram, READ) == strix.offchip_rate(dram, WRITE) == 177.7
+    assert strix.offchip_rate(dram, READ) == strix.offchip_rate(dram, WRITE) == 252.5
     plain = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
     dram = plain.offchip_memory
     assert plain.offchip_rate(dram, READ) == plain.offchip_rate(dram, WRITE) == 128

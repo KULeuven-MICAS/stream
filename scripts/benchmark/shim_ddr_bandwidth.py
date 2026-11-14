@@ -174,13 +174,10 @@ def bits_per_cycle(gb_per_s: float) -> float:
 
 
 def derive(records: list[dict]) -> dict:
-    """``bandwidth.dram`` from a sweep: per direction, the best of 8 and 16 channels walking runs apart; the ceiling,
-    the median of linear reads and writes together on 4 or more channels each way."""
-    walked = [r for r in records if not r["adjacent"] and r["columns"] == WHOLE_ARRAY_COLUMNS]
-    best = {
-        (r["mode"], r["run"]): max(s["gb_per_s"] for s in walked if (s["mode"], s["run"]) == (r["mode"], r["run"]))
-        for r in walked
-    }
+    """``bandwidth.dram`` from a sweep: per direction, the best of 8 and 16 channels walking runs apart, and the same
+    for adjacent runs; the ceiling, the median of linear reads and writes together on 4 or more channels each
+    way."""
+    best, adjacent = (_best(records, kind) for kind in (False, True))
     both = [
         r["gb_per_s"]
         for r in records
@@ -198,6 +195,19 @@ def derive(records: list[dict]) -> dict:
             }
             for side in ("read", "write")
         },
+        "adjacent": {
+            side: {run: bits_per_cycle(rate) for (mode, run), rate in sorted(adjacent.items()) if mode == side}
+            for side in ("read", "write")
+        },
+    }
+
+
+def _best(records: list[dict], adjacent: bool) -> dict[tuple[str, int], float]:
+    """Per direction and run, the fastest of the whole array's records walking runs apart or adjacent ones."""
+    walked = [r for r in records if r["adjacent"] == adjacent and r["columns"] == WHOLE_ARRAY_COLUMNS]
+    return {
+        (r["mode"], r["run"]): max(s["gb_per_s"] for s in walked if (s["mode"], s["run"]) == (r["mode"], r["run"]))
+        for r in walked
     }
 
 

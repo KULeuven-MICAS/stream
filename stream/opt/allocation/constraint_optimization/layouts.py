@@ -11,6 +11,7 @@ from stream.workload.workload import ComputationNode, InEdge, OutEdge, Tensor, T
 
 if TYPE_CHECKING:
     from stream.cost_model.communication_manager import MulticastPathPlan
+    from stream.hardware.architecture.memory import Memory
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 
 
@@ -149,13 +150,39 @@ class CopyLayouts:
         """The tile ``tr`` moves per firing: the indices of its source's tile its readers read, widened, into a memory
         tile, along each axis of the block it stages there (:meth:`DecisionSpace.staging_block`), which its walk
         streams as one."""
-        tile = list(self.space.workload.strided_view(tr.inputs[0]).shape)
+        return self._staged(tr, tuple(self.space.workload.strided_view(tr.inputs[0]).shape))
+
+    def _staged(self, tr: TransferNode, tile: tuple[int, ...]) -> tuple[int, ...]:
+        """``tile`` widened along each axis of the block ``tr`` stages in a memory tile."""
+        widened = list(tile)
         _, trips = self.space.staging_block(tr.outputs[0])
         strides = self.space.workload.strides_for_tensor(tr.inputs[0]) if trips else {}
         for dim, factor in trips.items():
             for axis, step in enumerate(strides.get(dim, ())):
-                tile[axis] *= factor if step else 1
-        return tuple(tile)
+                widened[axis] *= factor if step else 1
+        return tuple(widened)
+
+    def adjacent_runs(
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
+    ) -> float | None:
+        """Contiguous bytes per run each link moves of ``tr``'s tile into or out of ``memory`` on ``choice``, where
+        several links move their targets' boxes in adjacent runs: the shortest run of a box in that side's layout. None
+        where one link moves it all."""
+        if len(choice.links_at(memory, leaving=direction == READ)) <= 1:
+            return None
+        copy = tr.inputs[0] if direction == READ else tr.outputs[0]
+        full = tuple(tr.inputs[0].subview.source.type.get_shape())
+        bits = self.space.moved_element_bits(tr, choice)
+        runs = [
+            self.of(copy).contiguous_bytes(
+                self._staged(tr, tuple(hi - lo + 1 for lo, hi in item.box[-len(full) :])),
+                self.extent(copy, full),
+                bits,
+                self.index_steps(copy),
+            )
+            for item in choice.delivered_items
+        ]
+        return min(runs, default=None)
 
     def extent(self, copy: Tensor, full: tuple[int, ...]) -> tuple[int, ...]:
         """The buffer ``copy`` lives in: the whole tensor off chip, where a workload input or output is, else the tile
