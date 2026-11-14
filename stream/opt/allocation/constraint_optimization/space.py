@@ -602,6 +602,17 @@ class DecisionSpace:
         )
         return max(link, *shared) if self.shared_bandwidth else link
 
+    def core_stream_cycles(self, tr: TransferNode, path: MulticastPathPlan) -> float:
+        """Cycles one firing of ``tr`` takes to reach the compute target that receives most of it, each at the width of
+        the links of ``path`` into it: what a core's own stream needs, whatever else shares the route's links."""
+        cycles = 0.0
+        for at, target in enumerate(path.targets):
+            links = path.links_at(target, leaving=False) if target.kind == "compute" else ()
+            if links:
+                width = sum(link.bandwidth for link in links)
+                cycles = max(cycles, self.moved_bits(tr, path, target_at=at) / width)
+        return cycles
+
     def _copy_set_link_cycles(self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet) -> int:
         """Cycles the busiest link of ``path`` takes to carry what it delivers to exactly ``copies``."""
         bits = self.copy_set_link_bits(tr, path, copies)
