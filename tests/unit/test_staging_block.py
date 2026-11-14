@@ -116,3 +116,15 @@ def test_a_block_split_between_cores_is_not_read_across_its_tiles():
     memory = StrensorType(bf16, space, [StringAttr("tile_0_1")], reuse_index=4)
     pairs = [(v, v) for v in reversed(space.vars)]
     assert convert._widened_run(memory, pairs, {N: 1, K: 8192}, staged=True) is None
+
+
+def test_the_tile_search_offers_more_output_tiles_held_across_the_reduction():
+    """A GEMM tiled k, n, m at 32-row calls also loops m innermost over four calls: each core holds four output tiles
+    across the k loop and reuses each weight tile it fetches for all four."""
+    from stream.mapping.mapping import FusedGroup
+    from stream.stages.generation.tile_search import _rows_held
+
+    group = FusedGroup("g", ("Gemm",), ((K, 64), (N, 64), (M, 32)))
+    assert _rows_held(group, 4).intra_core_tiling == ((M, 32), (K, 64), (N, 64), (M, 128))
+    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 32), (M, 64))), 2) is None
+    assert _rows_held(FusedGroup("g", ("Gemm",), ((K, 64), (M, 1))), 2) is None
