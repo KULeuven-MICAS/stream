@@ -614,3 +614,27 @@ def test_renaming_the_memories_changes_neither_the_solve_nor_its_routes(tmp_path
     (tmp_path / "renamed.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
     original = _solved(tmp_path / "original.yaml", tmp_path, {name: name for name in names})
     assert _solved(tmp_path / "renamed.yaml", tmp_path, {new: old for old, new in renamed.items()}) == original
+
+
+def test_a_shim_link_carries_a_circuit_per_shim_dma_channel():
+    """On Strix a shim DMA port has two channels each way, so two transfers may enter one column from DRAM at once, as
+    the code generator gives the activation and the weight a channel each; links between tiles keep one circuit."""
+    from stream.opt.allocation.constraint_optimization.families.routing import circuits
+
+    strix = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
+    links = {(u.name, v.name): data["cl"] for u, v, data in strix.network.edges(data=True)}
+    assert circuits(links[("dram", "tile_0_1")]) == 2
+    assert circuits(links[("tile_0_1", "dram")]) == 2
+    assert circuits(links[("tile_0_1", "tile_0_2")]) == 1
+
+
+def test_off_chip_data_with_a_link_per_target_is_offered_no_single_entry_route():
+    """On Strix each memory tile has its own two-channel link from DRAM, so a read striped over memory tiles never
+    needs to enter over one link and forward on chip; a target an off-chip memory reaches over no link of its own
+    still gets that route."""
+    strix = parse_accelerator("stream/inputs/aie/hardware/whole_array_strix.yaml")
+    dram = strix.offchip_memory
+    tiles = tuple(strix.memories[f"tile_{c}_1"] for c in range(4))
+    manager = strix.communication_manager
+    assert manager._enters_each((dram,), tiles)
+    assert not manager._enters_each((dram,), (*tiles, strix.memories["tile_0_2"]))

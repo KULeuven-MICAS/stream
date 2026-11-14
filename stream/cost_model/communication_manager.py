@@ -275,12 +275,25 @@ class CommunicationManager:
                 for link, bits in carried.items():
                     taken[link] = taken.get(link, 0.0) + bits
             if len(set(key[1])) > 1 and any(source.offchip for source in key[0]):
-                for entry in ("striped", "single"):
+                single: tuple[Entry, ...] = () if self._enters_each(key[0], key[1]) else ("single",)
+                for entry in ("striped", *single):
                     with suppress(nx.NetworkXNoPath):
                         plan, _ = self.route(key[0], key[1], demand, bitwidth, shares_memory, entry=entry)
                         found.setdefault(frozenset(zip(plan.hops, map(frozenset, plan.hop_demand), strict=True)), plan)
             self._transfer_plans[key] = tuple(found.values())
         return self._transfer_plans[key]
+
+    def _enters_each(self, sources: tuple[Memory, ...], targets: tuple[Memory, ...]) -> bool:
+        """Whether every target has a link of its own from an off-chip source that carries more than one transfer at
+        once, so the striped route needs no shared entry and the route over one link is never the faster."""
+        from stream.opt.allocation.constraint_optimization.families.routing import circuits  # noqa: PLC0415
+
+        adjacency = self._adjacency()
+        for target in set(targets):
+            direct = [link for source in sources if source.offchip for v, link in adjacency[source] if v is target]
+            if not direct or not any(circuits(link) > 1 for link in direct):
+                return False
+        return True
 
     def route(  # noqa: PLR0913
         self,
