@@ -461,7 +461,7 @@ class DecisionSpace:
 
     def transfer_shares_memory(self, tr: TransferNode, memory: Memory, incoming: bool) -> bool:
         """Whether this memory gets (or gives) this transfer's data without moving it: every memory it takes from (or
-        hands to) shares memory with it."""
+        serves) shares memory with it."""
         if self.within_one_memory(tr):
             return True
         choices = self.path_choices.get(tr) or ()
@@ -531,7 +531,7 @@ class DecisionSpace:
         return item_bits(items, tr.inputs[0].operand_type.bitwidth)
 
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Memory, Memory], ...]:
-        """The sources and targets of ``choice`` that hand ``tr``'s data to each other: those its route pairs up."""
+        """The sources and targets of ``choice`` that serve ``tr``'s data to each other: those its route pairs up."""
         if choice.pairs:
             return tuple((choice.sources[i], choice.targets[j]) for i, j in choice.pairs)
         return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
@@ -550,7 +550,7 @@ class DecisionSpace:
         return {link: c / slowest for link, c in cycles.items()}
 
     def in_one_memory(self, choice: MulticastPathPlan) -> bool:
-        """Whether each source of this choice hands its targets data already in their memory, so none of it moves:
+        """Whether each source of this choice serves its targets data already in their memory, so none of it moves:
         every pair its route makes is one memory, or, without pairs, all of it is."""
         if choice.pairs:
             return all(choice.sources[i] is choice.targets[j] for i, j in choice.pairs)

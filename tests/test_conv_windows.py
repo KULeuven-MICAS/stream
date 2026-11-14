@@ -153,9 +153,9 @@ def test_allocation_matches_the_oracle(scenario: str, hardware: str):
     assert found["halos"] == {loop: halo for loop, halo in halos.items() if halo}
     assert found["in_place"] is IN_PLACE.get(scenario, True)
     if not found["in_place"]:
-        handed = {(src, dst): n for dst, srcs in expected["sources"].items() for src, n in srcs.items() if src != dst}
+        served = {(src, dst): n for dst, srcs in expected["sources"].items() for src, n in srcs.items() if src != dst}
         assert found["linked_bits"] == 16 * expected["linked"]
-        assert set(found["linked_pairs"]) == set(handed)
+        assert set(found["linked_pairs"]) == set(served)
     into1, into2 = expected["received"]
     received = (into1, into2 if not found["in_place"] else (0,) * len(into2))
     assert found["received_bits"] == tuple(tuple(16 * n for n in each) for each in received)
@@ -309,7 +309,7 @@ def test_a_producer_keeps_its_own_extent_under_an_unpadded_reader(graph: str, no
 
 
 def test_a_transfer_to_two_windowed_readers_hands_each_core_their_widest_window():
-    """conv1_out feeds a 3x3 and a 5x5 conv split over the same columns: the 5x5's two halo columns are handed."""
+    """conv1_out feeds a 3x3 and a 5x5 conv split over the same columns: the 5x5's two halo columns are served."""
     shapes = {"input": [1, 8, 32, 32], "w1": [16, 8, 3, 3], "w2": [32, 16, 3, 3], "w3": [32, 16, 5, 5]}
     nodes = [
         conv("Conv1", "input", "w1", "m"),
@@ -397,10 +397,10 @@ def test_a_padded_window_over_an_axis_no_core_splits_hands_the_reader_every_colu
     allocation = estimate.context.get("allocation")
     transfer = next(n for n in allocation.problem.workload.get_transfer_nodes() if n.name == "Transfer(conv1_out)")
     route = allocation.solution.transfer_routes[transfer]
-    read = [item.box for item in route.demand]
+    served = [item.box for item in route.demand]
     assert all(
         lo >= 0 and hi < size
-        for b in (*route.delivered, *read)
+        for b in (*route.delivered, *served)
         for (lo, hi), size in zip(b, transfer.inputs[0].shape, strict=True)
-    ), read
-    assert box_bits(read, 1) == prod(transfer.inputs[0].shape)
+    ), served
+    assert box_bits(served, 1) == prod(transfer.inputs[0].shape)

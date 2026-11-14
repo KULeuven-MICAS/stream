@@ -10,12 +10,12 @@ from conv_windows import HARDWARE, MAPPINGS, conv, conv_chain, onnx_graph
 from onnx import helper
 
 from stream.allocation.allocation import Allocation
+from stream.allocation.steady_state import _NodeDetail
 from stream.api import SolveOptions, evaluate_mapping
 from stream.ir import AllocationIR
-from stream.opt.allocation.constraint_optimization.space import DecisionSpace
 
 INTO_CONV2 = "Transfer(conv1_out)"
-# Per Conv2 core, the elements each Conv1 core hands it per firing; Conv2's window and what one firing moves.
+# Per Conv2 core, the elements each Conv1 core serves it per firing; Conv2's window and what one firing moves.
 EXPECTED = {
     "s3": {
         "iterations": 1,
@@ -73,14 +73,14 @@ def test_the_detail_reports_the_tiles_windows_halos_and_sources(tmp_path: Path, 
     view = _view(tmp_path, "eyeriss_like_quad_core", conv_chain(), str(MAPPINGS / f"{scenario}.yaml"))
     nodes, expected = _nodes(view), EXPECTED[scenario]
     into2 = nodes[INTO_CONV2]
-    handed: dict[int, dict[int, int]] = {}
-    for hand in into2["handed"]:
-        handed.setdefault(_core(hand["target"]), {})[_core(hand["source"])] = hand["elements"]
+    served: dict[int, dict[int, int]] = {}
+    for entry in into2["demand"]:
+        served.setdefault(_core(entry["target"]), {})[_core(entry["source"])] = entry["elements"]
     assert view["iterations"] == expected["iterations"]
     assert (tuple(nodes["Conv1"]["cores"]), tuple(nodes["Conv2"]["cores"])) == expected["cores"]
     assert (nodes["Conv1"]["tiles"], nodes["Conv2"]["tiles"]) == (expected["conv1_tile"], expected["out_tile"])
     assert (into2["windows"], into2["moved"]) == (expected["window"], expected["moved"])
-    assert handed == expected["sources"]
+    assert served == expected["sources"]
     assert {(h["type"], h["halo"]) for h in into2["halos"]} >= {("spatial", 2)}
     assert into2["links"] and into2["route_cycles"] > 0
     moved = [prod(tile) for tile in into2["moved"]]
@@ -172,14 +172,14 @@ fused_groups:
 
 def test_a_node_whose_detail_fails_keeps_its_summary_and_the_rest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     allocation = _allocation(tmp_path, "eyeriss_like_quad_core", conv_chain(), str(MAPPINGS / "s2.yaml"))
-    overlaps = DecisionSpace.overlaps
+    link_bits = _NodeDetail._link_bits
 
-    def failing(space: DecisionSpace, tr: Any) -> Any:
+    def failing(detail: _NodeDetail, tr: Any, route: Any) -> Any:
         if tr.name == "Transfer(w2)":
             raise RuntimeError("unreadable transfer")
-        return overlaps(space, tr)
+        return link_bits(detail, tr, route)
 
-    monkeypatch.setattr(DecisionSpace, "overlaps", failing)
+    monkeypatch.setattr(_NodeDetail, "_link_bits", failing)
     nodes = _nodes(_steady_state(allocation))
-    assert nodes["Transfer(w2)"]["kind"] == "transfer" and "handed" not in nodes["Transfer(w2)"]
-    assert "handed" in nodes[INTO_CONV2] and nodes["Conv1"]["cores"]
+    assert nodes["Transfer(w2)"]["kind"] == "transfer" and "demand" not in nodes["Transfer(w2)"]
+    assert "demand" in nodes[INTO_CONV2] and nodes["Conv1"]["cores"]
