@@ -211,8 +211,8 @@ class SteadyStateTensorIR(BaseModel):
     """A tensor of the steady state as the solution placed and buffered it."""
 
     name: str
-    shape: list[int]
-    bits: int
+    shape: list[int] = Field(description="Its tile; for a transfer's copy, the window its reader holds on one core")
+    bits: int = Field(description="The bits of that tile")
     loops: list[SteadyStateIterationIR] = Field(description="Its solved loop nest, outermost first")
     placement: list[str] = Field(description="The memory it sits in at each position")
     reuse_level: int | None = Field(description="The temporal loop it is reused up to")
@@ -224,15 +224,17 @@ class SteadyStateIR(BaseModel):
     """Tiled/steady-state view of a fused group: operators + tensor sizes, loop nest, and tiled transfer graph."""
 
     operators: list[SteadyStateOperatorIR] = Field(description="Original operators + tensor sizes")
-    loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space for-loop nest")
+    loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space loop nest, outermost first")
     tiled_graph: dict[str, Any] = Field(
         description=(
             "The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}. With the "
-            "per-core detail, a computation node also carries its dims, loops, cores, output tile per core position "
-            "and whether a reader waits on it; a transfer its source and target memories and links, the window and "
-            "moved tile per copy a target holds, its halos, what each source hands each target, its moved bits, route "
-            "cycles and reuse factor. Where a window slides, both also carry their work per fused tile and how far "
-            "they run ahead"
+            "per-core detail, a computation node also carries its dims, loops, its number of calls ('calls'), cores, "
+            "output tile per core position and whether a reader waits on it; a transfer its loops, source and target "
+            "memories and links, its copies' names ('copy_names'), the copy each target holds ('target_copies'), "
+            "that copy's window and moved tile, each copy's halos, "
+            "the demand each source serves at each target, the bits one firing moves, route cycles and reuse factor "
+            "(the iterations one firing serves). Where a window slides, both "
+            "also carry their work per fused tile and how far they run ahead"
         )
     )
     iterations: int | None = Field(default=None, description="Steady-state iterations of the group")
@@ -298,7 +300,7 @@ class NodePerformanceIR(BaseModel):
     n_cores: int = Field(description="Number of cores the node is inter-core-tiled across")
     latency_cycles: float = Field(description="The node's latency contribution to one steady-state iteration")
     ideal_compute_cycles: float | None = Field(
-        default=None, description="Cycles at perfect MAC spatial utilization (the compute-ideal floor)"
+        default=None, description="Cycles of one call at perfect MAC spatial utilization (the compute-ideal floor)"
     )
     mac_spatial_utilization: float | None = Field(
         default=None,
@@ -409,7 +411,7 @@ class TensorReuseIR(BaseModel):
     tensor: str
     size_bits: int | None = Field(default=None)
     reuse_factor: int | None = Field(
-        default=None, description="Steady-state iterations it stays resident; 1 = re-fetched every iteration"
+        default=None, description="Steady-state iterations one fetch serves, absent loops included; 1 = every iteration"
     )
     reuse_stop_level: int | None = Field(default=None, description="Loop level reuse stops at; -1 = none")
     on_chip_tiles: int | None = Field(default=None, description="Tile buffers that residency needs")
@@ -600,7 +602,7 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["3.2"] = "3.2"
+    schema_version: Literal["3.3"] = "3.3"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
