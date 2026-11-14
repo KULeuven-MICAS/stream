@@ -76,3 +76,9 @@ def test_a_loop_longer_than_a_descriptor_iterates_keeps_its_tasks():
 )
 def test_only_an_evenly_stepped_rereading_loop_chains(offsets, sizes_strides):
     assert len(_chain(_sequence(offsets, sizes_strides), descriptors=16)) == 3
+
+
+def test_a_loop_stepping_further_than_a_descriptor_steps_keeps_its_tasks():
+    """A bf16 descriptor steps at most 2^21 elements; 256 rows of 14336 is further."""
+    step = 256 * 14336
+    assert len(_chain(_sequence([0, step]), descriptors=16)) == 2
