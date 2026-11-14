@@ -1,6 +1,7 @@
 """Elementwise layers folded into the GEMM producing their input, run on its cores at its output tile."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -113,6 +114,48 @@ def test_post_ops_are_priced_once_per_finished_sum(swiglu):
 
 def _memory(accelerator, name):
     return accelerator.memories[name]
+
+
+def test_a_transfer_to_two_memory_tiles_drives_a_shim_channel_in_each_column(strix):
+    """Code generation gives each memory tile its own fifo through its own column's shim, so a read that the route
+    brings in over one shim link and forwards to the second tile still takes a channel of each column's port."""
+    from stream.opt.allocation.constraint_optimization.families.dma import _port_channels
+    from stream.opt.allocation.constraint_optimization.hardware import build_hardware_facts
+
+    dram, left, right = _memory(strix, "dram"), _memory(strix, "tile_0_1"), _memory(strix, "tile_1_1")
+
+    def memory_links(memory, leaving):
+        edges = strix.network.out_edges if leaving else strix.network.in_edges
+        return tuple(dict.fromkeys(data["cl"] for *_, data in edges(memory, data=True)))
+
+    entry = next(link for link in memory_links(dram, True) if left in link.ports)
+
+    class Hashable(SimpleNamespace):
+        __hash__ = object.__hash__
+
+    route = Hashable(
+        sources=(dram,),
+        targets=(left, right),
+        link_shares=((entry, 1.0),),
+        links_at=lambda memory, leaving: (entry,) if memory is dram and leaving else (),
+        pairs=((0, 0), (0, 1)),
+    )
+    transfer = Hashable(inputs="in", outputs="out")
+    space = SimpleNamespace(
+        accelerator=strix,
+        transfer_nodes=[transfer],
+        path_choices={transfer: [route]},
+        walk_shares=lambda tr, choice: {},
+        operand_role=lambda tr, read_side: "input1",
+        memory_links=memory_links,
+        hardware=build_hardware_facts(strix, 8),
+        overlaps=lambda tr: False,
+        placement_width=lambda tensors: 1,
+        distinct_slice_width=lambda tensors: 1 if tensors == "in" else 2,
+    )
+    ctx = SimpleNamespace(space=space, vars=SimpleNamespace(y={(transfer, route): SimpleNamespace(_raw=1)}))
+    _, out = _port_channels(ctx)
+    assert sorted((port.key.port, fifos) for (_, port), fifos in out.items()) == [("mm2s_c0", 1), ("mm2s_c1", 1)]
 
 
 def test_a_folded_gemm_is_priced_as_the_gemm_and_its_post_ops(swiglu, strix):

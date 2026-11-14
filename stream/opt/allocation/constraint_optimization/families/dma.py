@@ -105,6 +105,14 @@ def _port_channels(ctx: FormulationContext) -> tuple[dict[tuple[Memory, Port], A
                         continue
                     direction = WRITE if incoming else READ
                     operand = space.operand_role(tr, read_side=not incoming)
+                    others = choice.sources if incoming else choice.targets
+                    own = space.hardware.own_ports(memory, others, space.memory_links(memory, not incoming))
+                    if own is not None:
+                        for port in own:
+                            dma = memory.dma_port(port, direction, operand)
+                            if dma is not None:
+                                usage[0 if incoming else 1][(memory, dma)] += ctx.vars.y[(tr, choice)]._raw
+                        continue
                     carried: dict[Port, float] = defaultdict(float)
                     links = choice.links_at(memory, leaving=not incoming)
                     for link in links or (space.memory_links(memory, not incoming) if walked else ()):
