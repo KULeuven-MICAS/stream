@@ -21,3 +21,5 @@ AIE_KERNELS = {
     "partial_softmax": PartialSoftmaxKernel,
     "matmul_softmax": FusedScoreSoftmaxKernel,
 }
+POST_OP_KERNELS = ("silu", "eltwise_mul")
+"""The elementwise kernels a GEMM runs as post-ops on its output tile."""

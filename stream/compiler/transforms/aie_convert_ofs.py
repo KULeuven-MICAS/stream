@@ -500,8 +500,8 @@ class ChannelToObjectFifoPass(RewritePattern):
 
         ofs: list[ObjectFifoOp] = []
 
-        # max one spatial dimension:
-        assert len(spatial_dims) <= 1
+        # max one spatial dimension, but for a unicast between cores split alike:
+        assert len(spatial_dims) <= 1 or not (join_dims or broadcast_dims or fork_dims)
         for i, spatial in enumerate(iterate_spat_vars(spatial_dims)):
             # Switch Fork Patterns:
             if fork_dims:

@@ -110,10 +110,26 @@ def _projection_replayed(out: str) -> tuple[str, str, SolveOptions]:
     return workload, mapping, SolveOptions(nb_cols_to_use=8, stage_options={"npu": "npu2"}, families=families)
 
 
+def _swiglu_post_ops(out: str) -> tuple[str, str, SolveOptions]:
+    """The gate and up projections with the SiLU and the product as their post-ops, the up projection reading the
+    gate's result from the core beside it."""
+    workload = make_swiglu_workload(256, 512, 2048, "bf16", "bf16", last_gemm_down=False, output_dir=out)
+    gemm = {"name": "gemm", "kwargs": {"m": 32, "k": 32, "n": 64, "layout": "default"}}
+    kernels = {"Gemm_Left": gemm, "Gemm_Right": gemm, "Silu": {"name": "silu", "kwargs": {"layout": "default"}}}
+    kernels["Elt_Mul"] = {"name": "eltwise_mul", "kwargs": {"layout": "default"}}
+    mapping = {
+        "layers": [{"name": name, "core_allocation": [], "kernel": kernel} for name, kernel in kernels.items()],
+        "fused_groups": [{"name": "front", "layers": list(kernels), "post_ops": ["Silu", "Elt_Mul"]}],
+    }
+    path = Path(out) / "swiglu_post_ops.yaml"
+    path.write_text(yaml.safe_dump(mapping, sort_keys=False))
+    return workload, str(path), SolveOptions(nb_cols_to_use=8, tile_search=True, stage_options={"npu": "npu2"})
+
+
 @pytest.fixture(
     scope="module",
-    params=[_mha, _mha_halves, _swiglu, _swiglu_down, _projection, _projection_replayed],
-    ids=["mha", "mha_halves", "swiglu", "swiglu_down", "projection", "projection_replayed"],
+    params=[_mha, _mha_halves, _swiglu, _swiglu_down, _projection, _projection_replayed, _swiglu_post_ops],
+    ids=["mha", "mha_halves", "swiglu", "swiglu_down", "projection", "projection_replayed", "swiglu_post_ops"],
 )
 def accounts(request, tmp_path_factory) -> tuple[str, Counter[str], Counter[str], Path]:
     """A design's name, the bytes the allocation charges each tile, the bytes mlir-aie allocates there, and its
@@ -150,4 +166,39 @@ def test_each_tile_is_charged_the_buffers_mlir_aie_allocates(accounts, request):
             "kernel tile at a time, so it charges them more than they hold"
         )
         request.applymarker(pytest.mark.xfail(strict=True, reason=reason))
+    if design == "_swiglu_post_ops":
+        reason = (
+            "the allocation charges the reading core two buffers of the post-op input the core beside it sends, which "
+            "mlir-aie allocates once, at depth one, in the sending core's memory, where the allocation charges it too"
+        )
+        request.applymarker(pytest.mark.xfail(strict=True, reason=reason))
     assert charged == allocated
+
+
+@pytest.fixture(scope="module")
+def post_op_final(tmp_path_factory) -> Path:
+    """The ``final.mlir`` of the post-op design."""
+    out = tmp_path_factory.mktemp("post_ops")
+    workload, mapping, options = _swiglu_post_ops(str(out))
+    generate_code(ACCELERATOR, workload, str(out), mapping, options)
+    (final,) = out.glob("**/codegen/final.mlir")
+    return final
+
+
+@pytest.mark.slow
+def test_a_post_op_reads_its_input_once_the_sum_is_done_from_the_core_beside_it(post_op_final):
+    """The up projection's cores acquire the gate's tile only after their last K trip, for the product, and release it
+    right after; the gate's tile reaches them through the memory the two cores share, which a fifo with a layout
+    transform would route through DMA channels instead."""
+    text = post_op_final.read_text()
+    fifos = re.findall(r"aie\.objectfifo @(\w+)\((%\d+)( dimensionsToStream)?, \{(%\d+)\}", text)
+    sent = [name for name, _, transform, _ in fifos if "unicast" in name and not transform]
+    assert sent
+    for core in re.findall(r"aie\.core\(%\d+\) \{(.*?)aie\.end", text, flags=re.S):
+        reads = [name for name in sent if f"acquire @{name}(Consume" in core]
+        if not reads:
+            continue
+        lines = core.splitlines()
+        acquire = next(i for i, line in enumerate(lines) if f"acquire @{reads[0]}(Consume" in line)
+        assert "matmul" in "".join(lines[:acquire]) and "matmul" not in "".join(lines[acquire:])
+        assert "eltwise_mul" in lines[acquire + 1] and f"release @{reads[0]}(Consume" in lines[acquire + 2]

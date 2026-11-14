@@ -64,6 +64,7 @@ class MappingValidator:
             "required": True,
             "default": [],
         },
+        "post_ops": {"type": "list", "schema": {"type": "string"}, "required": False},
     }
 
     SCHEMA_RUNTIME_ARGS = {

@@ -194,16 +194,25 @@ def unfinished_reductions(workload: "Workload") -> dict[LayerDim, UnfinishedRedu
     for node in workload.get_iteration_space_nodes():
         node_dims = workload.get_dims(node)
         reduced = {p for p, kind in derive_iterator_types(node).items() if kind is IteratorType.REDUCTION}
-        later = sorted(
-            (n for n in nx.descendants(workload, node) if isinstance(n, ComputationNode)), key=lambda n: n.name
-        )
+        descendants = nx.descendants(workload, node)
+        later = sorted((n for n in descendants if isinstance(n, ComputationNode)), key=lambda n: n.name)
+        produced = {t for n in (node, *descendants) for t in getattr(n, "outputs", ())}
         for p in sorted(p for p in reduced if p < len(node_dims)):
-            if walkers := tuple(n.name for n in later if node_dims[p] in workload.get_dims(n)):
+            walking = [n for n in later if node_dims[p] in workload.get_dims(n)]
+            if walkers := tuple(n.name for n in walking if not _reads_after_sum(workload, n, node_dims[p], produced)):
                 found.setdefault(node_dims[p], UnfinishedReduction(node.name, p, False, walkers))
         for p in sorted(p for p in nonlinear_reduction_dims(node) if p < len(node_dims)):
             if node_dims[p] not in found or not found[node_dims[p]].nonlinear:
                 found[node_dims[p]] = UnfinishedReduction(node.name, p, True)
     return found
+
+
+def _reads_after_sum(workload: "Workload", reader: ComputationNode, dim: LayerDim, produced: set[Tensor]) -> bool:
+    """Whether ``reader`` reads what ``produced`` holds only with its output, and itself sums over ``dim``: it reads it
+    once its own sum over ``dim`` is done, at the trip the producer's is."""
+    types = derive_iterator_types(reader)
+    summed = {d for p, d in enumerate(workload.get_dims(reader)) if types.get(p) is IteratorType.REDUCTION}
+    return dim in summed and not produced & set(operand_inputs(reader))
 
 
 def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload", dim: LayerDim):

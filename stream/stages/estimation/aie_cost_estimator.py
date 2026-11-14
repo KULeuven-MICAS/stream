@@ -7,7 +7,7 @@ from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.mapping.work_share import computed_fraction, core_work_share, split_steps
-from stream.workload.iterator_type import is_state_operand
+from stream.workload.iterator_type import IteratorType, derive_iterator_types, is_state_operand
 from stream.workload.workload import ComputationNode, Workload
 
 
@@ -28,6 +28,8 @@ class AIECostEstimator:
         cycles, metadata = self._kernel_cycles(kernel, macs)
         if cycles is None:
             cycles, metadata = ideal_cycles, {"backend": "aie"}
+        if getattr(kernel, "post_ops", ()):
+            cycles += kernel.post_op_cycles(self._finished_outputs(node, dim_sizes, macs))
         metadata["computed_fraction"] = computed_fraction(self.workload, self.mapping, node, core, self._steps(node))
         energy = 0  # TODO
         return CoreCostEntry(
@@ -41,6 +43,15 @@ class AIECostEstimator:
             layer=node,
             metadata=metadata,
         )
+
+    def _finished_outputs(self, node: ComputationNode, dim_sizes: list[int], macs: int) -> float:
+        """Output elements whose sum ``macs`` operations finish: those they add into, over the trips of the fused loops
+        the node sums across."""
+        types = derive_iterator_types(node)
+        dims = self.workload.get_dims(node)
+        trips = prod(self.fusion_splits.get(d, 1) for p, d in enumerate(dims) if types.get(p) is IteratorType.REDUCTION)
+        written = prod(dim_sizes[r.position] for r in node.operand_mapping[-1].results)
+        return macs * written / prod(dim_sizes) / trips
 
     @staticmethod
     def _kernel_cycles(kernel, macs: int) -> tuple[int | None, dict]:

@@ -92,6 +92,7 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 | `name` | yes | Group label. |
 | `layers` | yes | Names of the layers in this group. |
 | `intra_core_tiling` | no | Per-dimension temporal tiling, each `{dim: <Node>.D<n>, tile: size}` - note the **fully-qualified** dimension name (e.g. `Conv.D0`). The list order is the loop order, innermost first, kept as given. |
+| `post_ops` | no | Elementwise layers of the group that run as post-ops of the GEMM producing their input (AIE only): each folds into that GEMM, which writes the layer's output and, once its sum over a tile is done, calls the layer's kernel (`silu`, `eltwise_mul`) on its own cores at its output tile. A layer folds where it alone reads that GEMM's output, at the index it writes its own; a binary one folds into the later of the GEMMs it reads and reads its other input at that GEMM's output tile, from the core beside it when a GEMM of the group produces it. Every post-op and the GEMM it folds into are layers of the group. |
 
 ---
 
