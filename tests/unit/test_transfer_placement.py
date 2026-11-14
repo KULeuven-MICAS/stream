@@ -138,3 +138,25 @@ def test_a_gather_pairing_by_spatial_index_splits_its_memory_tiles_along_one_loo
     tiles = tuple(memory for memory in facts.mem_memories if memory.col_id in (6, 7))
     split = lowering.get_matching_tiling(((LayerDim(2), 4), (LayerDim(3), 2)), tiles)
     assert [(str(dim), factor) for dim, factor in split] == gathered
+
+
+@pytest.mark.parametrize(
+    ("tiles", "parts"),
+    [
+        ([((0, 3), (0, 1)), ((0, 3), (2, 3))], [((0, 3), (0, 1)), ((0, 3), (2, 3))]),
+        ([((0, 1), (0, 3)), ((2, 3), (0, 3))], [((0, 1), (0, 3)), ((2, 3), (0, 3))]),
+        ([((0, 3), (0, 3)), ((0, 3), (0, 3))], [((0, 1), (0, 3)), ((2, 3), (0, 3))]),
+    ],
+    ids=["columns", "rows", "same"],
+)
+def test_a_gathered_box_is_split_along_the_axis_its_sources_tiles_lie_on(tiles, parts):
+    """Two sources feed one target a 4x4 box by spatial index: each sends the half it holds, by columns or by rows as
+    their tiles lie, whatever the box's shape; sources holding the same get it cut along its longest axis."""
+    from stream.workload.workload import _DemandBuilder, _TargetDemand
+
+    builder = _DemandBuilder(2, 1, True, False, [[tile] for tile in tiles], {0}, lambda s, t: False, [])
+    box = ((0, 3), (0, 3))
+    entry = _TargetDemand(0, box, [(lo, hi, True) for lo, hi in box], (0,), False)
+    assert [(item.sources, item.box) for item in builder.items([entry], None)] == [
+        ((s,), part) for s, part in enumerate(parts)
+    ]
