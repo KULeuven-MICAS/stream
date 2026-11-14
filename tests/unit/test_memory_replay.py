@@ -92,3 +92,28 @@ def test_replay_count_is_the_producer_window_loops_the_consumer_refires_on():
     )
     assert aie_convert_ofs.ChannelToObjectFifoPass.replay_count(producer, consumer) == 4
     assert aie_convert_ofs.ChannelToObjectFifoPass.replay_count(consumer, consumer) == 1
+
+
+def test_a_held_loop_of_the_same_dim_and_trips_as_an_inner_one_still_replays():
+    """A weight held across four row blocks, with four row tiles each core holds within a block, is sent once
+    per row block: two loops over the rows at four trips each, of which the reader re-fires on the outer one."""
+    aie_convert_ofs = pytest.importorskip(
+        "stream.compiler.transforms.aie_convert_ofs",
+        reason="the AIE dialects are a separate install, via stream-setup-aie",
+    )
+    kernel = (_var(StrensorVarType.KERNEL, 64, KEY),)
+    producer = _strensor_space(
+        4,
+        _var(StrensorVarType.TEMPORAL, 4, Q),
+        _var(StrensorVarType.TEMPORAL, 8, KEY),
+        _var(StrensorVarType.TEMPORAL, 4, Q),
+        *kernel,
+    )
+    consumer = _strensor_space(
+        3,
+        _var(StrensorVarType.TEMPORAL, 4, Q),
+        _var(StrensorVarType.TEMPORAL, 8, KEY),
+        _var(StrensorVarType.TEMPORAL, 4, Q),
+        *kernel,
+    )
+    assert aie_convert_ofs.ChannelToObjectFifoPass.replay_count(producer, consumer) == 4
