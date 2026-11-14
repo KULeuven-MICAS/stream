@@ -165,6 +165,12 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
 
     iter_step: float = latency_per_iteration - overlap
     path_of: dict[TransferNode, MulticastPathPlan] = dict(solution.transfer_routes)
+    # A transfer's solved cycles per iteration, each copy over its own reuse; else its route over its first copy's.
+    solved_latency: dict[str, float] = {
+        entry["transfer"]: entry["latency_contribution_cycles"]
+        for slot in (solution.slot_latency_breakdown or {}).get("slots", [])
+        for entry in slot["transfer_contributors"]
+    }
 
     # ── 3.  Build TID mapping (depends on compact flag) ──────────────── #
     shown_iterations = [-1, 0, 1]
@@ -286,8 +292,9 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
                 continue
 
             one_transfer_lat = float(solution.route_cycles[node])
-            reuse_factor = solution.reuse_factors[node]
-            active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, ssis)
+            active_transfer_lat = solved_latency.get(node.name) or get_active_transfer_latency_for_path(
+                node, chosen_path, solution.reuse_factors[node], ssis
+            )
             reuse_summary = ssis[node].reuse_summary()
 
             is_const_i = is_const_input(workload, node)
@@ -424,8 +431,9 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
                 continue
 
             one_transfer_lat = float(solution.route_cycles[node])
-            reuse_factor = solution.reuse_factors[node]
-            active_transfer_lat = get_active_transfer_latency_for_path(node, chosen_path, reuse_factor, ssis)
+            active_transfer_lat = solved_latency.get(node.name) or get_active_transfer_latency_for_path(
+                node, chosen_path, solution.reuse_factors[node], ssis
+            )
             reuse_summary = ssis[node].reuse_summary()
 
             is_const_i = is_const_input(workload, node)

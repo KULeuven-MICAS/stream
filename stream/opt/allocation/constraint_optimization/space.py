@@ -20,6 +20,7 @@ from stream.mapping.mapping import placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
+from stream.workload.demand import Box, DemandItem, box_bits, copy_sets, firing_count, item_bits, moved_elements
 from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import IterationVariableType, LoopEffect, Reuse
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
     from stream.workload.steady_state.node import Node
     from stream.workload.workload import Workload
 
+CopySet: TypeAlias = tuple[int, ...]
+"""The copies of a transfer that read a piece of its demand, as indices into its outputs."""
 Placement: TypeAlias = tuple[Memory, ...]
 """The memory a tensor sits in at each position of its node; cores sharing a memory repeat it."""
 Choice: TypeAlias = tuple[TransferNode, MulticastPathPlan]
@@ -283,15 +286,50 @@ class DecisionSpace:
             return tr.inputs[0]
         raise ValueError(f"Transfer {tr.name} is not a constant I/O transfer.")
 
-    def transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
-        """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse."""
+    def transfer_latency_for_path(
+        self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet | None = None
+    ) -> int:
+        """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse; with ``copies``, the
+        cycles of what it delivers to exactly those copies."""
         if self.choice_shares_memory(tr, path):
             return 0
-        link = get_transfer_latency_for_path(tr, path, self.moved_bits(tr, path))
+        if copies is None:
+            link = get_transfer_latency_for_path(tr, path, self.moved_bits(tr, path))
+        else:
+            link = self._copy_set_link_cycles(tr, path, copies)
         shared = (
-            self.shared_cycles(memory, tr, path, model.contiguous) for memory, model in self.shared_bandwidth.items()
+            self.shared_cycles(memory, tr, path, model.contiguous, copies)
+            for memory, model in self.shared_bandwidth.items()
         )
         return max(link, *shared) if self.shared_bandwidth else link
+
+    def _copy_set_link_cycles(self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet) -> int:
+        """Cycles the busiest link of ``path`` takes to carry what it delivers to exactly ``copies``."""
+        bits = self.copy_set_link_bits(tr, path, copies)
+        return ceil(max((b / link.bandwidth for link, b in bits.items()), default=0))
+
+    def copy_set_link_bits(
+        self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet
+    ) -> dict[CommunicationLink, float]:
+        """Per link of ``path``, the bits one firing carries over it of what it delivers to exactly ``copies``."""
+        carried: dict[CommunicationLink, dict[int | None, list[Box]]] = {}
+        for (_, _, link), demand in zip(path.hops, path.hop_demand, strict=True):
+            for item in demand:
+                if item.copies == copies:
+                    sent = carried.setdefault(link, {}).setdefault(None if item.reduce else item.sources[0], [])
+                    sent.append(item.box)
+        bitwidth = tr.inputs[0].operand_type.bitwidth / firing_count(path.demand)
+        return {link: sum(box_bits(boxes, bitwidth) for boxes in sent.values()) for link, sent in carried.items()}
+
+    def link_shares(
+        self, tr: TransferNode, path: MulticastPathPlan, copies: CopySet | None = None
+    ) -> tuple[tuple[CommunicationLink, float], ...]:
+        """Each link of ``path`` with the share of the bits it delivers, or of those it delivers to exactly
+        ``copies``, that crosses it."""
+        if copies is None:
+            return path.link_shares
+        moved = self.moved_bits(tr, path, copies=copies)
+        return tuple((link, b / moved) for link, b in self.copy_set_link_bits(tr, path, copies).items() if moved and b)
 
     @staticmethod
     def direction(memory: Memory, path: MulticastPathPlan) -> str | None:
@@ -302,14 +340,16 @@ class DecisionSpace:
             return "write"
         return None
 
-    def shared_cycles(self, memory: Memory, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
+    def shared_cycles(
+        self, memory: Memory, tr: TransferNode, path: MulticastPathPlan, rate: float, copies: CopySet | None = None
+    ) -> int:
         """Cycles one firing holds a shared-bandwidth memory at ``rate`` for its share of the bits, slowed by its
         access pattern."""
         direction = self.direction(memory, path)
         if direction is None:
             return 0
         span = self.layouts.runs(tr, path)[0 if direction == READ else 1]
-        bits = self.moved_bits(tr, path) * path.memory_share(memory, leaving=direction == READ)
+        bits = self.moved_bits(tr, path, copies=copies) * path.memory_share(memory, direction == READ, copies)
         return ceil(bits / (rate * self.shared_bandwidth[memory].efficiency(span, direction)))
 
     @cached_property
@@ -326,7 +366,7 @@ class DecisionSpace:
         return lambda span: model.contiguous * model.efficiency(span, direction)
 
     def side_ports(
-        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str
+        self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str, copies: CopySet | None = None
     ) -> dict[Port, float]:
         """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
         share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`). Empty when the route moves no
@@ -334,7 +374,7 @@ class DecisionSpace:
         leaving = direction == READ
         role = self.operand_role(tr, read_side=leaving and memory in choice.sources)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))
-        shares = {port: choice.share_at(memory, leaving, port_links) for port, port_links in by_port.items()}
+        shares = {port: choice.share_at(memory, leaving, port_links, copies) for port, port_links in by_port.items()}
         return {port: share for port, share in shares.items() if share}
 
     def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
@@ -455,43 +495,40 @@ class DecisionSpace:
         return found
 
     def moved_bits(
-        self, tr: TransferNode, choice: MulticastPathPlan, source_at: int | None = None, target_at: int | None = None
+        self,
+        tr: TransferNode,
+        choice: MulticastPathPlan,
+        source_at: int | None = None,
+        target_at: int | None = None,
+        copies: CopySet | None = None,
     ) -> float:
-        """Bits one firing of ``tr`` moves on ``choice``. With ``source_at`` or ``target_at``, only the bits out of
-        the source or into the target at that position (a memory can appear at several positions). With overlapping
-        windows these are the bits sources hand to targets they share no memory with; else the tensor (a source's even
-        share, a target's tile) less the halo a sliding loop keeps resident."""
-        tensor, out = tr.inputs[0], tr.outputs[0]
-        if overlaps := self.overlaps(tr):
-            moved = sum(
-                n
-                for (i, j), n in overlaps.items()
-                if not self.hardware.shares_memory(choice.sources[i], choice.targets[j])
-                and source_at in (None, i)
-                and target_at in (None, j)
-            )
-            return moved * tensor.operand_type.bitwidth
-        sources = len(choice.sources) if source_at is not None else 1
-        if not (sliding := self.workload.sliding_halo(out, tr, self.mapping, self.ssis.get(out))) and target_at is None:
-            return tensor.size_bits() / sources
-        tile = self.workload.get_tensor_of_transfer_to_single_core(out, tr, self.mapping, ssis=self.ssis.get(out))
-        if target_at is not None:
-            return tile.size_bits()
-        return (
-            tensor.size_bits()
-            * min(tile.shape[sliding[0]], tensor.shape[sliding[0]])
-            // tensor.shape[sliding[0]]
-            / sources
-        )
+        """Bits one firing of ``tr`` moves on ``choice``, each source's data once however many targets and copies read
+        it. With ``source_at``, ``target_at`` or ``copies``, only what leaves the source at that position, enters the
+        target at that position, or reaches exactly those copies."""
+        items = [
+            item
+            for item in choice.delivered_items
+            if (source_at is None or source_at in item.sources)
+            and target_at in (None, item.target)
+            and copies in (None, item.copies)
+        ]
+        return moved_elements(items) * tr.inputs[0].operand_type.bitwidth
+
+    def copy_sets(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[CopySet, ...]:
+        """The copy sets ``choice`` delivers some box to: each a copy alone, or several reading the same box."""
+        return copy_sets(choice.delivered_items)
 
     def copied_bits(self, t: Tensor) -> float:
-        """Bits per firing the transfer of ``t`` delivers, in place or not: a halo once per target holding it."""
-        tr = next((tr for tr in self.transfer_nodes if t in tr.tensors), None)
+        """Bits per firing of the demand of ``t`` on the transfer writing it, moved or in place, each element once; for
+        a tensor no transfer writes, the demand of all copies of the transfer reading it."""
+        landing = next((tr for tr in self.transfer_nodes if t in tr.outputs), None)
+        tr = landing or next((tr for tr in self.transfer_nodes if t in tr.inputs), None)
         if tr is None:
             return t.size_bits()
-        if overlaps := self.overlaps(tr):
-            return sum(overlaps.values()) * tr.inputs[0].operand_type.bitwidth
-        return self.moved_bits(tr, self.path_choices[tr][0])
+        items: list[DemandItem] = list(self.path_choices[tr][0].demand)
+        if landing is not None:
+            items = [item for item in items if tr.outputs.index(t) in item.copies]
+        return item_bits(items, tr.inputs[0].operand_type.bitwidth)
 
     def pairs(self, tr: TransferNode, choice: MulticastPathPlan) -> tuple[tuple[Memory, Memory], ...]:
         """The sources and targets of ``choice`` that hand ``tr``'s data to each other: those its route pairs up."""
@@ -499,13 +536,16 @@ class DecisionSpace:
             return tuple((choice.sources[i], choice.targets[j]) for i, j in choice.pairs)
         return communicating_pairs(choice.sources, choice.targets, self.overlaps(tr))
 
-    def link_load(self, tr: TransferNode, choice: MulticastPathPlan) -> dict[CommunicationLink, float]:
+    def link_load(
+        self, tr: TransferNode, choice: MulticastPathPlan, copies: CopySet | None = None
+    ) -> dict[CommunicationLink, float]:
         """Per link of ``choice``, the share of one firing's latency it is busy: the bottleneck link 1."""
         if not (links := self.links_in_choice[(tr, choice)]):
             return {}
         if not choice.link_shares:
             return dict.fromkeys(links, 1.0)
-        cycles = {link: share / link.bandwidth for link, share in choice.link_shares if link in links and share}
+        shares = self.link_shares(tr, choice, copies)
+        cycles = {link: share / link.bandwidth for link, share in shares if link in links and share}
         slowest = max(cycles.values(), default=0.0)
         return {link: c / slowest for link, c in cycles.items()}
 

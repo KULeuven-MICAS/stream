@@ -3,7 +3,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from itertools import combinations, product
+from itertools import product
 from math import prod
 from typing import TYPE_CHECKING, Literal
 
@@ -12,31 +12,21 @@ import networkx as nx
 from stream.hardware.architecture.memory import Memory
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.hardware.ports import READ
+from stream.workload.demand import Box, DemandItem, box_bits, firing_count, meet, moved_elements
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.mapping.mapping import EdgePlacement
 
-Box = tuple[tuple[int, int], ...]
-"""Inclusive index range per axis of the data a demand moves; equal boxes are the same data."""
-
 _HOP = 1e-9
 """Cost of a hop beside the cycles a link adds, so equally fast routes prefer the shorter."""
 
 
-@dataclass(frozen=True)
-class DemandItem:
-    """Data the target at ``target`` reads, ``box`` of the tensor, held by each source at ``sources``, any one of which
-    can serve it; or, if ``reduce``, of which each holds a partial sum that the target needs all of."""
-
-    target: int
-    sources: tuple[int, ...]
-    box: Box
-    reduce: bool = False
-
-
 # One step of a route: the memory the data leaves, the one it reaches and the link it crosses.
 Hop = tuple[Memory, Memory, CommunicationLink]
+
+# What a memory sends of each item crossing a link out of it, each part with the copies it holds that part for.
+Sent = list[tuple[CommunicationLink, DemandItem, list[tuple[tuple[int, ...], Box]]]]
 
 # How a route leaves off-chip memory: as one tree, in a part per linked target, or as a tree over one of its links.
 Entry = Literal["tree", "striped", "single"]
@@ -46,7 +36,8 @@ Entry = Literal["tree", "striped", "single"]
 class MulticastPathPlan:
     """A transfer's route: the source serving each target (``pairs``), the ``hops`` it crosses and the share of its bits
     each link carries, one copy per source; ``hop_demand`` is the demand on each hop, ``delivered`` the boxes it
-    delivers, ``placement`` how its sources hold an input whose placement the allocation chooses."""
+    delivers, ``items`` the demand it delivers, ``demand`` all its targets read, ``placement`` how its sources hold an
+    input whose placement the allocation chooses. Data a target already holds is not delivered."""
 
     sources: tuple[Memory, ...]
     targets: tuple[Memory, ...]
@@ -57,76 +48,81 @@ class MulticastPathPlan:
     hops: tuple[Hop, ...] = field(default=(), compare=False)
     hop_demand: tuple[tuple[DemandItem, ...], ...] = ()
     delivered: tuple[Box, ...] = field(default=(), compare=False)
+    delivered_items: tuple[DemandItem, ...] = field(default=(), compare=False)
+    demand: tuple[DemandItem, ...] = field(default=(), compare=False)
     placement: "EdgePlacement | None" = None
+    _shares: dict[tuple, float] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _sent: dict[Memory, Sent] = field(default_factory=dict, init=False, compare=False, repr=False)
 
     def links_at(self, memory: Memory, leaving: bool) -> tuple["CommunicationLink", ...]:
         """The links of the route's hops that leave ``memory`` (``leaving``) or enter it."""
         return tuple(dict.fromkeys(link for u, v, link in self.hops if (u if leaving else v) is memory))
 
-    def share_at(self, memory: Memory, leaving: bool, links: Iterable["CommunicationLink"]) -> float:
+    def share_at(
+        self, memory: Memory, leaving: bool, links: Iterable["CommunicationLink"], copies: tuple[int, ...] | None = None
+    ) -> float:
         """The share of the delivered data ``memory`` sends over ``links`` (``leaving``) to the targets it serves, or
         receives over them for its own targets: all of a broadcast, the part of a split. Of data it passes on, it
-        reads only what it holds as a target itself. Off-chip memory, with no switch, sends a copy per link."""
-        links, ends = set(links), self.sources if leaving else self.targets
-        held = [
-            item.box
+        reads only what it holds as a target itself. Off-chip memory, with no switch, sends a copy per link.
+        With ``copies``, the share of what it delivers to exactly those copies."""
+        links = frozenset(links)
+        key = (memory, leaving, links, copies)
+        if (found := self._shares.get(key)) is None:
+            found = self._shares[key] = self._share_at(memory, leaving, links, copies)
+        return found
+
+    def _share_at(
+        self, memory: Memory, leaving: bool, links: frozenset["CommunicationLink"], copies: tuple[int, ...] | None
+    ) -> float:
+        """:meth:`share_at`, uncached."""
+        kept = (lambda item: item.copies == copies) if copies is not None else (lambda item: True)
+        boxes: dict[CommunicationLink | None, list[Box]] = {}
+        if leaving:
+            for link, item, parts in self._sent_from(memory):
+                if link in links and kept(item):
+                    own = boxes.setdefault(link if memory.offchip else None, [])
+                    own += [part for held, part in parts if copies is None or held == copies]
+        else:
+            for (_, v, link), demand in zip(self.hops, self.hop_demand, strict=True):
+                if link in links and v is memory:
+                    own = boxes.setdefault(None, [])
+                    own += [item.box for item in demand if kept(item) and self.targets[item.target] is memory]
+        if (delivered := self._shares.get(("delivered", copies))) is None:
+            delivered = self._shares["delivered", copies] = moved_elements(filter(kept, self.delivered_items))
+        sent = sum(box_bits(own, 1) for own in boxes.values()) / firing_count(self.demand)
+        return sent / delivered if delivered else 0.0
+
+    def _sent_from(self, memory: Memory) -> Sent:
+        """Per item ``memory`` sends over a link of the route, the parts it sends with the copies they are for: all of
+        the item where it is a source, else what it holds of it as a target."""
+        if (found := self._sent.get(memory)) is not None:
+            return found
+        held = dict.fromkeys(
+            (item.copies, item.box)
             for (_, v, _), demand in zip(self.hops, self.hop_demand, strict=True)
-            if leaving and v is memory
+            if v is memory
             for item in demand
             if self.targets[item.target] is memory
-        ]
-        boxes: dict[CommunicationLink | None, list[Box]] = {}
-        for (u, v, link), demand in zip(self.hops, self.hop_demand, strict=True):
-            if link not in links or (u if leaving else v) is not memory:
-                continue
-            own = boxes.setdefault(link if leaving and memory.offchip else None, [])
-            for item in demand:
-                if any(ends[i] is memory for i in (item.sources if leaving else (item.target,))):
-                    own.append(item.box)
-                else:
-                    own += [part for box in held if (part := meet(box, item.box))]
-        delivered = box_bits(self.delivered, 1)
-        return sum(box_bits(own, 1) for own in boxes.values()) / delivered if delivered else 0.0
+        )
+        parts: dict[Box, list[tuple[tuple[int, ...], Box]]] = {}
+        found = self._sent[memory] = []
+        for (u, _, link), demand in zip(self.hops, self.hop_demand, strict=True):
+            for item in demand if u is memory else ():
+                if any(self.sources[i] is memory for i in item.sources):
+                    found.append((link, item, [(item.copies, item.box)]))
+                    continue
+                if (passed := parts.get(item.box)) is None:
+                    passed = parts[item.box] = [(c, part) for c, box in held if (part := meet(box, item.box))]
+                found.append((link, item, passed))
+        return found
 
-    def memory_share(self, memory: Memory, leaving: bool) -> float:
+    def memory_share(self, memory: Memory, leaving: bool, copies: tuple[int, ...] | None = None) -> float:
         """The share of the delivered data ``memory`` sends (``leaving``) or receives: all of it where it is the only
         memory on its side, but for off-chip memory sending, a copy per link (:meth:`share_at`)."""
         links = self.links_at(memory, leaving)
         if set(self.sources if leaving else self.targets) == {memory} and not (leaving and memory.offchip and links):
             return 1.0
-        return self.share_at(memory, leaving, links)
-
-
-def box_bits(boxes: Iterable[Box], bitwidth: float) -> float:
-    """Bits the ``boxes`` cover together: distinct data counted once."""
-    unique = list(dict.fromkeys(boxes))
-    return _covered(unique) * bitwidth
-
-
-def _covered(boxes: list[Box]) -> int:
-    """Points the inclusive boxes cover together, sweeping the first axis between the boxes' edges."""
-    if not boxes:
-        return 0
-    if len(boxes) == 1 or all(_disjoint(a, b) for a, b in combinations(boxes, 2)):
-        return sum(prod(hi - lo + 1 for lo, hi in box) for box in boxes)
-    if len(boxes[0]) == 1:
-        spans = sorted((box[0][0], box[0][1]) for box in boxes)
-        total, end = 0, -1
-        for lo, hi in spans:
-            if hi > end:
-                total += hi - max(lo, end + 1) + 1
-                end = hi
-        return total
-    edges = sorted({box[0][0] for box in boxes} | {box[0][1] + 1 for box in boxes})
-    total = 0
-    for lo, nxt in zip(edges, edges[1:], strict=False):
-        inside = [box[1:] for box in boxes if box[0][0] <= lo and box[0][1] >= nxt - 1]
-        total += (nxt - lo) * _covered(list(dict.fromkeys(inside)))
-    return total
-
-
-def _disjoint(a: Box, b: Box) -> bool:
-    return any(ha < lb or hb < la for (la, ha), (lb, hb) in zip(a, b, strict=True))
+        return self.share_at(memory, leaving, links, copies)
 
 
 class CommunicationManager:
@@ -210,15 +206,17 @@ class CommunicationManager:
         pairs: set[tuple[int, int]] = set()
         reduced: dict[int, list[DemandItem]] = {}
         delivered: list[Box] = []
+        routed: list[DemandItem] = []
         for item in demand:
             target = targets[item.target]
+            if not item.sources:
+                continue
             if item.reduce:
                 pairs.update((s, item.target) for s in item.sources)
                 reduced.setdefault(item.target, []).append(item)
                 continue
             if same := [s for s in item.sources if sources[s] is target]:
                 pairs.add((same[0], item.target))
-                delivered.append(item.box)
                 continue
             if local := [s for s in item.sources if shares_memory(sources[s], target)]:
                 pairs.add((local[0], item.target))
@@ -231,12 +229,13 @@ class CommunicationManager:
             pairs.add((s, item.target))
             served.setdefault(s, []).append(replace(item, sources=(s,)))
 
-        taken = taken or {}
-        load: dict[CommunicationLink, float] = dict(taken)
+        taken, spanned = taken or {}, firing_count(demand)
+        load: dict[CommunicationLink, float] = {link: bits * spanned for link, bits in taken.items()}
         hops: dict[Hop, dict[DemandItem, None]] = {}
         ranked = sorted(served, key=lambda s: (-box_bits((i.box for i in served[s]), bitwidth), sources[s]))
         for s in ranked:
             delivered += [i.box for i in served[s]]
+            routed += served[s]
             for hop, carried in self._multicast(sources[s], targets, served[s], bitwidth, load, entry).items():
                 hops.setdefault(hop, {}).update(dict.fromkeys(carried))
         for s, reached in sorted(in_place.items()):
@@ -245,11 +244,12 @@ class CommunicationManager:
                 hops.setdefault(hop, {})
         for t, items in sorted(reduced.items()):
             delivered += [i.box for i in items]
+            routed += items
             for hop, carried in self._reduce(sources, targets[t], items, bitwidth, load).items():
                 hops.setdefault(hop, {}).update(dict.fromkeys(carried))
         links = dict.fromkeys(link for _, _, link in hops)
-        moved = box_bits(delivered, bitwidth)
-        carried = {link: load[link] - taken.get(link, 0.0) for link in links}
+        moved = moved_elements(routed) * bitwidth
+        carried = {link: load[link] / spanned - taken.get(link, 0.0) for link in links}
         shares = tuple((link, carried[link] / moved if moved else 0.0) for link in links)
         plan = MulticastPathPlan(
             sources=sources,
@@ -261,6 +261,8 @@ class CommunicationManager:
             hops=tuple(hops),
             hop_demand=tuple(map(tuple, hops.values())),
             delivered=tuple(dict.fromkeys(delivered)),
+            delivered_items=tuple(routed),
+            demand=demand,
         )
         return plan, carried
 
@@ -507,13 +509,6 @@ def _path(
         node, link = previous[node]
         steps.append((node, link))
     return steps
-
-
-def meet(a: Box, b: Box) -> Box | None:
-    """The part two boxes share, if any."""
-    if _disjoint(a, b):
-        return None
-    return tuple((max(la, lb), min(ha, hb)) for (la, ha), (lb, hb) in zip(a, b, strict=True))
 
 
 def _cells(

@@ -192,7 +192,7 @@ def _link_rows(
 ) -> list[dict[str, Any]]:
     bits: dict[Any, float] = defaultdict(float)
     for stream, stream_bits in streams:
-        shares = dict(stream.choice.link_shares) or dict.fromkeys(stream.choice.links_used, 1.0)
+        shares = dict(stream.link_shares) or dict.fromkeys(stream.choice.links_used, 1.0)
         for link in stream.choice.links_used:
             bits[link] += stream_bits * shares.get(link, 0.0)
     return [

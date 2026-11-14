@@ -156,10 +156,33 @@ class _NodeDetail:
                 {"source": route.sources[i].name, "target": route.targets[j].name, "elements": elements}
                 for (i, j), elements in space.overlaps(tn).items()
             ],
-            "moved_bits": 0 if space.choice_shares_memory(tn, route) else space.moved_bits(tn, route),
+            **self._copy_bits(tn),
             "route_cycles": solution.route_cycles[tn],
-            "reuse_factor": reported_reuse(solution.reuse_factors[tn], space.ssis[tn]),
             **self._sliding(tn),
+        }
+
+    def _copy_bits(self, tn: TransferNode) -> dict[str, Any]:
+        """Per copy, the bits one of its firings moves and its reuse factor, a box several copies read charged to the
+        one firing most often; the transfer's own are its most often firing copy's reuse and bits per such firing."""
+        space, solution = self.space, self.allocation.solution
+        route = solution.transfer_routes[tn]
+        reuse = [
+            reported_reuse(space.reuse_levels[(copy, solution.reuse_levels[copy])], space.ssis[tn])
+            if copy in solution.reuse_levels
+            else reported_reuse(solution.reuse_factors[tn], space.ssis[tn])
+            for copy in tn.outputs
+        ]
+        moved = [0.0] * len(tn.outputs)
+        if not space.choice_shares_memory(tn, route):
+            for copies in space.copy_sets(tn, route):
+                first = min(copies, key=lambda c: reuse[c])
+                moved[first] += space.moved_bits(tn, route, copies=copies)
+        top = min((r for r, bits in zip(reuse, moved, strict=True) if bits), default=reuse[0])
+        return {
+            "moved_bits": sum(bits * top / r for bits, r in zip(moved, reuse, strict=True)),
+            "reuse_factor": top,
+            "copy_moved_bits": moved,
+            "copy_reuse_factors": reuse,
         }
 
     def _positions(self, node: HasIterationSpace) -> int:

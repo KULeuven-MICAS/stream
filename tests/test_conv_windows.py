@@ -142,8 +142,9 @@ def test_oracle_matches_the_hand_derived_sizes(scenario: str, check: str):
 @pytest.mark.parametrize(("scenario", "hardware"), [_run(*run) for run in RUNS])
 def test_allocation_matches_the_oracle(scenario: str, hardware: str):
     """Every tile is the oracle's; conv2's window keeps the halo consecutive tiles share; what other cores hand over
-    moves over the links on one DMA channel per core; the first tiles are longer by the lookahead and the halo, and
-    conv2 waits for conv1's where it runs on other cores."""
+    moves over the links on one DMA channel per core, what a core sends several others once; each target receives
+    what it does not hold yet, the input's copy all of it once; the first tiles are longer by the lookahead and the
+    halo, and conv2 waits for conv1's where it runs on other cores."""
     found, expected = solve(scenario, hardware), oracle(scenario)
     assert {check: found[check] for check in CHECKS} == {check: expected[check] for check in CHECKS}
     windows, moved, cores = expected["window"], expected["moved"], len(expected["window"])
@@ -153,10 +154,12 @@ def test_allocation_matches_the_oracle(scenario: str, hardware: str):
     assert found["in_place"] is IN_PLACE.get(scenario, True)
     if not found["in_place"]:
         handed = {(src, dst): n for dst, srcs in expected["sources"].items() for src, n in srcs.items() if src != dst}
-        assert found["linked_bits"] == 16 * sum(handed.values())
+        assert found["linked_bits"] == 16 * expected["linked"]
         assert set(found["linked_pairs"]) == set(handed)
-    assert all(received == moved for received, moved in found["received_bits"])
-    assert found["input_copied"] == 16 * sum(prod(tile) for tile in expected["input_moved"])
+    into1, into2 = expected["received"]
+    received = (into1, into2 if not found["in_place"] else (0,) * len(into2))
+    assert found["received_bits"] == tuple(tuple(16 * n for n in each) for each in received)
+    assert found["input_copied"] == 16 * expected["input_copied"]
     rows, inputs = expected["conv1_rows"], expected["input_moved_rows"]
     first = {"Conv1": rows[0] * len(rows) / sum(rows) - 1, "Transfer(input)": inputs[0] * len(inputs) / sum(inputs) - 1}
     assert {name: found["first_tiles"].get(name, 0.0) for name in first} == first
@@ -385,15 +388,19 @@ def test_the_producers_of_a_strided_pool_take_the_loop_fused_along_its_rows(tmp_
 
 def test_a_padded_window_over_an_axis_no_core_splits_hands_the_reader_every_column():
     """Conv1's output split by rows over four cores and read by a padded 3x3 conv split alike: each core's window
-    spans every column, so the transfer hands conv2 all of conv1's output, the columns of the last one included."""
+    spans every column, so the transfer serves conv2 all of conv1's output, the columns of the last one included, the
+    rows each core already holds in place."""
     with tempfile.TemporaryDirectory() as out:
         estimate = evaluate_mapping(
             HARDWARE.format("tpu_like_quad_core"), conv_chain(), out, options=SolveOptions(artifacts=False)
         )
     allocation = estimate.context.get("allocation")
     transfer = next(n for n in allocation.problem.workload.get_transfer_nodes() if n.name == "Transfer(conv1_out)")
-    delivered = allocation.solution.transfer_routes[transfer].delivered
+    route = allocation.solution.transfer_routes[transfer]
+    read = [item.box for item in route.demand]
     assert all(
-        lo >= 0 and hi < size for b in delivered for (lo, hi), size in zip(b, transfer.inputs[0].shape, strict=True)
-    ), delivered
-    assert box_bits(delivered, 1) == prod(transfer.inputs[0].shape)
+        lo >= 0 and hi < size
+        for b in (*route.delivered, *read)
+        for (lo, hi), size in zip(b, transfer.inputs[0].shape, strict=True)
+    ), read
+    assert box_bits(read, 1) == prod(transfer.inputs[0].shape)

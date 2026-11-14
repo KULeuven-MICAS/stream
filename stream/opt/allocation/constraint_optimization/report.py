@@ -507,7 +507,10 @@ def slot_latency_breakdown(
                 ),
                 "path_cycles": raw,
                 "active_latency_cycles": round(get_active_latency(tr, float(raw), space.ssis)),
-                "reuse_factor": reported_reuse(value(q.get("reuse_factor", tr).expr), space.ssis[tr]),
+                "reuse_factor": min(
+                    reported_reuse(value(q.get("copy_reuse_factor", tr.outputs[c]).expr), space.ssis[tr])
+                    for c in {c for copies in space.copy_sets(tr, choice) for c in copies} or {0}
+                ),
                 "latency_contribution_cycles": _json_scalar(value(q.get("transfer_latency", (tr, choice)).expr)),
             }
         )

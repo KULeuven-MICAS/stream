@@ -171,6 +171,18 @@ def oracle(name: str | Scenario) -> dict[str, Any]:
             dst: {src: len(moved & own) for src, own in zip(c1, owned, strict=True) if moved & own}
             for dst, moved in zip(c2, moved2[i], strict=True)
         },
+        "linked": sum(
+            len(set().union(*(moved & own for dst, moved in zip(c2, moved2[i], strict=True) if src != dst)))
+            for src, own in zip(c1, owned, strict=True)
+        ),
+        "input_copied": len(set().union(*moved1[i])),
+        "received": (
+            tuple(len(moved) for moved in moved1[i]),
+            tuple(
+                sum(len(moved & own) for src, own in zip(c1, owned, strict=True) if src != dst)
+                for dst, moved in zip(c2, moved2[i], strict=True)
+            ),
+        ),
         "conv1_rows": tuple(len({e[2] for e in new}) for new in new1),
         "input_moved_rows": tuple(len({e[2] for e in moved[0]}) for moved in moved1),
     }
@@ -233,13 +245,10 @@ def solve(name: str, hardware: str) -> dict[str, Any]:
             for i, j in positions
             if not space.hardware.shares_memory(route.sources[i], route.targets[j])
         ],
-        "received_bits": [
-            (
-                sum(space.moved_bits(tr, routes[tr], target_at=j) for j in range(len(routes[tr].targets))),
-                space.moved_bits(tr, routes[tr]),
-            )
+        "received_bits": tuple(
+            tuple(space.moved_bits(tr, routes[tr], target_at=j) for j in range(len(routes[tr].targets)))
             for tr in (into1, into2)
-        ],
+        ),
         "input_copied": space.copied_bits(inp),
         "waited_on": space.is_waited_on(conv1),
         "first_tiles": {node.name: extra for node, extra in space.warmup.items()},

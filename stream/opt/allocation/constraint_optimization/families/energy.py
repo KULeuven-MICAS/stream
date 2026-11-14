@@ -33,7 +33,7 @@ def _energy_per_bit(stream: DmaStream) -> list[tuple[Component, float]]:
     ]
     return ports + [
         (("link", link_name(link), link_cores(link)), share * link.unit_energy_cost / link.bandwidth)
-        for link, share in stream.choice.link_shares
+        for link, share in stream.link_shares
     ]
 
 
