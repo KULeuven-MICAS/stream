@@ -1355,16 +1355,50 @@ class TransferToRuntimeSequence(RewritePattern):
                     dim_strides[mvar.dim] *= mvar.size
                 iteration_mult *= mvar.size
 
+        window = mem_strensor.reuse_index.data
+        by_rounds = isinstance(op, PullOp)
+        placed: dict[int, int] = {}
+        if by_rounds:
+            for i, (mvar, cvar) in enumerate(iter_strensors()):
+                joined = mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL
+                local = cvar.type == StrensorVarType.TEMPORAL and i < window
+                if (joined or local) and cvar.dim in dim_strides:
+                    placed[i] = dim_strides[cvar.dim]
+                    dim_strides[cvar.dim] *= cvar.size
+
+        def step(i: int, var: StrensorVar) -> int:
+            """The DRAM step of loop ``i``, moving ``dim_strides`` past it. A memory tile sends what it gathers one
+            round at a time, so a pull's loops in the window step as the space nests them, whatever order they are
+            walked in."""
+            if i in placed:
+                return placed[i]
+            stride = dim_strides[var.dim]
+            dim_strides[var.dim] *= var.size
+            return stride
+
+        def across_cores() -> None:
+            """The join / distribute vars. A memory tile gathers one round of its cores' tiles at a time
+            (``RealizeLinks.match_link_objects``), so a pull walks its cores inside the loops the tile keeps local; an
+            object it sends holds each core's share of those loops whole, so a push walks its cores outside them."""
+            nonlocal iteration_mult
+            for i, (mvar, cvar) in enumerate(iter_strensors()):
+                if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
+                    vars.append(mvar)
+                    if cvar.dim in dim_strides:
+                        strides.append(Stride(cvar.size, step(i, cvar), iteration_mult))
+                    iteration_mult *= cvar.size
+
+        if by_rounds:
+            across_cores()
+
         # next, iterate temporal/absent vars kept local in a memtile
         for i, (mvar, cvar) in enumerate(iter_strensors()):
-            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
-            if cvar.type == StrensorVarType.ABSENT and i < mem_strensor.reuse_index.data:
+            if cvar.type == StrensorVarType.ABSENT and i < window:
                 iteration_mult *= cvar.size
-            if cvar.type == StrensorVarType.TEMPORAL and i < mem_strensor.reuse_index.data:
+            if cvar.type == StrensorVarType.TEMPORAL and i < window:
                 vars.append(mvar)
                 if cvar.dim in dim_strides and cvar is not widened:
-                    strides.append(Stride(cvar.size, stride, iteration_mult))
-                    dim_strides[cvar.dim] *= cvar.size
+                    strides.append(Stride(cvar.size, step(i, cvar), iteration_mult))
                 iteration_mult *= cvar.size
 
         # broadcast vars timing:
@@ -1373,16 +1407,8 @@ class TransferToRuntimeSequence(RewritePattern):
             if mvar.type == StrensorVarType.ABSENT and cvar.type == StrensorVarType.SPATIAL:
                 iteration_mult *= cvar.size
 
-        # then, iterate the join / distribute vars:
-        for mvar, cvar in iter_strensors():
-            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
-            if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
-                vars.append(mvar)
-                if cvar.dim in dim_strides:
-                    # only add relevant
-                    strides.append(Stride(cvar.size, stride, iteration_mult))
-                    dim_strides[cvar.dim] *= cvar.size
-                iteration_mult *= cvar.size
+        if not by_rounds:
+            across_cores()
 
         # then, remaining vars:
         for i, (mvar, cvar) in enumerate(iter_strensors()):
