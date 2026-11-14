@@ -51,6 +51,9 @@ class TileSearchStage(Stage):
             staged = self._staged(group)
             alternatives = [("staged", staged), ("order", _reordered(group))]
             alternatives.append(("staged order", _reordered(staged) if staged is not None else None))
+            alternatives += [(("rows", f), _rows_held(group, f)) for f in GROWTH_FACTORS]
+            if staged is not None:
+                alternatives += [(("staged rows", f), _rows_held(staged, f)) for f in GROWTH_FACTORS]
             for key, alternative in alternatives:
                 if alternative is not None:
                     new_groups = list(groups)
@@ -199,6 +202,19 @@ def _reordered(group: FusedGroup) -> FusedGroup | None:
         return None
     swapped = (*tiling[:first], tiling[first + 1], tiling[first], *tiling[first + 2 :])
     return replace(group, intra_core_tiling=swapped)
+
+
+def _rows_held(group: FusedGroup, factor: int) -> FusedGroup | None:
+    """``group`` with its outermost tile loop's dim also looped innermost, over ``factor`` tiles: each core then holds
+    that many output tiles across the loops between, and reuses each operand tile it fetches for all of them. None
+    where the outermost loop is a single index or its dim is tiled at several sizes already."""
+    tiling = group.intra_core_tiling
+    if not tiling:
+        return None
+    dim, tile = tiling[-1]
+    if tile <= 1 or sum(d == dim for d, _ in tiling) > 1:
+        return None
+    return replace(group, intra_core_tiling=((dim, tile), *tiling[:-1], (dim, tile * factor)))
 
 
 def _unpriced(timed_out: bool) -> RuntimeError:
