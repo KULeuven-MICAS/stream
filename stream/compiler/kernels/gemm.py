@@ -168,8 +168,7 @@ class GemmKernel(AIEKernelWithZeroing):
         super().rewrite(op, rewriter, bindings)
         _erase_unused(output, rewriter)
         for value in extra:
-            _read_at_post_ops(value, rewriter)
-            name = cast(ObjectFifoAcquireOp, acquired_object(value).owner).objFifo_name.string_value()
+            name = _read_at_post_ops(value, rewriter)
             for fifo in device.walk():
                 if isinstance(fifo, ObjectFifoOp) and fifo.sym_name.data == name:
                     fifo.elemNumber = ArrayAttr([IntegerAttr.from_int_and_width(1, 32)] * (len(fifo.consumerTiles) + 1))
@@ -286,25 +285,54 @@ def _erase_unused(value: SSAValue, rewriter: PatternRewriter) -> None:
         value = source
 
 
-def _read_at_post_ops(value: SSAValue, rewriter: PatternRewriter) -> None:
-    """Acquire a post-op's input, read through ``value``, just before the post-op that reads it and release it right
-    after, so the core holds it only once its sum is done, as the core producing it sends it. Producer and reader sum
-    in step, so one buffer serves both."""
-    (reader,) = {use.operation for use in value.uses}
-    acquired = acquired_object(value)
-    casts = []
-    while isinstance(owner := value.owner, LayoutCast):
-        casts.insert(0, owner)
-        value = owner.source
-    for unread in [use.operation for use in acquired.uses if use.operation not in casts]:
-        if isinstance(unread, LayoutCast) and not unread.dest.uses:
-            rewriter.erase_op(unread)
-    acquire, release = cast(ObjectFifoAcquireOp, acquired.owner), _release(acquired)
-    for moved in (acquire, *casts):
-        moved.detach()
-        rewriter.insert_op(moved, InsertPoint.before(reader))
-    release.detach()
-    rewriter.insert_op(release, InsertPoint.after(reader))
+def _read_at_post_ops(value: SSAValue, rewriter: PatternRewriter) -> str:
+    """Acquire a post-op's input, read through ``value``, just before each post-op that reads it and release it right
+    after, so the core holds it only once its sum is done, as the core producing it sends it: one tile for each
+    output tile the core sums at once, in the order both cores send them. Producer and reader sum in step, so one
+    buffer serves both."""
+    readers = {use.operation for use in value.uses}
+    block = next(iter(readers)).parent_block()
+    assert block is not None and all(reader.parent_block() is block for reader in readers)
+    first = acquired_object(value)
+    if isinstance(switch := first.owner, IndexSwitchOp):
+        first = acquired_object(yielded_value(switch.case_regions[0]))
+    acquire = cast(ObjectFifoAcquireOp, first.owner)
+    name, port = acquire.objFifo_name, acquire.port
+    shape = cast(MemRefType[AnyDenseElement], first.type)
+    one = IntegerAttr.from_int_and_width(1, 32)
+    placed: set[Operation] = set()
+    for reader in [op for op in block.ops if op in readers]:
+        fresh = ObjectFifoAcquireOp(port, 1, name, shape.get_shape(), shape.element_type)
+        tile = [LayoutCast(fresh.results[0], value.type)] if value.type != shape else []
+        rewriter.insert_op([fresh, *tile], InsertPoint.before(reader))
+        read = tile[0].dest if tile else fresh.results[0]
+        reader.operands = [read if operand is value else operand for operand in reader.operands]
+        rewriter.insert_op(release := ObjectFIFOReleaseOp(port, one, name), InsertPoint.after(reader))
+        placed |= {fresh, release}
+    _erase_unused(value, rewriter)
+    if isinstance(switch, IndexSwitchOp) and switch.parent is not None and not any(r.uses for r in switch.results):
+        rewriter.erase_op(switch)
+    core = _enclosing_core(acquire)
+    stale = [
+        op
+        for op in core.walk()
+        if isinstance(op, ObjectFifoAcquireOp | ObjectFIFOReleaseOp) and op.objFifo_name == name and op not in placed
+    ]
+    for op in stale:
+        for unread in [use.operation for result in op.results for use in result.uses]:
+            if unread.parent is not None:
+                rewriter.erase_op(unread)
+        if op.parent is not None:
+            rewriter.erase_op(op)
+    return name.string_value()
+
+
+def _enclosing_core(op: Operation) -> CoreOp:
+    parent = op.parent_op()
+    while parent is not None and not isinstance(parent, CoreOp):
+        parent = parent.parent_op()
+    assert isinstance(parent, CoreOp)
+    return parent
 
 
 def _with_producer_depth(depth: Attribute, producer: int) -> Attribute:
