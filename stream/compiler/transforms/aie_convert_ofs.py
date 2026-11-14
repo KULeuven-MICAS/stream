@@ -1220,6 +1220,10 @@ class RealizeLinks(RewritePattern):
         above; handing out, one above is cut into one for each below. A memory tile sizes its
         buffer by the reuse window it stages, which is more than it needs when it only
         forwards. Only the link sees both sides, so the two are reconciled here.
+
+        A tile may stage several rounds of a hand-out, the offsets stepping by one round either way. A gather fills
+        each source's share of its object contiguously while the cores' spatial index lies inside the rounds, so its
+        object holds one round, and the tile holds fewer rounds than the allocation charges.
         """
         if len(pulls) > 1 and len(pushes) > 1:
             return
@@ -1236,10 +1240,8 @@ class RealizeLinks(RewritePattern):
             raise NotImplementedError(f"a link handing out objects of differing sizes {parts}")
         need = sum(parts)
         shape = tuple(cast(ObjectFIFO[Attribute], held.elemType).buffer.get_shape())
-        # A tile may stage several rounds of the same gather or hand-out, which is its own
-        # business: the offsets step by one round either way. Only a side that cannot hold a
-        # whole number of them has the wrong object.
-        if prod(shape) >= need and not prod(shape) % need:
+        gather = many is pulls and len(many) > 1
+        if prod(shape) >= need and not prod(shape) % need and not (gather and prod(shape) > need):
             return
         kernel = shape[-2:] if len(shape) > 1 else shape
         count, rem = divmod(need, prod(kernel))
@@ -1251,7 +1253,7 @@ class RealizeLinks(RewritePattern):
         )
         # A smaller object leaves the tile less in flight than it was given, so it keeps as
         # much by holding more of them.
-        if need < prod(shape) and not prod(shape) % need:
+        if need < prod(shape) and not prod(shape) % need and not gather:
             held.properties["elemNumber"] = cls.scale_depth(held.elemNumber, prod(shape) // need)
 
 
