@@ -81,11 +81,17 @@ class HardwareNamespace:
 
 class AIE2Namespace(HardwareNamespace):
     """The AIE2 tile array: neighbouring tiles share memory, a core's stack is reserved, a dispatch of several
-    designs configures each one's cores, and the object-fifo, buffer-descriptor, memory-tile replay and DMA
-    channel limits are its families."""
+    designs configures each one's cores, and the object-fifo, buffer-descriptor, memory-tile replay, memory-tile
+    object length and DMA channel limits are its families."""
 
     NAMESPACE = "aie2"
-    families = ("aie2_object_fifo_depth", "aie2_buffer_descriptors", "aie2_memory_reuse", "aie2_dma_channels")
+    families = (
+        "aie2_object_fifo_depth",
+        "aie2_buffer_descriptors",
+        "aie2_memory_reuse",
+        "aie2_object_length",
+        "aie2_dma_channels",
+    )
     pairs_by_spatial_index = True
     accumulates_across_cores = False
     circuit_switched = True

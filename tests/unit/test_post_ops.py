@@ -112,6 +112,23 @@ def test_post_ops_are_priced_once_per_finished_sum(swiglu):
     assert estimator._finished_outputs(gate, sizes, m * k * n) == m * n / 16
 
 
+def test_a_memory_tile_holds_no_object_longer_than_one_buffer_descriptor():
+    """A 512 KB block is one 32-bit word past what a memory tile's descriptor sends, so holding it is refused."""
+    from stream.opt.allocation.constraint_optimization.families.aie2 import AIE2ObjectLength
+
+    tile = SimpleNamespace(namespace="aie2", kind="memory", name="tile_0_1")
+    core = SimpleNamespace(namespace="aie2", kind="compute", name="tile_0_2")
+    held = [SimpleNamespace(_raw=0)] * 3
+    objects = ((tile, held[0], 512 * 1024 * 8), (tile, held[1], 512 * 1024 * 8 - 32), (core, held[2], 10**9))
+    refused = []
+    ctx = SimpleNamespace(
+        quantities=SimpleNamespace(get=lambda name: SimpleNamespace(expr=objects)),
+        add_constr=lambda constraint, name, resource: refused.append(resource.name),
+    )
+    AIE2ObjectLength().build(ctx)
+    assert refused == ["tile_0_1"]
+
+
 def _memory(accelerator, name):
     return accelerator.memories[name]
 
@@ -202,6 +219,16 @@ def test_a_post_op_pair_takes_alternate_rows_and_pairs_cores_beside_each_other(s
     assert {c.row_id for c in gate_cores} == set(rows[0::2]) and {c.row_id for c in up_cores} == set(rows[1::2])
     assert [(u.col_id, u.row_id - 1) for u in up_cores] == [(g.col_id, g.row_id) for g in gate_cores]
     assert stage.mapping.get(gate).inter_core_tiling == stage.mapping.get(up).inter_core_tiling
+
+
+def test_the_aie2_namespace_bounds_memory_tile_objects(strix):
+    from stream.api import default_families
+    from stream.opt.allocation.constraint_optimization.families import BUILTIN_FAMILIES
+    from stream.opt.allocation.constraint_optimization.hardware import AIE2Namespace
+
+    assert "aie2_object_length" in AIE2Namespace.families
+    assert BUILTIN_FAMILIES["aie2_object_length"] == "aie2:AIE2ObjectLength"
+    assert "aie2_object_length" in default_families(strix)
 
 
 def _post_op_mapping(post_ops=("Silu", "Elt_Mul"), layers=("Gemm_Left", "Gemm_Right", "Silu", "Elt_Mul")):

@@ -76,6 +76,7 @@ BUILTIN_FAMILIES: dict[str, str] = {
     "aie2_object_fifo_depth": "aie2:AIE2ObjectFifoDepth",
     "aie2_buffer_descriptors": "aie2:AIE2BufferDescriptors",
     "aie2_memory_reuse": "aie2:AIE2MemoryReuse",
+    "aie2_object_length": "aie2:AIE2ObjectLength",
     "aie2_dma_channels": "aie2:AIE2DmaChannels",
     "memory_ports": "memory_ports:MemoryPorts",
     "energy": "energy:Energy",

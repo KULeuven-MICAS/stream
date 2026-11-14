@@ -92,6 +92,7 @@ The allocation model is built from constraint families, each a group of constrai
 | `offchip_traffic` | the bits crossing the off-chip boundary, an objective level and charged in the latency objective | `charge` (without it only the level) |
 | `aie2_object_fifo_depth`, `aie2_buffer_descriptors` | an AIE2 tile's fifo depth and buffer descriptors stay within `max_object_fifo_depth` | |
 | `aie2_memory_reuse` | a memory tile outlives its reader only where one replay expresses the re-read | |
+| `aie2_object_length` | a memory tile holds no object longer than one buffer descriptor sends | `max_mem_tile_bd_words` (131071) |
 | `aie2_dma_channels` | a memory drives at most its DMA's channels in each direction: a tile's memory its tile DMA's, capped by the option for its kind; DRAM each shim port's `channels` | `max_compute_tile_dma_channels` (2), `max_mem_tile_dma_channels` (6) |
 | `memory_ports` | each memory port's bits fit in its rate, see [Memory ports](hardware.md#memory-ports) | `interval`, `burst` |
 | `energy` | the energy one iteration takes: each node's on its cores, and each transfer's bits times the energy per bit of the ports and links it uses; it only reports | |
