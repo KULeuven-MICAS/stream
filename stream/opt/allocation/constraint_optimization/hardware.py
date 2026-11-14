@@ -10,6 +10,7 @@ from functools import cache
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.memory import Memory
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.plugins import load_group
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,13 @@ class HardwareNamespace:
         """Cycles one dispatch spends beyond its designs' prices, given each design's compute cores."""
         return 0.0
 
+    def own_ports(
+        self, offchip: Memory, others: Sequence[Memory], links: Sequence[CommunicationLink]
+    ) -> list[tuple[str, ...]] | None:
+        """The port names ``offchip`` drives a fifo through for each of ``others`` it reads or writes, where its code
+        generator gives each its own fifo whatever route the allocation takes; None where it follows the route."""
+        return None
+
 
 class AIE2Namespace(HardwareNamespace):
     """The AIE2 tile array: neighbouring tiles share memory, a core's stack is reserved, a dispatch of several
@@ -110,6 +118,19 @@ class AIE2Namespace(HardwareNamespace):
         if core.type != "compute":
             return 0
         return self.DEFAULT_CORE_STACK_BYTES * 8
+
+    def own_ports(
+        self, offchip: Memory, others: Sequence[Memory], links: Sequence[CommunicationLink]
+    ) -> list[tuple[str, ...]] | None:
+        """The port names of the link joining ``offchip`` straight to each of ``others``: code generation gives every
+        memory tile of this namespace its own fifo through its own column's shim, whichever way the route forwards the
+        data between memory tiles. None where one of them is not such a tile."""
+        joined = {end: link for link in links for end in link.ports if end is not offchip}
+        if not others or any(
+            other not in joined or other.offchip or not any(self.applies_to(c) for c in other.cores) for other in others
+        ):
+            return None
+        return [joined[other].ports[offchip] for other in others]
 
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether two compute tiles are served by one memory module: on AIE2 a core reaches the memory north, south
@@ -163,6 +184,12 @@ class HardwareFacts:
     def dispatch_overhead_cycles(self, cores_per_design: Sequence[int]) -> float:
         """Cycles one dispatch pays beyond its designs' prices, summed over the namespaces."""
         return sum(ns.dispatch_overhead_cycles(cores_per_design) for ns in self.namespaces)
+
+    def own_ports(
+        self, offchip: Memory, others: Sequence[Memory], links: Sequence[CommunicationLink]
+    ) -> list[tuple[str, ...]] | None:
+        """The first namespace's :meth:`HardwareNamespace.own_ports` that has them, else None."""
+        return next((p for ns in self.namespaces if (p := ns.own_ports(offchip, others, links)) is not None), None)
 
 
 def namespace_classes(accelerator: Accelerator) -> dict[str, type[HardwareNamespace]]:
