@@ -159,12 +159,12 @@ class MemoryCapacity:
                     min_req: int | None = None
                     staged = memory.kind == "memory"
                     for stop in space.stops(t):
-                        halo = space.halo_bits(t, stop)
+                        beside = space.halo_bits(t, stop) + accumulator * space.summed_tiles(t, stop)
                         resident = space.resident_tiles(t, stop, staged=staged)
-                        req_size = copies * (ceil(resident * tensor_size) + halo + accumulator)
+                        req_size = copies * (ceil(resident * tensor_size) + beside)
                         single = (t, stop) in z_single
                         resident = space.resident_tiles(t, stop, single, staged)
-                        least = copies * (ceil(resident * tensor_size) + halo + accumulator)
+                        least = copies * (ceil(resident * tensor_size) + beside)
                         min_req = least if min_req is None else min(min_req, least)
                         uz = ctx.binary_product(
                             a=u,

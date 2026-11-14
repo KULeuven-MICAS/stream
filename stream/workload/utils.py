@@ -1,7 +1,8 @@
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import ceil
+from itertools import pairwise
+from math import ceil, prod
 from typing import TYPE_CHECKING
 
 import networkx as nx
@@ -85,7 +86,7 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
             raise _uncoupled_read_error(fused_group.name, dim, nb_splits, uncoupled[dim])
         # A tile the cores' split already covers leaves no loop to step: one of a single trip is none.
         if nb_splits > 1 or largest.get(dim) is None:
-            result[dim] = nb_splits
+            result[dim] = max(result.get(dim, 1), nb_splits)
     return result
 
 
@@ -220,13 +221,29 @@ def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload",
     return new_dim
 
 
+def fusion_levels(mapping: "Mapping", fusion_splits: dict[LayerDim, int]) -> list[tuple[LayerDim, int]]:
+    """The fused group's tile loops in its tiling's order, each a dim and its trips: a dim tiled at nested sizes loops
+    once per size, each over the next larger tile, the largest over the dim's remaining blocks."""
+    tiling = dict.fromkeys(mapping.fused_groups[0].intra_core_tiling if mapping.fused_groups else ())
+    levels: list[tuple[LayerDim, int]] = []
+    for dim, tile in tiling:
+        if dim not in fusion_splits:
+            continue
+        larger = sorted(t for d, t in tiling if d == dim and t > tile)
+        sizes = sorted(t for d, t in tiling if d == dim)
+        inner = prod(b // a for a, b in pairwise(sizes))
+        levels.append((dim, larger[0] // tile if larger else fusion_splits[dim] // inner))
+    return levels
+
+
 def generate_steady_state_iteration_spaces(
     workload: "Workload", mapping: "Mapping", fusion_splits: dict[LayerDim, int]
 ) -> dict["HasIterationSpace", SteadyStateIterationSpace]:
     spatial_unrollings, largest = collect_spatial_unrollings(workload, mapping)
     unique_spatial_unrollings = [(dim, factor) for dim, (_, factor) in largest.items()]
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)
-    iteration_variables = _add_temporal_iteration_variables(iteration_variables, fusion_splits, workload)
+    levels = fusion_levels(mapping, fusion_splits)
+    iteration_variables = _add_temporal_iteration_variables(iteration_variables, levels, workload)
     iteration_variables = _insert_kernel_iteration_variables(iteration_variables, workload, unique_spatial_unrollings)
     ssis_dict = _create_steady_state_iteration_spaces(iteration_variables, workload)
     return ssis_dict
@@ -272,7 +289,7 @@ def _create_steady_state_iteration_spaces(iteration_variables, workload: "Worklo
 
 def _add_temporal_iteration_variables(
     iteration_variables: dict["HasIterationSpace", list[IterationVariable]],
-    fusion_splits: dict[LayerDim, int],
+    levels: list[tuple[LayerDim, int]],
     workload: "Workload",
 ) -> dict["HasIterationSpace", list[IterationVariable]]:
     """Iterate through all computation nodes and add the temporal iteration variables: a node varies along a fused dim
@@ -282,7 +299,7 @@ def _add_temporal_iteration_variables(
         return {workload.leading_dim(d)[0] for d in workload.get_dims(node)}
 
     for node in workload.get_iteration_space_nodes():
-        for dim, size in fusion_splits.items():
+        for dim, size in levels:
             if isinstance(node, ComputationNode):
                 effect = LoopEffect.VARYING if dim in steps(node) else LoopEffect.ABSENT
             elif isinstance(node, TransferNode):

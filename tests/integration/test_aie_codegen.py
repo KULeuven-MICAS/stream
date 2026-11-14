@@ -38,4 +38,4 @@ def test_a_single_tile_gemm_generates_an_npu2_design(tmp_path):
     mapping = make_gemm_mapping(64, 64, 64, 64, 64, 64, nb_rows_to_use=1, nb_cols_to_use=1, output_dir=str(tmp_path))
     options = SolveOptions(nb_cols_to_use=1, stage_options={"npu": "npu2"})
     module = str(generate_code(ACCELERATOR, workload, str(tmp_path), mapping, options).context.get("module"))
-    assert len(re.findall(r'func\.call @"?\w+_matmul_bf16_bf16"?\(', module)) == 1
+    assert len(re.findall(r'func\.call @"?\w+_matmul_bf16_f32"?\(', module)) == 1

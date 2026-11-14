@@ -61,7 +61,9 @@ class AIE2BufferDescriptors(_DepthLimit):
 
 
 class AIE2MemoryReuse:
-    """A memory tile outlives its reader only where one whole-object replay expresses the re-read."""
+    """A memory tile outlives its reader only where one whole-object replay expresses the re-read, and replays an
+    object it refills from one buffer: mlir-aie repeats one descriptor in hardware, but unrolls a replay over two
+    buffers into a descriptor per buffer per replay, which runs the tile out of descriptors."""
 
     name: ClassVar[str] = "aie2_memory_reuse"
     requires: ClassVar[tuple[str, ...]] = ("memory_reuse",)
@@ -76,6 +78,13 @@ class AIE2MemoryReuse:
                 ctx.add_constr(
                     mem_stop._raw + compute_stop._raw <= 1,
                     name=f"aie2_mem_replay_{entry.name}_{resource_key(entry.memory)}_P{i}",
+                    resource=entry.memory,
+                )
+            for i, (mem_stop, compute_stop, single) in enumerate(entry.replayed):
+                held = single._raw if single is not None else 0
+                ctx.add_constr(
+                    mem_stop._raw + compute_stop._raw <= 1 + held,
+                    name=f"aie2_mem_replay_single_{entry.name}_{resource_key(entry.memory)}_P{i}",
                     resource=entry.memory,
                 )
 

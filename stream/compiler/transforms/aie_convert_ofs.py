@@ -32,6 +32,10 @@ from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.traits import SymbolTable
 from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
+    BDDimLayout,
+    BDDimLayoutArray,
+    BDDimLayoutArrayArray,
+    BDDimLayoutArrayArrayAttr,
     CoreOp,
     DeviceOp,
     DMABDOp,
@@ -300,6 +304,8 @@ class StrideSet:
 
 
 NB_COLUMNS = 8
+TILE_AXES = 2
+"""The axes of a kernel tile a memory tile scatters a widened run into: its rows and columns."""
 # The buffer descriptors a fifo's runtime transfers ping pong between.
 PING_PONG = 2
 
@@ -511,7 +517,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         self.get_tile(source),
                         [self.get_tile(target)],
                         name_base + f"switch_join_{i}_{j}",
-                        (2, 2),  # TODO: correct object fifo depth for switch joins
+                        (self.produced_count(source), 2),
                         target_type.get_element_type(),
                         target_type.get_kernel_shape(),
                     )
@@ -542,7 +548,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(target)],
                     name_base + f"unicast_{i}",
-                    (2, 2),  # TODO: correct object fifo depth for unicasts
+                    (self.produced_count(source), 2),
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                 )
@@ -575,7 +581,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(t) for t in targets],
                     name_base + f"broadcast_{i}",
-                    (2,) * (1 + len(targets)),  # TODO: correct object fifo depth for broadcasts
+                    (self.produced_count(source),) + (2,) * len(targets),
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                 )
@@ -867,6 +873,13 @@ class ChannelToObjectFifoPass(RewritePattern):
             return {(v.dim, v.size) for v in window if v.type == StrensorVarType.TEMPORAL and v.dim not in kernel_dims}
 
         return prod(size for _, size in covered(producer) - covered(consumer))
+
+    @classmethod
+    def produced_count(cls, push: PushOp) -> int:
+        """Buffers a core holds of what its kernel computes: the tiles its window spans, or the buffers the allocation
+        chose for one."""
+        assert isinstance(produced := push.input.type, StrensorType)
+        return max(cls.held_count(produced), prod(produced.get_local_shape()))
 
     @staticmethod
     def held_count(strensor: StrensorType) -> int:
@@ -1275,8 +1288,10 @@ class TransferToRuntimeSequence(RewritePattern):
             mult *= var.size
 
         iteration_mult = 1
+        staged = isinstance(op, PushOp) and self.tiles[mem_strensor.core_allocation.data[0].data].kind == MEMORY
+        widened = _widened_run(mem_strensor, list(iter_strensors()), dim_strides, staged)
 
-        # first kernel vars:
+        # first kernel vars, the memory tile's innermost loop beside the one it continues:
         for _, var in iter_strensors():
             stride = dim_strides[var.dim] if var.dim in dim_strides else 0
             if var.type == StrensorVarType.KERNEL:
@@ -1284,6 +1299,9 @@ class TransferToRuntimeSequence(RewritePattern):
                 vars.append(var)
                 if var.dim in dim_strides:
                     dim_strides[var.dim] *= var.size
+                if widened is not None and len(strides) == 1:
+                    strides.append(Stride(widened.size, dim_strides[widened.dim], iteration_mult))
+                    dim_strides[widened.dim] *= widened.size
 
         # then pure spatial vars:
         for mvar, _ in iter_strensors():
@@ -1302,7 +1320,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 iteration_mult *= cvar.size
             if cvar.type == StrensorVarType.TEMPORAL and i < mem_strensor.reuse_index.data:
                 vars.append(mvar)
-                if cvar.dim in dim_strides:
+                if cvar.dim in dim_strides and cvar is not widened:
                     strides.append(Stride(cvar.size, stride, iteration_mult))
                     dim_strides[cvar.dim] *= cvar.size
                 iteration_mult *= cvar.size
@@ -1341,6 +1359,8 @@ class TransferToRuntimeSequence(RewritePattern):
         assert isa(ofs, StringAttr) or isa(ofs, ArrayAttr[StringAttr])
         names = [ofs] if isinstance(ofs, StringAttr) else list(ofs.data)
         groups = [(x, y.canonicalize().legalize()) for x, y in StrideSet(tuple(strides)).split(len(names))]
+        if widened is not None:
+            _scatter_into_tiles(runtime_sequence, names, mem_strensor, widened)
 
         for of, (spatial_offset, stride_set) in zip(names, groups, strict=True):
             hardware_strides = stride_set.strides[:4]
@@ -1391,6 +1411,42 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # remove output from edge op operands
         rewriter.erase_matched_op(safe_erase=False)
+
+
+def _widened_run(
+    memory: StrensorType,
+    pairs: Sequence[tuple[StrensorVar, StrensorVar]],
+    dim_strides: Mapping[LayerDim, int],
+    staged: bool,
+) -> StrensorVar | None:
+    """The memory tile's innermost loop where it continues the off-chip tensor's contiguous kernel axis: a block of
+    several tiles along that axis, which a read off chip into the memory tile (``staged``) then takes in runs across
+    all of them."""
+    kernel = [cvar for _, cvar in pairs if cvar.type == StrensorVarType.KERNEL]
+    window = memory.reuse_index.data
+    local = [cvar for i, (_, cvar) in enumerate(pairs) if cvar.type == StrensorVarType.TEMPORAL and i < window]
+    if not (staged and local and len(kernel) == len(memory.get_kernel_shape()) == TILE_AXES):
+        return None
+    return local[0] if local[0].dim == kernel[0].dim and dim_strides.get(kernel[0].dim) == 1 else None
+
+
+def _scatter_into_tiles(
+    runtime_sequence: RuntimeSequenceOp, names: Sequence[StringAttr], memory: StrensorType, widened: StrensorVar
+) -> None:
+    """Have each memory tile write the rows a widened run streams back into its tile-major object: a row of every tile
+    in turn, tile by tile within the row."""
+    rows, columns = memory.get_kernel_shape()
+    tile = rows * columns
+    whole = prod(memory.get_local_shape()) * tile
+    walk = [(rows, columns), (widened.size, tile), (columns, 1)]
+    if whole > widened.size * tile:
+        walk.insert(0, (whole // (widened.size * tile), widened.size * tile))
+    device = runtime_sequence.parent_op()
+    assert isinstance(device, DeviceOp)
+    layout = BDDimLayoutArrayArrayAttr(BDDimLayoutArrayArray((BDDimLayoutArray(tuple(BDDimLayout(d) for d in walk)),)))
+    for fifo in device.walk():
+        if isinstance(fifo, ObjectFifoOp) and fifo.sym_name in names:
+            fifo.dimensionsFromStreamPerConsumer = layout
 
 
 def select_object(index: SSAValue, objects: Sequence[SSAValue]) -> IndexSwitchOp:

@@ -46,6 +46,13 @@ class BandwidthModel:
             burst=self.burst,
         )
 
+    def full_rate_span(self, direction: str) -> float:
+        """The shortest contiguous span, in bytes, at which a transfer in ``direction`` gets the contiguous rate."""
+        table = sorted(self.strided[direction].items())
+        if table:
+            return 2 * table[-1][0]
+        return self.burst or 0.0
+
     def efficiency(self, span_bytes: float, direction: str) -> float:
         """Fraction of the contiguous rate a transfer gets whose contiguous span is ``span_bytes``."""
         table = sorted(self.strided[direction].items())

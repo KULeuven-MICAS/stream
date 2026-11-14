@@ -420,6 +420,9 @@ class CausalGemmKernel(GemmKernel):
     what leaves the block defined whichever way the test goes.
     """
 
+    ACCUMULATOR: ClassVar[str | None] = None
+    """The scores reach the softmax in bf16, as IRON's attention writes them."""
+
     @property
     def unique_name(self) -> str:
         return f"{super().unique_name}_causal"
@@ -585,6 +588,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         SNAPSHOT: (SNAPSHOT, SNAPSHOT_OBJECT),
     }
     SCRATCH_BITS: ClassVar[int] = INDEX_BITS
+    ACCUMULATOR: ClassVar[str | None] = None
 
     @property
     def function_name(self) -> str:

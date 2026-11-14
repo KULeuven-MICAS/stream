@@ -8,7 +8,7 @@ from typing import get_args
 import numpy as np
 from aie.iron import ExternalFunction
 from aie.iron.device import AIEArch, from_name
-from aie.iron.kernels import activation, eltwise, linalg
+from aie.iron.kernels import activation, datamovement, eltwise, linalg
 from aie.utils import set_current_device
 from ml_dtypes import bfloat16
 
@@ -32,10 +32,15 @@ def _target(npu: str) -> bool:
     return device.arch is AIEArch.AIE2p
 
 
-def mm(npu: str, m: int, k: int, n: int, bfp16: bool = True) -> linalg.MatrixKernel:
-    """mm.cc as IRON's GEMM builds it, its multiplies in bfp16 when ``bfp16`` (``Precision.MEDIUM``), else bf16."""
+def mm(npu: str, m: int, k: int, n: int, bfp16: bool = True, accumulate: bool = False) -> linalg.MatrixKernel:
+    """mm.cc as IRON's GEMM builds it, its multiplies in bfp16 when ``bfp16`` (``Precision.MEDIUM``), else bf16; where
+    it ``accumulate``s, into a float tile, with the cast of that tile to the bf16 output beside it."""
     _target(npu)
-    return linalg.mm(m, k, n, bfloat16, bfloat16, emulate_bf16_mmul_with_bfp16=bfp16, round_conv_even=True)
+    output = np.float32 if accumulate else bfloat16
+    kernel = linalg.mm(m, k, n, bfloat16, output, emulate_bf16_mmul_with_bfp16=bfp16, round_conv_even=True)
+    if accumulate:
+        kernel.cast = datamovement.convert_copy(m * n)
+    return kernel
 
 
 def silu(npu: str, m: int, n: int) -> ExternalFunction:

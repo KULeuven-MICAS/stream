@@ -400,7 +400,10 @@ def _resident_fill(ctx: FormulationContext, drain: int = 0) -> Any:
             if space.is_const_i(tr)
             else []
         )
-        choices = whole + [(prod(sizes[s + 1 :]), single, f"single_L{s}") for s, single in singles[t]]
+        choices = whole + [
+            (prod(sizes[s + 1 :]) * space.tiles_needed_levels[(t, s)], single, f"single_L{s}")
+            for s, single in singles[t]
+        ]
         route = space.route_name(tr, choice)
         held = [(tiles, ctx.binary_product(a=y, b=z, base_name=f"fill_{route}_{name}")) for tiles, z, name in choices]
         if not held:

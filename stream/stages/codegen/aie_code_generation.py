@@ -308,6 +308,7 @@ class AIECodeGenerationStage(Stage):
             ss,
             cores_attrs,
             reuse_index,
+            self._buffers(node.outputs[0]),
         )
         # workload.global_mapping(node, node.operand_mapping[-1])
         # # Spatial: (m, 4), (n, 4)

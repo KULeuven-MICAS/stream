@@ -3,8 +3,9 @@ import os
 import shutil
 from dataclasses import replace
 
+from stream.hardware.ports import READ
 from stream.ir.infeasibility import InfeasibleAllocationError, save_infeasibility_report
-from stream.mapping.mapping import Mapping
+from stream.mapping.mapping import FusedGroup, Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import Workload
@@ -17,7 +18,7 @@ GROWTH_FACTORS = (2, 4)
 class TileSearchStage(Stage):
     """Let the optimizer choose each fused group's intra-core tile size."""
 
-    reads = ("workload", "mapping", "output_path")
+    reads = ("workload", "mapping", "output_path", "accelerator")
     optional_reads = ("tile_search",)
     writes = ("mapping", "output_path", "placement_alternatives", "placement_reserves")
     result_reads = ("allocation",)
@@ -47,7 +48,35 @@ class TileSearchStage(Stage):
                     new_groups = list(groups)
                     new_groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
                     seeds.append(((gi, ti), self.mapping.with_fused_groups(new_groups)))
+            if (staged := self._staged(group)) is not None:
+                new_groups = list(groups)
+                new_groups[gi] = staged
+                seeds.append(((gi, "staged"), self.mapping.with_fused_groups(new_groups)))
         return seeds
+
+    def _staged(self, group: FusedGroup) -> FusedGroup | None:
+        """``group`` with its innermost tile loop nested in a larger tile its memory tiles stage, wide enough that an
+        operand contiguous along it is read off chip in runs at the full rate; None where none is or none divides."""
+        if not group.intra_core_tiling:
+            return None
+        dim, tile = group.intra_core_tiling[0]
+        nodes = [n for n in self.workload.get_computation_nodes() if n.name in group.layers]
+        contiguous = [
+            t.operand_type.bitwidth
+            for n in nodes
+            for t in n.inputs
+            if (steps := self.workload.strides_for_tensor(t).get(dim)) and steps[-1] == 1
+        ]
+        span = max((m.full_rate_span(READ) for m in self.ctx.get("accelerator").bandwidth.values()), default=0.0)
+        if not contiguous or span <= 0:
+            return None
+        run = tile * max(contiguous) / 8
+        extent = self.workload.get_dimension_size(dim)
+        factor = next((f for f in range(2, extent // tile + 1) if (extent // tile) % f == 0 and run * f >= span), None)
+        if factor is None or factor * tile >= extent:
+            return None
+        tiling = (group.intra_core_tiling[0], (dim, tile * factor), *group.intra_core_tiling[1:])
+        return replace(group, intra_core_tiling=tiling)
 
     def run(self):
         if not self.enabled:
