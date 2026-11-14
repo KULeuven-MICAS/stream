@@ -177,7 +177,8 @@ class DecisionSpace:
                 tiles_factor *= Nl if relevancy else 1
                 self.reuse_levels[(t, i)] = reuse_factor
                 self.tiles_needed_levels[(t, i)] = tiles_factor
-                self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
+                moving = zip(relevancies[i + 1 :], sizes[i + 1 :], strict=True)
+                self.rotation_levels[(t, i)] = any(relevant and n > 1 for relevant, n in moving)
                 self.bds_needed_levels[(t, i)] = 4 if i == len(sizes) - 1 else tiles_factor
             if tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
@@ -430,9 +431,35 @@ class DecisionSpace:
         partial = any(item.reduce for (_, v, _), demand in hops if not v.offchip for item in demand)
         return self.partial_sum_element_bits(tensor) if partial else tensor.operand_type.bitwidth
 
-    def held_bits(self, t: Tensor, tile: Tensor) -> int:
-        """Bits of ``tile`` of ``t`` held, at :meth:`element_bits`."""
-        return tile.size_elements() * self.element_bits(t)
+    def held_bits(self, t: Tensor, tile: Tensor | None = None) -> int:
+        """Bits of ``tile`` (default all) of ``t`` held, at :meth:`element_bits`, or at its type where its kernel sums
+        into an accumulator of its own (:meth:`accumulator_bits`)."""
+        bits = t.operand_type.bitwidth if self.accumulator_bits(t) else self.element_bits(t)
+        return (t if tile is None else tile).size_elements() * bits
+
+    def accumulator_bits(self, t: Tensor, tile: Tensor | None = None) -> int:
+        """Bits of the buffer the kernel producing ``t`` declares it sums ``tile`` (default all) of it into, held once
+        in addition to the tiles of ``t`` it sends on; 0 where its kernel declares none."""
+        node = self.producers.get(t)
+        if node is None or (accumulator := self._accumulator(node)) is None:
+            return 0
+        return (t if tile is None else tile).size_elements() * ELEMENT_BITS[accumulator]
+
+    @cached_property
+    def kernel_states(self) -> frozenset[Tensor]:
+        """The recurrence states the computation nodes carry, each a buffer of its kernel's own."""
+        return frozenset(t for node in self.ssc_nodes for t in node.inputs if is_state_operand(node, t))
+
+    @cached_property
+    def kernel_scratch(self) -> dict[Memory, int]:
+        """Per memory, the bits of the scratch buffer the kernels running on its core keep there (``SCRATCH_BITS``),
+        one buffer a core whichever of its kernels makes it."""
+        found: dict[Memory, int] = {}
+        for node in self.ssc_nodes:
+            bits = getattr(self.mapping.get(node).kernel, "SCRATCH_BITS", 0)
+            for memory in the_one(self.placements(node, node.outputs[0]), node, "placements") if bits else ():
+                found[memory] = max(found.get(memory, 0), bits)
+        return found
 
     def partial_sum_factor(
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, leaving: bool, copies: CopySet | None = None
@@ -481,12 +508,17 @@ class DecisionSpace:
             and self.tiles_needed_levels[(t, stop)] == 1
         )
 
-    def resident_tiles(self, t: Tensor, stop: int, single: bool = False) -> int:
+    def resident_tiles(self, t: Tensor, stop: int, single: bool = False, staged: bool = False) -> int:
         """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``, held in one
-        buffer where ``single``."""
-        return buffer_count(
-            self.tiles_needed_levels[(t, stop)], bool(self.rotation_levels.get((t, stop))) and not single
+        buffer where ``single``; one of a kernel's state (:attr:`kernel_states`). A memory tile
+        (``staged``) holds the window as one block, so one it moves on takes two of them."""
+        if t in self.kernel_states:
+            return 1
+        tiles, double_buffered = (
+            self.tiles_needed_levels[(t, stop)],
+            bool(self.rotation_levels.get((t, stop))) and not single,
         )
+        return 2 * tiles if staged and double_buffered else buffer_count(tiles, double_buffered)
 
     def halo_bits(self, t: Tensor, stop: int) -> int:
         """Bits of halo the copy ``t`` holds on one core in addition to its resident tiles at reuse stop ``stop``."""
@@ -843,7 +875,7 @@ class DecisionSpace:
                     continue
                 bits = self.workload.get_tensor_single_core(held, node, self.mapping).size_bits()
                 sources = the_one(self.placements(node, held), node, "placements")
-                for consumer, read in self._reads_of(node):
+                for consumer, read in self._reads_of(node, chained=True):
                     targets = the_one(self.placements(consumer, read), consumer, "placements")
                     pairs = communicating_pairs(sources, targets)
                     found += [(one, other, state.handover * bits) for one, other in pairs]
@@ -900,13 +932,17 @@ class DecisionSpace:
             not cores.issuperset(self.cores(c)) for c, _ in self._reads_of(node)
         )
 
-    def _reads_of(self, node: ComputationNode) -> list[tuple[ComputationNode, Tensor]]:
-        """The computation nodes this one's output reaches, across the transfer between them, each with the tensor
-        it reads it as."""
+    def _reads_of(
+        self, node: ComputationNode | TransferNode, chained: bool = False
+    ) -> list[tuple[ComputationNode, Tensor]]:
+        """The computation nodes this one's output reaches, across the transfer between them, or with ``chained``
+        across every copy of a chain of them, each with the tensor it reads it as."""
         reached = []
         for succ in self.workload.successors(node):
             if isinstance(succ, ComputationNode):
                 reached.append((succ, next(t for t in succ.inputs if t in node.outputs)))
+            elif isinstance(succ, TransferNode) and chained:
+                reached += self._reads_of(succ, chained)
             elif isinstance(succ, TransferNode):
                 readers = (x for x in self.workload.successors(succ) if isinstance(x, ComputationNode))
                 reached += [(x, next(t for t in x.inputs if t in succ.outputs)) for x in readers]

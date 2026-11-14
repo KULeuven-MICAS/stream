@@ -75,6 +75,8 @@ from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
 SCALE_ROWS = 4
+INDEX_BITS = 3 * 32
+"""The block-index buffer of every core running a flash kernel (:func:`_index_buffer`)."""
 
 # The running scale, carried over the key block ``n`` and indexed by the query block ``m``.
 STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over="n", indexed_by="m", handover=2, element_type=f32)
@@ -432,6 +434,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     tiled_in: bool = False
     tiled_out: bool = False
     FALLBACK: ClassVar[Mapping[str, tuple[str, str | None]]] = {SNAPSHOT: (SNAPSHOT, SNAPSHOT_OBJECT)}
+    SCRATCH_BITS: ClassVar[int] = INDEX_BITS
 
     @property
     def function_name(self) -> str:
@@ -544,6 +547,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         **GemmKernel.FALLBACK,
         SNAPSHOT: (SNAPSHOT, SNAPSHOT_OBJECT),
     }
+    SCRATCH_BITS: ClassVar[int] = INDEX_BITS
 
     @property
     def function_name(self) -> str:
@@ -632,6 +636,7 @@ class FlashKernel(GemmKernel):
     """
 
     ACCUMULATOR: ClassVar[str | None] = "fp32"
+    SCRATCH_BITS: ClassVar[int] = INDEX_BITS
 
     @property
     def function_name(self) -> str:

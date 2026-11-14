@@ -100,7 +100,8 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
             tile = space.workload.get_tensor_single_core(t, node, space.mapping)
             whole = tile.size_bits() == t.size_bits()
             copies = 1 if whole else min(choice.count(memory) for choice in space.tensor_choices[t])
-            held[t] = (memory, max(0, ceil(copies * _min_resident_bits(space, t, space.held_bits(t, tile)) - share)))
+            least = _min_resident_bits(space, t, space.held_bits(t, tile), memory) + space.accumulator_bits(t, tile)
+            held[t] = (memory, max(0, ceil(copies * least - share)))
     pinned: dict[Memory, int] = defaultdict(int)
     for memory, bits in held.values():
         pinned[memory] += bits
@@ -145,7 +146,7 @@ class MemoryCapacity:
             carried = [x for x in node.inputs if is_state_operand(node, x)]
             for t in (*node.outputs, *carried):
                 tile = space.workload.get_tensor_single_core(t, node, space.mapping)
-                tensor_size = space.held_bits(t, tile)
+                tensor_size, accumulator = space.held_bits(t, tile), space.accumulator_bits(t, tile)
                 tile_dims, tile_dtype = _tile_shape(space, node, t, tile)
                 whole = tile.size_bits() == t.size_bits()
                 holders = (
@@ -156,11 +157,14 @@ class MemoryCapacity:
                 for memory, copies, u in holders:
                     name = f"{t.name}_{resource_key(memory)}" + ("" if whole else f"_x{copies}")
                     min_req: int | None = None
+                    staged = memory.kind == "memory"
                     for stop in space.stops(t):
                         halo = space.halo_bits(t, stop)
-                        req_size = copies * (ceil(space.resident_tiles(t, stop) * tensor_size) + halo)
+                        resident = space.resident_tiles(t, stop, staged=staged)
+                        req_size = copies * (ceil(resident * tensor_size) + halo + accumulator)
                         single = (t, stop) in z_single
-                        least = copies * (ceil(space.resident_tiles(t, stop, single) * tensor_size) + halo)
+                        resident = space.resident_tiles(t, stop, single, staged)
+                        least = copies * (ceil(resident * tensor_size) + halo + accumulator)
                         min_req = least if min_req is None else min(min_req, least)
                         uz = ctx.binary_product(
                             a=u,
@@ -190,6 +194,10 @@ class MemoryCapacity:
                 terms = ledger.terms[(MEMORY_CAPACITY, memory)]
                 handed = terms.get("handover", {}).get("value", 0) + bits / 8
                 terms["handover"] = {"value": handed, "dims": (), "dtype": ""}
+
+        for memory, bits in space.kernel_scratch.items():
+            load[memory] = load[memory] + bits
+            ledger.terms[(MEMORY_CAPACITY, memory)]["kernel scratch"] = {"value": bits / 8, "dims": (), "dtype": ""}
 
         for memory, expr in load.items():
             cap = space.memory_capacity_bits(memory)
@@ -284,10 +292,13 @@ def _holdings(ctx: FormulationContext, t: Tensor) -> list[tuple[Memory, int, Sol
     ]
 
 
-def _min_resident_bits(space: DecisionSpace, t: Tensor, tensor_size: int) -> int:
-    """The least this tensor can keep resident under any reuse-stop and buffering choice."""
+def _min_resident_bits(space: DecisionSpace, t: Tensor, tensor_size: int, memory: Memory) -> int:
+    """The least this tensor can keep resident in ``memory`` under any reuse-stop and buffering choice, with the halos
+    its sliding loops keep."""
+    staged = memory.kind == "memory"
     return min(
-        ceil(space.resident_tiles(t, stop, space.may_single_buffer(t, stop)) * tensor_size) + space.halo_bits(t, stop)
+        ceil(space.resident_tiles(t, stop, space.may_single_buffer(t, stop), staged) * tensor_size)
+        + space.halo_bits(t, stop)
         for stop in space.stops(t)
     )
 

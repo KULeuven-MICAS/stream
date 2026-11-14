@@ -127,6 +127,8 @@ class AIEKernel(ABC):
     ACCUMULATOR: ClassVar[str | None] = None
     """The format the kernel keeps a sum in across the calls adding into it, beside its output; None where it
     adds into the output itself."""
+    SCRATCH_BITS: ClassVar[int] = 0
+    """Bits of a buffer the binding keeps on each core the kernel runs on, beside its operands and its state."""
 
     @property
     def unique_name(self) -> str:

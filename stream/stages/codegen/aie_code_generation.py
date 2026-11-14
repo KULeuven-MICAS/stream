@@ -26,7 +26,6 @@ from stream.compiler.dialects.stream import (
     TransferOp,
     YieldOp,
 )
-from stream.compiler.fifo_depths import FifoDepths, TileBudget
 from stream.compiler.kernels.binding import Bindings
 from stream.compiler.transforms.aie_add_tracing_script import MAX_TRACED_TILES, AIEAddTracingScript
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
@@ -496,28 +495,6 @@ class AIECodeGenerationStage(Stage):
         descriptors = offchip.dma.buffer_descriptors
         return descriptors - 1 if self.trace_size else descriptors, offchip.dma.iterations
 
-    def _fifo_depths(self) -> FifoDepths | None:
-        """A depth policy funded by the capacity the solved allocation left unused on chip."""
-        allocation = self.ctx.get("allocation")
-        slack = allocation.solution.capacity_slack
-        if not slack:
-            return None
-        accelerator = allocation.problem.accelerator
-        budgets: dict[tuple[int, int], TileBudget] = {}
-        for memory in accelerator.memories.values():
-            free = slack.get(memory)
-            if memory.offchip or free is None:
-                continue
-            tile = memory.core
-            if tile.col_id is None or tile.row_id is None:
-                continue
-            slots = min(free.get("object_fifo_depth", float("inf")), free.get("buffer_descriptors", float("inf")))
-            budgets[(tile.col_id, tile.row_id)] = TileBudget(
-                bytes_free=free.get("memory_bytes", 0.0),
-                bds_free=0.0 if slots == float("inf") else slots,
-            )
-        return FifoDepths(budgets)
-
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
         assert workload is not None
@@ -562,9 +539,7 @@ class AIECodeGenerationStage(Stage):
         with open(output_path + "/with_for.mlir", "w") as f:
             f.write(str(module))
         descriptors, iterations = self._shim_limits()
-        AIEConvertOfs(
-            tiles, depths=self._fifo_depths(), shim_descriptors=descriptors, shim_iterations=iterations
-        ).apply(self.context, module)
+        AIEConvertOfs(tiles, shim_descriptors=descriptors, shim_iterations=iterations).apply(self.context, module)
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
