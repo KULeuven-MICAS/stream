@@ -47,6 +47,7 @@ from stream.compiler.dialects.stream import (
     ComputationNodeOp,
 )
 from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.compiler.transforms.aie_convert_ofs import RealizeLinks
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 
@@ -84,6 +85,37 @@ def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) ->
             resulting_strides.insert(0, stride)
 
     return resulting_sizes, resulting_strides
+
+
+def walk_held_object(
+    device: DeviceOp, fifo: ObjectFifoOp, sizes: Sequence[int], strides: Sequence[int]
+) -> tuple[list[int], list[int]]:
+    """Step a walk over one of ``fifo``'s objects across the whole object its tile forwards from.
+
+    A memory tile linking one fifo into ``fifo`` sends each object it holds in one descriptor,
+    so mlir-aie has the walk on ``fifo`` cover that object. Holding several of ``fifo``'s objects
+    back to back, the tile hands them out one after another: the walk gains an outer dimension
+    stepping from one to the next.
+    """
+    link = next(
+        (
+            op
+            for op in device.walk()
+            if isinstance(op, ObjectFifoLinkOp) and [ref.root_reference for ref in op.fifoOuts] == [fifo.sym_name]
+        ),
+        None,
+    )
+    if link is None or len(link.fifoIns) != 1:
+        return list(sizes), list(strides)
+    source = link.fifoIns.data[0].root_reference
+    held, handed = (RealizeLinks.object_elements(device, name) for name in (source, fifo.sym_name))
+    if held <= handed:
+        return list(sizes), list(strides)
+    if held % handed:
+        raise NotImplementedError(
+            f"@{source.data} holds {held} elements, not a whole number of @{fifo.sym_name.data}'s {handed}"
+        )
+    return canonicalize_transformation([held // handed, *sizes], [handed, *strides])
 
 
 @dataclass
@@ -293,11 +325,6 @@ class RealizeLayoutCasts(RewritePattern):
 
         transform_is_null = len(sizes) == 1 and strides == [1]
 
-        # create BDDimlayout
-        bd_layout = BDDimLayoutArrayAttr(
-            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=True)])
-        )
-
         # take last fifo in the chain (starting form memtile i)
         fifo = SymbolTable.lookup_symbol(device_op, of_name)
         assert isinstance(fifo, ObjectFifoOp)
@@ -313,7 +340,10 @@ class RealizeLayoutCasts(RewritePattern):
 
         # fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
         if not transform_is_null:
-            fifo.dimensionsToStream = bd_layout
+            sizes, strides = walk_held_object(device_op, fifo, sizes, strides)
+            fifo.dimensionsToStream = BDDimLayoutArrayAttr(
+                BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=True)])
+            )
 
         for acquires, layout in ((consumers, consumer_type), (producers, producer_type)):
             if layout is None:
