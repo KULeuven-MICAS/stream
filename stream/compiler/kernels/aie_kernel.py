@@ -135,19 +135,26 @@ class AIEKernel(ABC):
         return self.function_name
 
     @property
+    def library_name(self) -> str:
+        """The kernel library's entry for this kernel: its function, built as the library describes it."""
+        return self.function_name
+
+    @property
     def spec(self) -> KernelSpec:
         if self.library is None:
             raise ValueError(f"{type(self).__name__} needs a kernel library")
-        spec = self.library.spec(self.function_name)
+        spec = self.library.spec(self.library_name)
         if spec is None:
-            raise ValueError(f"the kernel library does not describe {self.function_name}")
+            raise ValueError(f"the kernel library does not describe {self.library_name}")
         return spec
 
     @property
     def mac(self) -> Mapping[str, int]:
+        """The MAC tile the kernel computes in, which is also the tiling it leaves an operand in."""
         if self.library is None:
             raise ValueError(f"{type(self).__name__} needs a kernel library")
-        return self.library.mac
+        spec = self.library.spec(self.library_name)
+        return spec.mac if spec is not None and spec.mac else self.library.mac
 
     def call_shape(self) -> dict[str, int]:
         return {d.name: int(getattr(self, d.name)) for d in self.spec.dims}
@@ -186,12 +193,17 @@ class AIEKernel(ABC):
         """What a call to ``call`` resolves to: the provider's binding, or stream's own declaration."""
         spec = self.spec
         if spec.binding is not None:
-            entry = {"binding": spec.binding, "args": {**dims, "npu": bindings.npu}}
+            args = {**dims, **spec.options, **self.binding_options(), "npu": bindings.npu}
+            entry = {"binding": spec.binding, "args": args}
             return bindings.resolve(entry if call == self.function_name else entry | {"companion": call})
         symbol, object_file = self.FALLBACK.get(call, (call, None))
         if (object_file := object_file or spec.object) is None:
             raise ValueError(f"the kernel library names neither a binding nor an object for {self.function_name}")
         return bindings.resolve({"symbol": symbol, "object": object_file})
+
+    def binding_options(self) -> dict[str, bool]:
+        """What the provider builds the kernel's object with besides the call's dimensions."""
+        return {}
 
     @property
     @abstractmethod

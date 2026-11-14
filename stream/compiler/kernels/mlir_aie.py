@@ -7,7 +7,7 @@ from typing import get_args
 
 import numpy as np
 from aie.iron import ExternalFunction
-from aie.iron.device import from_name
+from aie.iron.device import AIEArch, from_name
 from aie.iron.kernels import activation, eltwise, linalg
 from aie.utils import set_current_device
 from ml_dtypes import bfloat16
@@ -25,13 +25,17 @@ def _scale(rows: int) -> type[np.ndarray]:
     return _tile(SCALE_ROWS * rows, np.float32)
 
 
-def _target(npu: str) -> None:
-    set_current_device(from_name(npu, n_cols=None))
+def _target(npu: str) -> bool:
+    """Bind ``npu`` as the device the factories build for; whether it is AIE2P."""
+    device = from_name(npu, n_cols=None)
+    set_current_device(device)
+    return device.arch is AIEArch.AIE2p
 
 
-def mm(npu: str, m: int, k: int, n: int) -> linalg.MatrixKernel:
+def mm(npu: str, m: int, k: int, n: int, bfp16: bool = True) -> linalg.MatrixKernel:
+    """mm.cc as IRON's GEMM builds it, its multiplies in bfp16 when ``bfp16`` (``Precision.MEDIUM``), else bf16."""
     _target(npu)
-    return linalg.mm(m, k, n, bfloat16, bfloat16, emulate_bf16_mmul_with_bfp16=True, round_conv_even=True)
+    return linalg.mm(m, k, n, bfloat16, bfloat16, emulate_bf16_mmul_with_bfp16=bfp16, round_conv_even=True)
 
 
 def silu(npu: str, m: int, n: int) -> ExternalFunction:
@@ -82,23 +86,25 @@ class Entry(ExternalFunction):
         return Entry(copy, "passThroughLine", [self.scale, self.scale, np.int32], self.rows)
 
 
-def _mha(npu: str, m: int, k: int, n: int) -> linalg.MatrixKernel:
-    _target(npu)
-    return linalg.mha(dim_m=m, dim_k=k, dim_n=n, emulate_bf16_mmul_with_bfp16=True)
+def _mha(npu: str, m: int, head: int, keys: int, causal: bool, **kind) -> linalg.MatrixKernel:
+    """mha.cc at an m-query block of ``keys`` keys and a ``head``-wide head, its mask causal or none, built with the
+    flags IRON's attention builds it with: bf16 multiplies, K as stored, and on AIE2P the accurate exp2 in place of
+    the instruction, which is up to 6% high."""
+    aie2p = _target(npu)
+    return linalg.mha(dim_m=m, dim_k=head, dim_n=keys, b_col_maj=True, accurate_exp2=aie2p, causal=causal, **kind)
 
 
-def partial_softmax(npu: str, m: int, n: int) -> Entry:
-    """An online-softmax step over an m-query by n-key block; mha.cc sizes the block by its head, so n is both."""
+def partial_softmax(npu: str, m: int, n: int, causal: bool = True) -> Entry:
+    """An online-softmax step over an m-query by n-key block; it reads no head, so its object takes the key block's."""
     scores = _tile(m * n)
     return Entry(
-        _mha(npu, m, n, n), "partial_softmax", [scores, scores, _scale(m), INDEX, bfloat16, *[np.int32] * 4], m
+        _mha(npu, m, n, n, causal), "partial_softmax", [scores, scores, _scale(m), INDEX, bfloat16, *[np.int32] * 4], m
     )
 
 
-def matmul_pv(npu: str, m: int, k: int, n: int) -> Entry:
+def matmul_pv(npu: str, m: int, k: int, n: int, causal: bool = True) -> Entry:
     """``O += P V`` into a float accumulator, as mlir-aie declares it: P m queries by k keys, V k keys by n."""
-    _target(npu)
-    pv = linalg.mha(dim_m=m, dim_k=n, dim_n=k, pv=True, float_o=True, emulate_bf16_mmul_with_bfp16=True)
+    pv = _mha(npu, m, n, k, causal, pv=True, float_o=True)
     return Entry(pv, "matmul_PV", pv.arg_types(), m)
 
 

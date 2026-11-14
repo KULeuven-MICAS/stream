@@ -5,8 +5,12 @@ from stream.compiler.kernels.silu import SiluKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
 
-def gemm(*, flash: bool = False, causal: bool = False, **fields) -> GemmKernel:
-    return (FlashKernel if flash else CausalGemmKernel if causal else GemmKernel)(**fields)
+def gemm(*, flash: bool = False, **fields) -> GemmKernel:
+    """The value side of a flash step when ``flash``, causal unless told otherwise; else a GEMM, skipping the blocks
+    past the diagonal when ``causal``."""
+    if flash:
+        return FlashKernel(**fields)
+    return (CausalGemmKernel if fields.pop("causal", False) else GemmKernel)(**fields)
 
 
 AIE_KERNELS = {

@@ -22,9 +22,9 @@ LIBRARY = KernelLibrary.from_dict(
 @pytest.mark.parametrize(
     ("kernel", "ops"),
     [
-        (SimpleNamespace(library=LIBRARY, function_name="matmul_bf16_bf16"), 512),
-        (SimpleNamespace(library=LIBRARY, function_name="silu_bf16"), None),
-        (SimpleNamespace(library=None, function_name="matmul_bf16_bf16"), None),
+        (SimpleNamespace(library=LIBRARY, library_name="matmul_bf16_bf16", mac={"m": 8, "k": 8, "n": 8}), 512),
+        (SimpleNamespace(library=LIBRARY, library_name="silu_bf16"), None),
+        (SimpleNamespace(library=None, library_name="matmul_bf16_bf16"), None),
         (None, None),
     ],
 )
