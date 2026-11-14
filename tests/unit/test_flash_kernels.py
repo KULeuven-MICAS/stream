@@ -68,6 +68,7 @@ def _column(split, causal=True, rows=TILE, keys=TILE, head_split=False):
         EndOp,
         ObjectFifoAcquireOp,
         ObjectFifoPortEnum,
+        ObjectFIFOReleaseOp,
         TileOp,
     )
 
@@ -113,7 +114,8 @@ def _column(split, causal=True, rows=TILE, keys=TILE, head_split=False):
             at = StrensorSpaceAttr(StrensorSpace((*points, StrensorVar(StrensorVarType.POINT, half, head))))
         output = StrensorType(bf16, StrensorSpace(space + kernel_vars))
         node = ComputationNodeOp([a.results[0] for a in acquires], (output,), kernel_name, at)
-        return [*acquires, node]
+        release = ObjectFIFOReleaseOp(acquires[-1].port, IntegerAttr.from_int_and_width(1, 32), "operand")
+        return [*acquires, node, release]
 
     def core(row, body):
         """The node on its own tile, wrapped in the key loop and then the query loop."""

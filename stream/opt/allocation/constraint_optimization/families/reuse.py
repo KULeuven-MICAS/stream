@@ -28,16 +28,39 @@ class MemoryReuseEntry:
     mem_level: LinExpr
     compute_level: LinExpr
     unexpressible: tuple[tuple[SolverVar, SolverVar], ...]
+    replayed: tuple[tuple[SolverVar, SolverVar, SolverVar | None], ...]
+    """Each (memory stop, reader stop) pair at which the tile replays an object it refills, with the variable holding
+    that object in one buffer, None where it cannot be."""
 
 
-def replay_unexpressible_levels(relevancies: list[bool], read_levels: int) -> list[tuple[int, int]]:
-    """(memory stop, reader stop) level pairs no single whole-object replay realises."""
+def replayed_refilled_levels(sizes: list[int], relevancies: list[bool], read_levels: int) -> list[tuple[int, int]]:
+    """(memory stop, reader stop) level pairs at which a memory tile replays an object it refills: the reader re-reads
+    it over a loop of more than one trip the object does not index between the two stops, and a loop of more than one
+    trip outside the memory's stop moves the object on."""
+    pairs: list[tuple[int, int]] = []
+    for s_m in range(len(sizes)):
+        if all(n == 1 for n in sizes[s_m + 1 :]):
+            continue
+        for s_c in range(-1, min(s_m, read_levels)):
+            if any(not relevancies[i] and sizes[i] > 1 for i in range(s_c + 1, s_m + 1)):
+                pairs.append((s_m, s_c))
+    return pairs
+
+
+def replay_unexpressible_levels(
+    relevancies: list[bool], read_levels: int, distributed: bool = False
+) -> list[tuple[int, int]]:
+    """(memory stop, reader stop) level pairs no whole-object replay realises: a loop the reader re-reads on inside one
+    the held object spans, or, where the tile distributes its object over its readers in slices (``distributed``), a
+    refilled object holding several tiles per reader. The memory tile refills the object on each trip of the loops
+    outside its stop."""
     pairs: list[tuple[int, int]] = []
     for s_m in range(len(relevancies)):
         top_relevant = max((i for i in range(s_m + 1) if relevancies[i]), default=-1)
         for s_c in range(-1, min(s_m, read_levels)):
-            inside = any(not relevancies[i] and i < top_relevant for i in range(s_c + 1, s_m + 1))
-            if inside or s_m != len(relevancies) - 1:
+            window = range(s_c + 1, s_m + 1)
+            sliced = distributed and s_m != len(relevancies) - 1 and any(relevancies[i] for i in window)
+            if sliced or any(not relevancies[i] and i < top_relevant for i in window):
                 pairs.append((s_m, s_c))
     return pairs
 
@@ -76,6 +99,11 @@ FUSED_INTERMEDIATE = StructuralRule(
     "A fused group's intermediate is pinned on-chip and re-read rather than spilled to HBM (the AIE "
     "code-gen cannot stream partial results out and back), which fixes its reuse level across the fused loop.",
 )
+STAGING_BLOCK = StructuralRule(
+    "A memory tile holds its staging block",
+    "A dim tiled at nested sizes stages its larger tile in a memory tile, which holds the copy at least across the "
+    "loops over the smaller tiles within it.",
+)
 RESIDENT_OUTPUT = StructuralRule(
     "Output must stay resident",
     "An operator's output is pinned resident and reused in place (no partial spill to HBM), which fixes its reuse "
@@ -105,6 +133,11 @@ class ReuseLevels:
     def build(self, ctx: FormulationContext) -> None:
         for tr in ctx.space.transfer_nodes:
             _local_copy_sources_held(ctx, tr)
+        for t in ctx.space.tensors_to_optimize_reuse_for:
+            level, _ = ctx.space.staging_block(t)
+            if level >= 0:
+                loops = len(ctx.space.ssis[t].get_applicable_temporal_variables())
+                _held_from(ctx, t, level, loops, f"staging_block_{t.name}", STAGING_BLOCK)
         for tr in ctx.space.transfer_nodes:
             if tr.transfer_type not in (TransferType.COMPUTE_TO_COMPUTE):
                 continue
@@ -216,6 +249,7 @@ class ReuseCompatibility:
                         name=f"reuse_ge_output_{tr.name}",
                     )
                     unexpressible = _replay_unexpressible_pairs(ctx, input_tensor, output_tensor)
+                    replayed = _replayed_refilled_pairs(ctx, input_tensor, output_tensor)
                     memory_reuse.extend(
                         MemoryReuseEntry(
                             tr.name,
@@ -223,6 +257,7 @@ class ReuseCompatibility:
                             _reuse_level_expr(ctx, input_tensor),
                             _reuse_level_expr(ctx, output_tensor),
                             unexpressible,
+                            replayed,
                         )
                         for memory in namespace_memories
                     )
@@ -242,8 +277,31 @@ def _replay_unexpressible_pairs(
     ssis, z_stop = ctx.space.ssis, ctx.vars.z_stop
     relevancies = [v.relevant for v in ssis[staged].get_applicable_temporal_variables()]
     read_levels = len(ssis[read].get_applicable_temporal_variables())
-    levels = replay_unexpressible_levels(relevancies, read_levels)
+    levels = replay_unexpressible_levels(relevancies, read_levels, _distributes(ssis[staged], ssis[read]))
     return tuple((z_stop[(staged, s_m)], z_stop[(read, s_c)]) for s_m, s_c in levels)
+
+
+def _replayed_refilled_pairs(
+    ctx: FormulationContext, staged: Tensor, read: Tensor
+) -> tuple[tuple[SolverVar, SolverVar, SolverVar | None], ...]:
+    """The (staged, read) stop pairs at which the tile replays an object it refills, as their z_stop variables, with
+    the staged stop's single-buffer variable."""
+    ssis, z_stop, z_single = ctx.space.ssis, ctx.vars.z_stop, ctx.vars.z_single
+    loops = ssis[staged].get_applicable_temporal_variables()
+    read_levels = len(ssis[read].get_applicable_temporal_variables())
+    levels = replayed_refilled_levels([v.size for v in loops], [v.relevant for v in loops], read_levels)
+    return tuple((z_stop[(staged, s_m)], z_stop[(read, s_c)], z_single.get((staged, s_m))) for s_m, s_c in levels)
+
+
+def _distributes(staged: Any, read: Any) -> bool:
+    """Whether the readers split a loop their operand is indexed by that its memory tile holds in time, so each reads
+    its own slice of the held object."""
+    if len(staged.variables) != len(read.variables):
+        return False
+    return any(
+        r.type == IterationVariableType.SPATIAL and s.type != IterationVariableType.SPATIAL and r.relevant
+        for s, r in zip(staged.variables, read.variables, strict=True)
+    )
 
 
 class SpatialReuse:

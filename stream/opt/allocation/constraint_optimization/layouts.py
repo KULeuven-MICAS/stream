@@ -146,8 +146,16 @@ class CopyLayouts:
         )
 
     def block(self, tr: TransferNode) -> tuple[int, ...]:
-        """The tile ``tr`` moves per firing: the indices of its source's tile its readers read."""
-        return tuple(self.space.workload.strided_view(tr.inputs[0]).shape)
+        """The tile ``tr`` moves per firing: the indices of its source's tile its readers read, widened, into a memory
+        tile, along each axis of the block it stages there (:meth:`DecisionSpace.staging_block`), which its walk
+        streams as one."""
+        tile = list(self.space.workload.strided_view(tr.inputs[0]).shape)
+        _, trips = self.space.staging_block(tr.outputs[0])
+        strides = self.space.workload.strides_for_tensor(tr.inputs[0]) if trips else {}
+        for dim, factor in trips.items():
+            for axis, step in enumerate(strides.get(dim, ())):
+                tile[axis] *= factor if step else 1
+        return tuple(tile)
 
     def extent(self, copy: Tensor, full: tuple[int, ...]) -> tuple[int, ...]:
         """The buffer ``copy`` lives in: the whole tensor off chip, where a workload input or output is, else the tile

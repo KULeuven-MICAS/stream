@@ -226,8 +226,9 @@ class AllocationModel:
         return reuse_levels
 
     def get_single_buffered(self) -> set[Tensor]:
-        """The tensors whose moving window the solve holds in one buffer."""
-        return {t for (t, _), z in self.vars.z_single.items() if z.X > VAR_THRESHOLD}
+        """The tensors whose moving window the solve holds in one buffer, and the outputs summed in an accumulator."""
+        held = {t for (t, _), z in self.vars.z_single.items() if z.X > VAR_THRESHOLD}
+        return held | self.space.summed_outputs
 
     def get_transfer_routing(self) -> TransferAlloc:
         routing: TransferAlloc = {}

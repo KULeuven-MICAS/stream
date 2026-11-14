@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("snaxc", reason="the AIE kernels are a separate install, via stream-setup-aie")
 
 from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, bf16, f32, i32  # noqa: E402
-from xdsl.dialects.func import FuncOp  # noqa: E402
+from xdsl.dialects.func import CallOp, FuncOp  # noqa: E402
 from xdsl.ir import Block, Region  # noqa: E402
 from xdsl.ir.affine import AffineMap  # noqa: E402
 from xdsl.pattern_rewriter import PatternRewriteWalker  # noqa: E402
@@ -93,18 +93,22 @@ def test_a_kernel_without_a_library_says_so():
 def _gemms(library, *shapes):
     """A device with one GEMM per tile shape on cores of its own, rewritten the way codegen rewrites it."""
     consume = IntegerAttr.from_int_and_width(aie.ObjectFifoPortEnum.Consume.get_int(), 32)
+    produce = IntegerAttr.from_int_and_width(aie.ObjectFifoPortEnum.Produce.get_int(), 32)
     ops, kernels = [], {}
     for column, (m, k, n) in enumerate(shapes):
         gemm = AIE_KERNELS["gemm"](m=m, k=k, n=n, layout="default", library=library)
-        acquires = [aie.ObjectFifoAcquireOp(consume, 1, "operand", shape, bf16) for shape in ((m, k), (k, n), (m, n))]
+        acquires = [aie.ObjectFifoAcquireOp(consume, 1, "operand", shape, bf16) for shape in ((m, k), (k, n))]
+        tile, memory = aie.TileOp(column, 2), aie.TileOp(column, 1)
+        result = aie.ObjectFifoOp.from_referenced_type(tile, [memory], f"result_{column}", 2, bf16, (m, n))
+        acquires.append(aie.ObjectFifoAcquireOp(produce, 1, f"result_{column}", (m, n), bf16))
+        release = aie.ObjectFIFOReleaseOp(produce, IntegerAttr.from_int_and_width(1, 32), f"result_{column}")
         space = stream.StrensorSpace(
             tuple(stream.StrensorVar(stream.StrensorVarType.KERNEL, size, LayerDim(d)) for d, size in enumerate((m, n)))
         )
         node = stream.ComputationNodeOp(
             [a.results[0] for a in acquires], (stream.StrensorType(bf16, space),), gemm.unique_name
         )
-        tile = aie.TileOp(column, 2)
-        ops += [tile, aie.CoreOp(None, tile, Region(Block([*acquires, node, aie.EndOp()])))]
+        ops += [tile, memory, result, aie.CoreOp(None, tile, Region(Block([*acquires, node, release, aie.EndOp()])))]
         kernels[gemm.unique_name] = gemm
     device = aie.DeviceOp(
         IntegerAttr.from_int_and_width(aie.AIEDeviceEnum.npu2.get_int(), 32), Region(Block([*ops, aie.EndOp()]))
@@ -147,12 +151,14 @@ def test_a_kernel_no_provider_binds_is_declared_on_the_library_object():
 
 
 def test_two_gemm_tiles_in_one_design_link_two_objects():
-    """Each tile shape compiles an object of its own, so its symbols must be its own too."""
+    """Each tile shape compiles an object of its own, so its symbols must be its own too: its float sum's zeroing, the
+    GEMM and the cast of the sum to its output."""
     pytest.importorskip("aie.iron.kernels", reason="the library binds the GEMM through mlir-aie")
     device, _ = _gemms(SHIPPED, (32, 64, 32), (64, 64, 64))
     declared = _declarations(device)
-    assert len(declared) == 4 and len(set(declared.values())) == 4
-    assert sum(symbol.endswith("_matmul_bf16_bf16") for symbol in declared) == 2
+    assert len(declared) == 6 and len(set(declared.values())) == 6
+    assert sum(symbol.endswith("_matmul_bf16_f32") for symbol in declared) == 2
+    assert sum(symbol.endswith("_cast_f32_bf16_row") for symbol in declared) == 2
 
 
 def test_the_recorded_bindings_rebuild_the_objects_the_design_links(tmp_path):
@@ -176,3 +182,52 @@ def test_silu_binds_mlir_aies_lut_build_of_the_sized_entry_point():
     assert binding.name.endswith("_silu_bf16_size")
     assert binding.arg_types() == [tile, tile, np.int32]
     assert "-DACTIVATIONS_TANH_LUT=1" in binding.compile_flags
+
+
+def test_a_gemm_sums_its_k_tiles_in_float_and_casts_the_sum_into_its_output():
+    """As IRON's GEMMs do: the core zeroes a float tile of its own, adds each call into it, and only then acquires the
+    output, casts the sum into it and sends it on, so its side of the output fifo holds one tile."""
+    pytest.importorskip("aie.iron.kernels", reason="the library binds the GEMM through mlir-aie")
+    device, _ = _gemms(SHIPPED, (64, 64, 64))
+    (core,) = [op for op in device.walk() if isinstance(op, aie.CoreOp)]
+    steps = [
+        op.callee.string_value().rsplit("_", 3)[-1] if isinstance(op, CallOp) else op.name
+        for op in core.walk()
+        if isinstance(op, CallOp | aie.ObjectFIFOReleaseOp)
+    ]
+    assert steps == ["zero", "f32", "row", "aie.objectfifo.release"]
+    acquires = [op for op in core.walk() if isinstance(op, aie.ObjectFifoAcquireOp)]
+    acquired = [op for op in acquires if op.objFifo_name.string_value() == "result_0"]
+    (cast_call,) = [op for op in core.walk() if isinstance(op, CallOp) and op.callee.string_value().endswith("_row")]
+    assert [a.results[0] for a in acquired] == [cast_call.arguments[1]]
+    (result,) = [op for op in device.walk() if isinstance(op, aie.ObjectFifoOp)]
+    assert result.elemNumber.data[0].value.data == 1
+    (accumulator,) = [op for op in device.walk() if isinstance(op, aie.BufferOp)]
+    assert accumulator.buffer.type == MemRefType(f32, (64 * 64,))
+
+
+def test_the_output_tiles_a_core_picks_between_keep_their_kernel_layout():
+    """Eight output tiles held across a reduction, each cast to the kernel's tiled layout and picked by a switch: the
+    tile acquired to send a sum on is written in that layout too."""
+    from snaxc.dialects.snax import LayoutCast
+    from snaxc.dialects.tsl import TiledStridedLayoutAttr
+    from xdsl.dialects.builtin import DenseArrayBase, IntegerType
+    from xdsl.dialects.scf import IndexSwitchOp, YieldOp
+
+    from stream.compiler.kernels.aie_kernel import tiled_layout
+    from stream.compiler.kernels.gemm import _layout
+
+    produce = IntegerAttr.from_int_and_width(aie.ObjectFifoPortEnum.Produce.get_int(), 32)
+    acquire = aie.ObjectFifoAcquireOp(produce, 2, "result", (32, 32), bf16)
+    laid_out = MemRefType(bf16, (32, 32), layout=TiledStridedLayoutAttr(tiled_layout(32, 32, 8, 8)))
+    casts = [LayoutCast(result, laid_out) for result in acquire.results]
+    index = aie.TileOp(0, 2)
+    switch = IndexSwitchOp(
+        index.result,
+        DenseArrayBase.from_list(IntegerType(64), [0, 1]),
+        Region(Block([YieldOp(casts[0].dest)])),
+        [Region(Block([YieldOp(cast.dest)])) for cast in casts],
+        [laid_out],
+    )
+    assert _layout(switch.results[0]) == laid_out
+    assert _layout(acquire.results[0]) is None

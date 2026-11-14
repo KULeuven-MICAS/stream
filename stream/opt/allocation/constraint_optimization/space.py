@@ -438,12 +438,24 @@ class DecisionSpace:
         return (t if tile is None else tile).size_elements() * bits
 
     def accumulator_bits(self, t: Tensor, tile: Tensor | None = None) -> int:
-        """Bits of the buffer the kernel producing ``t`` declares it sums ``tile`` (default all) of it into, held once
-        in addition to the tiles of ``t`` it sends on; 0 where its kernel declares none."""
+        """Bits of the buffer the kernel producing ``t`` declares it sums ``tile`` (default all) of it into, held beside
+        the tiles of ``t`` it sends on, one per tile it sums at once (:meth:`summed_tiles`); 0 where its kernel declares
+        none."""
         node = self.producers.get(t)
         if node is None or (accumulator := self._accumulator(node)) is None:
             return 0
         return (t if tile is None else tile).size_elements() * ELEMENT_BITS[accumulator]
+
+    @cached_property
+    def summed_outputs(self) -> frozenset[Tensor]:
+        """The outputs whose kernel sums them in accumulators of its own and sends each tile on once its sum is done,
+        through one buffer, while the next sum runs in the accumulators."""
+        return frozenset(t for node in self.ssc_nodes for t in node.outputs if self.accumulator_bits(t))
+
+    def summed_tiles(self, t: Tensor, stop: int) -> int:
+        """Tiles of ``t`` its producer sums at once held to ``stop``: those its window spans, one where it holds a
+        single tile."""
+        return self.tiles_needed_levels[(t, stop)] if stop >= 0 else 1
 
     @cached_property
     def kernel_states(self) -> frozenset[Tensor]:
@@ -497,22 +509,41 @@ class DecisionSpace:
         return {tr.outputs[0] for tr in self.transfer_nodes if len(set(self.workload.successors(tr))) == 1}
 
     def may_single_buffer(self, t: Tensor, stop: int) -> bool:
-        """Whether a tensor a transfer moves to one reader may hold its one-tile window at ``stop`` in
-        a single buffer where an outer loop moves it on: the next window then waits for the last
-        read of this one."""
+        """Whether a tensor a transfer moves to one reader may hold its window at ``stop`` in a single
+        buffer where an outer loop moves it on, a one-tile window or one a memory tile holds whole:
+        the next window then waits for the last read of this one."""
         return (
             stop >= 0
             and t in self.tensors_to_optimize_reuse_for
             and t in self.sole_outputs
             and self.rotation_levels[(t, stop)]
-            and self.tiles_needed_levels[(t, stop)] == 1
+            and (self.tiles_needed_levels[(t, stop)] == 1 or self.staged_whole(t))
         )
+
+    def staged_whole(self, t: Tensor) -> bool:
+        """Whether ``t`` sits only in memory tiles, which hold each window as one object of all its tiles."""
+        return all(memory.kind == "memory" for memory in self.candidate_memories(t))
+
+    def staging_block(self, t: Tensor) -> tuple[int, dict[LayerDim, int]]:
+        """The block a memory tile stages of ``t``: its innermost loops that tile a dim within a larger tile of the
+        same dim, as the level up to which it holds ``t`` and their trips per dim; ``(-1, {})`` for none."""
+        if not self.staged_whole(t):
+            return -1, {}
+        loops = self.ssis[t].get_applicable_temporal_variables()
+        level, trips = -1, {}
+        for i, loop in enumerate(loops):
+            if not any(outer.dimension == loop.dimension for outer in loops[i + 1 :]):
+                break
+            level, trips[loop.dimension] = i, trips.get(loop.dimension, 1) * loop.size
+        return level, trips
 
     def resident_tiles(self, t: Tensor, stop: int, single: bool = False, staged: bool = False) -> int:
         """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``, held in one
         buffer where ``single``; one of a kernel's state (:attr:`kernel_states`). A memory tile
         (``staged``) holds the window as one block, so one it moves on takes two of them."""
         if t in self.kernel_states:
+            return 1
+        if t in self.summed_outputs:
             return 1
         tiles, double_buffered = (
             self.tiles_needed_levels[(t, stop)],

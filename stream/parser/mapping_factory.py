@@ -189,10 +189,12 @@ class MappingFactory:
         return tuple(dim for dim, _ in tiling if dim in runtime and dim not in compiled)
 
     def _intra_core_tiling(self, entries: list[dict[str, Any]]) -> tuple[tuple[LayerDim, int], ...]:
-        """The fused group's tiling over unique dims; entries that name one fused axis must tile it alike."""
+        """The fused group's tiling over unique dims; entries that name one fused axis tile it alike, but for one node
+        dim named at nested sizes, a loop over the next smaller tile each."""
         tiling = [(*self._convert_intra_core_tiling_entry(entry), entry) for entry in entries]
         for (dim, tile, entry), (other_dim, other_tile, other) in combinations(tiling, 2):
-            if dim == other_dim and tile != other_tile:
+            nested = entry["dim"] == other["dim"] and max(tile, other_tile) % min(tile, other_tile) == 0
+            if dim == other_dim and tile != other_tile and not nested:
                 raise ValueError(
                     f"Tiles {entry['tile']} of {entry['dim']} and {other['tile']} of {other['dim']} cut one fused axis "
                     "differently."
