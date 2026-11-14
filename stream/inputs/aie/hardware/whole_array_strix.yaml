@@ -83,13 +83,14 @@ core_coordinates:
   45: [7, 3]
   46: [7, 4]
   47: [7, 5]
-bandwidth:
+bandwidth:  # bits per cycle at 1.8 GHz, from scripts/benchmark/shim_ddr_bandwidth.py --derive
   dram:
-    ceiling: 296.6
-    contiguous: 148.3
+    ceiling: 260.1  # reads and writes together, long runs, the median over 4 to 32 channels
+    contiguous: 177.7  # one direction, long runs on 8 or more channels; 1 KB runs and longer reach it
     strided:
-      read: {32: 19.0, 64: 35.2, 128: 53.5, 256: 57.2, 512: 93.5}
-      write: {32: 17.1, 64: 28.3, 128: 53.2, 256: 54.2, 512: 93.5}
+      # runs apart at an 8 KB pitch, the faster of 8 and 16 channels
+      read: {32: 14.0, 64: 28.8, 128: 56.4, 256: 69.8, 512: 135.2}
+      write: {32: 14.6, 64: 29.0, 128: 53.9, 256: 59.1, 512: 116.1}
 reconfiguration:  # a dispatch of SwiGLU's five designs from IRON costs 1.0-1.3 ms over its groups
   cycles_per_column: 40000
   reset_cycles: 63000
