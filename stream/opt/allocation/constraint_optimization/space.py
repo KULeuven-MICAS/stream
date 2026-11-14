@@ -321,10 +321,19 @@ class DecisionSpace:
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, leaving: bool, copies: CopySet | None = None
     ) -> float:
         """The share of the delivered bits of ``tr``, or of those delivered to exactly ``copies``, ``memory`` sends or
-        receives on ``choice``, its partial sums at the accumulator precision."""
-        return choice.memory_share(memory, leaving, copies) * self.partial_sum_factor(
+        receives on ``choice``, its partial sums at the accumulator precision, with the reads and writes of the partial
+        sums added into it."""
+        share = choice.memory_share(memory, leaving, copies) * self.partial_sum_factor(
             tr, choice, memory, leaving, copies
         )
+        if memory not in choice.sum_memories():
+            return share
+        links = (*choice.links_at(memory, leaving=True), *choice.links_at(memory, leaving=False))
+        share += choice.local_sum_share(memory, links, copies) * self.partial_sum_ratio.get(tr, 1.0)
+        if not leaving:
+            return share
+        added = choice.sum_read_share(memory, choice.links_at(memory, leaving=False), copies)
+        return share + added * self.partial_sum_factor(tr, choice, memory, False, copies)
 
     @cached_property
     def sole_outputs(self) -> set[Tensor]:
@@ -471,14 +480,27 @@ class DecisionSpace:
         self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str, copies: CopySet | None = None
     ) -> dict[Port, float]:
         """The ports of ``memory`` that ``tr``'s operand passes in ``direction`` on route ``choice``, each with the
-        share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`). Empty when the route moves no
-        bits through a port of ``memory``. A target passing data on reads it in the role it holds it in."""
+        share of the transfer's bits it carries (:meth:`MulticastPathPlan.share_at`), with the reads and writes of the
+        partial sums added into it. Empty when the route moves no bits through a port of ``memory``. A target passing
+        data on reads it in the role it holds it in."""
         leaving = direction == READ
         role = self.operand_role(tr, read_side=leaving and memory in choice.sources)
         by_port = self.accelerator.ports.memory_ports(memory, direction, role, choice.links_at(memory, leaving))
         widening = self.partial_sum_factor(tr, choice, memory, leaving, copies)
-        shares = {port: choice.share_at(memory, leaving, port_links, copies) for port, port_links in by_port.items()}
-        return {port: share * widening for port, share in shares.items() if share}
+        shares = {
+            port: choice.share_at(memory, leaving, port_links, copies) * widening
+            for port, port_links in by_port.items()
+        }
+        if memory in choice.sum_memories():
+            ratio = self.partial_sum_ratio.get(tr, 1.0)
+            links = (*choice.links_at(memory, leaving=True), *choice.links_at(memory, leaving=False))
+            for port, port_links in self.accelerator.ports.memory_ports(memory, direction, role, links).items():
+                shares[port] = shares.get(port, 0.0) + choice.local_sum_share(memory, port_links, copies) * ratio
+            arriving = choice.links_at(memory, leaving=False) if leaving else ()
+            received = self.partial_sum_factor(tr, choice, memory, False, copies)
+            for port, port_links in self.accelerator.ports.memory_ports(memory, READ, role, arriving).items():
+                shares[port] = shares.get(port, 0.0) + choice.sum_read_share(memory, port_links, copies) * received
+        return {port: share for port, share in shares.items() if share}
 
     def side_port(self, tr: TransferNode, choice: MulticastPathPlan, memory: Memory, direction: str) -> Port | None:
         """Of :meth:`side_ports`, the one carrying the most of the side's bits; None where none is."""

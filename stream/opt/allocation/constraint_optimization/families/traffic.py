@@ -65,7 +65,8 @@ class NodeTraffic:
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any, copies: CopySet | None = None) -> list[PortShare]:
     """The share of the transfer's bits each port of each memory on route ``choice`` passes, as
     :meth:`DecisionSpace.side_ports` gives it. A target passing data on reads what it holds of it, unless its cores'
-    switch copies the data onto the links unread."""
+    switch copies the data onto the links unread. A memory a partial sum is added into is read and written for each add;
+    the add itself is not costed."""
     space = ctx.space
     sides: list[PortShare] = []
     runs = dict(zip((READ, WRITE), space.layouts.runs(tr, choice), strict=True))
@@ -76,7 +77,8 @@ def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any, copies: CopyS
         and choice.links_at(memory, leaving=True)
         and not space.hardware.circuit_switched(memory.cores)
     )
-    for memories, direction in ((choice.sources + relays, READ), (choice.targets, WRITE)):
+    summed_in = choice.sum_memories()
+    for memories, direction in ((choice.sources + relays + summed_in, READ), (choice.targets + summed_in, WRITE)):
         for memory in dict.fromkeys(memories):
             for port, share in space.side_ports(tr, choice, memory, direction, copies).items():
                 efficiency = port.bandwidth.efficiency(runs[direction], direction)

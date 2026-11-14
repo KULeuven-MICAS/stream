@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import onnx
 import pytest
@@ -13,14 +14,18 @@ import yaml
 from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.hardware.ports import READ, WRITE
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetPattern,
     ResNetSubgraphConfig,
     make_resnet_subgraph,
 )
+from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.mapping.capacity_tiler import CapacityTiler
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.opt.allocation.constraint_optimization.families.offchip import duplicate_offchip_bits
+from stream.opt.allocation.constraint_optimization.families.traffic import _sides
 from stream.opt.allocation.constraint_optimization.utils import active_fraction
 from stream.stages.context import StageContext
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
@@ -291,3 +296,62 @@ def test_the_key_projection_sits_out_the_query_tiles(tmp_path):
         (loop,) = problem.ssis[nodes[name]].get_temporal_variables()
         assert (loop.dimension, loop.effect) == (queries.dimension, LoopEffect.ABSENT)
         assert active_fraction(nodes[name], problem.ssis) == 0.5
+
+
+@pytest.fixture(scope="module")
+def tensor_parallel_swiglu():
+    """A 256 x 2048 x 8192 SwiGLU on the TensorCores, fused in 16-token, 128-wide and 32-hidden tiles: its down
+    projection's 16 x 128 output tile is summed over the four VMEMs and reduce-scattered, a quarter to each."""
+    tiling = [
+        {"dim": "Gemm_Left.D1", "tile": 128},
+        {"dim": "Gemm_Down.D2", "tile": 128},
+        {"dim": "Gemm_Left.D2", "tile": 32},
+        {"dim": "Gemm_Left.D0", "tile": 16},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        workload = make_small_swiglu_workload(seq_len=256, embedding_dim=2048, hidden_dim=8192, output_dir=tmp)
+        options = SolveOptions(artifacts=False, stage_options={"intra_core_tiling": tiling})
+        return evaluate_mapping(TPU_V7, workload, tmp, options=options).context.get("allocation")
+
+
+def _route(allocation, name: str):
+    tr = next(tr for tr in allocation.solution.transfer_routes if tr.name == name)
+    return tr, allocation.solution.transfer_routes[tr]
+
+
+def test_each_vmem_writes_every_partial_sum_it_receives_and_reads_those_it_adds_and_sends(tensor_parallel_swiglu):
+    """The VMEMs link as a path 0-1-3-2 and each gathers a quarter of the 16 x 128 sum, 512 fp32 partial sums of
+    16384 bits. Each VMEM adds its two TensorCores' partial sums per quarter, 65536 bits read and written. vmem_0
+    receives one quarter (16384 written, 16384 read to add it) and sends three (49152 read): 81920 written, 131072
+    read. vmem_1 receives five and sends three on: 147456 written, 196608 read. The ports and the estimate agree."""
+    space = tensor_parallel_swiglu.space
+    tr, route = _route(tensor_parallel_swiglu, "Transfer(output_1)")
+    moved = space.moved_bits(tr, route)
+    charged: dict[tuple[str, str], float] = {}
+    for side in _sides(SimpleNamespace(space=space), tr, route):
+        key = (side.port.key.memory, side.direction)
+        charged[key] = charged.get(key, 0.0) + side.share * moved
+    expected = {
+        "vmem_0": (81920, 131072),
+        "vmem_1": (147456, 196608),
+        "vmem_2": (81920, 131072),
+        "vmem_3": (147456, 196608),
+    }
+    for memory in dict.fromkeys(route.targets):
+        estimated = tuple(space.memory_share(tr, route, memory, leaving) * moved for leaving in (False, True))
+        ported = (charged[(memory.name, WRITE)], charged[(memory.name, READ)])
+        assert estimated == pytest.approx(expected[memory.name]), memory.name
+        assert ported == pytest.approx(expected[memory.name]), memory.name
+
+
+def test_the_off_chip_traffic_counts_a_copy_per_link_a_multicast_leaves_hbm_on(tensor_parallel_swiglu):
+    """A 16 x 128 bf16 input tile, 32768 bits, read by all four VMEMs: over the four HBM links at once HBM sends a copy
+    on each, 3 x 32768 = 98304 bits beyond once; on the other routes it sends it once, as the solve chooses."""
+    space = tensor_parallel_swiglu.space
+    tr, chosen = _route(tensor_parallel_swiglu, "Transfer(input)")
+    repeated = {route: duplicate_offchip_bits(space, tr, route, None) for route in space.path_choices[tr]}
+    direct = [route for route in repeated if len(set(route.targets)) == 4 and len(route.hops) == 4]
+    per_link = [route for route in direct if all(u.offchip for u, _, _ in route.hops)]
+    assert len(per_link) == 1
+    assert {route: bits for route, bits in repeated.items() if bits} == {per_link[0]: 3 * 32768}
+    assert repeated[chosen] == 0

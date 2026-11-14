@@ -167,7 +167,10 @@ def test_a_target_passing_data_on_reads_it_unless_its_switch_copies_it(switched,
     for memory, tag in zip(memories, ("source", "relay", "target"), strict=True):
         memory.tag = tag
     choice = SimpleNamespace(
-        sources=(source,), targets=(relay, target), links_at=lambda memory, leaving: (memory is relay) == leaving
+        sources=(source,),
+        targets=(relay, target),
+        links_at=lambda memory, leaving: (memory is relay) == leaving,
+        sum_memories=lambda: (),
     )
     ctx = MagicMock()
     ctx.space.layouts.runs.return_value = (None, None)
