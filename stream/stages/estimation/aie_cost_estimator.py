@@ -45,7 +45,7 @@ class AIECostEstimator:
     @staticmethod
     def _kernel_cycles(kernel, macs: int) -> tuple[int | None, dict]:
         """Cycles for ``macs`` operations of this kernel, from its measured call or its family rate."""
-        if kernel is None or kernel.library is None or kernel.library.spec(kernel.function_name) is None:
+        if kernel is None or kernel.library is None or kernel.library.spec(kernel.library_name) is None:
             return None, {}
         spec = kernel.spec
         if measured := spec.call_cycles(kernel.call_shape()):
@@ -57,10 +57,10 @@ class AIECostEstimator:
     @staticmethod
     def _mac_unit_ops(kernel) -> int | None:
         """MACs per cycle of the matmul unit a matmul kernel runs on: the library's MAC tile, one issued per cycle."""
-        if kernel is None or kernel.library is None or (spec := kernel.library.spec(kernel.function_name)) is None:
+        if kernel is None or kernel.library is None or (spec := kernel.library.spec(kernel.library_name)) is None:
             return None
         family = kernel.library.families[spec.family]
-        return prod(family.mac.values()) if spec.family == "matmul" and family.mac else None
+        return prod(kernel.mac.values()) if spec.family == "matmul" and (spec.mac or family.mac) else None
 
     def _steps(self, node: ComputationNode) -> int:
         return split_steps(self.workload, self.mapping, node, self.fusion_splits)

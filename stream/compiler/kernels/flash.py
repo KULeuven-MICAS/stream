@@ -388,11 +388,12 @@ def _store_index(buffer: SSAValue, key: SSAValue, query: SSAValue) -> list[Opera
 class CausalGemmKernel(GemmKernel):
     """A GEMM over the score matrix that leaves out the blocks a causal mask would zero.
 
-    Both kernels behind it return before doing anything when the key block sits past the
-    query block, so the scores of such a block are written and never read: the score GEMM
-    is the one stage of the step that a mask inside the kernels cannot skip. The same test
-    around the call skips it here, while the zeroing before it stays unconditional, which
-    is what leaves the block defined whichever way the test goes.
+    Both kernels behind it return before doing anything when the key block's first key sits
+    past the query block's last row, so the scores of such a block are written and never
+    read: the score GEMM is the one stage of the step that a mask inside the kernels cannot
+    skip. The same test around the call skips it here, in positions, since the two blocks
+    need not be the same size, while the zeroing before it stays unconditional, which is
+    what leaves the block defined whichever way the test goes.
     """
 
     @property
@@ -412,7 +413,13 @@ class CausalGemmKernel(GemmKernel):
         return [
             *key_ops,
             *query_ops,
-            attends := CmpiOp(key_block, query_block, "sle"),
+            keys := ConstantOp.from_int_and_width(self.n, i32),
+            first_key := MuliOp(key_block, keys),
+            rows := ConstantOp.from_int_and_width(self.m, i32),
+            first_row := MuliOp(query_block, rows),
+            span := ConstantOp.from_int_and_width(self.m - 1, i32),
+            last_row := AddiOp(first_row, span),
+            attends := CmpiOp(first_key, last_row, "sle"),
             IfOp(attends, [], Region(Block([*GemmKernel.function_call(self, op), YieldOp()]))),
         ]
 
@@ -426,8 +433,10 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     running maximum and sum carry across the blocks in the scale buffer instead of
     finishing inside one call. Masking is the kernel's own business: it reads the block
     indices and drops everything a query may not attend, which is why this kernel takes
-    no separate causal entry point.
+    no separate causal entry point: ``causal`` says which mask the kernel is built with.
     """
+
+    causal: bool = True
 
     # Which side of the step arrives or leaves in the tiling a GEMM works in. Neither is
     # the plain kernel; either one takes the mode-selectable entry point.
@@ -443,6 +452,9 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{int(self.tiled_in)}{int(self.tiled_out)}_{self.m}_{self.n}"
+
+    def binding_options(self) -> dict[str, bool]:
+        return {"causal": self.causal}
 
     @property
     def mode(self) -> int:
@@ -632,11 +644,25 @@ class FlashKernel(GemmKernel):
     block after the first, and divided by the final row sum after the last one. The key
     is the contraction, so the context stays on the compute tile across the key loop by
     the same reuse the backend already gives a GEMM's output. It accumulates in a float
-    buffer of the core's own, which the closing rescale writes into the output.
+    buffer of the core's own, which the closing rescale writes into the output. ``causal``
+    is the mask the kernel is built with, which skips the blocks the softmax beside it skips.
     """
 
     ACCUMULATOR: ClassVar[str | None] = "fp32"
     SCRATCH_BITS: ClassVar[int] = INDEX_BITS
+    causal: bool = True
+    precision: str = "high"
+
+    def __post_init__(self) -> None:
+        if self.precision != "high":
+            raise ValueError(f"matmul_PV multiplies in bf16 (precision 'high'), not {self.precision!r}")
+
+    @property
+    def library_name(self) -> str:
+        return self.function_name
+
+    def binding_options(self) -> dict[str, bool]:
+        return {"causal": self.causal}
 
     @property
     def function_name(self) -> str:

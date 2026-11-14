@@ -13,7 +13,7 @@ import yaml
 
 FAMILIES = ("matmul", "vector")
 _FAMILY_KEYS = {"ops_per_cycle", "mac"}
-_KERNEL_KEYS = {"family", "binding", "object", "dims", "cycles", "per_op"}
+_KERNEL_KEYS = {"family", "binding", "object", "dims", "cycles", "per_op", "mac", "options"}
 _DIM_KEYS = {"name", "runtime", "fixed", "blocks", "divisor", "keep_whole"}
 
 
@@ -49,6 +49,10 @@ class KernelSpec:
     object: str | None = None
     cycles: tuple[tuple[Mapping[str, int], float], ...] = ()
     per_op: tuple[float, int] | None = None
+    mac: Mapping[str, int] | None = None
+    """The kernel's own MAC tile, where it differs from its family's."""
+    options: Mapping[str, Any] = field(default_factory=dict)
+    """What the binding builds this entry with besides the call's dimensions."""
 
     def dim(self, name: str) -> CallDim | None:
         return next((d for d in self.dims if d.name == name), None)
@@ -131,6 +135,7 @@ def _kernel(symbol: str, entry: Mapping[str, Any], families: Mapping[str, Family
             raise ValueError(f"{symbol}: cycles name dimensions it does not declare: {sorted(unknown)}")
         cycles.append((shape, float(row["cycles"])))
     per_op = entry.get("per_op")
+    mac = entry.get("mac")
     return KernelSpec(
         symbol=symbol,
         family=entry["family"],
@@ -139,4 +144,6 @@ def _kernel(symbol: str, entry: Mapping[str, Any], families: Mapping[str, Family
         object=entry.get("object"),
         cycles=tuple(cycles),
         per_op=(float(per_op["cycles"]), int(per_op["ops"])) if per_op else None,
+        mac={k: int(v) for k, v in mac.items()} if mac else None,
+        options=dict(entry.get("options", {})),
     )

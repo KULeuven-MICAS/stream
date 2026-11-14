@@ -18,10 +18,18 @@ class GemmKernel(AIEKernelWithZeroing):
     k: int
     n: int
     layout: str
+    precision: str = "medium"
+    """How the multiplies round, as IRON's ``Precision`` names it: ``medium`` takes A and B to bfp16 where the device
+    has bfp16 MACs, ``high`` multiplies in bf16. Each is its own library entry, which says how its object is built,
+    its MAC tile and its cycles; ``medium`` is the plain one."""
 
     @property
     def unique_name(self) -> str:
-        return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
+        return f"{self.library_name}_{self.m}_{self.k}_{self.n}"
+
+    @property
+    def library_name(self) -> str:
+        return self.function_name if self.precision == "medium" else f"{self.function_name}_{self.precision}"
 
     @property
     def function_name(self) -> str:

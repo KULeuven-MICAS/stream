@@ -31,16 +31,23 @@ def column():
     Score GEMM, online softmax and value GEMM on three neighbouring tiles, each in the
     query loop over the key loop the blocked design nests them in.
     """
-    return _column(split=True)
+    return _column(split=True)[0]
 
 
 @pytest.fixture(scope="module")
 def unsplit():
     """The same column where one query block is all there is, so no core splits it."""
-    return _column(split=False)
+    return _column(split=False)[0]
 
 
-def _column(split):
+@pytest.fixture(scope="module")
+def full():
+    """The column of an attention without a mask, and the bindings its calls resolved to."""
+    return _column(split=True, causal=False)
+
+
+def _column(split, causal=True, rows=TILE, keys=TILE):
+    """The column at ``rows`` queries by ``keys`` keys a block, its head ``TILE`` wide."""
     from xdsl.dialects.arith import ConstantOp
     from xdsl.dialects.builtin import IndexType, IntegerAttr, ModuleOp, bf16
     from xdsl.dialects.scf import ForOp, YieldOp
@@ -66,7 +73,7 @@ def _column(split):
         StrensorVarType,
     )
     from stream.compiler.kernels.binding import Bindings
-    from stream.compiler.kernels.flash import CausalGemmKernel, FlashKernel, PartialSoftmaxKernel
+    from stream.compiler.kernels.registry import AIE_KERNELS
     from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
     from stream.datatypes import LayerDim
 
@@ -78,19 +85,19 @@ def _column(split):
     points = (StrensorVar(StrensorVarType.POINT, 0, query),) if split else ()
     position = StrensorSpaceAttr(StrensorSpace(points))
 
-    def node(kernel_name, operands, kernel_dims):
+    def node(kernel_name, shapes, kernel_dims):
         """One computation node, its operands taken from fifos the way codegen leaves them."""
         acquires = [
             ObjectFifoAcquireOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),
                 1,
                 "operand",
-                (TILE, TILE),
+                shape,
                 bf16,
             )
-            for _ in range(operands)
+            for shape in shapes
         ]
-        kernel_vars = tuple(StrensorVar(StrensorVarType.KERNEL, TILE, dim) for dim in kernel_dims)
+        kernel_vars = tuple(StrensorVar(StrensorVarType.KERNEL, size, dim) for dim, size in kernel_dims)
         output = StrensorType(bf16, StrensorSpace(outer + kernel_vars))
         node = ComputationNodeOp([a.results[0] for a in acquires], (output,), kernel_name, position)
         return [*acquires, node]
@@ -106,25 +113,24 @@ def _column(split):
         tile = TileOp(0, row)
         return [tile, CoreOp(None, tile, Region(Block([*ops, EndOp()])))]
 
-    scores = CausalGemmKernel(m=TILE, k=TILE, n=TILE, layout="default", library=LIBRARY)
-    softmax = PartialSoftmaxKernel(m=TILE, n=TILE, layout="contiguous", library=LIBRARY)
-    context = FlashKernel(m=TILE, k=TILE, n=TILE, layout="default", library=LIBRARY)
+    flags = {"layout": "default", "causal": causal, "library": LIBRARY}
+    scores = AIE_KERNELS["gemm"](m=rows, k=TILE, n=keys, **flags)
+    softmax = AIE_KERNELS["partial_softmax"](m=rows, n=keys, layout="contiguous", causal=causal, library=LIBRARY)
+    context = AIE_KERNELS["gemm"](m=rows, k=keys, n=TILE, flash=True, **flags)
+    score_side, value_side = ((query, rows), (key, keys)), ((query, rows), (head, TILE))
+    nodes = [
+        node(scores.unique_name, [(rows, TILE), (TILE, keys), (rows, keys)], score_side),
+        node(softmax.unique_name, [(rows, keys)] * 2, score_side),
+        node(context.unique_name, [(rows, keys), (keys, TILE), (rows, TILE)], value_side),
+    ]
+    tiles = [op for row, body in enumerate(nodes) for op in core(row, body)]
     device = DeviceOp(
-        IntegerAttr.from_int_and_width(AIEDeviceEnum.npu2.get_int(), 32),
-        Region(
-            Block(
-                [
-                    *core(0, node(scores.unique_name, 3, (query, key))),
-                    *core(1, node(softmax.unique_name, 2, (query, key))),
-                    *core(2, node(context.unique_name, 3, (query, head))),
-                    EndOp(),
-                ]
-            )
-        ),
+        IntegerAttr.from_int_and_width(AIEDeviceEnum.npu2.get_int(), 32), Region(Block([*tiles, EndOp()]))
     )
     kernels = {kernel.unique_name: kernel for kernel in (scores, softmax, context)}
-    PatternRewriteWalker(ConvertAIEKernels(kernels, Bindings("npu2"))).rewrite_module(ModuleOp([device]))
-    return device
+    bindings = Bindings("npu2")
+    PatternRewriteWalker(ConvertAIEKernels(kernels, bindings)).rewrite_module(ModuleOp([device]))
+    return device, bindings
 
 
 def _call(device, name):
@@ -168,6 +174,39 @@ def test_the_score_gemm_skips_only_the_blocks_past_the_diagonal(column):
     condition = _guard(_call(column, "matmul_bf16_bf16"))
     assert isinstance(condition, CmpiOp) and "arith.cmpi sle," in str(condition)
     assert _driven_by(condition.lhs, LayerDim(2)) and _driven_by(condition.rhs, LayerDim(0))
+
+
+def _evaluate(value, loops):
+    """``value`` as an integer, with each loop's induction variable at ``loops[dim]``."""
+    from xdsl.dialects.arith import AddiOp, CmpiOp, ConstantOp, IndexCastOp, MuliOp
+    from xdsl.ir import BlockArgument
+
+    if isinstance(value, BlockArgument):
+        return loops[value.block.parent_op().attributes["layer_dim"].data.dim]
+    op = value.op
+    if isinstance(op, ConstantOp):
+        return op.value.value.data
+    if isinstance(op, IndexCastOp):
+        return _evaluate(op.input, loops)
+    lhs, rhs = _evaluate(op.lhs, loops), _evaluate(op.rhs, loops)
+    if isinstance(op, CmpiOp):
+        assert "arith.cmpi sle," in str(op)
+        return lhs <= rhs
+    return {AddiOp: lhs + rhs, MuliOp: lhs * rhs}[type(op)]
+
+
+@pytest.mark.parametrize("rows, keys", [(64, 32), (32, 64)])
+def test_the_score_gemm_skips_a_block_only_past_the_query_blocks_last_row(rows, keys):
+    """Key block ``j`` holds keys from ``j * keys``; the first column's query block at loop index ``i`` is the array's
+    block ``COLUMNS * i`` and ends at row ``COLUMNS * i * rows + rows - 1``. At 64 rows over 32 keys, query
+    block 0 attends key blocks 0 and 1: comparing block indices would drop block 1."""
+    from stream.datatypes import LayerDim
+
+    device, _ = _column(split=True, rows=rows, keys=keys)
+    condition = _guard(_call(device, "matmul_bf16_bf16"))
+    for i in range(BLOCKS // COLUMNS):
+        attended = [j for j in range(BLOCKS) if _evaluate(condition.results[0], {LayerDim(0): i, LayerDim(2): j})]
+        assert attended == [j for j in range(BLOCKS) if j * keys <= COLUMNS * i * rows + rows - 1]
 
 
 def test_the_scale_snapshot_is_unconditional(column):
@@ -270,12 +309,13 @@ def _array(size, dtype):
     return np.ndarray[(size,), np.dtype[dtype]]
 
 
-def _flash_entries(m, keys, head):
+def _flash_entries(m, keys, head, causal=True):
     """Each flash entry point of mha.cc the providers bind, at an m-query block over ``keys`` keys of a ``head``-wide
-    value: the softmax side's on a square block, as mha.cc sizes it, the value side's at the shape given."""
+    value: the softmax side's on the key block, which is all it reads, the value side's at the shape given."""
     from stream.compiler.kernels import mlir_aie
 
-    softmax, context = mlir_aie.partial_softmax("npu2", m, keys), mlir_aie.matmul_pv("npu2", m, keys, head)
+    softmax = mlir_aie.partial_softmax("npu2", m, keys, causal=causal)
+    context = mlir_aie.matmul_pv("npu2", m, keys, head, causal=causal)
     return {
         "partial_softmax": softmax,
         "init_scale_buffer": softmax.init_scale_buffer,
@@ -284,14 +324,15 @@ def _flash_entries(m, keys, head):
     }
 
 
-@pytest.mark.parametrize("m", [32, 64])
-def test_the_flash_entries_take_mlir_aie_1_4_6s_arguments(m):
+@pytest.mark.parametrize("m, head", [(32, 64), (64, 64), (32, 128)])
+def test_the_flash_entries_take_mlir_aie_1_4_6s_arguments(m, head):
     """mlir-aie 1.4.6 keeps O and the running state in float, and ``rescale_O`` writes O into a bf16 output: a binding
-    that still passed bf16 compiled, linked and computed garbage."""
+    that still passed bf16 compiled, linked and computed garbage. The value side is ``head`` wide whatever the key
+    block: V is 32 x head, O m x head."""
     import numpy as np
     from ml_dtypes import bfloat16
 
-    keys, head = 32, 64
+    keys = 32
     index, state = _array(3, np.int32), _array(4 * m, np.float32)
     expected = {
         "partial_softmax": [
@@ -318,7 +359,8 @@ def test_the_flash_entries_take_mlir_aie_1_4_6s_arguments(m):
     assert {name: entry.arg_types() for name, entry in _flash_entries(m, keys, head).items()} == expected
 
 
-def test_the_flash_entries_take_what_mha_cc_defines():
+@pytest.mark.parametrize("head, causal", [(64, True), (128, True), (64, False), (128, False)])
+def test_the_flash_entries_take_what_mha_cc_defines(head, causal):
     """Arity and element types against the C definitions in the source the bindings compile; ``score_t`` is bf16, as
     no binding builds ``MHA_F32_SCORES``."""
     import re
@@ -329,7 +371,7 @@ def test_the_flash_entries_take_what_mha_cc_defines():
     from ml_dtypes import bfloat16
 
     c_types = {"bfloat16": bfloat16, "score_t": bfloat16, "float": np.float32, "int32_t": np.int32}
-    for name, entry in _flash_entries(64, 64, 64).items():
+    for name, entry in _flash_entries(64, 64, head, causal).items():
         source = Path(entry.source_file).read_text()
         (parameters,) = re.findall(rf"^void {name}\(([^)]*)\)\s*{{", source, re.MULTILINE)
         defined = []
@@ -341,6 +383,42 @@ def test_the_flash_entries_take_what_mha_cc_defines():
             for arg in entry.arg_types()
         ]
         assert declared == defined, name
+
+
+@pytest.mark.parametrize("causal", [True, False])
+def test_the_flash_entries_are_built_with_the_mask_asked_for(causal):
+    """mha.cc is causal unless built with ``MHA_CAUSAL=0``; the value side at head 128 is built at ``DIM_K=128``, the
+    softmax side at its key block, 64."""
+    entries = _flash_entries(32, 64, 128, causal)
+    for name, entry in entries.items():
+        assert ("-DMHA_CAUSAL=0" in entry.compile_flags) is not causal, name
+    assert "-DDIM_K=128" in entries["matmul_PV"].compile_flags
+    assert "-DDIM_K=64" in entries["partial_softmax"].compile_flags
+
+
+@pytest.mark.parametrize("head, causal", [(64, True), (128, False)])
+def test_the_flash_entries_build_mha_cc_as_irons_attention_does(head, causal):
+    """IRON's attention builds mha.cc once per pipeline, at (B_q, d, B_kv), with K as stored, no bfp16 multiplies and
+    AIE2P's accurate exp2; the value side binds that object, so its flags are those, and the softmax side's differ only
+    in the head, which it does not read."""
+    from aie.iron.kernels import linalg
+
+    from stream.compiler.kernels import mlir_aie
+
+    mlir_aie._target("npu2")
+    expected = linalg.mha(32, head, 32, b_col_maj=True, accurate_exp2=True, causal=causal).compile_flags
+    entries = _flash_entries(32, 32, head, causal)
+    assert entries["matmul_PV"].compile_flags == expected
+    assert entries["partial_softmax"].compile_flags == [f if f != f"-DDIM_K={head}" else "-DDIM_K=32" for f in expected]
+
+
+def test_an_unmasked_step_links_mha_cc_built_without_its_mask(full):
+    """The softmax and value cores call objects built with ``MHA_CAUSAL=0``: a causal object there would drop every
+    key past each query, and the value side would rescale by the state of a block the softmax skipped."""
+    _, bindings = full
+    linked = {binding.name.split("_", 1)[1]: binding for binding in bindings.used.values()}
+    for name in ("partial_softmax", "init_scale_buffer", "matmul_PV", "rescale_O"):
+        assert "-DMHA_CAUSAL=0" in linked[name].compile_flags, name
 
 
 def test_the_value_core_accumulates_in_float_and_rescales_into_the_output(column):
