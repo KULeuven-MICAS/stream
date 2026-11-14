@@ -432,6 +432,35 @@ def test_a_dim_split_whole_across_cores_counts_one_slice_per_core(tmp_path):
     assert gen._build_intra_core_tiling(sub, cns) == seed
 
 
+def test_a_group_the_given_tiling_does_not_name_is_tiled_to_fit():
+    """Two bf16 3 x 3 convolutions, 16 channels on 256 x 256, on fusemax, cut after Conv1, a tiling given for Conv1's
+    rows only. Conv1's group keeps it. Conv2 whole holds its input and output, 16777216 bits each, and 36864 bits of
+    weights: 2.0022 times fusemax's 16777216-bit SRAM. Its group takes the automatic tiling, which fits."""
+    shapes = {"input": [1, 16, 256, 256], "w1": [16, 16, 3, 3], "w2": [16, 16, 3, 3]}
+    path = onnx_graph([conv("Conv1", "input", "w1", "mid"), conv("Conv2", "mid", "w2", "out")], shapes, ["out"])
+    acc, w = _parse("stream/inputs/examples/hardware/fusemax.yaml", path)
+    given = [{"dim": "Conv1.D1", "tile": 32}]
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp(), intra_core_tiling=given)
+    first, second = gen.groups(["Conv1"])
+    assert gen._build_intra_core_tiling(first, tuple(first.get_computation_nodes())) == given
+    cns = tuple(second.get_computation_nodes())
+    assert _worst_core_ratio(gen, second, cns, gen._whole_layer_tiling(second, cns)) == 33591296 / 16777216
+    assert _worst_core_ratio(gen, second, cns, gen._build_intra_core_tiling(second, cns)) <= 1.0
+
+
+@pytest.mark.slow
+def test_an_empty_given_tiling_is_cut_as_without_one(tmp_path):
+    """The attention of the test below, which no tiling fits fused: given an empty tiling, no entry names its group,
+    and it is cut as without one."""
+    acc, parsed = _parse(
+        "stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml",
+        make_multi_head_attention(tmp_path / "mha.onnx", seq=512),
+    )
+    gen = GenericMappingGenerator(acc, expand_normalizations(parsed), tempfile.mkdtemp(), intra_core_tiling=[])
+    operators = [{"proj_K", "proj_Q"}, {"proj_V"}, {"scores", "softmax", "context"}]
+    assert [{source_operator(n) for n in g.get_computation_nodes()} for g in gen.groups()] == operators
+
+
 def test_a_group_no_tiling_fits_is_cut_where_the_operators_before_stop_fitting(tmp_path):
     """A 4096-wide attention fused on four Eyeriss-like cores cannot hold its projections' weights next to the softmax
     of every head: it is cut after the longest runs that fit, two projections, the third, then the attention with
