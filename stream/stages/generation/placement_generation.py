@@ -17,6 +17,7 @@ from stream.mapping.chain_placement import (
 from stream.mapping.mapping import Mapping, role_of
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.utils import operand_inputs
 from stream.workload.workload import ComputationNode, Workload
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,11 @@ class PlacementGenerationStage(Stage):
         )
         extent = self.workload.get_dimension_size(self.workload.get_dims(nodes[0])[rows_at[0]])
         width = widest_columns(extent, granule, max(counts), len(columns))
+        if self._post_op_pair(nodes, counts):
+            self._place_paired(nodes, kernels, grid, columns, rows, self.mapping)
+            half = columns[: len(columns) // 2]
+            self._pending_fallbacks.append(lambda m: self._place_paired(nodes, kernels, grid, half, rows, m))
+            return
         offset = 0
         for node, r, at in zip(nodes, counts, rows_at, strict=True):
             layer_rows = rows[offset : offset + r]
@@ -187,6 +193,26 @@ class PlacementGenerationStage(Stage):
                 split = ((at, width * len(own[0])),)
                 plan.append((node, cores, split if len(own) == 1 else ((half.dim_positions(node)["n"], 2), *split)))
             self._pending_fallbacks.append(lambda m: self._assign_plan(plan, half, m))
+
+    @staticmethod
+    def _post_op_pair(nodes: list[ComputationNode], counts: list[int]) -> bool:
+        """Whether the second of two layers on as many rows reads the first's output with its own, as a post-op does."""
+        if len(nodes) != 2 or counts[0] != counts[1]:  # noqa: PLR2004
+            return False
+        return bool(set(nodes[0].outputs) & set(nodes[1].inputs) - set(operand_inputs(nodes[1])))
+
+    def _place_paired(self, nodes: list[ComputationNode], kernels, grid, columns, rows, mapping: Mapping) -> None:
+        """Place a post-op pair on alternate rows, each split alike over its rows and ``columns``, so the core computing
+        a tile of the second reads the first's tile from the memory of the core beside it. Over every column, each
+        column's shim reads both weights' slices and has no channel left for the shared input, so half the columns
+        are the fallback."""
+        for i, (node, kernel) in enumerate(zip(nodes, kernels, strict=True)):
+            layer_rows = rows[i::2]
+            at, granule = kernel.dim_positions(node), call_sizes(kernel, node)
+            down = self._fitting_split(node, at["m"], len(layer_rows), granule.get(at["m"], 1))
+            across = self._fitting_split(node, at["n"], len(columns), granule.get(at["n"], 1))
+            cores = tuple(grid[(col, row)] for col in columns[:across] for row in layer_rows[:down])
+            self._assign(node, cores, ((at["m"], down), (at["n"], across)), mapping)
 
     def _column_split(self, last: ComputationNode, kernels, counts, num_rows: int):
         """The kernel of the chain's last layer split in two over its output columns, where that is worth offering.

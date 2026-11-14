@@ -6,8 +6,10 @@ from zigzag.utils import open_yaml
 from stream.mapping.mapping import runtime_args_per_group
 from stream.parser.mapping_factory import MappingFactory
 from stream.parser.mapping_validator import MappingValidator
+from stream.stages.codegen.backends import AIE2_CODEGEN
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.post_ops import fold_post_ops
 from stream.workload.workload import determine_fusion_cut_points
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ class FixedMappingGenerationStage(Stage):
 
     def run(self):
         mapping_data = self._parse_and_validate_yaml()
+        self._fold_post_ops(mapping_data)
         fused_groups_data = mapping_data["fused_groups"]
 
         cut_points = determine_fusion_cut_points(self.workload)
@@ -66,6 +69,51 @@ class FixedMappingGenerationStage(Stage):
         self.ctx.set(sub_workloads=sub_workloads, sub_mappings=sub_mappings)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
+
+    def _fold_post_ops(self, mapping_data: dict[str, Any]) -> None:
+        """Fold each group's post-ops into the node producing their input, which then calls their kernels after its
+        own, in the order they fold. Every group is checked before the workload or a kernel changes.
+
+        Raises:
+            ValueError: A group names post-ops on an accelerator without AIE cores, or one that is not its own
+                elementwise layer folding into a GEMM of its own.
+        """
+        groups = [group for group in mapping_data["fused_groups"] if group.get("post_ops")]
+        if not groups:
+            return
+        if not AIE2_CODEGEN.claims(self.accelerator):
+            raise ValueError(
+                f"fused groups {[g['name'] for g in groups]} name post-ops, which only AIE cores price and run"
+            )
+        from stream.compiler.kernels.registry import POST_OP_KERNELS  # noqa: PLC0415
+
+        layers = {layer["name"]: layer for layer in mapping_data["layers"]}
+        nodes = {node.name for node in self.workload.node_list}
+        workload, into = self.workload, {}
+        for group in groups:
+            for layer in group["post_ops"]:
+                kernel = (layers.get(layer, {}).get("kernel") or {}).get("name")
+                if layer not in group["layers"] or layer not in nodes or kernel not in POST_OP_KERNELS:
+                    raise ValueError(
+                        f"fused group {group['name']}: post-op {layer} must be one of its layers, a node of the "
+                        f"workload, with an elementwise kernel ({', '.join(POST_OP_KERNELS)}), not {kernel}"
+                    )
+            try:
+                workload, folded = fold_post_ops(workload, group["post_ops"])
+            except ValueError as e:
+                raise ValueError(f"fused group {group['name']}: {e}") from e
+            for layer, node in folded.items():
+                if node not in group["layers"] or (layers[node].get("kernel") or {}).get("name") != "gemm":
+                    raise ValueError(
+                        f"fused group {group['name']}: post-op {layer} folds into {node}, not a GEMM of it"
+                    )
+            into |= folded
+        self.workload = workload
+        for layer, node in into.items():
+            kwargs = layers[node]["kernel"]["kwargs"]
+            kwargs["post_ops"] = (*kwargs.get("post_ops", ()), layers[layer]["kernel"]["name"])
+        for group in groups:
+            group["layers"] = [layer for layer in group["layers"] if layer not in into]
 
     @staticmethod
     def _cut_points_from_fused_groups(fused_groups_data: list[dict[str, Any]]) -> list[str]:
