@@ -132,7 +132,7 @@ class MemoryCapacity:
 
     name: ClassVar[str] = "memory_capacity"
     requires: ClassVar[tuple[str, ...]] = ()
-    provides: ClassVar[tuple[str, ...]] = ("offchip_footprint",)
+    provides: ClassVar[tuple[str, ...]] = ("offchip_footprint", "memory_objects")
 
     def build(self, ctx: FormulationContext) -> None:
         """What each memory holds against its capacity: a whole tensor once however many of its positions sit there,
@@ -141,6 +141,7 @@ class MemoryCapacity:
         space, ledger = ctx.space, ctx.ledger
         z_stop, z_single = ctx.vars.z_stop, ctx.vars.z_single
         held: dict[tuple[Tensor, Memory], Held] = defaultdict(list)
+        objects: list[tuple[Memory, Any, int]] = []
         least_held: dict[tuple[Tensor, Memory], tuple[int, dict[str, Any]]] = {}
         for node in space.workload.get_iteration_space_nodes():
             carried = [x for x in node.inputs if is_state_operand(node, x)]
@@ -173,6 +174,7 @@ class MemoryCapacity:
                             tag=ConstraintTag(memory, MEMORY_CAPACITY, t.name),
                         )
                         held[(t, memory)].append((uz, req_size, t.name))
+                        objects.append((memory, uz, ceil(space.resident_tiles(t, stop, True, staged) * tensor_size)))
                         if single:
                             us = ctx.binary_product(
                                 a=u,
@@ -186,6 +188,7 @@ class MemoryCapacity:
 
         load = _memory_loads(ctx, held)
         _record_least(ctx, least_held)
+        ctx.quantities.add("memory_objects", tuple(objects))
 
         for one, other, bits in space.handovers:
             for memory in dict.fromkeys((one,) if space.hardware.shares_memory(one, other) else (one, other)):

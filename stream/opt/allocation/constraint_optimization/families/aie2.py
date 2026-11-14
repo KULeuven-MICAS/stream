@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.hardware.architecture.memory import Memory
 from stream.opt.allocation.constraint_optimization.families.dma import DMA_CHANNELS
@@ -87,6 +87,25 @@ class AIE2MemoryReuse:
                     name=f"aie2_mem_replay_single_{entry.name}_{resource_key(entry.memory)}_P{i}",
                     resource=entry.memory,
                 )
+
+
+class AIE2ObjectLength:
+    """A memory tile sends each object it holds in one buffer descriptor, whose length is at most
+    ``max_mem_tile_bd_words`` 32-bit words."""
+
+    name: ClassVar[str] = "aie2_object_length"
+    requires: ClassVar[tuple[str, ...]] = ("memory_objects",)
+    provides: ClassVar[tuple[str, ...]] = ()
+
+    def __init__(self, max_mem_tile_bd_words: int = 131071) -> None:
+        self.max_mem_tile_bd_words = max_mem_tile_bd_words
+
+    def build(self, ctx: FormulationContext) -> None:
+        limit = self.max_mem_tile_bd_words * 32
+        objects: tuple[tuple[Memory, Any, int], ...] = ctx.quantities.get("memory_objects").expr
+        for i, (memory, held, bits) in enumerate(objects):
+            if memory.namespace == AIE2Namespace.NAMESPACE and memory.kind == "memory" and bits > limit:
+                ctx.add_constr(held._raw == 0, name=f"aie2_object_length_{resource_key(memory)}_{i}", resource=memory)
 
 
 class AIE2DmaChannels:
