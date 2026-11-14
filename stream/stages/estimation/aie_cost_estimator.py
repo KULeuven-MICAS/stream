@@ -7,6 +7,7 @@ from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.mapping.work_share import computed_fraction, core_work_share, split_steps
+from stream.workload.iterator_type import is_state_operand
 from stream.workload.workload import ComputationNode, Workload
 
 
@@ -66,8 +67,8 @@ class AIECostEstimator:
 
     def ops_per_cycle(self, node: ComputationNode, core: Core) -> int:
         """Depending on the node inputs and output data type and core type,
-        return the number of operations per cycle."""
-        inputs_datatype = [inp.operand_type for inp in node.inputs]
+        return the number of operations per cycle. A state the kernel keeps is not an input it computes on."""
+        inputs_datatype = [inp.operand_type for inp in node.inputs if not is_state_operand(node, inp)]
         assert all(dt == inputs_datatype[0] for dt in inputs_datatype), "All input datatypes must be the same."
         input_datatype = inputs_datatype[0]
         output_datatype = node.outputs[0].operand_type

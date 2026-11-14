@@ -427,23 +427,34 @@ def partial_sum_format(cores: Iterable[Core]) -> str | None:
 
 
 def running_sum_format(
-    workload: Workload, node: ComputationNode, cores: Iterable[Core], fused: set[LayerDim], split: set[LayerDim]
+    workload: Workload,
+    node: ComputationNode,
+    cores: Iterable[Core],
+    fused: set[LayerDim],
+    split: set[LayerDim],
+    accumulator: str | None = None,
 ) -> str | None:
     """The format ``cores`` store an incomplete sum of ``node`` in, if wider than the output's type: the accumulator's
-    for a running sum (a ``fused`` dim is one ``node`` reduces over), else the :func:`partial_sum_format` for a partial
-    sum (a ``split`` dim is)."""
+    (``accumulator`` where its kernel declares one) for a running sum (a ``fused`` dim is one ``node`` reduces over),
+    else the :func:`partial_sum_format` for a partial sum (a ``split`` dim is)."""
     cores, reduced = tuple(cores), reduced_dims(workload, node)
-    found = (
-        accumulator_format(node, cores) if reduced & fused else partial_sum_format(cores) if reduced & split else None
-    )
+    if reduced & fused:
+        found = accumulator or accumulator_format(node, cores)
+    else:
+        found = partial_sum_format(cores) if reduced & split else None
     return found if found is not None and ELEMENT_BITS[found] > node.outputs[0].operand_type.bitwidth else None
 
 
 def running_sum_bits(
-    workload: Workload, node: ComputationNode, cores: Iterable[Core], fused: set[LayerDim], split: set[LayerDim]
+    workload: Workload,
+    node: ComputationNode,
+    cores: Iterable[Core],
+    fused: set[LayerDim],
+    split: set[LayerDim],
+    accumulator: str | None = None,
 ) -> int | None:
     """Bits per element of :func:`running_sum_format`; None where it gives none."""
-    found = running_sum_format(workload, node, cores, fused, split)
+    found = running_sum_format(workload, node, cores, fused, split, accumulator)
     return None if found is None else ELEMENT_BITS[found]
 
 

@@ -8,7 +8,7 @@ from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.builtin import AnyDenseElement, FunctionType, MemRefType, StringAttr, SymbolRefAttr, bf16
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
-from xdsl.ir import Operation, Region, SSAValue
+from xdsl.ir import Attribute, Operation, Region, SSAValue
 from xdsl.ir.affine import AffineDimExpr
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.printer import Printer
@@ -100,14 +100,16 @@ class KernelDeclaration(FuncOp):
 @dataclass(frozen=True)
 class StateOperand:
     """A buffer a kernel keeps on its core from one step of a loop to the next: read at ``carried_over - 1`` and
-    written at ``carried_over``, ``rows`` per step times the extent of ``indexed_by``. ``handover`` is how deep a
-    copy the next step of the computation reads, zero for a state kept private."""
+    written at ``carried_over``, ``rows`` per step times the extent of ``indexed_by``, of ``element_type`` (the
+    output's where None). ``handover`` is how deep a copy the next step of the computation reads, zero for a state
+    kept private."""
 
     name: str
     rows: int
     carried_over: str
     indexed_by: str
     handover: int = 0
+    element_type: Attribute | None = None
 
 
 @dataclass(kw_only=True)
@@ -122,6 +124,9 @@ class AIEKernel(ABC):
     FALLBACK: ClassVar[Mapping[str, tuple[str, str | None]]] = {}
     """The symbol and object, ``None`` for the library's, stream declares for a call it names otherwise,
     where no provider binds the kernel."""
+    ACCUMULATOR: ClassVar[str | None] = None
+    """The format the kernel keeps a sum in across the calls adding into it, beside its output; None where it
+    adds into the output itself."""
 
     @property
     def unique_name(self) -> str:
