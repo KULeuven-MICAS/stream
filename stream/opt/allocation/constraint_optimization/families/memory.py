@@ -22,6 +22,8 @@ from stream.opt.solver import ObjectiveLevel, SolverModel, SolverVar, SolverVarT
 from stream.workload.iterator_type import is_state_operand
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from stream.opt.allocation.constraint_optimization.formulation import FormulationContext
     from stream.opt.allocation.constraint_optimization.space import DecisionSpace
     from stream.workload.workload import Tensor, TransferNode
@@ -138,6 +140,7 @@ class MemoryCapacity:
         space, ledger = ctx.space, ctx.ledger
         z_stop, z_single = ctx.vars.z_stop, ctx.vars.z_single
         held: dict[tuple[Tensor, Memory], Held] = defaultdict(list)
+        least_held: dict[tuple[Tensor, Memory], tuple[int, dict[str, Any]]] = {}
         for node in space.workload.get_iteration_space_nodes():
             carried = [x for x in node.inputs if is_state_operand(node, x)]
             for t in (*node.outputs, *carried):
@@ -150,7 +153,6 @@ class MemoryCapacity:
                     if whole
                     else _holdings(ctx, t)
                 )
-                least_bytes: dict[Memory, float] = {}
                 for memory, copies, u in holders:
                     name = f"{t.name}_{resource_key(memory)}" + ("" if whole else f"_x{copies}")
                     min_req: int | None = None
@@ -175,16 +177,11 @@ class MemoryCapacity:
                                 tag=ConstraintTag(memory),
                             )
                             held[(t, memory)].append((us, least - req_size, t.name))
-                    if min_req is not None:
-                        least_bytes[memory] = min(least_bytes.get(memory, min_req / 8), min_req / 8)
-                for memory, value in least_bytes.items():
-                    ledger.terms[(MEMORY_CAPACITY, memory)][t.name] = {
-                        "value": value,
-                        "dims": tile_dims,
-                        "dtype": tile_dtype,
-                    }
+                    if min_req is not None and min_req < least_held.get((t, memory), (inf,))[0]:
+                        least_held[(t, memory)] = (min_req, {"dims": tile_dims, "dtype": tile_dtype})
 
         load = _memory_loads(ctx, held)
+        _record_least(ctx, least_held)
 
         for one, other, bits in space.handovers:
             for memory in dict.fromkeys((one,) if space.hardware.shares_memory(one, other) else (one, other)):
@@ -197,8 +194,11 @@ class MemoryCapacity:
         for memory, expr in load.items():
             cap = space.memory_capacity_bits(memory)
             placed = _placed(space, memory)
+            terms = ledger.terms[(MEMORY_CAPACITY, memory)]
             for tensor, bits in placed.items():
-                ledger.terms[(MEMORY_CAPACITY, memory)][tensor.name] = {"value": bits / 8, "dims": (), "dtype": ""}
+                if tensor.name in terms:
+                    terms[f"{tensor.name} (outside its placement)"] = terms.pop(tensor.name)
+                terms[tensor.name] = {"value": bits / 8, "dims": (), "dtype": ""}
             ctx.add_constr(
                 expr <= cap - sum(placed.values()),
                 name=f"mem_cap_{resource_key(memory)}",
@@ -298,12 +298,11 @@ def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Memory], Hel
     copy of one only what it holds beyond the placement's block there (:func:`_placed_share`)."""
     space, ledger = ctx.space, ctx.ledger
     load: dict[Memory, Any] = defaultdict(int)
-    copies = {copy: tr.inputs[0] for tr in space.transfer_nodes for copy in tr.outputs}
-    shares = {key: _placed_share(space, *key) for key in held}
-    charged = {key: _beyond(terms, shares[key]) for key, terms in held.items() if shares[key] != inf}
+    charges = _counted_beyond(space, held)
+    charged = {key: _beyond(held[key], share) for key, (share, _) in charges.items()}
     for (t, memory), terms in charged.items():
         ledger.memory[memory] += terms
-        source = charged.get((copies[t], memory)) if t in copies else None
+        source = charged[source_key] if (source_key := charges[(t, memory)][1]) else None
         if not source:
             load[memory] = load[memory] + _held_bits(terms)
             continue
@@ -313,6 +312,29 @@ def _memory_loads(ctx: FormulationContext, held: dict[tuple[Tensor, Memory], Hel
         load[memory] = load[memory] + extra._raw
         ledger.memory[memory] += [(indicator, -bits, t.name) for indicator, bits, _ in source]
     return load
+
+
+def _record_least(ctx: FormulationContext, least: dict[tuple[Tensor, Memory], tuple[int, dict[str, Any]]]) -> None:
+    """Each tensor's least residency in a memory as a diagnosis term, counted as :func:`_memory_loads` counts it:
+    beyond the placement's block there, and for a copy in its source's memory beyond the source."""
+    charges = _counted_beyond(ctx.space, least)
+    beyond = {key: max(0, least[key][0] - share) for key, (share, _) in charges.items()}
+    for (t, memory), bits in beyond.items():
+        value = max(0, bits - beyond[source_key]) if (source_key := charges[(t, memory)][1]) else bits
+        ctx.ledger.terms[(MEMORY_CAPACITY, memory)][t.name] = {"value": value / 8, **least[(t, memory)][1]}
+
+
+def _counted_beyond(
+    space: DecisionSpace, keys: Iterable[tuple[Tensor, Memory]]
+) -> dict[tuple[Tensor, Memory], tuple[float, tuple[Tensor, Memory] | None]]:
+    """For each (tensor, memory) of ``keys`` a placement there does not hold whole: the placement's share of it, and
+    for a copy whose source is also among them in that memory, the source's key, which it is charged beyond."""
+    copies = {copy: tr.inputs[0] for tr in space.transfer_nodes for copy in tr.outputs}
+    shares = {key: share for key in keys if (share := _placed_share(space, *key)) != inf}
+    return {
+        (t, memory): (share, (copies[t], memory) if t in copies and (copies[t], memory) in shares else None)
+        for (t, memory), share in shares.items()
+    }
 
 
 def _tile_shape(space: DecisionSpace, node: Any, tensor: Tensor, tile: Tensor) -> tuple[list[tuple[str, int]], str]:
