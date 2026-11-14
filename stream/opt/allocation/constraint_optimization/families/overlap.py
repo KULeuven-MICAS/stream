@@ -145,6 +145,7 @@ class Overlap:
             else:
                 model.add_constr(overlap <= v)
         _skipped_step_floor(ctx, overlap, iteration, latency)
+        _core_stream_floor(ctx, overlap, iteration, latency)
         _shared_bandwidth_bounds(ctx, overlap, iteration)
         rec = _recurrence_bound(space)
         q.add("recurrence_bound", rec)
@@ -308,6 +309,22 @@ def _skipped_step_floor(
                     name=f"skip_floor_{n.name}_{resource_key(core)}_{space.route_name(tr, choice)}",
                     resource=core,
                 )
+
+
+def _core_stream_floor(
+    ctx: FormulationContext, overlap: SolverVar, iteration: Any, latency: dict[tuple[Any, Any], Any]
+) -> None:
+    """A core calls no faster than its operands stream in: a transfer into a compute tile takes its own cycles per
+    iteration on the link that feeds the core, after its reuse, whether or not the families price contention between
+    transfers."""
+    space = ctx.space
+    steady = ctx.quantities.indexed("steady_state_latency") if "steady_state_latency" in ctx.quantities else {}
+    for key, term in latency.items():
+        tr, choice = key
+        stream, firing = space.core_stream_cycles(tr, choice), space.transfer_latency_for_path(tr, choice)
+        if stream and firing:
+            floor = (steady[key].expr if key in steady else term) * (stream / firing)
+            ctx.model.add_constr(overlap <= iteration - floor, name=f"core_stream_{space.route_name(tr, choice)}")
 
 
 def _is_offchip_link(space: DecisionSpace, res: HardwareResource) -> bool:
