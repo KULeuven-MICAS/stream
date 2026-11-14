@@ -4,6 +4,7 @@ from math import prod
 
 from stream.datatypes import LayerDim
 from stream.mapping.mapping import Mapping
+from stream.mapping.work_share import output_extent_diff
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.utils import (
@@ -65,12 +66,14 @@ class TilingGenerationStage(Stage):
         hardware-independent workload property. Consumed by the allocation model to report end-to-end MAC
         utilization against the peak of the cores that admit exactly these operators, which is why
         the same predicate must decide both. Must be read from ``self.workload`` BEFORE tiling
-        shrinks the dimension sizes.
+        shrinks the dimension sizes. A producer whose output ends past or short of its dims counts its own extent.
         """
         total = 0
         for node in self.workload.get_computation_nodes():
             if is_mac_operator_type(node.type):
-                total += prod(self.workload.get_dimension_size(d) for d in self.workload.get_dims(node))
+                edges = output_extent_diff(self.workload, node, {})
+                dims = enumerate(self.workload.get_dims(node))
+                total += prod(self.workload.get_dimension_size(d) + edges.get(p, 0) for p, d in dims)
         return total
 
     def substitute_loop_sizes_with_tiled_sizes(self):

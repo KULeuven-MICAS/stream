@@ -29,7 +29,7 @@ from stream.workload.steady_state.iteration_space import (
 
 if TYPE_CHECKING:
     from stream.mapping.mapping import Mapping
-    from stream.workload.workload import ComputationNode, HasIterationSpace, TransferNode, Workload
+    from stream.workload.workload import ComputationNode, HasIterationSpace, TransferNode, UncoupledRead, Workload
 
 
 #: Operator-type substrings that denote multiply-accumulate work (matched case-insensitively as a substring).
@@ -71,13 +71,30 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     fused_group = mapping.fused_groups[0]
     _, largest = collect_spatial_unrollings(workload, mapping)
     unfinished = unfinished_reductions(workload)
+    uncoupled = {
+        workload.leading_dim(workload.get_dims(read.reader)[read.position])[0]: read
+        for read in workload.uncoupled_reads
+        if {read.producer.name, read.reader.name} <= set(fused_group.layers)
+    }
     result = {}
     for dim, tile_size in fused_group.intra_core_tiling:
         nb_splits = fused_tile_splits(workload, fused_group.name, dim, tile_size, largest.get(dim))
         if nb_splits > 1 and dim in unfinished:
             raise _unfinished_reduction_error(fused_group.name, dim, nb_splits, unfinished[dim])
+        if nb_splits > 1 and dim in uncoupled:
+            raise _uncoupled_read_error(fused_group.name, dim, nb_splits, uncoupled[dim])
         result[dim] = nb_splits
     return result
+
+
+def _uncoupled_read_error(group: str, dim: LayerDim, blocks: int, read: "UncoupledRead") -> ValueError:
+    """The refusal of a fused group cutting ``dim`` into ``blocks`` though ``read`` leaves its producer's axis whole."""
+    return ValueError(
+        f"Fused group {group} tiles {dim} into {blocks} blocks, but {read.reader.name} reads axis {read.axis} of "
+        f"{read.producer.name}'s output, of extent {read.extent}, along it, which fuses the two only for an extent "
+        f"from {read.low} to {read.high}: {read.producer.name} computes that axis whole. Keep {dim} whole or cut the "
+        f"group between {read.producer.name} and {read.reader.name}."
+    )
 
 
 def _unfinished_reduction_error(group: str, dim: LayerDim, blocks: int, why: UnfinishedReduction) -> ValueError:

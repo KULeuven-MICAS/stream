@@ -1,3 +1,4 @@
+import logging
 from bisect import bisect_left
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -41,12 +42,28 @@ if TYPE_CHECKING:
     from stream.mapping.mapping import EdgePlacement, Mapping
 
 
+logger = logging.getLogger(__name__)
+
 _SharedAxis = tuple[Node, int]
 """An axis of a tensor several nodes read: its producer, and the axis."""
 
 _Read = tuple[Tensor, "Node", InterCoreTiling, int, int]
 """A copy's read at one target: the tensor read, the node reading it, that node's split, its core position and
 the number of positions."""
+
+
+@dataclass(frozen=True)
+class UncoupledRead:
+    """A windowed read too far from its producer's extent to fuse: ``reader`` reads ``axis`` of ``producer``'s output,
+    of ``extent``, along its dim ``position``; the two fuse only for an extent from ``low`` to ``high``."""
+
+    producer: HasIterationSpace
+    reader: HasIterationSpace
+    axis: int
+    position: int
+    extent: int
+    low: int
+    high: int
 
 
 @dataclass(frozen=True)
@@ -257,12 +274,18 @@ class Workload(DiGraphWrapper[Node]):
         return sorted(int(c) for c in row if c != 0) == [-1, 1]
 
     def _coupling(
-        self, consumer: HasIterationSpace, produced: AffineExpr, read: AffineExpr, extent: int
-    ) -> tuple[AffineExpr, int] | None:
-        """The relation a producer->consumer axis of whole ``extent`` adds, and its stride: the identity, or for a read
-        ``s*d + windows + c`` of a producer dim spanning ``s`` times ``d``, ``produced - s*d``, to which
-        :attr:`_couplings` adds a remainder dim of size ``s``; none where the whole extents differ, as under an
-        unpadded window."""
+        self,
+        producer: HasIterationSpace,
+        consumer: HasIterationSpace,
+        axis: int,
+        produced: AffineExpr,
+        read: AffineExpr,
+        extent: int,
+    ) -> tuple[AffineExpr, int] | UncoupledRead | None:
+        """The relation a producer->consumer ``axis`` of whole ``extent`` adds, and its stride: the identity, or for a
+        read ``s*d + windows + c`` of a producer dim, ``produced - s*d``, to which :attr:`_couplings` adds a remainder
+        dim of size ``s``. The producer's extent may run from ``s*(O-1) + 1`` to ``s*O + window - 1`` for ``d``'s
+        extent ``O``; outside that range, the :class:`UncoupledRead`, with a warning."""
         if self._is_identity_relation(relation := produced - read):
             return relation, 1
         rows = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (produced, read)))
@@ -282,9 +305,28 @@ class Workload(DiGraphWrapper[Node]):
             for r, n in zip(consumer.get_mapping(t).results, t.subview.source.type.get_shape(), strict=True)
             if r == local
         )
-        if stride * next(spans, 0) != extent:
-            return None
+        out = next(spans, 0)
+        low, high = stride * (out - 1) + 1, stride * out + self._window_span(read, indexed[0]) - 1
+        if not low <= extent <= high:
+            logger.warning(
+                "%s reads an axis of %s of extent %d for %d outputs at stride %d, which fuse along it only for an "
+                "extent from %d to %d: %s computes that axis whole.",
+                consumer.name,
+                producer.name,
+                extent,
+                out,
+                stride,
+                low,
+                high,
+                producer.name,
+            )
+            return UncoupledRead(producer, consumer, axis, local.position, extent, low, high)
         return AffineDimExpr(int(np.flatnonzero(rows.A[0])[0])) - AffineDimExpr(indexed[0]) * stride, stride
+
+    def _window_span(self, read: AffineExpr, output: int) -> int:
+        """How many indices the window of ``read`` spans at one position of its output dim ``output``."""
+        coefficients = affine_coefficients(read, self.num_dims)[1]
+        return 1 + sum(abs(c) * (self._direct_sizes.get(g, 1) - 1) for g, c in enumerate(coefficients) if g != output)
 
     def dimension_relations(self) -> tuple[AffineExpr, ...]:
         return tuple(relation for relation, _ in self._couplings)
@@ -299,7 +341,7 @@ class Workload(DiGraphWrapper[Node]):
         """Every dimension relation, and the stride of the windowed read it couples (1 for an identity), each strided
         read adding a remainder dim as a column after the node dims. An axis of a tensor several nodes read couples
         none of them where it would make two loops of one node one dim (:meth:`_held_axes`)."""
-        candidates = self._candidate_couplings()
+        candidates = self._candidate_couplings[0]
         held = self._held_axes(candidates)
         result: list[tuple[AffineExpr, int]] = []
         for relation, stride, shared in candidates:
@@ -309,11 +351,20 @@ class Workload(DiGraphWrapper[Node]):
             result.append((relation - remainder if stride > 1 else relation, stride))
         return tuple(result)
 
-    def _candidate_couplings(self) -> list[tuple[AffineExpr, int, _SharedAxis | None]]:
+    @property
+    def uncoupled_reads(self) -> tuple[UncoupledRead, ...]:
+        """Each windowed read too far from its producer's extent to fuse."""
+        return self._candidate_couplings[1]
+
+    @cached_property
+    def _candidate_couplings(
+        self,
+    ) -> tuple[list[tuple[AffineExpr, int, _SharedAxis | None]], tuple[UncoupledRead, ...]]:
         """Each relation the dataflow suggests, its stride, and the axis of a tensor several nodes read it couples
         through, as its producer and axis (None for a tensor one node reads): a producer couples to each reader, and
-        the readers of a workload input to each other."""
+        the readers of a workload input to each other; and the windowed reads that do not fuse."""
         candidates: list[tuple[AffineExpr, int, _SharedAxis | None]] = []
+        refused: list[UncoupledRead] = []
         for src, dst in self.edges:
             if isinstance(src, HasIterationSpace) and isinstance(dst, HasIterationSpace):
                 try:
@@ -326,7 +377,10 @@ class Workload(DiGraphWrapper[Node]):
                 shared = sum(isinstance(n, HasIterationSpace) for n in self.successors(src)) > 1
                 axes = zip(mapping_out.results, mapping_in.results, full, strict=True)
                 for axis, (expr_out, expr_in, extent) in enumerate(axes):
-                    if (coupled := self._coupling(dst, expr_out, expr_in, extent)) is not None:
+                    coupled = self._coupling(src, dst, axis, expr_out, expr_in, extent)
+                    if isinstance(coupled, UncoupledRead):
+                        refused.append(coupled)
+                    elif coupled is not None:
                         candidates.append((*coupled, (src, axis) if shared else None))
         for node in self.nodes:
             if isinstance(node, InEdge):
@@ -340,7 +394,7 @@ class Workload(DiGraphWrapper[Node]):
                         relation = expr_a - expr_b
                         if self._is_identity_relation(relation):
                             candidates.append((relation, 1, (node, axis)))
-        return candidates
+        return candidates, tuple(refused)
 
     def _held_axes(self, candidates: list[tuple[AffineExpr, int, _SharedAxis | None]]) -> set[_SharedAxis]:
         """The axes of tensors several nodes read that couple none of their readers, because they play two roles: one
@@ -577,23 +631,45 @@ class Workload(DiGraphWrapper[Node]):
         return self._dimension_sizes
 
     @cached_property
-    def _dimension_sizes(self) -> tuple[int, ...]:
+    def _result_spans(self) -> list[tuple[AffineExpr, int]]:
+        """Each global access expression of every node's tensors, and the tensor's span along it."""
         result_to_shape: list[tuple[AffineExpr, int]] = []
         for node in self.get_iteration_space_nodes():
             for tensor, mapping in zip(node.tensors, node.operand_mapping, strict=True):
                 global_mapping = self.global_mapping(node, mapping)
                 for expr, sz in zip(global_mapping.results, _span(tensor), strict=True):
                     result_to_shape.append((expr, sz))
+        return result_to_shape
 
-        # Step 1: direct read for dims that appear as pure AffineDimExpr
+    @cached_property
+    def _direct_sizes(self) -> dict[int, int]:
+        """The extent of each global dim a tensor axis indexes alone, or a window extent gives."""
         dim_to_size: dict[int, int] = {}
-        for expr, sz in result_to_shape:
+        for expr, sz in self._result_spans:
             if isinstance(expr, AffineDimExpr) and expr.position not in dim_to_size:
                 dim_to_size[expr.position] = sz
-
         for node in self.get_computation_nodes():
             for d, size in node.window_extents:
                 dim_to_size.setdefault(self.global_idxs[node].start + d, size)
+        return dim_to_size
+
+    @cached_property
+    def _own_extents(self) -> list[int]:
+        """The extent of each global dim: its node's output along it where it indexes an output axis alone, else the
+        span of its unique dims."""
+        unique_dims, dim_values = self.unique_dimensions()
+        sizes = [self.get_dimension_size(z) for z in unique_dims]
+        extents = [high - low + 1 for low, high in (affine_bounds(e, sizes) for e in dim_values[: self.num_dims])]
+        for node in self.get_computation_nodes():
+            for expr, n in zip(node.get_mapping(node.outputs[0]).results, _span(node.outputs[0]), strict=True):
+                if isinstance(expr, AffineDimExpr):
+                    extents[self.global_idxs[node].start + expr.position] = n
+        return extents
+
+    @cached_property
+    def _dimension_sizes(self) -> tuple[int, ...]:
+        result_to_shape = self._result_spans
+        dim_to_size = dict(self._direct_sizes)
 
         coefficients = [(expr, sz, affine_coefficients(expr, self.num_dims)[1]) for expr, sz in result_to_shape]
         missing = sorted(set(range(self.num_dims)) - set(dim_to_size))
@@ -815,28 +891,36 @@ class Workload(DiGraphWrapper[Node]):
     ) -> list[tuple[int, int, bool]]:
         """The inclusive index range per axis ``nodes`` touch of ``tensor`` as for the extents above, and whether the
         axis is placed; a dim of ``origin`` starts at the index it gives, in tensor coordinates but not placed. The
-        range counts the indices on ``index_steps`` (by default the readers')."""
+        range counts the indices on ``index_steps`` (by default the readers'). A computation's last tile along a dim
+        reaches the end of its own output."""
         index_steps = index_steps or self.index_steps(tensor)
         unique_dims, dim_values = self.unique_dimensions()
         sizes = [dimension_sizes[z] for z in unique_dims]
+        full = [self.get_dimension_size(z) for z in unique_dims]
         origin = origin or {}
         offset = [origin.get(z, at.get(z, 0) * n) for z, n in zip(unique_dims, sizes, strict=True)]
         bounds = []
         for axis, size in enumerate(tensor.subview.source.type.get_shape()):
             ranges, placed = [], False
             for node in nodes:
-                index = self.global_mapping(node, node.get_mapping(tensor)).results[axis]
-                index = index.replace_dims_and_symbols(dim_values, ())
+                own = self.global_mapping(node, node.get_mapping(tensor)).results[axis]
+                index = own.replace_dims_and_symbols(dim_values, ())
                 low, high = affine_bounds(index, sizes)
-                coefficients = affine_coefficients(index, len(sizes))[1] if at or origin else [0] * len(sizes)
-                if any(c and (z in at or z in origin) for c, z in zip(coefficients, unique_dims, strict=True)):
+                coefficients = affine_coefficients(index, len(sizes))[1]
+                shifted = any(c and (z in at or z in origin) for c, z in zip(coefficients, unique_dims, strict=True))
+                if shifted:
                     placed = placed or any(c and z in at for c, z in zip(coefficients, unique_dims, strict=True))
                     shift = sum(c * o for c, o in zip(coefficients, offset, strict=True))
-                    ranges.append((max(low + shift, 0), min(high + shift, size - 1)))
-                else:
-                    # A window spanning the axis is all of it; a narrower one keeps an interior tile's extent.
-                    ranges.append((0, size - 1) if high - low + 1 >= size else (low, high))
-                ranges[-1] = _stepped_range(*ranges[-1], *index_steps[axis])
+                    low, high = low + shift, high + shift
+                if isinstance(node, ComputationNode) and all(
+                    o + n >= f for c, o, n, f in zip(coefficients, offset, sizes, full, strict=True) if c
+                ):
+                    high = max(high, affine_bounds(own, self._own_extents)[1])
+                if shifted:
+                    low, high = max(low, 0), min(high, size - 1)
+                elif high - low + 1 >= size:
+                    low, high = 0, size - 1  # a window spanning the axis is all of it
+                ranges.append(_stepped_range(low, high, *index_steps[axis]))
             bounds.append((min(r[0] for r in ranges), max(r[1] for r in ranges), placed))
         return bounds
 
