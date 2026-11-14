@@ -170,7 +170,7 @@ def _shared_rows(
     rows = []
     for memory, model in space.shared_bandwidth.items():
         bits = sum(
-            b * s.choice.memory_share(memory, leaving=direction == READ)
+            b * space.memory_share(s.transfer, s.choice, memory, direction == READ, s.copies)
             for s, b in streams
             if (direction := space.direction(memory, s.choice)) is not None
         )

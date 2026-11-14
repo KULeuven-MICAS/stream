@@ -673,7 +673,7 @@ def test_a_route_over_two_columns_links_passes_one_shim_port_per_link():
 def _dram_space(accelerator: Accelerator) -> DecisionSpace:
     """A decision space over ``accelerator`` that reads only the side ports of a first-input transfer."""
     space = object.__new__(DecisionSpace)
-    space.accelerator, space.shared_bandwidth = accelerator, {}
+    space.accelerator, space.shared_bandwidth, space.partial_sum_ratio = accelerator, {}, {}
     space.operand_role = lambda tr, read_side: input_role(1)  # type: ignore[method-assign]
     return space
 

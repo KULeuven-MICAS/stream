@@ -98,7 +98,7 @@ def capacity_screen(space: DecisionSpace, model: SolverModel) -> None:
             tile = space.workload.get_tensor_single_core(t, node, space.mapping)
             whole = tile.size_bits() == t.size_bits()
             copies = 1 if whole else min(choice.count(memory) for choice in space.tensor_choices[t])
-            held[t] = (memory, max(0, ceil(copies * _min_resident_bits(space, t, tile.size_bits()) - share)))
+            held[t] = (memory, max(0, ceil(copies * _min_resident_bits(space, t, space.held_bits(t, tile)) - share)))
     pinned: dict[Memory, int] = defaultdict(int)
     for memory, bits in held.values():
         pinned[memory] += bits
@@ -142,9 +142,9 @@ class MemoryCapacity:
             carried = [x for x in node.inputs if is_state_operand(node, x)]
             for t in (*node.outputs, *carried):
                 tile = space.workload.get_tensor_single_core(t, node, space.mapping)
-                tensor_size = tile.size_bits()
+                tensor_size = space.held_bits(t, tile)
                 tile_dims, tile_dtype = _tile_shape(space, node, t, tile)
-                whole = tensor_size == t.size_bits()
+                whole = tile.size_bits() == t.size_bits()
                 holders = (
                     [(m, 1, ctx.tensor_in_memory_var(t, m)) for m in space.candidate_memories(t)]
                     if whole
@@ -325,7 +325,7 @@ def _tile_shape(space: DecisionSpace, node: Any, tensor: Tensor, tile: Tensor) -
         )
         for i, (r, size) in enumerate(zip(node.get_mapping(tensor).results, shape, strict=False))
     ]
-    return dims, str(tile.operand_type)
+    return dims, space.running_sum_format(tensor) or str(tile.operand_type)
 
 
 class ObjectFifoDepth:

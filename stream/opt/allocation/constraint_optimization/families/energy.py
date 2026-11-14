@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from stream.hardware.ports import READ, READ_BY_DATAPATH, WRITE
 from stream.opt.allocation.constraint_optimization.families.traffic import (
     DmaStream,
     dma_streams,
@@ -13,6 +14,7 @@ from stream.opt.allocation.constraint_optimization.families.traffic import (
     link_name,
     placed_cores,
     port_name,
+    running_sum_ports,
 )
 from stream.opt.allocation.constraint_optimization.utils import active_fraction
 
@@ -48,7 +50,8 @@ class Energy:
     def build(self, ctx: FormulationContext) -> None:
         q, space = ctx.quantities, ctx.space
         nodes = sum(
-            space.cost_lut.get_cost(node, core).energy_total * active_fraction(node, space.ssis)
+            (space.cost_lut.get_cost(node, core).energy_total + sum(pj for _, pj in _running_sum_pj(ctx, node, core)))
+            * active_fraction(node, space.ssis)
             for node in space.ssc_nodes
             for core in placed_cores(ctx, node)
         )
@@ -84,6 +87,8 @@ def _components(ctx: FormulationContext) -> list[dict[str, Any]]:
         for core in placed_cores(ctx, node):
             for kind, resource, energy in _node_split(ctx.space.cost_lut.get_cost(node, core)):
                 pj[(kind, resource, (core.id,))] += energy * fraction
+            for component, energy in _running_sum_pj(ctx, node, core):
+                pj[component] += energy * fraction
     for stream in dma_streams(ctx):
         bits = ctx.model.value(stream.bits_per_cycle * stream.active_cycles)
         for component, pj_per_bit in _energy_per_bit(stream):
@@ -94,6 +99,15 @@ def _components(ctx: FormulationContext) -> list[dict[str, Any]]:
         if energy > 0
     ]
     return sorted(rows, key=lambda row: -row["pj_per_iteration"])
+
+
+def _running_sum_pj(ctx: FormulationContext, node: Any, core: Any) -> list[tuple[Component, float]]:
+    """The pJ a firing of ``node`` on ``core`` spends at each port on its running sums."""
+    found = []
+    for port, direction, bits in running_sum_ports(ctx, node, core):
+        access = READ if direction in (READ, READ_BY_DATAPATH) else WRITE
+        found.append((("port", port_name(port.key), port.core_ids), bits * port.energy_per_bit(access)))
+    return found
 
 
 def _node_split(cost: CoreCostEntry) -> list[tuple[str, str, float]]:

@@ -137,7 +137,7 @@ class CopyLayouts:
     ) -> tuple[Layout, float, float]:
         tensor = tr.inputs[0]
         full = tuple(tensor.subview.source.type.get_shape())
-        bits = tensor.operand_type.bitwidth
+        bits = self.space.moved_element_bits(tr, choice)
         read, write = self._rate(tr, choice, READ), self._rate(tr, choice, WRITE)
         extents = (self.extent(tr.inputs[0], full), self.extent(tr.outputs[0], full))
         index_steps = (self.index_steps(tr.inputs[0]), self.index_steps(tr.outputs[0]))

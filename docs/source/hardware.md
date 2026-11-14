@@ -236,9 +236,8 @@ operand_precision:
   accumulator: fp32
 ```
 
-The `accumulator` sets how wide a matmul's or convolution's partial sums are while the core accumulates them; the
-result is written out at its output tensor's type. A core without an `accumulator` keeps partial sums at the output's
-type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
+The `accumulator` sets the precision of a matmul's or convolution's running sum while the core accumulates it; the
+result is written out at its output tensor's type. A core without an `accumulator` keeps running sums at the output's type. `input` names the multiplier format; it is recorded in the core's hardware cost report and does not change latency or energy. The known types are `int4`,
 `int8`, `uint8`, `int16`, `int24`, `bf16`, `fp16`, `int32` and `fp32`.
 
 ### Memory banks

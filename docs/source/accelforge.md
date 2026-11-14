@@ -37,7 +37,7 @@ Energies are pJ per access in Stream and J per action in AccelForge, set from th
 - **Latency**: ZigZag adds onloading, offloading and port stalls; AccelForge takes the slowest component. Systolic dimensions become broadcast fanouts, without fill or drain.
 - **Ports**: several ports of one type become one read and one write throughput, the sum of their widths, at the first port's access width and energy.
 - **Memories whose served dimensions do not nest** (tpu_v7_mxu, meta_prototype) are copied over the fanouts above them, with their size and bandwidth split.
-- **Partial sums** take the accumulator precision on every memory below the output's top memory.
+- **Running sums** take the accumulator precision on every memory below the output's top memory.
 - **Tensors**: an index's padding is dropped, as ZigZag drops it, so a padded input carries its halo; an axis indexed by one strided dim is compacted to the values read; inputs beyond `I1` and `I2` live in the outermost memory; a tensor read twice through one map is read once.
 - **Not modelled**: fixed dataflows (AccelForge searches spatial mappings itself), double buffering, per-access memory latency and area.
 - **Ops**: an Einsum computes one action per point; the backend scales the compute cycles and the MAC energy by the operators a point expands into, as ZigZag's entries do.

@@ -169,6 +169,7 @@ class _Describing(_Counting):
 class _Node:
     name: str
     tensors: tuple[str, ...]
+    outputs: tuple[str, ...] = ()
 
 
 def _space_with_one_entry(backend_name: str) -> tuple[Any, Any, Any]:

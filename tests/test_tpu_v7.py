@@ -69,8 +69,9 @@ def test_a_code_generator_that_cannot_add_partial_sums_keeps_the_contraction_who
 
 
 def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_link(tmp_path):
-    """Each TensorCore completes a quarter of the output: half of it crosses the chip boundary each way, and the
-    weights' stream from HBM, not the reduction, bounds the group."""
+    """Each TensorCore completes a quarter of the output: half of it crosses the chip boundary each way as partial
+    sums at the MXU's fp32 accumulator, twice its bf16 bits, once after the last of the 14 iterations:
+    ceil(256 x 4096 x 32 / 2 / 364) = 46092 cycles. The weights' stream from HBM bounds the iterations."""
     estimate = evaluate_mapping(
         TPU_V7,
         SWIGLU,
@@ -79,13 +80,24 @@ def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_l
         SolveOptions(artifacts=False),
     )
     routes = estimate.context.get("allocation").solution.transfer_routes
-    reduction = next(plan for plan in routes.values() if ICI & {str(link) for link in plan.links_used})
+    tr, reduction = next((tr, plan) for tr, plan in routes.items() if ICI & {str(link) for link in plan.links_used})
     assert sorted(m.name for m in reduction.targets) == ["vmem_0", "vmem_1", "vmem_2", "vmem_3"]
     assert {str(link): round(share, 2) for link, share in reduction.link_shares if str(link) in ICI} == dict.fromkeys(
-        ICI, 0.5
+        ICI, 0.5 * 32 / 16
     )
+    (group,) = estimate.context.data["group_allocations"].values()
+    detail = next(n for n in group["steady_state"]["tiled_graph"]["nodes"] if n["name"] == tr.name)
+    firing = math.ceil(256 * 4096 * 32 / 2 / 364)
+    assert (detail["copy_moved_bits"], detail["reuse_factor"], detail["route_cycles"]) == (
+        [256 * 4096 * 32],
+        14,
+        firing,
+    )
+    latency = group["latency"]
+    steady = 14 * latency["per_iteration"] - 13 * latency["overlap_between_iterations"]
     weights = 3 * 4096 * 14336 * 16 / (4 * 13400)
-    assert weights < estimate.cycles < 1.2 * weights
+    assert weights < steady < 1.2 * weights
+    assert estimate.cycles > steady
 
 
 _SOLVE = """

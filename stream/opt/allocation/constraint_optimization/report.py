@@ -223,7 +223,7 @@ def layout_section(ctx: FormulationContext) -> list[dict[str, Any]]:
                 "tensor": tensor.name,
                 "tile_shape": list(layouts.block(tr)),
                 "full_shape": list(full),
-                "element_bits": tensor.operand_type.bitwidth,
+                "element_bits": space.moved_element_bits(tr, choice),
                 "source_memories": [memory.name for memory in choice.sources],
                 "target_memories": [memory.name for memory in choice.targets],
                 "source_order": list(source.order),

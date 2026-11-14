@@ -13,7 +13,9 @@ import yaml
 from onnx import TensorProto, helper
 
 from stream.api import SolveOptions, evaluate_mapping
+from stream.hardware.cost import running_sum_bits
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
+from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_attention_head import make_multi_head_attention
 from stream.inputs.testing.workload.make_decode_attention import make_decode_attention
 from stream.mapping.capacity_tiler import CapacityTiler, _divisors_desc
@@ -50,6 +52,89 @@ def _worst_core_ratio(gen: GenericMappingGenerator, sub, cns, tiling) -> float:
     held = tiler.memory_bits(cns, cores, unroll, resident)
     capacities = tiler._capacities(cns, cores)
     return max(bits / (capacities[m] * tiler.fill_fraction) for m, bits in held.items())
+
+
+def test_a_running_sum_takes_its_accumulator_precision(tmp_path):
+    """A 64 x 256 by 256 x 64 int8 Gemm on a core with an int32 accumulator holds its 64 x 64 output at 32 bits with
+    the contraction tiled to 64, and at int8 with the contraction whole."""
+    chip, gemm = _gemm(tmp_path, 64, 256, 64, l1_kib=1056)
+    core = tmp_path / "packed.yaml"
+    core.write_text(core.read_text().replace("{input: int8}", "{input: int8, accumulator: int32}"))
+    acc, w = _parse(chip, gemm)
+    (cn,) = w.get_computation_nodes()
+    m, k, _ = (w.leading_dim(d)[0] for d in w.get_dims(cn))
+    whole = {w.leading_dim(d)[0]: w.get_dimension_size(d) for d in w.get_dims(cn)}
+    tiler = CapacityTiler(w, acc)
+    cores = {cn: [acc.get_core(0)]}
+    outputs = [
+        tiler.memory_bits((cn,), cores, {}, resident, None, frozenset({m}))["l1"]
+        for resident in (whole | {k: 64}, whole)
+    ]
+    assert outputs == [64 * 64 * 32, 64 * 64 * 8]
+
+
+def _mlp(tmp_path) -> str:
+    """X[64,128] @ W1[128,256] -> H1[64,256] @ W2[256,128] -> Y[64,128], all bf16."""
+    shapes = {"X": [64, 128], "W1": [128, 256], "W2": [256, 128], "Y": [64, 128]}
+    info = {name: helper.make_tensor_value_info(name, TensorProto.BFLOAT16, shape) for name, shape in shapes.items()}
+    nodes = [
+        helper.make_node("Gemm", ["X", "W1"], ["H1"], name="Gemm1"),
+        helper.make_node("Gemm", ["H1", "W2"], ["Y"], name="Gemm2"),
+    ]
+    graph = helper.make_graph(nodes, "mlp", [info["X"], info["W1"], info["W2"]], [info["Y"]])
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "mlp.onnx")
+    return str(tmp_path / "mlp.onnx")
+
+
+def test_a_reader_of_a_finished_sum_holds_it_at_its_type(tmp_path):
+    """Gemm1 split over four cores on its contraction holds its partial H1, 64 x 256, at the int32 accumulator, 524288
+    bits, next to X and W1 in bf16, 32768 and 131072 bits. Gemm2, split on tokens, reads its 16 x 256 of the finished
+    H1 at bf16, 65536 bits, with W2 and its Y, 524288 and 32768 bits: 688128 + 622592 bits a core."""
+    acc, w = _parse(_TPU_QUAD, _mlp(tmp_path))
+    gemm1, gemm2 = sorted(w.get_computation_nodes(), key=lambda n: n.name)
+    contraction, tokens = (w.leading_dim(w.get_dims(node)[i])[0] for node, i in ((gemm1, 1), (gemm2, 0)))
+    full = {d: w.get_dimension_size(d) for d in w.unique_dimensions()[0]}
+    unroll = {contraction: 4, tokens: 4}
+    resident = {d: n // unroll.get(d, 1) for d, n in full.items()}
+    cores = [acc.get_core(i) for i in range(4)]
+    split = {gemm1: {contraction: 4}, gemm2: {tokens: 4}}
+    held = CapacityTiler(w, acc).memory_bits((gemm1, gemm2), dict.fromkeys(split, cores), unroll, resident, split)
+    assert held == {f"tpu_like_{i}": 688128 + 622592 for i in range(4)}
+
+
+@pytest.mark.parametrize(("conv2_split", "bits"), [("D6", None), ("D5", 32)], ids=["output-channels", "input-channels"])
+def test_the_tiler_and_the_allocation_agree_on_a_running_sum(tmp_path, conv2_split, bits):
+    """Two bf16 3x3 convolutions over four cores: the second split on its output channels (D6) finishes a quarter on
+    each core, no running sum; split on its input channels (D5), each core holds a partial sum at int32."""
+    hardware = _TPU_QUAD
+    config = TwoConvWorkloadConfig(1, 8, 8, 8, 16, 16, 3, "bf16", "bf16")
+    workload = make_2_conv_workload(config, str(tmp_path))
+    acc, w = _parse(hardware, workload)
+    conv1, conv2 = sorted(w.get_computation_nodes(), key=lambda n: n.name)
+    split = {
+        conv1: w.leading_dim(w.get_dims(conv1)[6])[0],
+        conv2: w.leading_dim(w.get_dims(conv2)[int(conv2_split[1])])[0],
+    }
+    cores = [acc.get_core(i) for i in range(4)]
+    full = {d: w.get_dimension_size(d) for d in w.unique_dimensions()[0]}
+    unroll = dict.fromkeys(split.values(), 4)
+    resident = {d: n // unroll.get(d, 1) for d, n in full.items()}
+    node_unroll = {cn: {dim: 4} for cn, dim in split.items()}
+    sizes = CapacityTiler(w, acc)._node_sizes(conv2, dict.fromkeys(split, cores), unroll, resident, node_unroll)
+    partial = {d for d, size in sizes.items() if size < full[d]}
+    assert running_sum_bits(w, conv2, cores, partial) == bits
+    layers = [
+        {"name": name, "core_allocation": [[0, 1, 2, 3]], "inter_core_tiling": [[{"dim": dim, "split": 4}]]}
+        for name, dim in (("Conv1", "D6"), ("Conv2", conv2_split))
+    ]
+    (tmp_path / "mapping.yaml").write_text(
+        yaml.safe_dump({"layers": layers, "fused_groups": [{"name": "G", "layers": ["Conv1", "Conv2"]}]})
+    )
+    options = SolveOptions(artifacts=False)
+    allocation = evaluate_mapping(hardware, workload, str(tmp_path / "out"), str(tmp_path / "mapping.yaml"), options)
+    space = allocation.context.get("allocation").space
+    (solved,) = (n for n in space.ssc_nodes if n.name == "Conv2")
+    assert space.running_sum_bits(solved.outputs[0]) == bits
 
 
 def test_divisors_desc():
@@ -141,7 +226,8 @@ print(gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes())))
 
 
 def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed(tmp_path):
-    """The overflowing SwiGLU streams two dims, in the order its nodes walk them, whatever order a set iterates in."""
+    """The overflowing SwiGLU streams two dims, in the same order whatever order a set iterates in: its hidden dim
+    innermost, as the down projection's running sums for all 512 tokens, 512 x 1024 at int32, overflow a core."""
     workload = make_swiglu_workload(512, 1024, 4096, "bf16", "bf16", output_dir=str(tmp_path))
     plans = {
         subprocess.run(
@@ -153,7 +239,7 @@ def test_a_tiling_over_several_dims_does_not_depend_on_the_hash_seed(tmp_path):
         ).stdout.splitlines()[-1]
         for seed in range(4)
     }
-    assert plans == {str([{"dim": "Gemm_Left.D0", "tile": 8}, {"dim": "Gemm_Left.D2", "tile": 128}])}
+    assert plans == {str([{"dim": "Gemm_Left.D2", "tile": 32}, {"dim": "Gemm_Left.D0", "tile": 32}])}
 
 
 def test_a_node_left_on_one_core_holds_its_tensors_whole():
@@ -209,9 +295,9 @@ def test_a_group_no_tiling_fits_is_cut_where_the_operators_before_stop_fitting(t
 @pytest.mark.parametrize(
     ("hardware", "workload", "node", "layer_by_layer", "innermost"),
     [
-        # The key projection alone: its 1 MiB of outputs per 256 KiB chiplet cannot stay resident over its 4096-wide
-        # contraction
-        ("simba_small", "mha", "proj_K", True, "proj_K.D3"),
+        # The key projection alone: the 8 x 128 x 32 int24 running sums of its two 16-wide head-dim tiles, 96 KiB,
+        # stay in a 256 KiB chiplet over its 4096-wide contraction
+        ("simba_small", "mha", "proj_K", True, "proj_K.D2"),
         # The fused SwiGLU's down projection keeps its outputs while the d_ff its weights stream along goes past them
         ("eyeriss_like_quad_core", _SWIGLU_FITS, "Gemm_Down", False, "Gemm_Left.D0"),
     ],
@@ -250,7 +336,7 @@ memories:
               allocation: ["I1, fh", "I2, fh", "O, fh", "O, fl"]}]}
 operational_array:
   {unit_energy: 0.02, unit_area: 1, dimensions: [D1, D2, D3], sizes: [16, 16, 4], systolic_dimensions: [D1, D2]}
-operand_precision: {input: int8, accumulator: int32}
+operand_precision: {input: int8}
 operator_types: [MatMul, Gemm]
 """
 
@@ -309,9 +395,9 @@ connections:
 
 
 def _gemm(tmp_path, m: int, k: int, n: int, l1_kib: int, sram_kib: int = 0, link: int = 256) -> tuple[str, str]:
-    """The chip and an int8 ``m x k`` by ``k x n`` Gemm on it: one packed core with an L1 of ``l1_kib``, reaching the
-    off-chip memory through the SRAM of ``sram_kib`` of a memory core, over a link of ``link`` bits a cycle, or directly
-    where there is none."""
+    """The chip and an int8 ``m x k`` by ``k x n`` Gemm on it: one packed core, partial sums in int8 too, with an L1 of
+    ``l1_kib``, reaching the off-chip memory through the SRAM of ``sram_kib`` of a memory core, over a link of ``link``
+    bits a cycle, or directly where there is none."""
     (tmp_path / "packed.yaml").write_text(_PACKED_CORE.replace("L1_BITS", str(l1_kib * 8192)))
     (tmp_path / "sram.yaml").write_text(_SRAM_CORE.replace("SRAM_BITS", str(sram_kib * 8192)))
     staged = _STAGED_CHIP.replace("bandwidth: 256, ends: {l1", f"bandwidth: {link}, ends: {{l1")
@@ -354,6 +440,31 @@ def _order(tmp_path, m, k, n, l1_kib, sram_kib, nb_cols_to_use=None, link=256) -
 )
 def test_a_tile_loop_order_is_the_one_moving_the_least_data(tmp_path, shape, nb_cols_to_use, order):
     assert _order(tmp_path, *shape, nb_cols_to_use) == order
+
+
+def test_a_reduction_looped_innermost_is_cut_before_the_tiles_outside_it(tmp_path):
+    """a[256,64] @ w1[64,1024] -> mid @ w2[1024,64] -> out[256,64], int8 accumulating in int32, in a 64 KiB L1. The
+    first fit, 16 tokens by 128 hidden, cannot hold the running sums of every token tile, 256 x 64 x 32 bits, so the
+    hidden dim loops innermost; refitted with the hidden dim cut first, 32 tokens by 64 hidden fit and the weights
+    stream 8 rather than 16 times."""
+    chip, _ = _gemm(tmp_path, 256, 64, 64, l1_kib=64)
+    core = tmp_path / "packed.yaml"
+    core.write_text(core.read_text().replace("{input: int8}", "{input: int8, accumulator: int32}"))
+    shapes = {"a": [256, 64], "w1": [64, 1024], "w2": [1024, 64], "out": [256, 64]}
+    info = {name: helper.make_tensor_value_info(name, TensorProto.INT8, shape) for name, shape in shapes.items()}
+    nodes = [
+        helper.make_node("Gemm", ["a", "w1"], ["mid"], name="Gemm1"),
+        helper.make_node("Gemm", ["mid", "w2"], ["out"], name="Gemm2"),
+    ]
+    graph = helper.make_graph(nodes, "mlp", [info["a"], info["w1"], info["w2"]], [info["out"]])
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)]), tmp_path / "mlp.onnx")
+    acc, w = _parse(chip, str(tmp_path / "mlp.onnx"))
+    gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
+    (sub,) = gen.groups()
+    assert gen._build_intra_core_tiling(sub, tuple(sub.get_computation_nodes())) == [
+        {"dim": "Gemm1.D2", "tile": 64},
+        {"dim": "Gemm1.D0", "tile": 32},
+    ]
 
 
 def test_a_wide_link_from_the_staging_memory_takes_the_rows_outermost(tmp_path):
