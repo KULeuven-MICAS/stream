@@ -1,3 +1,4 @@
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import reduce
@@ -881,15 +882,18 @@ class ChannelToObjectFifoPass(RewritePattern):
 
     @staticmethod
     def replay_count(producer: StrensorType, consumer: StrensorType) -> int:
-        """How many times a staging tile re-sends its held object to this reader."""
+        """How many times a staging tile re-sends its held object to this reader: once per trip of each loop its window
+        spans and the reader's does not, two loops of one dim at one trip count counting twice."""
 
-        def covered(strensor: StrensorType) -> set[tuple[LayerDim, int]]:
+        def covered(strensor: StrensorType) -> Counter[tuple[LayerDim, int]]:
             kernel_dims = {v.dim for v in strensor.ssis.data.get_kernel_variables()}
             variables = strensor.ssis.data.vars
             window = variables[len(variables) - strensor.reuse_index.data :]
-            return {(v.dim, v.size) for v in window if v.type == StrensorVarType.TEMPORAL and v.dim not in kernel_dims}
+            return Counter(
+                (v.dim, v.size) for v in window if v.type == StrensorVarType.TEMPORAL and v.dim not in kernel_dims
+            )
 
-        return prod(size for _, size in covered(producer) - covered(consumer))
+        return prod(size**count for (_, size), count in (covered(producer) - covered(consumer)).items())
 
     @classmethod
     def produced_count(cls, push: PushOp) -> int:
