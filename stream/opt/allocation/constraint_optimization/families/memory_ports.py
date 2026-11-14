@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from stream.hardware.ports import READ, PortKey
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE
+from stream.opt.allocation.constraint_optimization.families.latency import single_copy
 from stream.opt.allocation.constraint_optimization.families.traffic import (
     DmaStream,
     dma_streams,
@@ -35,7 +36,7 @@ class MemoryPorts:
 
     name: ClassVar[str] = "memory_ports"
     declare_requires: ClassVar[tuple[str, ...]] = ("transfer_latency",)
-    declares: ClassVar[tuple[str, ...]] = ("port_rate", "port_demand", "port_demand_slot", SLOT_PRESSURE)
+    declares: ClassVar[tuple[str, ...]] = ("port_rate", "port_bits", "port_demand", "port_demand_slot", SLOT_PRESSURE)
     requires: ClassVar[tuple[str, ...]] = ("iteration", "overlap")
     provides: ClassVar[tuple[str, ...]] = ()
 
@@ -49,18 +50,30 @@ class MemoryPorts:
             q.add("port_rate", port.bits_per_cycle, index=port.key)
         per_iteration: dict[PortKey, Terms] = defaultdict(list)
         per_slot: dict[tuple[PortKey, int], Terms] = defaultdict(list)
+        steady_iteration: dict[PortKey, Terms] = defaultdict(list)
+        steady_slot: dict[tuple[PortKey, int], Terms] = defaultdict(list)
         for stream in dma_streams(ctx):
+            steady = _steady_state_cycles(ctx, stream)
             for side in stream.sides:
-                term = (stream.bits_per_cycle * side.share / side.efficiency, stream.active_cycles, stream.latency_ub)
+                rate = stream.bits_per_cycle * side.share / side.efficiency
+                term = (rate, stream.active_cycles, stream.latency_ub)
                 per_iteration[side.port.key].append(term)
                 per_slot[(side.port.key, stream.slot)].append(term)
+                term = term if steady is None else (rate, steady, stream.latency_ub)
+                steady_iteration[side.port.key].append(term)
+                steady_slot[(side.port.key, stream.slot)].append(term)
         for traffic in node_traffic(ctx):
-            per_iteration[traffic.port.key].append((traffic.bits, 1, 1))
-            per_slot[(traffic.port.key, traffic.slot)].append((traffic.bits, 1, 1))
-
+            term = (traffic.bits, 1, 1)
+            per_iteration[traffic.port.key].append(term)
+            per_slot[(traffic.port.key, traffic.slot)].append(term)
+            steady = [] if ctx.space.runs_in_epilogue(traffic.node) else [term]
+            steady_iteration[traffic.port.key] += steady
+            steady_slot[(traffic.port.key, traffic.slot)] += steady
         for key, terms in per_iteration.items():
+            q.add("port_bits", self._sum(ctx, terms), index=key)
+        for key, terms in steady_iteration.items():
             q.add("port_demand", self._sum(ctx, terms), index=key)
-        for key, terms in per_slot.items():
+        for key, terms in steady_slot.items():
             q.add("port_demand_slot", self._sum(ctx, terms), index=key)
         if not (self.interval or self.burst):
             return
@@ -96,7 +109,7 @@ class MemoryPorts:
         interval = ctx.model.value(q.get("iteration").expr) - ctx.model.value(q.get("overlap").expr)
         streams = _stream_bits(ctx)
         rows = [
-            *self._port_rows(ctx, interval),
+            *self._port_rows(ctx, interval, streams),
             *_shared_rows(ctx, interval, streams),
             *_link_rows(ctx, interval, streams),
         ]
@@ -104,14 +117,17 @@ class MemoryPorts:
         return {"memory_ports": rows}
 
     @staticmethod
-    def _port_rows(ctx: FormulationContext, interval: float) -> list[dict[str, Any]]:
+    def _port_rows(
+        ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, tuple[float, float]]]
+    ) -> list[dict[str, Any]]:
         q = ctx.quantities
-        if "port_demand" not in q:
+        if "port_bits" not in q:
             return []
         value = ctx.model.value
         cores = {port.key: port.core_ids for port in ctx.space.accelerator.ports}
+        once_per_run = _port_once(ctx, streams)
         rows = []
-        for key, demand in q.indexed("port_demand").items():
+        for key, bits in q.indexed("port_bits").items():
             rate = q.get("port_rate", key).expr
             bursts = {
                 slot: value(d.expr) / (rate * ctx.vars.slot_latency[slot].X)
@@ -119,7 +135,9 @@ class MemoryPorts:
                 if k == key and ctx.vars.slot_latency[slot].X > 0
             }
             busiest = max(bursts, key=bursts.__getitem__, default=None)
-            row = _activity_row(ctx, "memory_port", port_name(key), cores[key], rate, value(demand.expr), interval)
+            once = once_per_run[key]
+            steady = value(bits.expr) - once / ctx.space.iterations
+            row = _activity_row(ctx, "memory_port", port_name(key), cores[key], rate, (steady, once), interval)
             rows.append(
                 row | {"burst_utilization": bursts.get(busiest) if busiest is not None else None, "burst_slot": busiest}
             )
@@ -130,15 +148,26 @@ class MemoryPorts:
         return ctx.model.quicksum(coefficient * value for coefficient, value, _ in terms)._raw
 
 
+def _steady_state_cycles(ctx: FormulationContext, stream: DmaStream) -> Any:
+    """The steady-state cycles per iteration of ``stream``, without a firing in the epilogue; None where it has none."""
+    q = ctx.quantities
+    if stream.copies is not None or "steady_state_latency" not in q:
+        return None
+    steady = q.indexed("steady_state_latency").get((stream.transfer, stream.choice))
+    return None if steady is None else steady.expr
+
+
 def _activity_row(
     ctx: FormulationContext,
     kind: str,
     name: str,
     core_ids: tuple[int, ...],
     rate: float,
-    bits: float,
+    moved: tuple[float, float],
     interval: float,
 ) -> dict[str, Any]:
+    """A resource's row from the bits it ``moved``: per iteration, and once in the run after the last iteration."""
+    bits, once = moved
     core_types = [ctx.space.accelerator.get_core(core_id).core_type for core_id in core_ids]
     real_cycle = bits / rate
     return {
@@ -148,6 +177,7 @@ def _activity_row(
         "core_types": core_types,
         "bw_bits_per_cycle": rate,
         "bits_per_iteration": bits,
+        "once_per_run_bits": once,
         "req_bw_aver": bits / interval if interval > 0 else None,
         "real_cycle": real_cycle,
         "allowed_cycle": interval,
@@ -158,22 +188,48 @@ def _activity_row(
     }
 
 
-def _stream_bits(ctx: FormulationContext) -> list[tuple[DmaStream, float]]:
-    return [(stream, ctx.model.value(stream.bits_per_cycle * stream.active_cycles)) for stream in dma_streams(ctx)]
+def _stream_bits(ctx: FormulationContext) -> list[tuple[DmaStream, tuple[float, float]]]:
+    """Per stream, the bits it moves per iteration and those it moves once in the run, after the last iteration."""
+    space = ctx.space
+    found = []
+    for stream in dma_streams(ctx):
+        active = ctx.model.value(stream.active_cycles)
+        tr, choice = stream.transfer, stream.choice
+        held = 0.0
+        if _steady_state_cycles(ctx, stream) is not None:
+            copy = single_copy(ctx, tr, choice)
+            stopped = sum(ctx.vars.z_stop[(copy, s)].X for s in space.once_per_run_stops(tr, copy))
+            held = min(active, space.transfer_latency_for_path(tr, choice) / space.iterations * stopped)
+        bits = stream.bits_per_cycle
+        found.append((stream, (bits * (active - held), bits * held * space.iterations)))
+    return found
+
+
+def _port_once(ctx: FormulationContext, streams: list[tuple[DmaStream, tuple[float, float]]]) -> dict[PortKey, float]:
+    """Per port, the bits it moves once in the run, after the last iteration."""
+    once: dict[PortKey, float] = defaultdict(float)
+    for stream, (_, stream_once) in streams:
+        for side in stream.sides:
+            once[side.port.key] += stream_once * side.share / side.efficiency
+    for traffic in node_traffic(ctx):
+        if ctx.space.runs_in_epilogue(traffic.node):
+            once[traffic.port.key] += traffic.bits * ctx.space.iterations
+    return once
 
 
 def _shared_rows(
-    ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, float]]
+    ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, tuple[float, float]]]
 ) -> list[dict[str, Any]]:
     """A memory with a measured bandwidth: its solved busy time, which counts the access pattern's slow down."""
     q, space = ctx.quantities, ctx.space
     rows = []
     for memory, model in space.shared_bandwidth.items():
-        bits = sum(
-            b * space.memory_share(s.transfer, s.choice, memory, direction == READ, s.copies)
+        shares = [
+            (b, space.memory_share(s.transfer, s.choice, memory, direction == READ, s.copies))
             for s, b in streams
             if (direction := space.direction(memory, s.choice)) is not None
-        )
+        ]
+        bits = (sum(b[0] * share for b, share in shares), sum(b[1] * share for b, share in shares))
         cores = tuple(c.id for c in memory.cores)
         row = _activity_row(ctx, "shared_bandwidth", memory.name, cores, model.ceiling, bits, interval)
         if ("shared_busy" in q) and memory in q.indexed("shared_busy"):
@@ -188,15 +244,17 @@ def _shared_rows(
 
 
 def _link_rows(
-    ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, float]]
+    ctx: FormulationContext, interval: float, streams: list[tuple[DmaStream, tuple[float, float]]]
 ) -> list[dict[str, Any]]:
-    bits: dict[Any, float] = defaultdict(float)
+    steady: dict[Any, float] = defaultdict(float)
+    once: dict[Any, float] = defaultdict(float)
     for stream, stream_bits in streams:
         shares = dict(stream.link_shares) or dict.fromkeys(stream.choice.links_used, 1.0)
         for link in stream.choice.links_used:
-            bits[link] += stream_bits * shares.get(link, 0.0)
+            steady[link] += stream_bits[0] * shares.get(link, 0.0)
+            once[link] += stream_bits[1] * shares.get(link, 0.0)
     return [
-        _activity_row(ctx, "link", link_name(link), link_cores(link), link.bandwidth, b, interval)
-        for link, b in bits.items()
-        if b > 0
+        _activity_row(ctx, "link", link_name(link), link_cores(link), link.bandwidth, (b, once[link]), interval)
+        for link, b in steady.items()
+        if b > 0 or once[link] > 0
     ]

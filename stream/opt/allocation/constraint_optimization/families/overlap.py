@@ -24,8 +24,11 @@ from stream.opt.allocation.constraint_optimization.families import (
 from stream.opt.allocation.constraint_optimization.families.latency import (
     link_busy,
     per_copy_terms,
+    single_copy,
+    steady_state_cycles,
 )
 from stream.opt.allocation.constraint_optimization.families.routing import LINK_CONTENTION
+from stream.opt.allocation.constraint_optimization.families.traffic import call_port_cycles, firing_port_cycles
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, resource_key
 from stream.opt.solver import LinExpr, ObjectiveLevel, SolverVar, SolverVarType
 from stream.workload.demand import DemandItem, firing_count, moved_elements
@@ -64,6 +67,7 @@ class Overlap:
         "idle_latency",
         "recurrence_bound",
         "absent_wait",
+        "epilogue",
         TOTAL_LATENCY,
         OFFCHIP_TIMED,
     )
@@ -78,6 +82,7 @@ class Overlap:
         self.transfer_contention = transfer_contention
         self.offchip_contention = offchip_contention
         self.has_absent_wait = False
+        self.has_epilogue = False
 
     def build(self, ctx: FormulationContext) -> None:
         q = ctx.quantities
@@ -89,6 +94,10 @@ class Overlap:
         self._define_overlap_var(ctx, idle_lat, latency)
         drained = _drained(ctx.space)
         fill = _resident_fill(ctx, max(drained.values(), default=0))
+        epilogue = _epilogue(ctx, drained)
+        self.has_epilogue = epilogue is not None
+        q.add("epilogue", epilogue if self.has_epilogue else 0)
+        fill = fill + epilogue if self.has_epilogue else fill
         wait = _absent_wait(ctx, fill, drained)
         self.has_absent_wait = wait is not None
         q.add("absent_wait", wait if self.has_absent_wait else 0)
@@ -106,9 +115,9 @@ class Overlap:
         )
         q.add(TOTAL_LATENCY, total_latency._raw)
         levels = [ObjectiveLevel(expr=total_latency._raw, priority=LATENCY, name="latency")]
-        if not self.has_absent_wait:
+        if not (self.has_absent_wait or self.has_epilogue):
             return levels
-        without_wait = total_latency._raw - q.get("absent_wait").expr
+        without_wait = total_latency._raw - q.get("absent_wait").expr - q.get("epilogue").expr
         return [*levels, ObjectiveLevel(expr=without_wait, priority=LATENCY_WITHOUT_WAIT, name="latency_without_wait")]
 
     def _define_overlap_var(
@@ -344,6 +353,10 @@ def _active_shared_latency(
         lambda copies: float(space.shared_cycles(memory, tr, choice, ceiling, copies)),
         f"shared_latency_{memory.name}_{tr}",
     )
+    if None in terms and space.once_per_run_stops(tr, single_copy(ctx, tr, choice)):
+        return steady_state_cycles(
+            ctx, tr, choice, terms[None], float(space.shared_cycles(memory, tr, choice, ceiling))
+        )
     return next(iter(terms.values())) if len(terms) == 1 else ctx.model.quicksum(terms.values())
 
 
@@ -404,6 +417,103 @@ def _resident_fill(ctx: FormulationContext, drain: int = 0) -> Any:
         model.add_constr(fill >= model.quicksum(terms), name=f"fill_shared_{memory.name}")
     fill_cycles = fill._raw + drain
     return fill_cycles + warmup if (warmup := _warmup(ctx)) is not None else fill_cycles
+
+
+def _epilogue(ctx: FormulationContext, drained: dict[object, int]) -> Any:
+    """The epilogue: cycles the run lasts after its last iteration and drain, for the last firing of a copy kept along a
+    loop its producer still computes in (:meth:`DecisionSpace.epilogue_stops`) and every call and firing after it. None
+    where there is none."""
+    space, model, q = ctx.space, ctx.model, ctx.quantities
+    nodes = space.epilogue_nodes
+    if not nodes:
+        return None
+    drain = max(drained.values(), default=0)
+    after = q.get("iteration").expr + drain
+    slot_bound = _slot_pressure_bound(q)
+    epilogue = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="epilogue")
+    calls = call_port_cycles(ctx)
+    done: dict[Any, SolverVar] = {}
+    in_epilogue: dict[Any, SolverVar] = {}
+    for node in nodes:
+        done[node] = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name=f"epilogue_done_{node.name}")
+        producers = [p for p in space.workload.predecessors(node) if p in space.slot_of]
+        in_epilogue[node] = _in_epilogue(ctx, node, producers, in_epilogue)
+        cost = _epilogue_cost(ctx, node, in_epilogue[node], producers, drained, calls)
+        if node not in space.ssc_nodes:
+            reach = (space.slot_of[node] + 1) * slot_bound + drained[node]
+            model.add_constr(
+                done[node] >= _slot_end(ctx, node, drained) - reach * in_epilogue[node],
+                name=ctx.unique_name(f"epilogue_slot_{node.name}"),
+            )
+        for k, p in enumerate(producers):
+            ready = done[p] if p in done else _slot_end(ctx, p, drained)
+            model.add_constr(done[node] >= ready + cost, name=ctx.unique_name(f"epilogue_{node.name}_{k}"))
+        model.add_constr(epilogue >= done[node] - after, name=ctx.unique_name(f"epilogue_end_{node.name}"))
+    return epilogue._raw
+
+
+def _in_epilogue(
+    ctx: FormulationContext, node: Any, producers: list[Any], in_epilogue: dict[Any, SolverVar]
+) -> SolverVar:
+    """1 where ``node`` runs in the epilogue, else 0: where it :meth:`DecisionSpace.runs_in_epilogue`,
+    a copy of it is held at a :meth:`DecisionSpace.epilogue_stops` stop, or a producer does."""
+    space, model, z_stop = ctx.space, ctx.model, ctx.vars.z_stop
+    once = node in space.ssc_nodes and space.runs_in_epilogue(node)
+    var = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=float(once), ub=1.0, name=f"in_epilogue_{node.name}")
+    if once:
+        return var
+    causes = [in_epilogue[p]._raw for p in producers if p in in_epilogue]
+    if node not in space.ssc_nodes:
+        causes += [
+            model.quicksum(z_stop[(copy, s)]._raw for s in sorted(stops))
+            for copy in node.outputs
+            if (stops := space.epilogue_stops(node, copy))
+        ]
+    for cause in causes:
+        model.add_constr(var >= cause, name=ctx.unique_name(f"in_epilogue_{node.name}"))
+    model.add_constr(var <= model.quicksum(causes), name=ctx.unique_name(f"in_epilogue_{node.name}_ub"))
+    return var
+
+
+def _slot_end(ctx: FormulationContext, node: Any, drained: dict[object, int]) -> Any:
+    """Cycles into the last iteration ``node``'s slot ends, its drain added."""
+    slots = ctx.vars.slot_latency
+    return ctx.model.quicksum([*(slots[s]._raw for s in range(ctx.space.slot_of[node] + 1)), drained[node]])
+
+
+def _epilogue_cost(  # noqa: PLR0913
+    ctx: FormulationContext,
+    node: Any,
+    in_epilogue: SolverVar,
+    producers: list[Any],
+    drained: dict[object, int],
+    calls: dict[ComputationNode, float],
+) -> Any:
+    """Cycles ``node`` adds to the epilogue where it runs in it (``in_epilogue``): a transfer's whole firing on the
+    route it takes, or a computation node's whole call, at its busiest port if that is longer (``calls``), and its own
+    drain."""
+    space, model = ctx.space, ctx.model
+    if node in space.ssc_nodes:
+        own = drained[node] - max((drained[p] for p in producers), default=0)
+        return (max(space.runtime(node), calls.get(node, 0.0)) + own) * in_epilogue
+    firings = {choice: _firing_cycles(ctx, node, choice) for choice in space.path_choices[node]}
+    longest = max(firings.values(), default=0)
+    chosen = model.quicksum(cycles * ctx.vars.y[(node, choice)]._raw for choice, cycles in firings.items())
+    return chosen + longest * in_epilogue - longest
+
+
+def _firing_cycles(ctx: FormulationContext, tr: TransferNode, choice: MulticastPathPlan) -> float:
+    """Cycles one whole firing of ``tr`` on ``choice`` holds its busiest resource: its links, a top-level port or a
+    shared-bandwidth memory at its ceiling."""
+    space = ctx.space
+    cycles = [float(space.transfer_latency_for_path(tr, choice)), firing_port_cycles(ctx, tr, choice)]
+    if not space.choice_shares_memory(tr, choice):
+        cycles += [
+            float(space.shared_cycles(memory, tr, choice, bandwidth.ceiling))
+            for memory, bandwidth in space.shared_bandwidth.items()
+            if space.direction(memory, choice) is not None
+        ]
+    return max(cycles)
 
 
 def _warmup(ctx: FormulationContext) -> Any:

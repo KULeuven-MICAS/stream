@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.ports import OUTPUT, READ, READ_BY_DATAPATH, WRITE, WRITE_BY_DATAPATH, Port, PortKey
 from stream.opt.allocation.constraint_optimization.families.latency import copy_latencies, reuse_selectors
-from stream.opt.allocation.constraint_optimization.utils import active_fraction, get_active_latency
+from stream.opt.allocation.constraint_optimization.utils import absent_trips, active_fraction, get_active_latency
 from stream.stages.estimation.core_cost_backends import discover_backends, entry_backend, port_traffic
 from stream.workload.demand import item_bits
 from stream.workload.workload import ComputationNode, InEdge, TransferNode
@@ -60,6 +61,7 @@ class NodeTraffic:
     port: Port
     bits: float
     slot: int
+    node: ComputationNode
 
 
 def _sides(ctx: FormulationContext, tr: TransferNode, choice: Any, copies: CopySet | None = None) -> list[PortShare]:
@@ -143,6 +145,30 @@ def dma_streams(ctx: FormulationContext) -> list[DmaStream]:
     return streams + local_copies(ctx)
 
 
+def firing_port_cycles(ctx: FormulationContext, tr: TransferNode, choice: MulticastPathPlan) -> float:
+    """Cycles the busiest top-level port spends on one whole firing of ``tr`` on ``choice``."""
+    space = ctx.space
+    if space.transfer_latency_for_path(tr, choice) <= 0:
+        return 0.0
+    bits = space.moved_bits(tr, choice)
+    per_port: dict[PortKey, float] = defaultdict(float)
+    for side in _sides(ctx, tr, choice):
+        per_port[side.port.key] += bits * side.share / side.efficiency / side.port.bits_per_cycle
+    return max(per_port.values(), default=0.0)
+
+
+def call_port_cycles(ctx: FormulationContext) -> dict[ComputationNode, float]:
+    """Per node, the cycles the busiest top-level port spends on one whole call of it (:func:`node_traffic`)."""
+    per_port: dict[tuple[ComputationNode, PortKey], float] = defaultdict(float)
+    for traffic in node_traffic(ctx):
+        calls = absent_trips(ctx.space.ssis[traffic.node])
+        per_port[(traffic.node, traffic.port.key)] += traffic.bits * calls / traffic.port.bits_per_cycle
+    busiest: dict[ComputationNode, float] = defaultdict(float)
+    for (node, _), cycles in per_port.items():
+        busiest[node] = max(busiest[node], cycles)
+    return dict(busiest)
+
+
 def local_copies(ctx: FormulationContext) -> list[DmaStream]:
     """Each local copy, per route: one read and one write of its box on that memory's
     ports per firing of the copy."""
@@ -216,7 +242,7 @@ def node_traffic(ctx: FormulationContext) -> list[NodeTraffic]:
             entry = ctx.space.cost_lut.get_cost(node, core)
             charged = port_traffic(entry_backend(entry, core, backends), entry)
             for port, _, bits in [*_at_ports(ctx, core, charged), *running_sum_ports(ctx, node, core)]:
-                traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node]))
+                traffic.append(NodeTraffic(port, bits * fraction, ctx.space.slot_of[node], node))
     return traffic
 
 

@@ -27,7 +27,8 @@ class LatencyInfo(BaseModel):
     )
     fill: int = Field(
         default=0,
-        description="Cycles the run adds to its overlapped iterations: fills, drains and the wait for absent nodes",
+        description="Cycles the run adds to its overlapped iterations: resident fills, warm-up, drain, epilogue and "
+        "the wait for absent nodes",
     )
 
 
@@ -454,7 +455,12 @@ class ResourceActivityIR(BaseModel):
     core_ids: list[int] = Field(description="Cores sharing the resource")
     core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
     bw_bits_per_cycle: float = Field(description="Port bandwidth")
-    bits_per_iteration: float = Field(description="Bits the solved schedule moves through the port per iteration")
+    bits_per_iteration: float = Field(
+        description="Bits the solved schedule moves through the port per iteration, without once_per_run_bits"
+    )
+    once_per_run_bits: float = Field(
+        default=0.0, description="Bits moved through the port once in the run, after the last iteration"
+    )
     req_bw_aver: float | None = Field(description="Average bandwidth required over the initiation interval")
     real_cycle: float = Field(description="Cycles the port needs for one iteration's bits")
     allowed_cycle: float = Field(description="Initiation interval: the cycles one iteration gives the port")
@@ -572,7 +578,7 @@ class AllocationPerformanceView(BaseModel):
     `compute_cores_available`, and per-node `mac_spatial_utilization` / `compute_efficiency`.
     """
 
-    schema_version: Literal["2.1"] = "2.1"
+    schema_version: Literal["2.2"] = "2.2"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     bottleneck: BottleneckIR = Field(description="Per-iteration compute-bound vs transfer/DMA-bound cycle split")
     aggregate: PerformanceAggregateIR = Field(description="Accelerator-wide core usage and MAC utilization")
@@ -613,7 +619,7 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["3.3"] = "3.3"
+    schema_version: Literal["3.4"] = "3.4"
     latency: LatencyInfo = Field(description="Latency metrics from the solved allocation")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(

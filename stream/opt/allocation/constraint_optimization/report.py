@@ -499,10 +499,12 @@ def slot_latency_breakdown(
                 "active_latency_cycles": space.active_runtime(n),
             }
         )
+    steady = q.indexed("steady_state_latency") if "steady_state_latency" in q else {}
     for (tr, choice), y in ctx.vars.y.items():
         if y.X < VAR_THRESHOLD:
             continue
         raw = int(space.transfer_latency_for_path(tr, choice))
+        timed = steady[(tr, choice)] if (tr, choice) in steady else q.get("transfer_latency", (tr, choice))
         breakdown[space.slot_of[tr]]["transfer_contributors"].append(
             {
                 "transfer": tr.name,
@@ -516,7 +518,7 @@ def slot_latency_breakdown(
                     reported_reuse(value(q.get("copy_reuse_factor", tr.outputs[c]).expr), space.ssis[tr])
                     for c in {c for copies in space.copy_sets(tr, choice) for c in copies} or {0}
                 ),
-                "latency_contribution_cycles": _json_scalar(value(q.get("transfer_latency", (tr, choice)).expr)),
+                "latency_contribution_cycles": _json_scalar(value(timed.expr)),
             }
         )
     per_iteration = sum(round(latency.X) for latency in ctx.vars.slot_latency.values())
@@ -530,6 +532,7 @@ def slot_latency_breakdown(
             "total_latency_cycles": round(value(q.get("total_latency").expr)),
             "fill_cycles": round(value(q.get("fill").expr)),
             "absent_wait_cycles": round(value(q.get("absent_wait").expr)) if "absent_wait" in q else 0,
+            "epilogue_cycles": round(value(q.get("epilogue").expr)) if "epilogue" in q else 0,
             "shared_busy_cycles": {memory.name: _json_scalar(value(busy.expr)) for memory, busy in shared.items()},
         },
         "resource_slack": slack,

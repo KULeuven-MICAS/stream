@@ -247,7 +247,7 @@ def _traffic(rows: list[dict[str, Any]], hardware: dict[str, Any], iterations: i
         name = row["resource"]
         if (level := level_of.get(name)) is None:
             continue
-        moved[level] += row["bits_per_iteration"] * iterations / 8
+        moved[level] += (row["bits_per_iteration"] * iterations + row.get("once_per_run_bits", 0.0)) / 8
         if level not in busiest or (row["utilization"] or 0) > (busiest[level]["utilization"] or 0):
             busiest[level] = {"resource": name, "utilization": row["utilization"]}
     return {level: (moved[level], busiest.get(level)) for level in moved}

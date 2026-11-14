@@ -87,19 +87,25 @@ def _solve(tmp_path: Path, tiles: str, gemm2_core: int = 1):
 
 
 def test_a_reduction_read_on_another_core_delays_its_reader_by_every_trip(tmp_path: Path):
-    """K tiled 32 (4 trips), Gemm1 on core 0, Gemm2 on core 1. Gemm2 reads the whole H1, the sum over every K trip,
-    so the run is X and W1's first tiles (the longer), Gemm1's four trips, H1's one firing, Gemm2 whole, Y's one
-    firing and the arrays' drain, each at the latency the cost model gives it. The slot breakdown's fill is the
-    drain and the absent wait; the iterations take the rest. The solve reports the latency level's objective."""
+    """K tiled 32 (4 trips), Gemm1 on core 0, Gemm2 on core 1. Gemm2 reads the whole H1, the sum over every K trip, so
+    it runs once, after the last iteration, and so do H1's and Y's one firing, each at its busiest port's time: H1's
+    262144 bits pass a 2048 bits/cycle port in 128 cycles (the bus takes 32), Y's 131072 in 64 (the bus 16). The slot
+    breakdown's fill is the drain and the epilogue. The solve reports the latency level's objective."""
     estimate, whole, drain = _solve(tmp_path, K_TILES)
+    (path,) = tmp_path.rglob("slot_latency_breakdown.yaml")
+    breakdown = yaml.safe_load(path.read_text())
+    gemm1 = next(s["slot"] for s in breakdown["slots"] for c in s["compute_contributors"] if c["node"] == "Gemm1")
+    last = sum(s["slot_latency_cycles"] for s in breakdown["slots"] if s["slot"] <= gemm1)
+    assert (whole["Transfer(H1)"], whole["Transfer(Y_1)"]) == (32, 16)
+    after = 262144 // 2048 + whole["Gemm2"] + 131072 // 2048 + drain
+    assert estimate.cycles == 3 * whole["Gemm1"] + last + after
     chain = max(whole["Transfer(X)"], whole["Transfer(W1)"]) + 4 * whole["Gemm1"] + whole["Transfer(H1)"]
-    assert estimate.cycles == chain + whole["Gemm2"] + whole["Transfer(Y_1)"] + drain
+    assert estimate.cycles > chain + whole["Gemm2"] + whole["Transfer(Y_1)"] + drain
     (group,) = estimate.context.data["group_allocations"].values()
     assert group["solve"]["objective"] == estimate.cycles
-    (path,) = tmp_path.rglob("slot_latency_breakdown.yaml")
-    totals = yaml.safe_load(path.read_text())["totals"]
+    totals = breakdown["totals"]
     steady = 4 * totals["iteration_latency_cycles"] - 3 * totals["overlap_cycles"]
-    assert (totals["fill_cycles"], totals["absent_wait_cycles"]) == (
+    assert (totals["fill_cycles"], totals["absent_wait_cycles"] + totals["epilogue_cycles"]) == (
         estimate.cycles - steady,
         totals["fill_cycles"] - drain,
     )
@@ -131,9 +137,10 @@ def test_a_node_waits_where_it_is_absent_from_a_loop_its_neighbour_varies_on(tmp
 
 def test_the_iterations_report_what_they_need_and_the_wait_the_rest(tmp_path: Path, monkeypatch):
     """The K-tiled MLP on two cores reports the iteration latency and overlap of its steady schedule alone: the wait
-    takes all the run adds to them."""
+    and the epilogue take all the run adds to them."""
     waited, _, _ = _solve(tmp_path / "waited", K_TILES)
     monkeypatch.setattr(overlap, "_absent_wait", lambda ctx, fill, drained: None)
+    monkeypatch.setattr(overlap, "_epilogue", lambda ctx, drained: None)
     steady, _, _ = _solve(tmp_path / "steady", K_TILES)
     keys = ("per_iteration", "overlap_between_iterations")
     assert [_latency(waited)[k] for k in keys] == [_latency(steady)[k] for k in keys]

@@ -38,6 +38,7 @@ class SlotLatency:
         "copy_latency",
         "copy_firing_rate",
         "shared_firing_rate",
+        "steady_state_latency",
         SLOT_PRESSURE,
     )
 
@@ -45,7 +46,8 @@ class SlotLatency:
         q = ctx.quantities
         space, model, slot_latency = ctx.space, ctx.model, ctx.vars.slot_latency
         for n in space.ssc_nodes:
-            model.add_constr(slot_latency[space.slot_of[n]] >= space.active_runtime(n), name=f"ssc_lat_{n.name}")
+            runtime = 0.0 if space.runs_in_epilogue(n) else space.active_runtime(n)
+            model.add_constr(slot_latency[space.slot_of[n]] >= runtime, name=f"ssc_lat_{n.name}")
         for (tr, choice), y in ctx.vars.y.items():
             if not is_single_copy(space.copy_sets(tr, choice)):
                 _add_copy_firing_rates(ctx, tr, choice, y)
@@ -57,6 +59,9 @@ class SlotLatency:
                     q.add("copy_latency", term._raw, index=(tr, choice, copies))
             latency = next(iter(terms.values())) if len(terms) == 1 else _busiest_resource(ctx, tr, choice)
             q.add("transfer_latency", latency._raw, index=(tr, choice))
+            if None in terms and space.once_per_run_stops(tr, single_copy(ctx, tr, choice)):
+                latency = steady_state_cycles(ctx, tr, choice, latency, space.transfer_latency_for_path(tr, choice))
+                q.add("steady_state_latency", latency._raw, index=(tr, choice))
             model.add_constr(slot_latency[space.slot_of[tr]] >= latency, name=f"tr_lat_{space.route_name(tr, choice)}")
         q.add(SLOT_PRESSURE, 0, index="slot_latency", upper_bound=_longest_step(space))
 
@@ -71,12 +76,31 @@ def per_copy_terms(  # noqa: PLR0913
 ) -> dict[CopySet | None, SolverVar | LinExpr]:
     """Cycles per iteration ``tr`` keeps a resource busy on ``choice`` while ``y`` chooses it, from the ``cycles`` one
     firing takes: keyed None over its one copy's reuse, else per copy set at that set's rate."""
-    groups = ctx.space.copy_sets(tr, choice)
-    if is_single_copy(groups):
-        copy = tr.outputs[groups[0][0]] if groups else tr.outputs[0]
-        return {None: _over_reuse(ctx, tr, y, cycles(None), copy, base_name)}
+    if is_single_copy(ctx.space.copy_sets(tr, choice)):
+        return {None: _over_reuse(ctx, tr, y, cycles(None), single_copy(ctx, tr, choice), base_name)}
     rates = copy_firing_rates(ctx, tr, choice)
     return {copies: ctx.model.quicksum([cycles(copies) * rate]) for copies, rate in rates.items()}
+
+
+def steady_state_cycles(
+    ctx: FormulationContext, tr: TransferNode, choice: MulticastPathPlan, term: SolverVar | LinExpr, cycles: float
+) -> SolverVar | LinExpr:
+    """``term`` without the firing of ``cycles`` that runs once, in the epilogue: the route's steady-state cycles per
+    iteration (:meth:`DecisionSpace.once_per_run_stops`)."""
+    space, z_stop = ctx.space, ctx.vars.z_stop
+    copy = single_copy(ctx, tr, choice)
+    once = space.once_per_run_stops(tr, copy)
+    name = ctx.unique_name(f"steady_state_{space.route_name(tr, choice)}")
+    steady = ctx.model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name=name)
+    once_per_run = ctx.model.quicksum(cycles / space.iterations * z_stop[(copy, s)]._raw for s in sorted(once))
+    ctx.model.add_constr(steady >= term - once_per_run, name=f"{name}_def")
+    return steady
+
+
+def single_copy(ctx: FormulationContext, tr: TransferNode, choice: MulticastPathPlan) -> Tensor:
+    """The copy whose reuse times a route one copy reads all of (:func:`is_single_copy`)."""
+    groups = ctx.space.copy_sets(tr, choice)
+    return tr.outputs[groups[0][0]] if groups else tr.outputs[0]
 
 
 def is_single_copy(groups: tuple[CopySet, ...]) -> bool:
@@ -147,10 +171,12 @@ def copy_latencies(ctx: FormulationContext) -> dict[tuple[TransferNode, Multicas
 
 def link_busy(ctx: FormulationContext) -> dict[tuple[CommunicationLink, int], list[Any]]:
     """Per link and slot, the cycles per iteration each route in that slot keeps the link busy."""
-    space = ctx.space
+    space, q = ctx.space, ctx.quantities
+    steady = q.indexed("steady_state_latency") if "steady_state_latency" in q else {}
     busy: dict[tuple[CommunicationLink, int], list[Any]] = defaultdict(list)
     for (tr, choice), terms in copy_latencies(ctx).items():
-        for copies, latency in terms.items():
+        timed = {None: steady[(tr, choice)].expr} if (tr, choice) in steady else terms
+        for copies, latency in timed.items():
             for link, share in space.link_load(tr, choice, copies).items():
                 busy[(link, space.slot_of[tr])].append(share * latency)
     return busy
