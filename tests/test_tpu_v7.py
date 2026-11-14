@@ -76,7 +76,9 @@ def test_a_code_generator_that_cannot_add_partial_sums_keeps_the_contraction_who
 def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_link(tmp_path):
     """Each TensorCore completes a quarter of the output: half of it crosses the chip boundary each way as partial
     sums at the MXU's fp32 accumulator, twice its bf16 bits, once after the last of the 14 iterations:
-    ceil(256 x 4096 x 32 / 2 / 364) = 46092 cycles. The weights' stream from HBM bounds the iterations."""
+    ceil(256 x 4096 x 32 / 2 / 364) = 46092 cycles; each quarter is then written to HBM in bf16,
+    ceil(256 x 4096 x 16 / (4 x 13400)) = 314 cycles. Both fire once in the run: they are its epilogue. The weights'
+    stream from HBM bounds the iterations."""
     estimate = evaluate_mapping(
         TPU_V7,
         SWIGLU,
@@ -84,8 +86,10 @@ def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_l
         "stream/inputs/examples/mapping/swiglu_tpu_v7_fused.yaml",
         SolveOptions(artifacts=False),
     )
-    routes = estimate.context.get("allocation").solution.transfer_routes
-    tr, reduction = next((tr, plan) for tr, plan in routes.items() if ICI & {str(link) for link in plan.links_used})
+    solution = estimate.context.get("allocation").solution
+    tr, reduction = next(
+        (tr, plan) for tr, plan in solution.transfer_routes.items() if ICI & {str(link) for link in plan.links_used}
+    )
     assert sorted(m.name for m in reduction.targets) == ["vmem_0", "vmem_1", "vmem_2", "vmem_3"]
     assert {str(link): round(share, 2) for link, share in reduction.link_shares if str(link) in ICI} == dict.fromkeys(
         ICI, 0.5 * 32 / 16
@@ -93,16 +97,21 @@ def test_the_partial_sums_are_reduce_scattered_over_both_directions_of_the_ici_l
     (group,) = estimate.context.data["group_allocations"].values()
     detail = next(n for n in group["steady_state"]["tiled_graph"]["nodes"] if n["name"] == tr.name)
     firing = math.ceil(256 * 4096 * 32 / 2 / 364)
+    write = math.ceil(256 * 4096 * 16 / (4 * 13400))
     assert (detail["copy_moved_bits"], detail["reuse_factor"], detail["route_cycles"]) == (
         [256 * 4096 * 32],
         14,
         firing,
     )
+    for slot in solution.slot_latency_breakdown["slots"]:
+        for transfer in slot["transfer_contributors"]:
+            if transfer["transfer"] in (tr.name, "Transfer(output_2)"):
+                assert slot["slot_latency_cycles"] == transfer["latency_contribution_cycles"] == 0
     latency = group["latency"]
     steady = 14 * latency["per_iteration"] - 13 * latency["overlap_between_iterations"]
     weights = 3 * 4096 * 14336 * 16 / (4 * 13400)
     assert weights < steady < 1.2 * weights
-    assert estimate.cycles > steady
+    assert estimate.cycles == steady + latency["fill"] >= steady + firing + write
 
 
 _SOLVE = """

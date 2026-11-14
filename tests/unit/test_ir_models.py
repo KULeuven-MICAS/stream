@@ -450,11 +450,11 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '3.3'."""
+        """AllocationIR.model_json_schema() must include schema_version const '3.4'."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "3.3", f"Expected const='3.3', got: {sv}"
+        assert sv.get("const") == "3.4", f"Expected const='3.4', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching Allocation.get_ir() shape validates without error."""
@@ -486,7 +486,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "3.3"
+        assert ir.schema_version == "3.4"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_allocation) constructs correctly."""
@@ -500,7 +500,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "3.3"
+        assert ir.schema_version == "3.4"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -611,7 +611,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "3.3"
+        assert parsed["schema_version"] == "3.4"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
@@ -791,11 +791,11 @@ def _without_descriptions(schema):
         (AcceleratorIR, "2.1", "0f52880a13485ad4"),
         (AcceleratorHardwareView, "2.1", "8c99f01169c52638"),
         (AcceleratorCompilerView, "2.1", "90a2ac03ca7c3355"),
-        (AllocationIR, "3.3", "803e01aca653e669"),
+        (AllocationIR, "3.4", "d96059bcb4121e60"),
         (AllocationAlgorithmicView, "2.0", "f236a5f99ec0d134"),
         (AllocationHardwareView, "2.0", "255efd3cc2abe43f"),
         (AllocationCompilerView, "2.2", "74d177bdcc875b7c"),
-        (AllocationPerformanceView, "2.1", "caf8ab21d24682e4"),
+        (AllocationPerformanceView, "2.2", "cd0b6cc884b4506e"),
         (InfeasibilityReportIR, "2.0", "f916a400b3ad105e"),
     ],
 )

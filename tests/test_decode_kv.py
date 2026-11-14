@@ -229,11 +229,12 @@ def _chosen(estimate):
 
 @pytest.mark.slow
 def test_the_allocation_places_a_cache_no_placement_names_as_well_as_the_best_declared_one(tmp_path):
-    """Split by heads, by sequence, pooled in one HBM or copied in each, against no placement at all: the allocation
-    splits q, K and V by heads as the cores split them, the fastest, rather than copy them, which is exactly as fast
-    but holds four times the bits."""
+    """Split by heads, by sequence, pooled in one HBM or copied in each, against no placement at all, the attention
+    unsplit in each, as the allocation sees it: a placement split on the sequence would otherwise split the attention
+    into flash-decoding parts, another workload. The allocation splits q, K and V by heads as the cores split them, the
+    fastest, rather than copy them, which is exactly as fast but holds four times the bits."""
     declared = {
-        name: _decode(tmp_path / name, "ring", _placements(cache)).cycles
+        name: _decode(tmp_path / name, "ring", _placements(cache), parts=1).cycles
         for name, cache in (("heads", BY_HEADS), ("sequence", BY_SEQUENCE), ("pooled", POOLED), ("copied", COPIED))
     }
     chosen = _decode(tmp_path / "chosen", "ring", {})

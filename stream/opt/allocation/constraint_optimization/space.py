@@ -23,7 +23,11 @@ from stream.mapping.capacity_tiler import buffer_count
 from stream.mapping.mapping import placements_of, role_of, the_one
 from stream.opt.allocation.constraint_optimization.diagnosis import structural_infeasibility
 from stream.opt.allocation.constraint_optimization.layouts import CopyLayouts
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_transfer_latency_for_path
+from stream.opt.allocation.constraint_optimization.utils import (
+    absent_trips,
+    get_active_latency,
+    get_transfer_latency_for_path,
+)
 from stream.workload.demand import (
     Box,
     DemandItem,
@@ -204,6 +208,10 @@ class DecisionSpace:
         """Cycles ``n`` takes per iteration: its runtime over the iterations it is not idle on an absent loop."""
         return get_active_latency(n, self.runtime(n), self.ssis)
 
+    def runs_in_epilogue(self, n: ComputationNode) -> bool:
+        """Whether ``n`` runs once in the run, after the last iteration: an epilogue node absent from every loop."""
+        return n in self.epilogue_nodes and absent_trips(self.ssis[n]) == self.iterations
+
     def calls_before_first_read(self, producer: HasIterationSpace, reader: HasIterationSpace) -> int:
         """Calls of ``producer`` the first call of ``reader`` waits for: up to its last along each loop it varies on
         and the reader does not."""
@@ -227,6 +235,47 @@ class DecisionSpace:
         """Whether ``node`` is absent from a loop ``other`` varies on."""
         loops = zip(self.ssis[node].get_temporal_variables(), self.ssis[other].get_temporal_variables(), strict=True)
         return any(a.effect is LoopEffect.ABSENT and b.effect is LoopEffect.VARYING for a, b in loops)
+
+    def producing_node(self, tr: TransferNode) -> ComputationNode | None:
+        """The computation node whose results ``tr`` moves, across the transfers before it; None for a group input."""
+        node = next(iter(self.workload.predecessors(tr)), None)
+        while node in self.path_choices:
+            node = next(iter(self.workload.predecessors(node)), None)
+        return node if node in self.ssc_nodes else None
+
+    def epilogue_stops(self, tr: TransferNode, copy: Tensor) -> frozenset[int]:
+        """The reuse stops at which ``copy`` of ``tr`` is kept along a loop in which the node whose results it moves
+        still computes, so that its last firing comes after that node's last call."""
+        producer = self.producing_node(tr)
+        if producer is None:
+            return frozenset()
+        loops = zip(self.ssis[copy].get_temporal_variables(), self.ssis[producer].get_temporal_variables(), strict=True)
+        held = [not c.relevant and c.size > 1 and p.effect is LoopEffect.VARYING for c, p in loops if c.applicable]
+        first = next((i for i, waits in enumerate(held) if waits), len(held))
+        return frozenset(range(first, len(held)))
+
+    @cached_property
+    def epilogue_nodes(self) -> tuple[HasIterationSpace, ...]:
+        """The transfers with a copy that has :meth:`epilogue_stops` and every node after them, in dataflow order."""
+        nodes = {*self.ssc_nodes, *self.transfer_nodes}
+        frontier = [tr for tr in self.transfer_nodes if any(self.epilogue_stops(tr, copy) for copy in tr.outputs)]
+        found = set(frontier)
+        while frontier:
+            for n in self.workload.successors(frontier.pop()):
+                if n in nodes and n not in found:
+                    found.add(n)
+                    frontier.append(n)
+        return tuple(n for n in self.workload.topological_sort() if n in found)
+
+    def once_per_run_stops(self, tr: TransferNode, copy: Tensor) -> frozenset[int]:
+        """The reuse stops at which ``copy`` of ``tr`` fires once in the run, after the last iteration: a
+        :meth:`epilogue_stops` stop, or any where ``tr`` moves the results of a node that
+        :meth:`runs_in_epilogue`."""
+        producer = next(iter(self.workload.predecessors(tr)), None)
+        after = self.stops(copy) if producer in self.ssc_nodes and self.runs_in_epilogue(producer) else ()
+        trips = absent_trips(self.ssis[tr])
+        stops = {*self.epilogue_stops(tr, copy), *after}
+        return frozenset(s for s in stops if trips * self.reuse_levels[(copy, s)] == self.iterations)
 
     def stops(self, t: Tensor) -> range:
         """The reuse stops ``t`` may take: -1 (none) up to its outermost applicable temporal loop."""
