@@ -242,10 +242,10 @@ def _solve(
         raise
     finish_instrumentation(observers)
     groups = sorted(ctx.get("group_cycles"))
-    columns = [len(ctx.get("group_columns")[i]) for i in groups]
+    cores = [ctx.get("group_cores")[i] for i in groups]
     return MappingEstimate(
         mapping=mapping,
         group_cycles=tuple(ctx.get("group_cycles")[i] for i in groups),
-        dispatch_cycles=ctx.get("allocation").problem.hardware.dispatch_overhead_cycles(columns),
+        dispatch_cycles=ctx.get("allocation").problem.hardware.dispatch_overhead_cycles(cores),
         context=ctx,
     )

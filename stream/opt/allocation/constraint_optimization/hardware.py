@@ -66,14 +66,14 @@ class HardwareNamespace:
         """Bits of the core's data memory the toolchain claims before any tensor lands."""
         return 0
 
-    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
-        """Cycles one dispatch spends configuring, given each design's column span."""
+    def dispatch_overhead_cycles(self, cores_per_design: Sequence[int]) -> float:
+        """Cycles one dispatch spends beyond its designs' prices, given each design's compute cores."""
         return 0.0
 
 
 class AIE2Namespace(HardwareNamespace):
     """The AIE2 tile array: neighbouring tiles share memory, a core's stack is reserved, a dispatch of several
-    designs reconfigures their columns, and the object-fifo, buffer-descriptor, memory-tile replay and DMA
+    designs configures each one's cores, and the object-fifo, buffer-descriptor, memory-tile replay and DMA
     channel limits are its families."""
 
     NAMESPACE = "aie2"
@@ -84,18 +84,25 @@ class AIE2Namespace(HardwareNamespace):
 
     def __init__(self, *, reconfiguration: Mapping[str, float] | None = None) -> None:
         reconfiguration = reconfiguration or {}
-        self.cycles_per_column = float(reconfiguration.get("cycles_per_column", 0.0))
-        self.reset_cycles = float(reconfiguration.get("reset_cycles", 0.0))
+        if retired := sorted({"cycles_per_column", "reset_cycles"} & set(reconfiguration)):
+            raise ValueError(
+                f"reconfiguration keys {retired} are retired: aie2 prices a dispatch by `cycles_per_core` and "
+                "`cycles_per_group`"
+            )
+        self.cycles_per_core = float(reconfiguration.get("cycles_per_core", 0.0))
+        self.cycles_per_group = float(reconfiguration.get("cycles_per_group", 0.0))
 
     @classmethod
     def from_config(cls, config: NamespaceConfig) -> AIE2Namespace:
         return cls(reconfiguration=config.accelerator.reconfiguration)
 
-    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
-        """A dispatch of several designs configures each one's columns and resets the array once."""
-        if len(columns_per_design) <= 1:
-            return 0.0
-        return sum(c * self.cycles_per_column for c in columns_per_design) + self.reset_cycles
+    def dispatch_overhead_cycles(self, cores_per_design: Sequence[int]) -> float:
+        """Each design's first fetch and last write, which its price leaves out, and where a dispatch holds several
+        designs, the configuration of each one's cores."""
+        fixed = len(cores_per_design) * self.cycles_per_group
+        if len(cores_per_design) <= 1:
+            return fixed
+        return fixed + sum(cores_per_design) * self.cycles_per_core
 
     DEFAULT_CORE_STACK_BYTES = 1024
 
@@ -153,9 +160,9 @@ class HardwareFacts:
         """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims in it."""
         return memory.capacity_bits - self.reserved_memory_bits(memory)
 
-    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
-        """Configuration cycles one dispatch pays, summed over the namespaces."""
-        return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespaces)
+    def dispatch_overhead_cycles(self, cores_per_design: Sequence[int]) -> float:
+        """Cycles one dispatch pays beyond its designs' prices, summed over the namespaces."""
+        return sum(ns.dispatch_overhead_cycles(cores_per_design) for ns in self.namespaces)
 
 
 def namespace_classes(accelerator: Accelerator) -> dict[str, type[HardwareNamespace]]:

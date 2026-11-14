@@ -1,0 +1,31 @@
+{
+ "what": "Stream's five-design SwiGLU, as IRON's SwiGLU prefill operator maps it, on an NPU2 in turbo mode, npu microseconds, run_iters median of 6 after 3 warm-up, two runs each. groups: each group as a one-design ELF, configured once (alone_us) and on every call (reconfigured_us); the up projection is the gate's design. prefixes: the first n groups in one ELF, each design configured on every call (n = 1 configured on every call too). cores: the design's compute tiles; priced_cycles: the allocation's estimate of the group or of the prefix's groups.",
+ "source": "Measured 2026-11-11 on a Ryzen AI NPU2 (Strix, XRT 2.25, amdxdna driver, mlir-aie 1.4.6.dev15) in turbo mode, each design built by IRON's graph runtime and timed with run_iters; a design configured on every call is a one-design ELF built to reconfigure itself before each run.",
+ "groups": [
+  {"seq": 512, "emb": 512, "hidden": 2048, "group": "gate", "cores": 32, "priced_cycles": 272270.0, "alone_us": [141.5, 233.5], "reconfigured_us": [560.9, 563.8]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "group": "silu", "cores": 8, "priced_cycles": 132124.0, "alone_us": [93.4, 90.7], "reconfigured_us": [221.2, 224.9]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "group": "mul", "cores": 8, "priced_cycles": 196058.0, "alone_us": [123.8, 154.0], "reconfigured_us": [254.6, 275.2]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "group": "down", "cores": 32, "priced_cycles": 238124.0, "alone_us": [180.0, 159.0], "reconfigured_us": [591.4, 636.7]},
+  {"seq": 256, "emb": 2048, "hidden": 8192, "group": "gate", "cores": 32, "priced_cycles": 1270109.0, "alone_us": [862.0, 798.2], "reconfigured_us": [1286.1, 1233.9]},
+  {"seq": 256, "emb": 2048, "hidden": 8192, "group": "silu", "cores": 8, "priced_cycles": 261108.0, "alone_us": [144.1, 170.4], "reconfigured_us": [297.3, 378.2]},
+  {"seq": 256, "emb": 2048, "hidden": 8192, "group": "mul", "cores": 8, "priced_cycles": 389577.0, "alone_us": [215.8, 207.4], "reconfigured_us": [349.8, 376.7]},
+  {"seq": 256, "emb": 2048, "hidden": 8192, "group": "down", "cores": 32, "priced_cycles": 1609193.0, "alone_us": [1372.8, 1187.9], "reconfigured_us": [1647.9, 1748.6]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "group": "gate", "cores": 32, "priced_cycles": 9955037.0, "alone_us": [5639.3, 5747.8], "reconfigured_us": [6107.6, 6169.2]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "group": "silu", "cores": 8, "priced_cycles": 2067444.0, "alone_us": [863.5, 838.7], "reconfigured_us": [1038.6, 983.9]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "group": "mul", "cores": 8, "priced_cycles": 3099081.0, "alone_us": [1512.1, 1630.1], "reconfigured_us": [1516.4, 1767.6]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "group": "down", "cores": 32, "priced_cycles": 12673001.0, "alone_us": [8524.4, 7745.0], "reconfigured_us": [8176.3, 8220.4]}
+ ],
+ "prefixes": [
+  {"seq": 512, "emb": 512, "hidden": 2048, "groups": 1, "reconfigured": true, "priced_cycles": 272270.0, "npu_us": [598.0, 599.7]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "groups": 2, "reconfigured": false, "priced_cycles": 544540.0, "npu_us": [1027.3, 1033.1]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "groups": 3, "reconfigured": false, "priced_cycles": 676664.0, "npu_us": [1224.5, 1306.5]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "groups": 4, "reconfigured": false, "priced_cycles": 872722.0, "npu_us": [1378.7, 1476.3]},
+  {"seq": 512, "emb": 512, "hidden": 2048, "groups": 5, "reconfigured": false, "priced_cycles": 1110846.0, "npu_us": [1947.1, 1929.2]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "groups": 1, "reconfigured": true, "priced_cycles": 9955037.0, "npu_us": [5886.3, 6184.2]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "groups": 2, "reconfigured": false, "priced_cycles": 19910074.0, "npu_us": [11936.9, 11956.6]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "groups": 3, "reconfigured": false, "priced_cycles": 21977518.0, "npu_us": [12498.7, 12765.8]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "groups": 4, "reconfigured": false, "priced_cycles": 25076599.0, "npu_us": [14013.6, 14265.9]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "groups": 5, "reconfigured": false, "priced_cycles": 37749600.0, "npu_us": [22162.8, 22107.5]},
+  {"seq": 2048, "emb": 2048, "hidden": 8192, "groups": 1, "reconfigured": false, "priced_cycles": 9955037.0, "npu_us": [5562.3, 5663.9]}
+ ]
+}

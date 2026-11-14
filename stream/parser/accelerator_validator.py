@@ -280,6 +280,7 @@ class AcceleratorValidator:
         self.validate_namespace()
         self.validate_connections()
         self.validate_bandwidth()
+        self.validate_reconfiguration()
 
         if not self.is_valid and self.errors:
             logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
@@ -492,6 +493,15 @@ class AcceleratorValidator:
         unreached = [name for name in memories if name not in connected]
         if unreached:
             self.invalidate(f"memories {unreached} have no connection: nothing can reach them.")
+
+    def validate_reconfiguration(self) -> None:
+        """Reject the reconfiguration keys priced per column, which no namespace reads any more."""
+        retired = sorted({"cycles_per_column", "reset_cycles"} & set(self.data.get("reconfiguration") or {}))
+        if retired:
+            self.invalidate(
+                f"`reconfiguration` keys {retired} are retired: aie2 prices a dispatch by `cycles_per_core` and "
+                "`cycles_per_group`."
+            )
 
     def validate_bandwidth(self) -> None:
         """Check that every ``bandwidth:`` key names a known memory, or a port of a memory without its own model, and
